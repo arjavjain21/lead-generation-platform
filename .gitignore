@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+
+# Data files (keep folder, exclude contents)
+backend/data/uploads/*
+backend/data/outputs/*
+backend/data/*.db
+backend/data/*.db-*
+backend/data/*.db-wal
+backend/data/*.db-shm
+backend/data/*.backup*
+*.csv
+
+# Node modules (if any)
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Frontend build (regenerate from source)
+frontend/assets/*.js
+frontend/assets/*.css
+
+# Temp files
+*.tmp
+*.temp

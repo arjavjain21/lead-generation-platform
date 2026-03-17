@@ -1,0 +1,1147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>List Building Tool - Lead Generation Platform</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --primary: #1a315d; --primary-dark: #122544; --primary-light: #2a4a8a;
+            --success: #10b981; --warning: #f59e0b; --danger: #ef4444;
+            --gray-50: #f9fafb; --gray-100: #f3f4f6; --gray-200: #e5e7eb;
+            --gray-300: #d1d5db; --gray-400: #9ca3af; --gray-500: #6b7280;
+            --gray-600: #4b5563; --gray-700: #374151; --gray-800: #1f2937;
+            --gray-900: #111827;
+            --sidebar-width: 260px;
+        }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--gray-50); color: var(--gray-800); min-height: 100vh; display: flex; }
+        
+        /* Sidebar */
+        .sidebar { width: var(--sidebar-width); background: var(--gray-900); color: white; min-height: 100vh; position: fixed; left: 0; top: 0; display: flex; flex-direction: column; }
+        .sidebar-header { padding: 1.5rem; border-bottom: 1px solid var(--gray-700); }
+        .sidebar-header h1 { font-size: 1.25rem; font-weight: 600; }
+        .sidebar-header span { font-size: 0.75rem; color: var(--gray-400); }
+        .sidebar-nav { flex: 1; padding: 1rem 0; }
+        .nav-section { padding: 0.5rem 1rem; }
+        .nav-section-title { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--gray-500); margin-bottom: 0.5rem; }
+        .nav-item { display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem 1rem; color: var(--gray-300); text-decoration: none; border-radius: 6px; margin: 0.25rem 0.5rem; transition: all 0.15s; cursor: pointer; }
+        .nav-item:hover { background: var(--gray-800); color: white; }
+        .nav-item.active { background: var(--primary); color: white; }
+        .nav-icon { font-size: 1.1rem; width: 20px; text-align: center; }
+        .sidebar-footer { padding: 1rem; border-top: 1px solid var(--gray-700); }
+        .user-badge { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem; }
+        .user-avatar { width: 32px; height: 32px; background: var(--primary); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.875rem; font-weight: 600; }
+        .user-details { flex: 1; }
+        .user-email { font-size: 0.875rem; color: white; }
+        .logout-btn { font-size: 0.75rem; color: var(--gray-400); cursor: pointer; }
+        .logout-btn:hover { color: white; }
+        
+        /* Main Content */
+        .main { flex: 1; margin-left: var(--sidebar-width); padding: 2rem; max-width: 1200px; }
+        
+        /* Auth Modal */
+        .auth-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 1000; align-items: center; justify-content: center; }
+        .auth-overlay.active { display: flex; }
+        .auth-card { background: white; border-radius: 12px; padding: 2.5rem; width: 100%; max-width: 400px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.3); }
+        .auth-card h2 { margin-bottom: 1.5rem; font-size: 1.5rem; text-align: center; }
+        .form-group { margin-bottom: 1rem; }
+        .form-group label { display: block; margin-bottom: 0.5rem; font-weight: 500; color: var(--gray-700); }
+        .form-group input { width: 100%; padding: 0.75rem; border: 1px solid var(--gray-300); border-radius: 8px; font-size: 1rem; }
+        .form-group input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(26,49,93,0.1); }
+        .btn { padding: 0.75rem 1.5rem; border: none; border-radius: 8px; font-weight: 500; cursor: pointer; transition: all 0.2s; font-size: 0.875rem; }
+        .btn-primary { background: var(--primary); color: white; }
+        .btn-primary:hover { background: var(--primary-dark); }
+        .btn-secondary { background: var(--gray-100); color: var(--gray-700); }
+        .btn-secondary:hover { background: var(--gray-200); }
+        .btn-success { background: var(--success); color: white; }
+        .btn-success:hover { background: #059669; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        
+        /* Page Sections */
+        .page { display: none; }
+        .page.active { display: block; }
+        
+        /* Welcome/Hero */
+        .welcome-card { background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%); border-radius: 16px; padding: 3rem; color: white; margin-bottom: 2rem; }
+        .welcome-card h2 { font-size: 2rem; margin-bottom: 1rem; }
+        .welcome-card p { font-size: 1.1rem; opacity: 0.9; line-height: 1.6; }
+        
+        /* Info Cards */
+        .info-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px,1fr)); gap: 1.5rem; margin-bottom: 2rem; }
+        .info-card { background: white; border-radius: 12px; padding: 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .info-card h3 { display: flex; align-items: center; gap: 0.5rem; font-size: 1rem; margin-bottom: 0.75rem; color: var(--gray-800); }
+        .info-card p { font-size: 0.875rem; color: var(--gray-600); line-height: 1.5; }
+        .info-card ol { font-size: 0.875rem; color: var(--gray-600); padding-left: 1.25rem; }
+        .info-card li { margin-bottom: 0.25rem; }
+        
+        /* Flow Cards */
+        .flow-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 1.5rem; }
+        .flow-card { background: white; border-radius: 12px; padding: 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); cursor: pointer; transition: all 0.2s; border: 2px solid transparent; }
+        .flow-card:hover { border-color: var(--primary); transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+        .flow-card.active { border-color: var(--primary); background: #e8eef5; }
+        .flow-icon { font-size: 2rem; margin-bottom: 0.75rem; }
+        .flow-card h4 { font-size: 1rem; margin-bottom: 0.5rem; color: var(--gray-800); }
+        .flow-card p { font-size: 0.8rem; color: var(--gray-600); }
+        
+        /* Forms */
+        .form-card { background: white; border-radius: 12px; padding: 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 1.5rem; }
+        .form-card h3 { font-size: 1.125rem; margin-bottom: 1rem; padding-bottom: 0.75rem; border-bottom: 1px solid var(--gray-200); }
+        
+        .upload-zone { border: 2px dashed var(--gray-300); border-radius: 12px; padding: 2.5rem; text-align: center; cursor: pointer; transition: all 0.2s; background: var(--gray-50); }
+        .upload-zone:hover { border-color: var(--primary); background: rgba(26,49,93,0.05); }
+        .upload-zone.dragover { border-color: var(--primary); background: rgba(26,49,93,0.1); }
+        .upload-zone input[type="file"] { display: none; }
+        .upload-icon { font-size: 2.5rem; margin-bottom: 0.75rem; }
+        .upload-text { color: var(--gray-600); margin-bottom: 0.25rem; }
+        .upload-hint { color: var(--gray-400); font-size: 0.8rem; }
+        
+        .filters { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px,1fr)); gap: 1rem; margin-bottom: 1rem; }
+        .filter-group { display: flex; flex-direction: column; gap: 0.25rem; }
+        .filter-group label { font-size: 0.8rem; font-weight: 500; color: var(--gray-700); }
+        .filter-group select, .filter-group input { padding: 0.5rem; border: 1px solid var(--gray-300); border-radius: 6px; font-size: 0.875rem; }
+        
+        .file-info { background: var(--gray-50); border-radius: 8px; padding: 1rem; margin-top: 1rem; display: flex; align-items: center; justify-content: space-between; }
+        .file-name { font-weight: 500; color: var(--gray-700); }
+        .file-size { color: var(--gray-500); font-size: 0.875rem; }
+        
+        /* Progress */
+        .progress-bar { height: 8px; background: var(--gray-200); border-radius: 4px; overflow: hidden; margin-top: 0.5rem; }
+        .progress-fill { height: 100%; background: var(--primary); border-radius: 4px; transition: width 0.3s; }
+        .progress-text { display: flex; justify-content: space-between; margin-top: 0.5rem; font-size: 0.875rem; color: var(--gray-600); }
+        
+        .stats-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 1rem; margin-bottom: 1rem; }
+        .stat-card { background: var(--gray-50); border-radius: 8px; padding: 1rem; text-align: center; }
+        .stat-value { font-size: 1.5rem; font-weight: 600; color: var(--primary); }
+        .stat-label { font-size: 0.75rem; color: var(--gray-500); margin-top: 0.25rem; }
+        
+        /* Tables */
+        .results-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+        .results-table th, .results-table td { padding: 0.6rem; text-align: left; border-bottom: 1px solid var(--gray-200); }
+        .results-table th { font-weight: 600; color: var(--gray-700); background: var(--gray-50); }
+        .results-table td { color: var(--gray-600); }
+        
+        /* Jobs List */
+        .jobs-list { display: flex; flex-direction: column; gap: 0.75rem; }
+        .job-card { background: white; border-radius: 8px; padding: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); display: flex; justify-content: space-between; align-items: center; }
+        .job-info h4 { font-weight: 500; margin-bottom: 0.2rem; font-size: 0.9rem; }
+        .job-meta { font-size: 0.75rem; color: var(--gray-500); }
+        .job-status { padding: 0.25rem 0.6rem; border-radius: 9999px; font-size: 0.7rem; font-weight: 500; }
+        .status-running { background: #dbeafe; color: #1d4ed8; }
+        .status-done { background: #d1fae5; color: #059669; }
+        .status-failed { background: #fee2e2; color: #dc2626; }
+        .status-queued { background: #fef3c7; color: #d97706; }
+        
+        .btn-sm { padding: 0.4rem 0.75rem; font-size: 0.75rem; }
+        .actions { display: flex; gap: 0.5rem; }
+        
+        .loading { display: flex; align-items: center; justify-content: center; padding: 2rem; color: var(--gray-500); }
+        .spinner { width: 20px; height: 20px; border: 3px solid var(--gray-200); border-top-color: var(--primary); border-radius: 50%; animation: spin 1s linear infinite; margin-right: 0.5rem; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .empty-state { text-align: center; padding: 2rem; color: var(--gray-500); }
+        
+        /* Help Page */
+        .help-section { background: white; border-radius: 12px; padding: 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 1.5rem; }
+        .help-section h3 { font-size: 1.1rem; margin-bottom: 1rem; color: var(--gray-800); }
+        .help-section p { font-size: 0.9rem; color: var(--gray-600); line-height: 1.6; margin-bottom: 0.75rem; }
+        .help-section ul { font-size: 0.9rem; color: var(--gray-600); padding-left: 1.25rem; margin-bottom: 0.75rem; }
+        .help-section li { margin-bottom: 0.25rem; }
+        
+        .data-sources { background: var(--gray-50); border-radius: 8px; padding: 1rem; margin-top: 1rem; }
+        .data-sources h4 { font-size: 0.9rem; margin-bottom: 0.5rem; color: var(--gray-700); }
+        .source-tag { display: inline-block; padding: 0.25rem 0.5rem; background: white; border: 1px solid var(--gray-300); border-radius: 4px; font-size: 0.75rem; margin-right: 0.5rem; margin-bottom: 0.25rem; }
+    </style>
+</head>
+<body>
+    <!-- Sidebar -->
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h1>List Building</h1>
+            <span>Lead Enrichment Tool</span>
+        </div>
+        <nav class="sidebar-nav">
+            <div class="nav-section">
+                <div class="nav-section-title">Main</div>
+                <a class="nav-item active" data-page="home"><span class="nav-icon">🏠</span>Home</a>
+                <a class="nav-item" data-page="scraper"><span class="nav-icon">🗺️</span>Google Maps Scraper</a>
+                <a class="nav-item" data-page="domains"><span class="nav-icon">📥</span>Upload Domains</a>
+                <a class="nav-item" data-page="search"><span class="nav-icon">🔍</span>Company Search</a>
+                <a class="nav-item" data-page="linkedin"><span class="nav-icon">🔗</span>LinkedIn Enrich</a>
+                <a class="nav-item" data-page="jobs"><span class="nav-icon">📋</span>Jobs</a>
+            </div>
+            <div class="nav-section">
+                <div class="nav-section-title">Resources</div>
+                <a class="nav-item" data-page="help"><span class="nav-icon">❓</span>Help & Guide</a>
+            </div>
+        </nav>
+        <div class="sidebar-footer">
+            <div class="user-badge">
+                <div class="user-avatar" id="userAvatar">?</div>
+                <div class="user-details">
+                    <div class="user-email" id="userEmail">Loading...</div>
+                    <div class="logout-btn" id="logoutBtn">Sign out</div>
+                </div>
+            </div>
+        </div>
+    </aside>
+    
+    <!-- Auth Modal -->
+    <div class="auth-overlay" id="authModal">
+        <div class="auth-card">
+            <h2>Sign In</h2>
+            <form id="loginForm">
+                <div class="form-group">
+                    <label>Email</label>
+                    <input type="email" id="email" required placeholder="your@email.com">
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" id="password" required placeholder="Password">
+                </div>
+                <button type="submit" class="btn btn-primary" style="width:100%;">Sign In</button>
+            </form>
+        </div>
+    </div>
+    
+    <!-- Main Content -->
+    <main class="main">
+        
+        <!-- Home Page -->
+        <div class="page active" id="page-home">
+            <div class="welcome-card">
+                <h2>Find Decision Makers with Verified Emails</h2>
+                <p>Build targeted lead lists by uploading domains, searching companies, or enriching LinkedIn profiles. Get emails from our internal database with Blitz API as fallback.</p>
+            </div>
+            
+            <div class="info-grid">
+                <div class="info-card">
+                    <h3>📊 Data Sources</h3>
+                    <p>We use two data sources (in priority order):</p>
+                    <ol>
+                        <li><strong>Internal Database</strong> - Free, cached data</li>
+                        <li><strong>Blitz API</strong> - Paid, fresh data</li>
+                    </ol>
+                </div>
+                <div class="info-card">
+                    <h3>✅ Email Verification</h3>
+                    <p>Output includes verification status:</p>
+                    <ul>
+                        <li><strong>yes</strong> - Verified deliverable</li>
+                        <li><strong>no</strong> - Not verified</li>
+                        <li><strong>unknown</strong> - No data</li>
+                    </ul>
+                </div>
+                <div class="info-card">
+                    <h3>📋 Output Format</h3>
+                    <p>CSV with columns:</p>
+                    <ul>
+                        <li>Company details</li>
+                        <li>Decision maker info</li>
+                        <li>Email + verification</li>
+                        <li>LinkedIn profile</li>
+                    </ul>
+                </div>
+            </div>
+            
+            <h3 style="margin-bottom:1rem; font-size:1.1rem;">Choose a Flow</h3>
+            <div class="flow-grid">
+                <div class="flow-card" data-page="scraper">
+                    <div class="flow-icon">🗺️</div>
+                    <h4>Google Maps Scraper</h4>
+                    <p>Scrape businesses from Google Maps by location and category. Find emails and phone numbers.</p>
+                </div>
+                <div class="flow-card" data-page="domains">
+                    <div class="flow-icon">📥</div>
+                    <h4>Upload Domains</h4>
+                    <p>Upload a CSV with company domains. We'll find generic emails and decision makers.</p>
+                </div>
+                <div class="flow-card" data-page="search">
+                    <div class="flow-icon">🔍</div>
+                    <h4>Search Companies</h4>
+                    <p>Search by industry, size, location. Then enrich the results with contact data.</p>
+                </div>
+                <div class="flow-card" data-page="linkedin">
+                    <div class="flow-icon">🔗</div>
+                    <h4>LinkedIn Enrichment</h4>
+                    <p>Upload LinkedIn URLs. We'll find work emails and company details.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Scraper Page -->
+        <div class="page" id="page-scraper">
+            <div class="form-card">
+                <h3>🗺️ Google Maps Scraper</h3>
+                <div style="background:#f0f9ff;border-left:4px solid #1a315d;padding:12px;margin-bottom:1rem;border-radius:4px;font-size:0.85rem;color:#374151;">
+                    <strong>What it does:</strong> Scrapes business listings from Google Maps based on category and location.<br>
+                    <strong>How to use:</strong> 1) Enter a category (type to see suggestions from Google's categories), 2) Select country, 3) Choose "All" for entire country or "Specific States/Cities" for targeted areas, 4) Click "Start Scraper Job". Results include business names, addresses, phone numbers, and websites.
+                </div>
+                <div class="filters">
+                    <div class="filter-group" style="grid-column: span 2;">
+                        <label>What to search (type to see suggestions)</label>
+                        <input type="text" id="scraperQuery" placeholder="e.g., Attorney, Restaurant, Dentist" autocomplete="off">
+                        <div id="scraperCategoryList" style="display:none;margin-top:4px;max-height:180px;overflow-y:auto;border:1px solid var(--gray-300);border-radius:8px;background:white;position:absolute;z-index:100;width:calc(100% - 24px);"></div>
+                    </div>
+                </div>
+                <div class="filters">
+                    <div class="filter-group">
+                        <label>Country</label>
+                        <select id="scraperCountry">
+                            <option value="us">United States</option>
+                            <option value="gb">United Kingdom</option>
+                            <option value="ie">Ireland</option>
+                            <option value="au">Australia</option>
+                            <option value="ca">Canada</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label>Search Mode</label>
+                        <select id="scraperMode">
+                            <option value="all">All Regions</option>
+                            <option value="states">Specific States</option>
+                            <option value="cities">Specific Cities</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="filters" id="scraperStatesContainer" style="display:none;">
+                    <div class="filter-group" style="grid-column: span 2;">
+                        <label>Select States (hold Ctrl/Cmd to select multiple)</label>
+                        <select id="scraperStates" multiple size="6" style="height:150px;">
+                        </select>
+                    </div>
+                </div>
+                <div class="filters" id="scraperCitiesContainer" style="display:none;">
+                    <div class="filter-group" style="grid-column: span 2;">
+                        <label>Search Cities (type to search)</label>
+                        <input type="text" id="scraperCitySearch" placeholder="Start typing city name..." autocomplete="off">
+                        <div id="scraperCitiesList" style="display:none;margin-top:4px;max-height:150px;overflow-y:auto;border:1px solid var(--gray-300);border-radius:8px;padding:0.5rem;background:white;"></div>
+                    </div>
+                </div>
+                <div style="margin-top:1rem;">
+                    <button class="btn btn-primary" id="startScraperJob">Start Scraper Job</button>
+                </div>
+            </div>
+
+            <div class="form-card" id="scraperProgress" style="display:none;">
+                <h3>📊 Scraping Progress</h3>
+                <div class="stats-grid">
+                    <div class="stat-card"><div class="stat-value" id="scraperTotal">0</div><div class="stat-label">Total Tasks</div></div>
+                    <div class="stat-card"><div class="stat-value" id="scraperDone">0</div><div class="stat-label">Completed</div></div>
+                    <div class="stat-card"><div class="stat-value" id="scraperResults">0</div><div class="stat-label">Results</div></div>
+                </div>
+                <div class="progress-bar"><div class="progress-fill" id="scraperProgressBar" style="width:0%"></div></div>
+                <div class="progress-text"><span id="scraperProgressText">0%</span><span id="scraperStatus">Initializing...</span></div>
+                <div style="margin-top:1rem;">
+                    <button class="btn btn-success btn-sm" id="downloadScraperResults" disabled>Download CSV</button>
+                    <button class="btn btn-secondary btn-sm" id="chainToEnrichment" disabled>Chain to Enrichment</button>
+                </div>
+            </div>
+
+            <div class="form-card" id="scraperJobsCard">
+                <h3>📋 Recent Scraper Jobs</h3>
+                <div id="scraperJobsList"></div>
+            </div>
+        </div>
+
+        <!-- Domains Page -->
+        <div class="page" id="page-domains">
+            <div class="form-card">
+                <h3>📥 Upload Domains CSV</h3>
+                <div style="background:#f0f9ff;border-left:4px solid #1a315d;padding:12px;margin-bottom:1rem;border-radius:4px;font-size:0.85rem;color:#374151;">
+                    <strong>How to use:</strong> Upload a CSV file with company domains (e.g., "acme.com"). The system will find LinkedIn company pages, then search for decision makers (CEO, VP, Directors) at each company and retrieve their work emails. Required column: <code>domain</code> (company website without https://)
+                </div>
+                <div class="upload-zone" id="domainUploadZone">
+                    <input type="file" id="domainFile" accept=".csv">
+                    <div class="upload-icon">📁</div>
+                    <div class="upload-text">Drop CSV file or click to browse</div>
+                    <div class="upload-hint">Required column: domain</div>
+                </div>
+                <div class="file-info" id="domainFileInfo" style="display:none;">
+                    <span class="file-name" id="domainFileName"></span>
+                    <span class="file-size" id="domainFileSize"></span>
+                </div>
+            </div>
+            
+            <div class="form-card" id="domainOptions" style="display:none;">
+                <h3>⚙️ Options</h3>
+                <div class="filters">
+                    <div class="filter-group">
+                        <label>Domain Column</label>
+                        <select id="domainCol"></select>
+                    </div>
+                    <div class="filter-group">
+                        <label>Max Decision Makers</label>
+                        <select id="maxResults">
+                            <option value="3">3 per company</option>
+                            <option value="5" selected>5 per company</option>
+                            <option value="10">10 per company</option>
+                        </select>
+                    </div>
+                </div>
+                <button class="btn btn-primary" id="startDomainEnrichment">Start Enrichment</button>
+            </div>
+            
+            <div class="form-card" id="domainProgress" style="display:none;">
+                <h3>📊 Progress</h3>
+                <div class="stats-grid">
+                    <div class="stat-card"><div class="stat-value" id="domainTotal">0</div><div class="stat-label">Total</div></div>
+                    <div class="stat-card"><div class="stat-value" id="domainProcessed">0</div><div class="stat-label">Processed</div></div>
+                    <div class="stat-card"><div class="stat-value" id="domainEmails">0</div><div class="stat-label">Emails</div></div>
+                </div>
+                <div class="progress-bar"><div class="progress-fill" id="domainProgressBar" style="width:0%"></div></div>
+                <div class="progress-text"><span id="domainProgressText">0%</span><span id="domainStatus">Running...</span></div>
+                <div style="margin-top:1rem;"><button class="btn btn-success btn-sm" id="downloadDomainResults" disabled>Download CSV</button></div>
+            </div>
+        </div>
+        
+        <!-- Search Page -->
+        <div class="page" id="page-search">
+            <div class="form-card">
+                <h3>🔍 Search Companies</h3>
+                <div style="background:#f0f9ff;border-left:4px solid #1a315d;padding:12px;margin-bottom:1rem;border-radius:4px;font-size:0.85rem;color:#374151;">
+                    <strong>How to use:</strong> Search for companies using filters like industry, employee count, company type, and country. Click "Search" to find companies, then "Search & Enrich" to get contact data (emails, phone numbers) for decision makers.
+                </div>
+                <div class="filters">
+                    <div class="filter-group">
+                        <label>Company Name</label>
+                        <input type="text" id="searchName" placeholder="Optional">
+                    </div>
+                    <div class="filter-group">
+                        <label>Industry</label>
+                        <select id="searchIndustry"><option value="">Any</option></select>
+                    </div>
+                    <div class="filter-group">
+                        <label>Employees</label>
+                        <select id="searchEmployeeRange"><option value="">Any</option></select>
+                    </div>
+                    <div class="filter-group">
+                        <label>Type</label>
+                        <select id="searchCompanyType"><option value="">Any</option></select>
+                    </div>
+                    <div class="filter-group">
+                        <label>Country</label>
+                        <select id="searchCountry"><option value="">Any</option></select>
+                    </div>
+                </div>
+                <div class="actions" style="margin-top:1rem;">
+                    <button class="btn btn-secondary" id="searchCompanies">Search</button>
+                    <button class="btn btn-primary" id="searchAndEnrich" disabled>Search & Enrich</button>
+                </div>
+            </div>
+            
+            <div class="form-card" id="searchResults" style="display:none;">
+                <h3>📋 Results <span id="searchResultsCount"></span></h3>
+                <div style="overflow-x:auto;">
+                    <table class="results-table">
+                        <thead><tr><th>Company</th><th>Industry</th><th>Employees</th><th>Type</th><th>Country</th></tr></thead>
+                        <tbody id="searchResultsBody"></tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <div class="form-card" id="searchProgress" style="display:none;">
+                <h3>📊 Enrichment Progress</h3>
+                <div class="stats-grid">
+                    <div class="stat-card"><div class="stat-value" id="searchTotal">0</div><div class="stat-label">Total</div></div>
+                    <div class="stat-card"><div class="stat-value" id="searchProcessed">0</div><div class="stat-label">Processed</div></div>
+                    <div class="stat-card"><div class="stat-value" id="searchEmails">0</div><div class="stat-label">Emails</div></div>
+                </div>
+                <div class="progress-bar"><div class="progress-fill" id="searchProgressBar" style="width:0%"></div></div>
+                <div class="progress-text"><span id="searchProgressText">0%</span><span id="searchStatus">Running...</span></div>
+                <div style="margin-top:1rem;"><button class="btn btn-success btn-sm" id="downloadSearchResults" disabled>Download CSV</button></div>
+            </div>
+        </div>
+        
+        <!-- LinkedIn Page -->
+        <div class="page" id="page-linkedin">
+            <div class="form-card">
+                <h3>🔗 Upload LinkedIn CSV</h3>
+                <div style="background:#f0f9ff;border-left:4px solid #1a315d;padding:12px;margin-bottom:1rem;border-radius:4px;font-size:0.85rem;color:#374151;">
+                    <strong>How to use:</strong> Upload a CSV file with LinkedIn profile URLs. We'll find work emails, phone numbers, and company details for each person. Required column: <code>linkedin_url</code> (e.g., https://linkedin.com/in/johndoe)
+                </div>
+                <div class="upload-zone" id="linkedinUploadZone">
+                    <input type="file" id="linkedinFile" accept=".csv">
+                    <div class="upload-icon">🔗</div>
+                    <div class="upload-text">Drop CSV file or click to browse</div>
+                    <div class="upload-hint">Required column: linkedin_url</div>
+                </div>
+                <div class="file-info" id="linkedinFileInfo" style="display:none;">
+                    <span class="file-name" id="linkedinFileName"></span>
+                    <span class="file-size" id="linkedinFileSize"></span>
+                </div>
+            </div>
+            
+            <div class="form-card" id="linkedinOptions" style="display:none;">
+                <h3>⚙️ Options</h3>
+                <div class="filters">
+                    <div class="filter-group">
+                        <label>LinkedIn Column</label>
+                        <select id="linkedinCol"></select>
+                    </div>
+                    <div class="filter-group">
+                        <label style="display:flex;align-items:center;gap:0.5rem;">
+                            <input type="checkbox" id="includeCompany" checked> Include Company Details
+                        </label>
+                    </div>
+                </div>
+                <button class="btn btn-primary" id="startLinkedinEnrichment">Start Enrichment</button>
+            </div>
+            
+            <div class="form-card" id="linkedinProgress" style="display:none;">
+                <h3>📊 Progress</h3>
+                <div class="stats-grid">
+                    <div class="stat-card"><div class="stat-value" id="linkedinTotal">0</div><div class="stat-label">Total</div></div>
+                    <div class="stat-card"><div class="stat-value" id="linkedinProcessed">0</div><div class="stat-label">Processed</div></div>
+                    <div class="stat-card"><div class="stat-value" id="linkedinEmails">0</div><div class="stat-label">Emails</div></div>
+                </div>
+                <div class="progress-bar"><div class="progress-fill" id="linkedinProgressBar" style="width:0%"></div></div>
+                <div class="progress-text"><span id="linkedinProgressText">0%</span><span id="linkedinStatus">Running...</span></div>
+                <div style="margin-top:1rem;"><button class="btn btn-success btn-sm" id="downloadLinkedinResults" disabled>Download CSV</button></div>
+            </div>
+        </div>
+        
+        <!-- Jobs Page -->
+        <div class="page" id="page-jobs">
+            <div class="form-card">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+                    <h3 style="margin:0;">📋 Recent Jobs</h3>
+                    <button class="btn btn-secondary btn-sm" id="refreshJobs">Refresh</button>
+                </div>
+                <div class="jobs-list" id="jobsList">
+                    <div class="loading"><div class="spinner"></div>Loading...</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Help Page -->
+        <div class="page" id="page-help">
+            <div class="help-section">
+                <h3>What is List Building Tool?</h3>
+                <p>List Building Tool helps you find decision makers and their verified work emails. You can:</p>
+                <ul>
+                    <li><strong>Upload domains</strong> - Get all decision makers from company websites</li>
+                    <li><strong>Search companies</strong> - Find companies by industry, size, location</li>
+                    <li><strong>Enrich LinkedIn profiles</strong> - Add emails to your existing leads</li>
+                </ul>
+            </div>
+            
+            <div class="help-section">
+                <h3>How It Works</h3>
+                <p>Every enrichment request follows this process:</p>
+                <ol>
+                    <li><strong>Upload your data</strong> - CSV with domains or LinkedIn URLs</li>
+                    <li><strong>We process in background</strong> - Watch progress in real-time</li>
+                    <li><strong>Download enriched CSV</strong> - Get emails, verification status, and more</li>
+                </ol>
+            </div>
+            
+            <div class="help-section">
+                <h3>Data Sources</h3>
+                <p>We use two data sources to maximize coverage while minimizing costs:</p>
+                <div class="data-sources">
+                    <h4>Primary: Internal Database (Free)</h4>
+                    <p style="font-size:0.85rem;color:var(--gray-600);">Our cached database with millions of contacts. Always checked first.</p>
+                    <div style="margin-top:0.5rem;">
+                        <span class="source-tag">contacts_db_linkedin</span>
+                        <span class="source-tag">contacts_db_name</span>
+                        <span class="source-tag">contacts_db_domain</span>
+                    </div>
+                </div>
+                <div class="data-sources">
+                    <h4>Fallback: Blitz API (Paid)</h4>
+                    <p style="font-size:0.85rem;color:var(--gray-600);">Used when internal DB has no data. Provides verified emails.</p>
+                    <div style="margin-top:0.5rem;">
+                        <span class="source-tag">blitz_linkedin</span>
+                        <span class="source-tag">blitz_name</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="help-section">
+                <h3>Understanding Output Columns</h3>
+                <p><strong>dm_email_source</strong> - Where the email came from</p>
+                <p><strong>dm_email_verified</strong> - Email verification status:</p>
+                <ul>
+                    <li><code>yes</code> - Email is verified deliverable</li>
+                    <li><code>no</code> - Email found but not verified</li>
+                    <li><code>unknown</code> - No verification data available</li>
+                </ul>
+                <p><strong>row_status</strong> - Processing result:</p>
+                <ul>
+                    <li><code>enriched</code> - Successfully found email</li>
+                    <li><code>no_contacts</code> - Company found but no contacts</li>
+                    <li><code>not_found</code> - Could not find company</li>
+                </ul>
+            </div>
+            
+            <div class="help-section">
+                <h3>Input Format Examples</h3>
+                <p><strong>Domain Upload:</strong></p>
+                <pre style="background:var(--gray-50);padding:0.75rem;border-radius:6px;font-size:0.8rem;overflow-x:auto;">domain
+acme.com
+example.org</pre>
+                <p><strong>LinkedIn Upload:</strong></p>
+                <pre style="background:var(--gray-50);padding:0.75rem;border-radius:6px;font-size:0.8rem;overflow-x:auto;">linkedin_url
+https://linkedin.com/in/johndoe
+https://linkedin.com/in/janesmith</pre>
+            </div>
+        </div>
+    </main>
+    
+    <script>
+        // State
+        let token = localStorage.getItem('token'), user = null;
+        let domainUploadId = null, linkedinUploadId = null, currentJobId = null, eventSource = null;
+        
+        // Auth
+        const authModal = document.getElementById('authModal');
+        if (token) checkAuth(); else showAuth();
+        
+        function showAuth() { authModal.classList.add('active'); }
+        function hideAuth() { authModal.classList.remove('active'); }
+        
+        async function checkAuth() {
+            try {
+                const res = await fetch('/api/auth/me', { headers: { 'Authorization': 'Bearer ' + token } });
+                if (res.ok) { user = await res.json(); updateUserUI(); hideAuth(); loadSearchOptions(); loadJobs(); }
+                else { localStorage.removeItem('token'); token = null; showAuth(); }
+            } catch (e) { showAuth(); }
+        }
+        
+        function updateUserUI() {
+            const email = user?.email || 'User';
+            document.getElementById('userEmail').textContent = email;
+            document.getElementById('userAvatar').textContent = email.charAt(0).toUpperCase();
+        }
+        
+        document.getElementById('loginForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const email = document.getElementById('email').value, password = document.getElementById('password').value;
+            try {
+                const res = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
+                if (res.ok) { const data = await res.json(); token = data.token; localStorage.setItem('token', token); user = { email: data.email }; updateUserUI(); hideAuth(); loadSearchOptions(); loadJobs(); }
+                else alert('Invalid credentials');
+            } catch (e) { alert('Connection error'); }
+        });
+        
+        document.getElementById('logoutBtn').addEventListener('click', () => { localStorage.removeItem('token'); token = null; user = null; showAuth(); });
+        
+        // Navigation
+        document.querySelectorAll('.nav-item, .flow-card').forEach(el => {
+            el.addEventListener('click', () => {
+                const page = el.dataset.page;
+                if (!page) return;
+                document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+                document.querySelectorAll('.flow-card').forEach(f => f.classList.remove('active'));
+                document.querySelector(`.nav-item[data-page="${page}"]`)?.classList.add('active');
+                document.querySelector(`.flow-card[data-page="${page}"]`)?.classList.add('active');
+                document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+                document.getElementById('page-' + page).classList.add('active');
+            });
+        });
+        
+        // Load Search Options
+        async function loadSearchOptions() {
+            try {
+                const res = await fetch('/api/enrichment/search/options', { headers: { 'Authorization': 'Bearer ' + token } }), data = await res.json();
+                ['Industry', 'EmployeeRange', 'CompanyType', 'Country'].forEach((type, i) => {
+                    const sel = document.getElementById('search' + type);
+                    const items = [data.industries, data.employee_ranges, data.company_types, data.countries][i];
+                    items.forEach(item => { const opt = document.createElement('option'); opt.value = item.code || item; opt.textContent = item.name || item; sel.appendChild(opt); });
+                });
+            } catch (e) { console.error('Failed to load options:', e); }
+        }
+        
+        // Domain Upload
+        const domainUploadZone = document.getElementById('domainUploadZone'), domainFile = document.getElementById('domainFile');
+        domainUploadZone.addEventListener('click', () => domainFile.click());
+        domainUploadZone.addEventListener('dragover', (e) => { e.preventDefault(); domainUploadZone.classList.add('dragover'); });
+        domainUploadZone.addEventListener('dragleave', () => domainUploadZone.classList.remove('dragover'));
+        domainUploadZone.addEventListener('drop', (e) => { e.preventDefault(); domainUploadZone.classList.remove('dragover'); if (e.dataTransfer.files.length) handleDomainFile(e.dataTransfer.files[0]); });
+        domainFile.addEventListener('change', (e) => { if (e.target.files.length) handleDomainFile(e.target.files[0]); });
+        
+        async function handleDomainFile(file) {
+            const formData = new FormData(); formData.append('file', file);
+            const res = await fetch('/api/enrichment/upload', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token }, body: formData });
+            if (res.ok) { const data = await res.json(); domainUploadId = data.upload_id; document.getElementById('domainFileName').textContent = data.filename; document.getElementById('domainFileSize').textContent = data.row_count + ' rows'; document.getElementById('domainFileInfo').style.display = 'flex'; const colSelect = document.getElementById('domainCol'); colSelect.innerHTML = ''; data.columns.forEach(c => { const opt = document.createElement('option'); opt.value = c; opt.textContent = c; if (c.toLowerCase().includes('domain')) opt.selected = true; colSelect.appendChild(opt); }); document.getElementById('domainOptions').style.display = 'block'; }
+            else alert('Upload failed');
+        }
+        
+        document.getElementById('startDomainEnrichment').addEventListener('click', async () => {
+            const domainCol = document.getElementById('domainCol').value, maxResults = parseInt(document.getElementById('maxResults').value);
+            const res = await fetch('/api/enrichment/by-domains', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify({ upload_id: domainUploadId, domain_col: domainCol, max_results: maxResults }) });
+            if (res.ok) { const data = await res.json(); currentJobId = data.job_id; document.getElementById('domainTotal').textContent = data.total; document.getElementById('domainProgress').style.display = 'block'; startProgressStream(currentJobId, 'domain'); }
+            else alert('Failed to start');
+        });
+
+        // ============================================================
+        // GOOGLE MAPS SCRAPER
+        // ============================================================
+
+        // Load states for scraper
+        async function loadScraperStates() {
+            try {
+                const res = await fetch('/api/scraper/regions/states', { headers: { 'Authorization': 'Bearer ' + token } });
+                if (res.ok) {
+                    const data = await res.json();
+                    const select = document.getElementById('scraperStates');
+                    select.innerHTML = '';
+                    data.states.forEach(state => {
+                        const opt = document.createElement('option');
+                        opt.value = state;
+                        opt.textContent = state;
+                        select.appendChild(opt);
+                    });
+                }
+            } catch (e) { console.error('Failed to load states:', e); }
+        }
+        loadScraperStates();
+
+        // Category autocomplete - load categories.json and filter on input
+        let categories = [];
+        fetch('/categories.json')
+            .then(res => res.json())
+            .then(data => { categories = data; })
+            .catch(err => console.error('Failed to load categories:', err));
+
+        const queryInput = document.getElementById('scraperQuery');
+        const categoryList = document.getElementById('scraperCategoryList');
+
+        queryInput.addEventListener('input', function() {
+            const q = this.value.toLowerCase().trim();
+            if (q.length < 2) {
+                categoryList.style.display = 'none';
+                return;
+            }
+            // Filter categories matching the query
+            const matches = categories.filter(cat => cat.toLowerCase().includes(q)).slice(0, 8);
+            if (matches.length === 0) {
+                categoryList.style.display = 'none';
+                return;
+            }
+            categoryList.innerHTML = '';
+            matches.forEach(cat => {
+                const div = document.createElement('div');
+                div.style.padding = '8px 12px';
+                div.style.cursor = 'pointer';
+                div.style.borderBottom = '1px solid #eee';
+                div.style.fontSize = '13px';
+                div.textContent = cat;
+                div.addEventListener('click', function() {
+                    queryInput.value = cat;
+                    categoryList.style.display = 'none';
+                    queryInput.focus();
+                });
+                categoryList.appendChild(div);
+            });
+            categoryList.style.display = 'block';
+        });
+
+        // Hide category dropdown when clicking outside
+        document.addEventListener('click', function(e) {
+            if (!queryInput.contains(e.target) && !categoryList.contains(e.target)) {
+                categoryList.style.display = 'none';
+            }
+        });
+
+        // Country change handler - hide states mode for non-US countries
+        function updateCountryOptions() {
+            const country = document.getElementById('scraperCountry').value;
+            const modeSelect = document.getElementById('scraperMode');
+            const statesOption = modeSelect.querySelector('option[value="states"]');
+            const citiesOption = modeSelect.querySelector('option[value="cities"]');
+
+            if (country !== 'us') {
+                // Hide states and cities options for non-US countries
+                if (statesOption) statesOption.style.display = 'none';
+                if (citiesOption) citiesOption.style.display = 'none';
+                // Reset to 'all' if currently states or cities
+                if (modeSelect.value === 'states' || modeSelect.value === 'cities') {
+                    modeSelect.value = 'all';
+                }
+                // Hide states/cities containers
+                document.getElementById('scraperStatesContainer').style.display = 'none';
+                document.getElementById('scraperCitiesContainer').style.display = 'none';
+            } else {
+                // Show all options for US
+                if (statesOption) statesOption.style.display = '';
+                if (citiesOption) citiesOption.style.display = '';
+            }
+        }
+
+        document.getElementById('scraperCountry').addEventListener('change', updateCountryOptions);
+        updateCountryOptions(); // Initialize on page load
+
+        // Scraper mode toggle
+        document.getElementById('scraperMode').addEventListener('change', function() {
+            const mode = this.value;
+            document.getElementById('scraperStatesContainer').style.display = (mode === 'states') ? 'block' : 'none';
+            document.getElementById('scraperCitiesContainer').style.display = (mode === 'cities') ? 'block' : 'none';
+        });
+
+        // City search autocomplete
+        let scraperCityTimeout;
+        const scraperCitiesList = document.getElementById('scraperCitiesList');
+        document.getElementById('scraperCitySearch').addEventListener('input', function() {
+            clearTimeout(scraperCityTimeout);
+            scraperCityTimeout = setTimeout(async () => {
+                const q = this.value.trim();
+                const country = document.getElementById('scraperCountry').value;
+                if (q.length < 2) {
+                    scraperCitiesList.style.display = 'none';
+                    return;
+                }
+                try {
+                    const res = await fetch('/api/scraper/regions/cities?q=' + encodeURIComponent(q) + '&country=' + country, { headers: { 'Authorization': 'Bearer ' + token } });
+                    if (res.ok) {
+                        const data = await res.json();
+                        scraperCitiesList.innerHTML = '';
+                        const cities = data.cities || [];
+                        if (cities.length === 0) {
+                            scraperCitiesList.style.display = 'none';
+                            return;
+                        }
+                        cities.forEach(city => {
+                            const cityName = city.name || city;
+                            const cityState = city.state || '';
+                            const displayText = cityState ? cityName + ', ' + cityState : cityName;
+                            const div = document.createElement('div');
+                            div.style.padding = '4px 8px';
+                            div.style.cursor = 'pointer';
+                            div.style.borderBottom = '1px solid #eee';
+                            div.style.fontSize = '13px';
+                            div.textContent = displayText;
+                            div.addEventListener('click', () => {
+                                const selected = document.getElementById('scraperSelectedCities') || createSelectedCitiesContainer();
+                                const tag = document.createElement('span');
+                                tag.style.display = 'inline-flex';
+                                tag.style.alignItems = 'center';
+                                tag.style.gap = '4px';
+                                tag.style.padding = '2px 8px';
+                                tag.style.background = 'var(--primary)';
+                                tag.style.color = 'white';
+                                tag.style.borderRadius = '4px';
+                                tag.style.fontSize = '12px';
+                                tag.style.margin = '2px';
+                                tag.setAttribute('data-city', cityName);
+                                tag.innerHTML = displayText + ' <span style="cursor:pointer;margin-left:4px;" onclick="this.parentElement.remove()">×</span>';
+                                selected.appendChild(tag);
+                                // Clear and hide the search after selection
+                                document.getElementById('scraperCitySearch').value = '';
+                                scraperCitiesList.style.display = 'none';
+                            });
+                            scraperCitiesList.appendChild(div);
+                        });
+                        scraperCitiesList.style.display = 'block';
+                    }
+                } catch (e) { console.error('City search failed:', e); }
+            }, 300);
+        });
+
+        function createSelectedCitiesContainer() {
+            const div = document.createElement('div');
+            div.id = 'scraperSelectedCities';
+            div.style.display = 'flex';
+            div.style.flexWrap = 'wrap';
+            div.style.gap = '4px';
+            div.style.marginTop = '8px';
+            document.getElementById('scraperCitiesContainer').appendChild(div);
+            return div;
+        }
+
+        // Hide city dropdown when clicking outside
+        document.addEventListener('click', function(e) {
+            const citySearch = document.getElementById('scraperCitySearch');
+            if (citySearch && !citySearch.contains(e.target) && !scraperCitiesList.contains(e.target)) {
+                scraperCitiesList.style.display = 'none';
+            }
+        });
+
+        // Hide city list when country changes
+        const originalUpdateCountryOptions = updateCountryOptions;
+        updateCountryOptions = function() {
+            originalUpdateCountryOptions();
+            scraperCitiesList.style.display = 'none';
+            document.getElementById('scraperCitySearch').value = '';
+            // Clear selected cities when country changes
+            const selectedCities = document.getElementById('scraperSelectedCities');
+            if (selectedCities) selectedCities.remove();
+        };
+
+        // Start scraper job
+        document.getElementById('startScraperJob').addEventListener('click', async () => {
+            const query = document.getElementById('scraperQuery').value.trim();
+            if (!query) { alert('Please enter a search query'); return; }
+
+            const mode = document.getElementById('scraperMode').value;
+            const country = document.getElementById('scraperCountry').value;
+            const payload = { query: query, mode: mode, country: country };
+
+            if (mode === 'states') {
+                const selected = Array.from(document.getElementById('scraperStates').selectedOptions).map(o => o.value);
+                if (selected.length === 0) { alert('Please select at least one state'); return; }
+                payload.states = selected;
+            } else if (mode === 'cities') {
+                const selectedCities = [];
+                const container = document.getElementById('scraperSelectedCities');
+                if (container) {
+                    container.querySelectorAll('span').forEach(span => {
+                        // Use data-city attribute if available, otherwise fall back to text
+                        const cityName = span.getAttribute('data-city') || span.textContent.replace('×', '').trim();
+                        selectedCities.push(cityName);
+                    });
+                }
+                if (selectedCities.length === 0) { alert('Please select at least one city'); return; }
+                payload.cities = selectedCities;
+            }
+
+            try {
+                const res = await fetch('/api/scraper/jobs', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    currentJobId = data.job_id;
+                    document.getElementById('scraperTotal').textContent = data.total_tasks || data.total || 0;
+                    document.getElementById('scraperProgress').style.display = 'block';
+                    startScraperProgressStream(currentJobId);
+                } else {
+                    const err = await res.json();
+                    alert('Failed to start: ' + (err.detail || 'Unknown error'));
+                }
+            } catch (e) { alert('Error: ' + e.message); }
+        });
+
+        // Scraper progress streaming
+        function startScraperProgressStream(jobId) {
+            const eventSource = new EventSource('/api/scraper/jobs/' + jobId + '/stream');
+            eventSource.onmessage = function(e) {
+                const data = JSON.parse(e.data);
+                document.getElementById('scraperDone').textContent = data.done_tasks || data.done || 0;
+                document.getElementById('scraperResults').textContent = data.result_count || 0;
+                const total = parseInt(document.getElementById('scraperTotal').textContent) || 1;
+                const pct = Math.round(((data.done_tasks || 0) / total) * 100);
+                document.getElementById('scraperProgressBar').style.width = pct + '%';
+                document.getElementById('scraperProgressText').textContent = pct + '%';
+                document.getElementById('scraperStatus').textContent = data.status || 'Running...';
+
+                if (data.status === 'done' || data.status === 'failed') {
+                    eventSource.close();
+                    document.getElementById('downloadScraperResults').disabled = false;
+                    document.getElementById('chainToEnrichment').disabled = (data.status !== 'done');
+                }
+            };
+            eventSource.onerror = function() { eventSource.close(); };
+        }
+
+        // Download scraper results
+        document.getElementById('downloadScraperResults').addEventListener('click', function() {
+            if (currentJobId) downloadFile(currentJobId, 'scraper_results.csv');
+        });
+
+        // Chain to enrichment
+        document.getElementById('chainToEnrichment').addEventListener('click', async function() {
+            if (!currentJobId) return;
+            try {
+                const res = await fetch('/api/enrichment/by-scraper-job', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ scraper_job_id: currentJobId })
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    alert('Enrichment job started! Job ID: ' + data.job_id);
+                    navigateTo('jobs');
+                } else {
+                    const err = await res.json();
+                    alert('Failed: ' + (err.detail || 'Unknown error'));
+                }
+            } catch (e) { alert('Error: ' + e.message); }
+        });
+
+        // Load scraper jobs
+        async function loadScraperJobs() {
+            try {
+                const res = await fetch('/api/scraper/jobs', { headers: { 'Authorization': 'Bearer ' + token } });
+                if (res.ok) {
+                    const data = await res.json();
+                    const jobs = data.jobs || [];
+                    const container = document.getElementById('scraperJobsList');
+                    if (jobs.length === 0) {
+                        container.innerHTML = '<div class="empty-state">No scraper jobs yet</div>';
+                    } else {
+                        container.innerHTML = jobs.slice(0, 10).map(job => {
+                            let actions = '<span class="job-status status-' + job.status + '">' + job.status + '</span>';
+                            if (job.status === 'done') {
+                                actions += ' <button class="btn btn-success btn-sm" onclick="downloadFile(\''+job.job_id+'\',\'scraper_'+job.job_id.substr(0,8)+'.csv\')">Download</button>';
+                            }
+                            return '<div class="job-card"><div class="job-info"><h4>' + (job.query || 'Scraper Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.done_tasks||0) + '/' + (job.total_tasks||0) + ' | ' + (job.result_count||0) + ' results</div></div><div class="actions">' + actions + '</div></div>';
+                        }).join('');
+                    }
+                }
+            } catch (e) { console.error('Failed to load scraper jobs:', e); }
+        }
+
+        // Load scraper jobs and enrichment jobs when navigating to respective pages
+        const originalShowPage = showPage;
+        showPage = function(page) {
+            originalShowPage(page);
+            if (page === 'scraper') loadScraperJobs();
+            if (page === 'jobs') loadJobs();
+        };
+
+        // Search
+        document.getElementById('searchCompanies').addEventListener('click', async () => {
+            const payload = { limit: 50 };
+            if (document.getElementById('searchName').value) payload.name = document.getElementById('searchName').value;
+            if (document.getElementById('searchIndustry').value) payload.industry = [document.getElementById('searchIndustry').value];
+            if (document.getElementById('searchEmployeeRange').value) payload.employee_range = [document.getElementById('searchEmployeeRange').value];
+            if (document.getElementById('searchCompanyType').value) payload.company_type = [document.getElementById('searchCompanyType').value];
+            if (document.getElementById('searchCountry').value) payload.country_code = document.getElementById('searchCountry').value;
+            const res = await fetch('/api/enrichment/search/companies', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            if (res.ok) { const data = await res.json(); displaySearchResults(data.results); document.getElementById('searchAndEnrich').disabled = false; }
+            else alert('Search failed');
+        });
+        
+        function displaySearchResults(companies) {
+            const tbody = document.getElementById('searchResultsBody'); tbody.innerHTML = '';
+            companies.forEach(c => { const tr = document.createElement('tr'); tr.innerHTML = '<td>'+(c.name||'')+'</td><td>'+(c.industry||'')+'</td><td>'+(c.employee_count||'')+'</td><td>'+(c.company_type||'')+'</td><td>'+(c.hq?.country_code||'')+'</td>'; tbody.appendChild(tr); });
+            document.getElementById('searchResultsCount').textContent = '(' + companies.length + ')';
+            document.getElementById('searchResults').style.display = 'block';
+        }
+        
+        document.getElementById('searchAndEnrich').addEventListener('click', async () => {
+            const payload = { max_decision_makers: 5, include_generic_emails: true };
+            if (document.getElementById('searchName').value) payload.name = document.getElementById('searchName').value;
+            if (document.getElementById('searchIndustry').value) payload.industry = [document.getElementById('searchIndustry').value];
+            if (document.getElementById('searchEmployeeRange').value) payload.employee_range = [document.getElementById('searchEmployeeRange').value];
+            if (document.getElementById('searchCompanyType').value) payload.company_type = [document.getElementById('searchCompanyType').value];
+            if (document.getElementById('searchCountry').value) payload.country_code = document.getElementById('searchCountry').value;
+            const res = await fetch('/api/enrichment/search/companies/enrich', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            if (res.ok) { const data = await res.json(); currentJobId = data.job_id; document.getElementById('searchTotal').textContent = data.total; document.getElementById('searchProgress').style.display = 'block'; startProgressStream(currentJobId, 'search'); }
+            else alert('Failed to start');
+        });
+        
+        // LinkedIn Upload
+        const linkedinUploadZone = document.getElementById('linkedinUploadZone'), linkedinFile = document.getElementById('linkedinFile');
+        linkedinUploadZone.addEventListener('click', () => linkedinFile.click());
+        linkedinUploadZone.addEventListener('dragover', (e) => { e.preventDefault(); linkedinUploadZone.classList.add('dragover'); });
+        linkedinUploadZone.addEventListener('dragleave', () => linkedinUploadZone.classList.remove('dragover'));
+        linkedinUploadZone.addEventListener('drop', (e) => { e.preventDefault(); linkedinUploadZone.classList.remove('dragover'); if (e.dataTransfer.files.length) handleLinkedinFile(e.dataTransfer.files[0]); });
+        linkedinFile.addEventListener('change', (e) => { if (e.target.files.length) handleLinkedinFile(e.target.files[0]); });
+        
+        async function handleLinkedinFile(file) {
+            const formData = new FormData(); formData.append('file', file);
+            const res = await fetch('/api/enrichment/upload', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token }, body: formData });
+            if (res.ok) { const data = await res.json(); linkedinUploadId = data.upload_id; document.getElementById('linkedinFileName').textContent = data.filename; document.getElementById('linkedinFileSize').textContent = data.row_count + ' rows'; document.getElementById('linkedinFileInfo').style.display = 'flex'; const colSelect = document.getElementById('linkedinCol'); colSelect.innerHTML = ''; data.columns.forEach(c => { const opt = document.createElement('option'); opt.value = c; opt.textContent = c; if (c.toLowerCase().includes('linkedin')) opt.selected = true; colSelect.appendChild(opt); }); document.getElementById('linkedinOptions').style.display = 'block'; }
+            else alert('Upload failed');
+        }
+        
+        document.getElementById('startLinkedinEnrichment').addEventListener('click', async () => {
+            const linkedinCol = document.getElementById('linkedinCol').value, includeCompany = document.getElementById('includeCompany').checked;
+            const res = await fetch('/api/enrichment/by-linkedin', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify({ upload_id: linkedinUploadId, linkedin_col: linkedinCol, include_company: includeCompany }) });
+            if (res.ok) { const data = await res.json(); currentJobId = data.job_id; document.getElementById('linkedinTotal').textContent = data.total; document.getElementById('linkedinProgress').style.display = 'block'; startProgressStream(currentJobId, 'linkedin'); }
+            else alert('Failed to start');
+        });
+        
+        // Progress Stream
+        function startProgressStream(jobId, type) {
+            if (eventSource) eventSource.close();
+            eventSource = new EventSource('/api/enrichment/jobs/' + jobId + '/stream', { headers: { 'Authorization': 'Bearer ' + token } });
+            eventSource.onmessage = (e) => {
+                const data = JSON.parse(e.data);
+                if (data.done) { eventSource.close(); document.getElementById(type + 'Status').textContent = 'Completed'; document.getElementById('download' + type.charAt(0).toUpperCase() + type.slice(1) + 'Results').disabled = false; return; }
+                const processed = data.processed || 0, total = data.total || 1, percent = Math.round((processed/total)*100);
+                document.getElementById(type + 'Processed').textContent = processed;
+                document.getElementById(type + 'Emails').textContent = data.emails_found || 0;
+                document.getElementById(type + 'ProgressBar').style.width = percent + '%';
+                document.getElementById(type + 'ProgressText').textContent = percent + '%';
+            };
+        }
+        
+        // Download Helper
+        async function downloadFile(jobId, filename) {
+            try {
+                const res = await fetch('/api/enrichment/jobs/' + jobId + '/download', { headers: { 'Authorization': 'Bearer ' + token } });
+                if (!res.ok) { const err = await res.json(); alert('Download failed: ' + (err.detail || 'Unknown')); return; }
+                const blob = await res.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a'); a.href = url; a.download = filename || 'data.csv';
+                document.body.appendChild(a); a.click(); window.URL.revokeObjectURL(url); a.remove();
+            } catch (e) { alert('Download error: ' + e.message); }
+        }
+        
+        document.getElementById('downloadDomainResults').addEventListener('click', () => { downloadFile(currentJobId, 'domain_enrichment.csv'); });
+        document.getElementById('downloadSearchResults').addEventListener('click', () => { downloadFile(currentJobId, 'company_search.csv'); });
+        document.getElementById('downloadLinkedinResults').addEventListener('click', () => { downloadFile(currentJobId, 'linkedin_enrichment.csv'); });
+        
+        // Jobs - refresh with user feedback
+        document.getElementById('refreshJobs').addEventListener('click', function() {
+            const btn = this;
+            btn.textContent = 'Refreshing...';
+            btn.disabled = true;
+            loadJobs().finally(() => {
+                btn.textContent = 'Refresh';
+                btn.disabled = false;
+            });
+        });
+        
+        async function retryJob(jobId) {
+            try {
+                const res = await fetch('/api/enrichment/jobs/' + jobId + '/restart', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    alert('Job restarted! New job ID: ' + data.job_id);
+                    loadJobs();
+                } else {
+                    const err = await res.json();
+                    alert('Failed to restart: ' + (err.detail || 'Unknown error'));
+                }
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
+        }
+
+        async function loadJobs() {
+            const jobsList = document.getElementById('jobsList');
+            try {
+                const res = await fetch('/api/enrichment/jobs', { headers: { 'Authorization': 'Bearer ' + token } });
+                if (res.ok) { const data = await res.json(), jobs = data.jobs || [];
+                    if (jobs.length === 0) { jobsList.innerHTML = '<div class="empty-state">No jobs yet</div>'; return; }
+                    jobsList.innerHTML = jobs.map(job => {
+                        let actions = '<span class="job-status status-' + job.status + '">' + job.status + '</span>';
+                        if (job.status === 'done') {
+                            actions += ' <button class="btn btn-success btn-sm" onclick="downloadFile(\''+job.job_id+'\',\'job_'+job.job_id.substr(0,8)+'.csv\')">Download</button>';
+                        } else if (job.status === 'failed') {
+                            actions += ' <button class="btn btn-secondary btn-sm" onclick="retryJob(\''+job.job_id+'\')">Retry</button>';
+                        }
+                        return '<div class="job-card"><div class="job-info"><h4>' + (job.display_filename || job.filename || 'Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.processed||0) + '/' + (job.total||0) + ' | ' + (job.emails_found||0) + ' emails</div></div><div class="actions">' + actions + '</div></div>';
+                    }).join('');
+                } else jobsList.innerHTML = '<div class="empty-state">Failed to load</div>';
+            } catch (e) { jobsList.innerHTML = '<div class="empty-state">Error</div>'; }
+        }
+
+        async function retryJob(jobId) {
+            try {
+                const res = await fetch('/api/enrichment/jobs/' + jobId + '/restart', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    alert('Job restarted! New job ID: ' + data.job_id);
+                    loadJobs();
+                } else {
+                    const err = await res.json();
+                    alert('Error: ' + (err.detail || 'Failed to restart job'));
+                }
+            } catch (e) { alert('Error: ' + e.message); }
+        }
+    </script>
+</body>
+</html>
