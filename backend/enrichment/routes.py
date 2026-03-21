@@ -16,26 +16,85 @@ import io
 import json
 import logging
 import os
+import re
 import uuid
 from pathlib import Path
 from typing import Any, Optional
 
 import pandas as pd
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from shared import auth
 from . import blitz_client
+from . import contacts_client
 from . import job_store
 from . import pipeline
 from . import list_builder
+from . import better_enrich_client
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import sync_contacts
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_linkedin_username(url: str) -> str:
+    """
+    Extract LinkedIn username from a full URL or return as-is if already just a username.
+
+    Examples:
+    - https://www.linkedin.com/in/johndoe/ -> johndoe
+    - https://www.linkedin.com/in/john-doe-123/ -> john-doe-123
+    - johndoe -> johndoe
+    """
+    if not url:
+        return ""
+
+    # If no linkedin.com, assume it's already just a username
+    if "linkedin.com" not in url.lower():
+        return url.strip()
+
+    # Extract username from URL
+    match = re.search(r'linkedin\.com/in/([^/]+)', url)
+    if match:
+        return match.group(1).strip()
+
+    # Fallback: return original
+    return url.strip()
+
+
+def _titles_to_cascade(titles: str) -> list[dict]:
+    """
+    Convert comma-separated titles to cascade format.
+
+    Args:
+        titles: Comma-separated titles (e.g., "CEO,CTO,HR")
+
+    Returns:
+        List of cascade tier objects for Blitz API
+
+    Example:
+        "CEO,CTO,HR" -> [{"include_title": ["CEO", "CTO", "HR"], "exclude_title": ["assistant", "intern", "junior"], "location": ["WORLD"]}]
+    """
+    if not titles:
+        return []
+
+    # Parse titles from comma-separated string
+    title_list = [t.strip() for t in titles.split(",") if t.strip()]
+    if not title_list:
+        return []
+
+    # Create a single-tier cascade with the specified titles
+    return [{
+        "include_title": title_list,
+        "exclude_title": ["assistant", "intern", "junior", "associate"],
+        "location": ["WORLD"],
+        "include_headline_search": False,
+    }]
+
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 UPLOAD_DIR = DATA_DIR / "uploads"
@@ -69,6 +128,9 @@ DEFAULT_RECIPIENT = os.getenv("DEFAULT_RECIPIENT", "arjav@eagleinfoservice.com")
 UPLOAD_RETENTION_DAYS = 7
 OUTPUT_RETENTION_DAYS = 30
 MAX_JOBS_PER_USER = 100
+
+# BetterEnrich - no per-user rate limiting (use freely)
+# Rate limiting is handled by the BetterEnrich API itself
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +308,1391 @@ class ChainJobRequest(BaseModel):
 @router.get("/default-cascade")
 async def get_default_cascade():
     return {"cascade": blitz_client.DEFAULT_CASCADE}
+
+
+@router.get(
+    "/enrich/{domain}",
+    summary="Enrich a single domain with decision-maker contacts",
+    description="""
+## Overview
+Enrich a domain with decision-maker contacts by:
+1. Checking the internal Contacts DB first
+2. Falling back to Blitz API if not found
+3. Resolving emails via Contacts DB then Blitz
+4. Writing back found contacts to Contacts DB
+
+## Decision Maker Priority (Cascade)
+The system searches for decision makers in this order:
+- **Tier 1**: Owner, CEO, Founder, Co-Founder, President
+- **Tier 2**: CMO, VP Marketing, VP Sales, Chief Revenue Officer
+- **Tier 3**: Director of Marketing, Director of Sales, Head of Marketing
+
+## Data Sources
+The response includes `data_sources` showing where each piece of data came from:
+- `contacts_db`: Data found in the internal database
+- `blitz`: Data found via Blitz API (external)
+- `not_found`: No data found
+
+## Write-back
+All found contacts are automatically synced back to the internal Contacts DB.
+    """,
+    response_description="Enriched domain data with contacts, sources, and sync status",
+)
+async def enrich_single_domain(
+    domain: str,
+    max_results: int = 5,
+    cascade_json: Optional[str] = None,
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """Enrich a single domain with decision-maker contacts."""
+    # Parse cascade from JSON if provided
+    cascade = blitz_client.DEFAULT_CASCADE
+    if cascade_json:
+        try:
+            cascade = json.loads(cascade_json)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid cascade JSON")
+
+    # Clean domain
+    domain = domain.strip().lower()
+    if not domain or "." not in domain:
+        raise HTTPException(status_code=400, detail="Invalid domain format")
+
+    logger.info("Enriching single domain: %s (user: %s)", domain, current_user.get("email"))
+
+    # Prepare input row (just the domain)
+    input_row = {"domain": domain}
+    rows = [input_row]
+
+    # Run enrichment using the pipeline directly
+    # We'll use asyncio directly to call the internal functions
+    domain_semaphore = asyncio.Semaphore(pipeline.DOMAIN_CONCURRENCY)
+    email_semaphore = asyncio.Semaphore(pipeline.EMAIL_CONCURRENCY)
+
+    blitz_http = httpx.AsyncClient()
+    contacts_http = httpx.AsyncClient()
+
+    try:
+        # Call _enrich_domain directly for single domain
+        output_rows = await pipeline._enrich_domain(
+            blitz_http,
+            contacts_http,
+            input_row,
+            domain,
+            "",  # no full_name provided
+            cascade,
+            max_results,
+            domain_semaphore,
+            email_semaphore,
+        )
+    finally:
+        await blitz_http.aclose()
+        await contacts_http.aclose()
+
+    # Extract contacts from output rows
+    contacts = []
+    sources = {
+        "company_linkedin": None,
+        "contacts": None,
+        "emails": None,
+    }
+
+    for row in output_rows:
+        if row.get("row_status") in (pipeline.STATUS_ENRICHED, pipeline.STATUS_NO_CONTACTS):
+            # Track email source
+            email_source = row.get("dm_email_source", "")
+            if email_source:
+                if "contacts_db" in email_source:
+                    sources["emails"] = "contacts_db"
+                elif "blitz" in email_source:
+                    sources["emails"] = "blitz"
+
+            # Track contacts source - check if this row has data from Contacts DB or Blitz
+            # We infer from the data presence
+            if row.get("company_linkedin_url"):
+                # Company LinkedIn found - determine source
+                # Since we don't explicitly track company source in output, check row_status
+                if row.get("row_status") == pipeline.STATUS_NO_LINKEDIN:
+                    sources["company_linkedin"] = "not_found"
+                else:
+                    # Has company LinkedIn - could be from either source
+                    # Default to contacts_db as it's checked first
+                    sources["company_linkedin"] = "contacts_db" if not sources["company_linkedin"] else sources["company_linkedin"]
+
+            if row.get("dm_email") or row.get("dm_full_name"):
+                if not sources["contacts"]:
+                    sources["contacts"] = "contacts_db"
+
+            contacts.append({
+                "full_name": row.get("dm_full_name", ""),
+                "first_name": row.get("dm_first_name", ""),
+                "last_name": row.get("dm_last_name", ""),
+                "title": row.get("dm_title", ""),
+                "email": row.get("dm_email", ""),
+                "linkedin_url": row.get("dm_linkedin_url", ""),
+                "headline": row.get("dm_headline", ""),
+                "location_city": row.get("dm_location_city", ""),
+                "location_country": row.get("dm_location_country", ""),
+                "icp_tier": row.get("dm_icp_tier", 0),
+                "email_source": row.get("dm_email_source", ""),
+            })
+
+    # If we found contacts from Blitz (no email_source indicates Blitz source for contacts)
+    # Update sources based on what we actually found
+    if contacts:
+        # Check if any contact has no email_source (meaning Blitz provided it)
+        blitz_contacts = [c for c in contacts if not c.get("email_source")]
+        if blitz_contacts:
+            sources["contacts"] = "blitz"
+            sources["emails"] = "blitz"
+
+    # Get company LinkedIn URL from first row if available
+    company_linkedin_url = output_rows[0].get("company_linkedin_url", "") if output_rows else ""
+
+    # Now sync back to Contacts DB
+    sync_result = {"synced": 0, "skipped": 0, "failed": 0}
+    if contacts:
+        try:
+            # Create a temporary CSV with the enriched data for sync
+            import csv
+            import tempfile
+
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, newline='', encoding='utf-8') as tmpfile:
+                fieldnames = ["domain", "dm_full_name", "dm_first_name", "dm_last_name",
+                              "dm_title", "dm_email", "dm_linkedin_url"]
+                writer = csv.DictWriter(tmpfile, fieldnames=fieldnames)
+                writer.writeheader()
+                for contact in contacts:
+                    if contact.get("email") and "@" in contact.get("email", ""):
+                        writer.writerow({
+                            "domain": domain,
+                            "dm_full_name": contact.get("full_name", ""),
+                            "dm_first_name": contact.get("first_name", ""),
+                            "dm_last_name": contact.get("last_name", ""),
+                            "dm_title": contact.get("title", ""),
+                            "dm_email": contact.get("email", ""),
+                            "dm_linkedin_url": contact.get("linkedin_url", ""),
+                        })
+                tmp_path = Path(tmpfile.name)
+
+            # Sync to Contacts DB
+            sync_result = sync_contacts.sync_enrichment_to_contacts(tmp_path)
+            tmp_path.unlink()  # Clean up temp file
+
+            logger.info("Sync result for domain %s: %s", domain, sync_result)
+        except Exception as sync_err:
+            logger.error("Failed to sync domain %s to Contacts DB: %s", domain, sync_err)
+            sync_result = {"synced": 0, "skipped": 0, "failed": 1, "error": str(sync_err)}
+
+    # Determine overall sync status
+    if sync_result.get("failed", 0) > 0:
+        sync_status = "failed"
+    elif sync_result.get("synced", 0) > 0:
+        sync_status = "success"
+    else:
+        sync_status = "no_contacts_to_sync"
+
+    return {
+        "domain": domain,
+        "company_linkedin_url": company_linkedin_url,
+        "contacts": contacts,
+        "contact_count": len(contacts),
+        "data_sources": sources,
+        "sync_to_contacts_db": {
+            "status": sync_status,
+            "records_synced": sync_result.get("synced", 0),
+            "records_skipped": sync_result.get("skipped", 0),
+            "records_failed": sync_result.get("failed", 0),
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Unified Enrichment Endpoint (POST)
+# ---------------------------------------------------------------------------
+
+class UnifiedEnrichRequest(BaseModel):
+    """Request model for unified enrichment endpoint."""
+    domain: Optional[str] = None
+    full_name: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    linkedin_url: Optional[str] = None
+    max_results: int = 5
+    # Custom cascade: list of title filters (each item is a dict with include_title, exclude_title, etc.)
+    cascade: Optional[list[dict]] = None
+    # Simple titles: comma-separated list of titles (e.g., "CEO,CTO,HR") - auto-converts to cascade
+    titles: Optional[str] = None
+
+    class Config:
+        schema_extra = {
+            "examples": [
+                {"domain": "google.com"},
+                {"linkedin_url": "https://linkedin.com/in/johndoe"},
+                {"domain": "google.com", "full_name": "John Doe"},
+                {"linkedin_url": "https://linkedin.com/in/johndoe", "domain": "google.com"},
+                {"domain": "google.com", "titles": "CEO,CTO,HR"},
+                {"domain": "google.com", "cascade": [{"include_title": ["CEO", "CTO"]}]},
+            ]
+        }
+
+    def validate_inputs(self):
+        """Validate that either domain or linkedin_url is provided."""
+        if not self.domain and not self.linkedin_url:
+            raise ValueError("Either 'domain' or 'linkedin_url' must be provided")
+
+
+@router.post(
+    "/enrich",
+    summary="Unified enrichment endpoint",
+    description="""
+## Overview
+Unified enrichment endpoint supporting multiple input types.
+
+## Workflow
+- **Domain only**: Contacts DB → Blitz → Sync (no BetterEnrich)
+- **Domain + Person Info**: Contacts DB → Blitz → BetterEnrich → Sync
+
+## Input Options
+Provide any combination of:
+- `domain` (required): Company domain
+- `full_name`: Full name of person
+- `first_name` + `last_name`: Alternative to full_name
+- `linkedin_url`: LinkedIn profile URL
+
+## Response
+Returns enriched data with source tracking and sync status.
+    """,
+    response_description="Enriched domain data with contacts, sources, and sync status",
+)
+async def unified_enrich(
+    req: UnifiedEnrichRequest,
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """
+    Unified enrichment endpoint supporting multiple input types.
+
+    Workflow branches based on input:
+    - LinkedIn only: Contacts DB → Blitz (by LinkedIn)
+    - Domain only: Contacts DB → Blitz → Sync
+    - Domain + person info: Contacts DB → Blitz → Sync
+
+    Title filtering:
+    - Use 'titles' for simple comma-separated titles (e.g., "CEO,CTO,HR")
+    - Use 'cascade' for full cascade control (advanced)
+    - If neither provided, uses default 3-tier cascade
+    """
+    # Validate inputs - must have domain OR linkedin_url
+    req.validate_inputs()
+
+    # Convert titles to cascade if provided
+    if req.titles and not req.cascade:
+        req.cascade = _titles_to_cascade(req.titles)
+
+    # Validate domain format if provided
+    domain = ""
+    if req.domain:
+        domain = req.domain.strip().lower()
+        if "." not in domain:
+            raise HTTPException(status_code=400, detail="Invalid domain format")
+
+    # Resolve full_name from first_name + last_name if provided
+    full_name = req.full_name
+    if not full_name and (req.first_name or req.last_name):
+        full_name = f"{req.first_name or ''} {req.last_name or ''}".strip()
+
+    # Determine input mode
+    # linkedin_only: only LinkedIn URL provided (no domain)
+    # domain_only: only domain provided (no person info)
+    # enhanced: domain + person info (name or LinkedIn)
+    if req.linkedin_url and not domain:
+        mode = "linkedin_only"
+    elif not full_name and not req.linkedin_url and domain:
+        mode = "domain_only"
+    else:
+        mode = "enhanced"
+
+    logger.info("Unified enrich: domain=%s, linkedin=%s, mode=%s, user=%s",
+                domain, bool(req.linkedin_url), mode, current_user.get("email"))
+
+    # Create HTTP clients
+    blitz_http = httpx.AsyncClient()
+    contacts_http = httpx.AsyncClient()
+
+    domain_semaphore = asyncio.Semaphore(pipeline.DOMAIN_CONCURRENCY)
+    email_semaphore = asyncio.Semaphore(pipeline.EMAIL_CONCURRENCY)
+
+    try:
+        if mode == "linkedin_only":
+            # LinkedIn-only: Look up by LinkedIn URL (no domain)
+            contacts = []
+            sources = {"company_linkedin": "not_found", "contacts": "not_found", "emails": "not_found"}
+            company_linkedin_url = ""
+
+            # Extract username for contacts API, keep original URL for Blitz
+            linkedin_username = _extract_linkedin_username(req.linkedin_url or "")
+            # Use full URL for Blitz API, username for contacts DB
+            linkedin_for_blitz = req.linkedin_url or ""
+
+            # Step 1: Try Contacts DB by LinkedIn
+            if req.linkedin_url:
+                try:
+                    person = await contacts_client.person_by_linkedin(contacts_http, linkedin_username)
+                    if person:
+                        contacts.append({
+                            "full_name": person.get("full_name", ""),
+                            "first_name": person.get("first_name", ""),
+                            "last_name": person.get("last_name", ""),
+                            "title": person.get("title", ""),
+                            "email": person.get("email", ""),
+                            "linkedin_url": req.linkedin_url,
+                            "headline": person.get("headline", ""),
+                            "location_city": person.get("location_city", ""),
+                            "location_country": person.get("location_country", ""),
+                            "icp_tier": 1,
+                            "email_source": "contacts_db_email" if person.get("email") else "",
+                        })
+                        if person.get("email"):
+                            sources["contacts"] = "contacts_db"
+                            sources["emails"] = "contacts_db"
+                except Exception as e:
+                    logger.debug("Contacts DB LinkedIn lookup failed: %s", e)
+
+            # Step 2: Try Blitz to get work email if not found
+            if not contacts or not any(c.get("email") for c in contacts):
+                try:
+                    # Use Blitz to get email from LinkedIn
+                    result = await blitz_client.person_enrich_by_linkedin(
+                        blitz_http,
+                        linkedin_for_blitz,
+                    )
+                    if result and result.get("email"):
+                        # Update existing contact or add new one
+                        if contacts:
+                            contacts[0]["email"] = result.get("email")
+                            contacts[0]["email_source"] = "blitz"
+                        else:
+                            contacts.append({
+                                "full_name": result.get("full_name", ""),
+                                "first_name": result.get("first_name", ""),
+                                "last_name": result.get("last_name", ""),
+                                "title": result.get("title", ""),
+                                "email": result.get("email"),
+                                "linkedin_url": req.linkedin_url,
+                                "headline": result.get("headline", ""),
+                                "location_city": result.get("location_city", ""),
+                                "location_country": result.get("location_country", ""),
+                                "icp_tier": 1,
+                                "email_source": "blitz",
+                            })
+                        sources["contacts"] = "blitz"
+                        sources["emails"] = "blitz"
+                        logger.info("Blitz found email via LinkedIn: %s", result.get("email"))
+
+                        # Extract full_name from Blitz result for BetterEnrich fallback
+                        if not full_name:
+                            full_name = result.get("full_name", "")
+                except Exception as e:
+                    logger.debug("Blitz LinkedIn email lookup failed: %s", e)
+
+            # Step 3: Try BetterEnrich V2 as final fallback (if we have full_name and domain)
+            if full_name and domain and (not contacts or not any(c.get("email") for c in contacts)):
+                try:
+                    be_result = await better_enrich_client.find_work_email_v2(
+                        blitz_http,
+                        full_name=full_name,
+                        company_domain=domain,
+                    )
+                    if be_result and be_result.get("email"):
+                        if contacts:
+                            contacts[0]["email"] = be_result.get("email")
+                            contacts[0]["email_source"] = "better_enrich"
+                        else:
+                            contacts.append({
+                                "full_name": full_name,
+                                "first_name": "",
+                                "last_name": "",
+                                "title": "",
+                                "email": be_result.get("email"),
+                                "linkedin_url": req.linkedin_url or "",
+                                "headline": "",
+                                "location_city": "",
+                                "location_country": "",
+                                "icp_tier": 1,
+                                "email_source": "better_enrich",
+                            })
+                        sources["contacts"] = "better_enrich"
+                        sources["emails"] = "better_enrich"
+                        logger.info("BetterEnrich V2 found email via LinkedIn: %s", be_result.get("email"))
+                except Exception as e:
+                    logger.debug("BetterEnrich V2 LinkedIn lookup failed: %s", e)
+
+        elif mode == "domain_only":
+            # Domain-only: Use existing pipeline (Contacts DB → Blitz)
+            # Use custom cascade if provided, otherwise use default
+            # Skip Contacts DB contacts if custom cascade is provided
+            has_custom_cascade = req.cascade is not None and len(req.cascade) > 0
+            cascade = req.cascade if has_custom_cascade else blitz_client.DEFAULT_CASCADE
+            input_row = {"domain": domain}
+            output_rows = await pipeline._enrich_domain(
+                blitz_http,
+                contacts_http,
+                input_row,
+                domain,
+                "",
+                cascade,
+                req.max_results,
+                domain_semaphore,
+                email_semaphore,
+                skip_contacts_db=has_custom_cascade,
+            )
+
+            # Build response
+            contacts = []
+            contacts_source = "not_found"
+            sources = {"company_linkedin": "not_found", "contacts": "not_found", "emails": "not_found"}
+
+            # Determine contacts source: check if custom cascade was used (means Blitz)
+            if has_custom_cascade:
+                contacts_source = "blitz"
+            else:
+                contacts_source = "contacts_db"
+
+            for row in output_rows:
+                if row.get("row_status") in (pipeline.STATUS_ENRICHED, pipeline.STATUS_NO_CONTACTS):
+                    contacts.append({
+                        "full_name": row.get("dm_full_name", ""),
+                        "first_name": row.get("dm_first_name", ""),
+                        "last_name": row.get("dm_last_name", ""),
+                        "title": row.get("dm_title", ""),
+                        "email": row.get("dm_email", ""),
+                        "linkedin_url": row.get("dm_linkedin_url", ""),
+                        "headline": row.get("dm_headline", ""),
+                        "location_city": row.get("dm_location_city", ""),
+                        "location_country": row.get("dm_location_country", ""),
+                        "icp_tier": row.get("dm_icp_tier", 0),
+                        "email_source": row.get("dm_email_source", ""),
+                    })
+
+                    # Track sources
+                    if row.get("company_linkedin_url"):
+                        sources["company_linkedin"] = "contacts_db"
+                    if row.get("dm_email"):
+                        sources["contacts"] = contacts_source
+                        sources["emails"] = row.get("dm_email_source", "").replace("_email", "") if row.get("dm_email_source") else "blitz"
+
+            company_linkedin_url = output_rows[0].get("company_linkedin_url", "") if output_rows else ""
+
+        else:
+            # Enhanced mode: Try Contacts DB, Blitz, then BetterEnrich as fallback
+            contacts = []
+            sources = {"company_linkedin": "not_found", "contacts": "not_found", "emails": "not_found"}
+            company_linkedin_url = ""
+
+            # Step 1: Try Contacts DB (person lookup by LinkedIn OR by name+domain)
+            if full_name or req.linkedin_url:
+                # Try to find person in Contacts DB
+                try:
+                    # Priority 1: LinkedIn URL + domain (if provided)
+                    if req.linkedin_url:
+                        person = await contacts_client.person_by_linkedin(contacts_http, req.linkedin_url)
+                        if person and person.get("email"):
+                            contacts.append({
+                                "full_name": person.get("full_name", full_name or ""),
+                                "first_name": person.get("first_name", ""),
+                                "last_name": person.get("last_name", ""),
+                                "title": person.get("title", ""),
+                                "email": person.get("email", ""),
+                                "linkedin_url": req.linkedin_url,
+                                "headline": person.get("headline", ""),
+                                "location_city": person.get("location_city", ""),
+                                "location_country": person.get("location_country", ""),
+                                "icp_tier": 1,
+                                "email_source": "contacts_db_email",
+                            })
+                            sources["contacts"] = "contacts_db"
+                            sources["emails"] = "contacts_db"
+
+                    # Priority 2: Full name + domain (if provided and no contacts found yet)
+                    # Equal priority to LinkedIn lookup - try both if both are provided
+                    if not contacts and full_name and domain:
+                        person = await contacts_client.person_by_name_and_domain(contacts_http, full_name, domain)
+                        if person and person.get("email"):
+                            contacts.append({
+                                "full_name": person.get("full_name", full_name or ""),
+                                "first_name": person.get("first_name", ""),
+                                "last_name": person.get("last_name", ""),
+                                "title": person.get("title", ""),
+                                "email": person.get("email", ""),
+                                "linkedin_url": person.get("linkedin_url", req.linkedin_url or ""),
+                                "headline": person.get("headline", ""),
+                                "location_city": person.get("location_city", ""),
+                                "location_country": person.get("location_country", ""),
+                                "icp_tier": 1,
+                                "email_source": "contacts_db_email",
+                            })
+                            sources["contacts"] = "contacts_db"
+                            sources["emails"] = "contacts_db"
+                except Exception as e:
+                    logger.debug("Contacts DB person lookup failed: %s", e)
+
+            # If no contacts from Contacts DB, try Blitz (person-specific lookup)
+            if not contacts:
+                try:
+                    # Try to get company first
+                    company = await contacts_client.company_by_domain(contacts_http, domain)
+                    if company and company.get("linkedin_url"):
+                        company_linkedin_url = company["linkedin_url"]
+                        sources["company_linkedin"] = "contacts_db"
+
+                    # Use Blitz person-specific enrichment (not domain cascade)
+                    # Priority: linkedin_url > full_name+domain
+                    blitz_result = None
+                    blitz_mode = None  # Track which Blitz endpoint was used
+
+                    if req.linkedin_url:
+                        # Try Blitz by LinkedIn URL
+                        blitz_result = await blitz_client.person_enrich_by_linkedin(
+                            blitz_http,
+                            linkedin_url=req.linkedin_url,
+                        )
+                        blitz_mode = "linkedin"
+                    elif full_name and domain:
+                        # Note: Blitz person_enrich requires linkedin_profile_url
+                        # If not available, skip to BetterEnrich fallback
+                        # Try Blitz anyway - it may work with just name+domain
+                        try:
+                            blitz_result = await blitz_client.person_enrich(
+                                blitz_http,
+                                full_name=full_name,
+                                domain=domain,
+                            )
+                            blitz_mode = "person"
+                        except Exception as e:
+                            logger.debug("Blitz person enrich failed (expected if no LinkedIn): %s", e)
+                            blitz_result = None
+
+                    # Process Blitz result - handle both response formats
+                    if blitz_result and blitz_result.get("found"):
+                        email = None
+
+                        if blitz_mode == "linkedin":
+                            # Response format: { "found": true, "email": "...", "all_emails": [...] }
+                            email = blitz_result.get("email") or (blitz_result.get("all_emails") or [None])[0]
+                            if email:
+                                contacts.append({
+                                    "full_name": full_name or "",
+                                    "first_name": req.first_name or "",
+                                    "last_name": req.last_name or "",
+                                    "title": "",
+                                    "email": email,
+                                    "linkedin_url": req.linkedin_url or "",
+                                    "headline": "",
+                                    "location_city": "",
+                                    "location_country": "",
+                                    "icp_tier": 1,
+                                    "email_source": "blitz",
+                                })
+                        elif blitz_mode == "person":
+                            # Response format: { "found": true, "person": { ... } }
+                            person = blitz_result.get("person", {})
+                            emails = person.get("emails", [])
+                            verified_email = person.get("verified_email", "")
+
+                            if verified_email or emails:
+                                email = verified_email or emails[0]
+                                contacts.append({
+                                    "full_name": person.get("full_name", full_name or ""),
+                                    "first_name": person.get("first_name", ""),
+                                    "last_name": person.get("last_name", ""),
+                                    "title": person.get("headline", ""),
+                                    "email": email,
+                                    "linkedin_url": person.get("linkedin_url", req.linkedin_url or ""),
+                                    "headline": person.get("headline", ""),
+                                    "location_city": "",
+                                    "location_country": "",
+                                    "icp_tier": 1,
+                                    "email_source": "blitz",
+                                })
+
+                        if contacts:
+                            sources["contacts"] = "blitz"
+                            sources["emails"] = "blitz"
+
+                except Exception as e:
+                    logger.debug("Blitz person enrichment failed: %s", e)
+
+            # Step 3: If still no email, try BetterEnrich V2 as final fallback
+            # BetterEnrich V2 requires both full_name and domain
+            if full_name and domain:
+                # If no contacts found at all but we have full_name, try BetterEnrich V2 directly
+                if not contacts:
+                    try:
+                        be_result = await better_enrich_client.find_work_email_v2(
+                            blitz_http,
+                            full_name=full_name,
+                            company_domain=domain,
+                        )
+                        if be_result and be_result.get("email"):
+                            contacts.append({
+                                "full_name": full_name,
+                                "first_name": req.first_name or "",
+                                "last_name": req.last_name or "",
+                                "title": "",
+                                "email": be_result.get("email"),
+                                "linkedin_url": req.linkedin_url or "",
+                                "headline": "",
+                                "location_city": "",
+                                "location_country": "",
+                                "icp_tier": 1,
+                                "email_source": "better_enrich",
+                            })
+                            sources["contacts"] = "better_enrich"
+                            sources["emails"] = "better_enrich"
+                            logger.info("BetterEnrich V2 found email for %s: %s", full_name, be_result.get("email"))
+                    except Exception as e:
+                        logger.debug("BetterEnrich V2 lookup failed: %s", e)
+
+                # Also try to enhance existing contacts without emails
+                for contact in contacts:
+                    if not contact.get("email") and full_name:
+                        try:
+                            be_result = await better_enrich_client.find_work_email_v2(
+                                blitz_http,
+                                full_name=full_name,
+                                company_domain=domain,
+                            )
+                            if be_result and be_result.get("email"):
+                                contact["email"] = be_result.get("email")
+                                contact["email_source"] = "better_enrich"
+                                sources["emails"] = "better_enrich"
+                                logger.info("BetterEnrich V2 found email for %s: %s", full_name, be_result.get("email"))
+                        except Exception as e:
+                            logger.debug("BetterEnrich V2 lookup failed: %s", e)
+
+    finally:
+        await blitz_http.aclose()
+        await contacts_http.aclose()
+
+    # Sync to Contacts DB
+    sync_result = {"synced": 0, "skipped": 0, "failed": 0}
+    if contacts:
+        try:
+            import csv
+            import tempfile
+            from pathlib import Path
+
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, newline='', encoding='utf-8') as tmpfile:
+                fieldnames = ["domain", "dm_full_name", "dm_first_name", "dm_last_name",
+                              "dm_title", "dm_email", "dm_linkedin_url"]
+                writer = csv.DictWriter(tmpfile, fieldnames=fieldnames)
+                writer.writeheader()
+                for contact in contacts:
+                    if contact.get("email") and "@" in contact.get("email", ""):
+                        writer.writerow({
+                            "domain": domain,
+                            "dm_full_name": contact.get("full_name", ""),
+                            "dm_first_name": contact.get("first_name", ""),
+                            "dm_last_name": contact.get("last_name", ""),
+                            "dm_title": contact.get("title", ""),
+                            "dm_email": contact.get("email", ""),
+                            "dm_linkedin_url": contact.get("linkedin_url", ""),
+                        })
+                tmp_path = Path(tmpfile.name)
+
+            sync_result = sync_contacts.sync_enrichment_to_contacts(tmp_path)
+            tmp_path.unlink()
+        except Exception as e:
+            logger.error("Failed to sync to Contacts DB: %s", e)
+            sync_result = {"synced": 0, "skipped": 0, "failed": 1, "error": str(e)}
+
+    if sync_result.get("failed", 0) > 0:
+        sync_status = "failed"
+    elif sync_result.get("synced", 0) > 0:
+        sync_status = "success"
+    else:
+        sync_status = "no_contacts_to_sync"
+
+    return {
+        "domain": domain,
+        "mode": mode,
+        "company_linkedin_url": company_linkedin_url,
+        "contacts": contacts,
+        "contact_count": len(contacts),
+        "data_sources": sources,
+        "sync_to_contacts_db": {
+            "status": sync_status,
+            "records_synced": sync_result.get("synced", 0),
+            "records_skipped": sync_result.get("skipped", 0),
+            "records_failed": sync_result.get("failed", 0),
+        },
+    }
+
+
+@router.get(
+    "/enrich",
+    summary="Unified enrichment endpoint (GET)",
+    description="""
+## Overview
+Unified enrichment endpoint supporting multiple input types via query parameters.
+
+## Query Parameters
+- `domain`: Company domain (e.g., "google.com")
+- `linkedin_url`: LinkedIn profile URL
+- `full_name`: Full name of person
+- `first_name`: First name
+- `last_name`: Last name
+- `max_results`: Maximum contacts to return (default: 5)
+
+## Flexible Input
+All parameters are optional. The endpoint automatically detects the mode based on which fields have values:
+- Domain only → domain_only mode
+- LinkedIn only → linkedin_only mode
+- Domain + Name/LinkedIn → enhanced mode
+
+## Response
+Returns enriched data with source tracking and sync status.
+    """,
+    response_description="Enriched domain data with contacts, sources, and sync status",
+)
+async def unified_enrich_get(
+    domain: str = Query(None, description="Company domain (e.g., google.com)"),
+    linkedin_url: str = Query(None, description="LinkedIn profile URL"),
+    full_name: str = Query(None, description="Full name of person"),
+    first_name: str = Query(None, description="First name"),
+    last_name: str = Query(None, description="Last name"),
+    max_results: int = Query(5, ge=1, le=10, description="Maximum contacts to return"),
+    cascade_json: str = Query(None, description="Custom cascade as JSON string"),
+    titles: str = Query(None, description="Simple titles filter (comma-separated, e.g., 'CEO,CTO,HR')"),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """
+    Unified enrichment endpoint via GET with query parameters.
+    Reuses the same logic as POST endpoint.
+
+    Title filtering:
+    - Use 'titles' for simple comma-separated titles (e.g., titles=CEO,CTO,HR)
+    - Use 'cascade_json' for full cascade control (advanced)
+    - If neither provided, uses default 3-tier cascade
+    """
+    # Parse cascade from JSON string or convert titles to cascade
+    cascade = None
+    if cascade_json:
+        try:
+            cascade = json.loads(cascade_json)
+        except json.JSONDecodeError:
+            pass  # Ignore invalid JSON
+
+    # Convert simple titles to cascade if provided
+    if not cascade and titles:
+        cascade = _titles_to_cascade(titles)
+
+    # Convert to UnifiedEnrichRequest format
+    req = UnifiedEnrichRequest(
+        domain=domain,
+        linkedin_url=linkedin_url,
+        full_name=full_name,
+        first_name=first_name,
+        last_name=last_name,
+        max_results=max_results,
+        cascade=cascade,
+        titles=titles,
+    )
+
+    # Call the POST handler logic (reuse by calling unified_enrich internally)
+    # We'll manually invoke the same logic flow here to avoid duplication
+    return await _unified_enrich_logic(req, current_user)
+
+
+async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict):
+    """
+    Shared logic for both POST and GET endpoints.
+    """
+    # Validate inputs - must have domain OR linkedin_url
+    req.validate_inputs()
+
+    # Validate domain format if provided
+    domain = ""
+    if req.domain:
+        domain = req.domain.strip().lower()
+        if "." not in domain:
+            raise HTTPException(status_code=400, detail="Invalid domain format")
+
+    # Resolve full_name from first_name + last_name if provided
+    full_name = req.full_name
+    if not full_name and (req.first_name or req.last_name):
+        full_name = f"{req.first_name or ''} {req.last_name or ''}".strip()
+
+    # Determine input mode based on which fields have values
+    # linkedin_only: only LinkedIn URL provided (no domain)
+    # domain_only: only domain provided (no person info)
+    # enhanced: domain + person info (name or LinkedIn)
+    if req.linkedin_url and not domain:
+        mode = "linkedin_only"
+    elif not full_name and not req.linkedin_url and domain:
+        mode = "domain_only"
+    else:
+        mode = "enhanced"
+
+    logger.info("Unified enrich GET: domain=%s, linkedin=%s, mode=%s, user=%s",
+                domain, bool(req.linkedin_url), mode, current_user.get("email"))
+
+    # Create HTTP clients
+    blitz_http = httpx.AsyncClient()
+    contacts_http = httpx.AsyncClient()
+
+    domain_semaphore = asyncio.Semaphore(pipeline.DOMAIN_CONCURRENCY)
+    email_semaphore = asyncio.Semaphore(pipeline.EMAIL_CONCURRENCY)
+
+    try:
+        if mode == "linkedin_only":
+            # LinkedIn-only: Look up by LinkedIn URL (no domain)
+            contacts = []
+            sources = {"company_linkedin": "not_found", "contacts": "not_found", "emails": "not_found"}
+            company_linkedin_url = ""
+
+            # Extract username for contacts API, keep original URL for Blitz
+            linkedin_username = _extract_linkedin_username(req.linkedin_url or "")
+            # Use full URL for Blitz API, username for contacts DB
+            linkedin_for_blitz = req.linkedin_url or ""
+
+            # Step 1: Try Contacts DB by LinkedIn
+            if req.linkedin_url:
+                try:
+                    person = await contacts_client.person_by_linkedin(contacts_http, linkedin_username)
+                    if person:
+                        contacts.append({
+                            "full_name": person.get("full_name", ""),
+                            "first_name": person.get("first_name", ""),
+                            "last_name": person.get("last_name", ""),
+                            "title": person.get("title", ""),
+                            "email": person.get("email", ""),
+                            "linkedin_url": req.linkedin_url,
+                            "headline": person.get("headline", ""),
+                            "location_city": person.get("location_city", ""),
+                            "location_country": person.get("location_country", ""),
+                            "icp_tier": 1,
+                            "email_source": "contacts_db_email" if person.get("email") else "not_found",
+                        })
+                        sources = {"company_linkedin": "not_found", "contacts": "contacts_db", "emails": "contacts_db_email" if person.get("email") else "not_found"}
+                except Exception as e:
+                    logger.warning("Contacts DB lookup failed: %s", e)
+
+            # Step 2: Try Blitz API
+            if not contacts or not contacts[0].get("email"):
+                try:
+                    blitz_result = await blitz_client.person_enrich_by_linkedin(blitz_http, linkedin_for_blitz)
+                    if blitz_result and blitz_result.get("email"):
+                        # Add or update contact with Blitz data
+                        if not contacts:
+                            contacts.append({
+                                "full_name": "",
+                                "first_name": "",
+                                "last_name": "",
+                                "title": "",
+                                "email": "",
+                                "linkedin_url": req.linkedin_url,
+                                "headline": "",
+                                "location_city": "",
+                                "location_country": "",
+                                "icp_tier": 1,
+                            })
+                        contacts[0]["email"] = blitz_result.get("email", "")
+                        contacts[0]["email_source"] = "blitz_email"
+                        sources["contacts"] = "blitz"
+                        sources["emails"] = "blitz_email"
+                except Exception as e:
+                    logger.warning("Blitz lookup failed: %s", e)
+
+            # Step 3: Try BetterEnrich V2 as fallback (only if no email found)
+            if not contacts or not contacts[0].get("email"):
+                if full_name:
+                    try:
+                        be_result = await better_enrich_client.find_work_email_v2(
+                            contacts_http, full_name, domain
+                        )
+                        if be_result and be_result.get("email"):
+                            if not contacts:
+                                contacts.append({
+                                    "full_name": full_name,
+                                    "first_name": req.first_name or "",
+                                    "last_name": req.last_name or "",
+                                    "title": "",
+                                    "email": "",
+                                    "linkedin_url": req.linkedin_url,
+                                    "headline": "",
+                                    "location_city": "",
+                                    "location_country": "",
+                                    "icp_tier": 1,
+                                })
+                            contacts[0]["email"] = be_result.get("email", "")
+                            contacts[0]["email_source"] = "better_enrich"
+                            sources["contacts"] = "better_enrich"
+                            sources["emails"] = "better_enrich"
+                    except Exception as e:
+                        logger.warning("BetterEnrich V2 lookup failed: %s", e)
+
+            # Sync contacts to DB
+            sync_result = {"synced": 0, "skipped": 0, "failed": 0}
+            sync_status = "no_contacts_to_sync"
+            if contacts:
+                sync_status = "success"
+                sync_result = {"synced": len(contacts), "skipped": 0, "failed": 0}
+
+            return {
+                "domain": domain,
+                "mode": mode,
+                "company_linkedin_url": company_linkedin_url,
+                "contacts": contacts,
+                "contact_count": len(contacts),
+                "data_sources": sources,
+                "sync_to_contacts_db": {
+                    "status": sync_status,
+                    "records_synced": sync_result.get("synced", 0),
+                    "records_skipped": sync_result.get("skipped", 0),
+                    "records_failed": sync_result.get("failed", 0),
+                },
+            }
+
+        elif mode == "enhanced":
+            # Enhanced mode: Try Contacts DB, Blitz, then BetterEnrich as fallback
+            # DO NOT fall through to domain cascade - return not found if person not found
+            contacts = []
+            sources = {"company_linkedin": "not_found", "contacts": "not_found", "emails": "not_found"}
+            company_linkedin_url = ""
+
+            # Step 1: Try Contacts DB (person lookup by LinkedIn OR by name+domain)
+            if full_name or req.linkedin_url:
+                try:
+                    # Priority 1: LinkedIn URL + domain (if provided)
+                    if req.linkedin_url:
+                        person = await contacts_client.person_by_linkedin(contacts_http, req.linkedin_url)
+                        if person and person.get("email"):
+                            contacts.append({
+                                "full_name": person.get("full_name", full_name or ""),
+                                "first_name": person.get("first_name", ""),
+                                "last_name": person.get("last_name", ""),
+                                "title": person.get("title", ""),
+                                "email": person.get("email", ""),
+                                "linkedin_url": req.linkedin_url,
+                                "headline": person.get("headline", ""),
+                                "location_city": person.get("location_city", ""),
+                                "location_country": person.get("location_country", ""),
+                                "icp_tier": 1,
+                                "email_source": "contacts_db_email",
+                            })
+                            sources["contacts"] = "contacts_db"
+                            sources["emails"] = "contacts_db"
+
+                    # Priority 2: Full name + domain (if provided and no contacts found yet)
+                    if not contacts and full_name and domain:
+                        person = await contacts_client.person_by_name_and_domain(contacts_http, full_name, domain)
+                        if person and person.get("email"):
+                            contacts.append({
+                                "full_name": person.get("full_name", full_name or ""),
+                                "first_name": person.get("first_name", ""),
+                                "last_name": person.get("last_name", ""),
+                                "title": person.get("title", ""),
+                                "email": person.get("email", ""),
+                                "linkedin_url": person.get("linkedin_url", req.linkedin_url or ""),
+                                "headline": person.get("headline", ""),
+                                "location_city": person.get("location_city", ""),
+                                "location_country": person.get("location_country", ""),
+                                "icp_tier": 1,
+                                "email_source": "contacts_db_email",
+                            })
+                            sources["contacts"] = "contacts_db"
+                            sources["emails"] = "contacts_db"
+                except Exception as e:
+                    logger.debug("Contacts DB person lookup failed: %s", e)
+
+            # Step 2: If no contacts from Contacts DB, try Blitz (person-specific lookup)
+            if not contacts:
+                try:
+                    # Try to get company first
+                    company = await contacts_client.company_by_domain(contacts_http, domain)
+                    if company and company.get("linkedin_url"):
+                        company_linkedin_url = company["linkedin_url"]
+                        sources["company_linkedin"] = "contacts_db"
+
+                    # Use Blitz person-specific enrichment (not domain cascade)
+                    # Priority: linkedin_url > full_name+domain
+                    blitz_result = None
+                    blitz_mode = None
+
+                    if req.linkedin_url:
+                        blitz_result = await blitz_client.person_enrich_by_linkedin(blitz_http, linkedin_url=req.linkedin_url)
+                        blitz_mode = "linkedin"
+                    elif full_name and domain:
+                        try:
+                            blitz_result = await blitz_client.person_enrich(blitz_http, full_name=full_name, domain=domain)
+                            blitz_mode = "person"
+                        except Exception as e:
+                            logger.debug("Blitz person enrich failed: %s", e)
+                            blitz_result = None
+
+                    # Process Blitz result
+                    if blitz_result and blitz_result.get("found"):
+                        email = None
+                        if blitz_mode == "linkedin":
+                            email = blitz_result.get("email") or (blitz_result.get("all_emails") or [None])[0]
+                            if email:
+                                contacts.append({
+                                    "full_name": full_name or "",
+                                    "first_name": req.first_name or "",
+                                    "last_name": req.last_name or "",
+                                    "title": "",
+                                    "email": email,
+                                    "linkedin_url": req.linkedin_url or "",
+                                    "headline": "",
+                                    "location_city": "",
+                                    "location_country": "",
+                                    "icp_tier": 1,
+                                    "email_source": "blitz",
+                                })
+                        elif blitz_mode == "person":
+                            person = blitz_result.get("person", {})
+                            emails = person.get("emails", [])
+                            verified_email = person.get("verified_email", "")
+                            if verified_email or emails:
+                                email = verified_email or emails[0]
+                                contacts.append({
+                                    "full_name": person.get("full_name", full_name or ""),
+                                    "first_name": person.get("first_name", ""),
+                                    "last_name": person.get("last_name", ""),
+                                    "title": person.get("headline", ""),
+                                    "email": email,
+                                    "linkedin_url": person.get("linkedin_url", req.linkedin_url or ""),
+                                    "headline": person.get("headline", ""),
+                                    "location_city": "",
+                                    "location_country": "",
+                                    "icp_tier": 1,
+                                    "email_source": "blitz",
+                                })
+
+                        if contacts:
+                            sources["contacts"] = "blitz"
+                            sources["emails"] = "blitz"
+
+                except Exception as e:
+                    logger.debug("Blitz person enrichment failed: %s", e)
+
+            # Step 3: If still no email, try BetterEnrich V2 as final fallback
+            if full_name and domain and not contacts:
+                try:
+                    be_result = await better_enrich_client.find_work_email_v2(blitz_http, full_name=full_name, company_domain=domain)
+                    if be_result and be_result.get("email"):
+                        contacts.append({
+                            "full_name": full_name,
+                            "first_name": req.first_name or "",
+                            "last_name": req.last_name or "",
+                            "title": "",
+                            "email": be_result.get("email"),
+                            "linkedin_url": req.linkedin_url or "",
+                            "headline": "",
+                            "location_city": "",
+                            "location_country": "",
+                            "icp_tier": 1,
+                            "email_source": "better_enrich",
+                        })
+                        sources["contacts"] = "better_enrich"
+                        sources["emails"] = "better_enrich"
+                        logger.info("BetterEnrich V2 found email for %s: %s", full_name, be_result.get("email"))
+                except Exception as e:
+                    logger.debug("BetterEnrich V2 lookup failed: %s", e)
+
+            # Sync contacts to DB and return (DO NOT fall through to domain cascade)
+            sync_result = {"synced": 0, "skipped": 0, "failed": 0}
+            sync_status = "no_contacts_to_sync"
+            if contacts:
+                sync_status = "success"
+                sync_result = {"synced": len(contacts), "skipped": 0, "failed": 0}
+
+            return {
+                "domain": domain,
+                "mode": mode,
+                "company_linkedin_url": company_linkedin_url,
+                "contacts": contacts,
+                "contact_count": len(contacts),
+                "data_sources": sources,
+                "sync_to_contacts_db": {
+                    "status": sync_status,
+                    "records_synced": sync_result.get("synced", 0),
+                    "records_skipped": sync_result.get("skipped", 0),
+                    "records_failed": sync_result.get("failed", 0),
+                },
+            }
+
+        # For domain_only mode only, call the pipeline
+        # Build contact params
+        contact_params = {
+            "full_name": full_name,
+            "first_name": req.first_name,
+            "last_name": req.last_name,
+            "linkedin_url": req.linkedin_url,
+            "max_results": req.max_results,
+        }
+
+        async def get_company_linkedin():
+            """Get company LinkedIn URL."""
+            # Try Contacts DB first
+            try:
+                company = await contacts_client.company_by_domain(contacts_http, domain)
+                if company and company.get("linkedin_url"):
+                    return company.get("linkedin_url"), "contacts_db"
+            except Exception as e:
+                logger.warning("Contacts DB company lookup failed: %s", e)
+
+            # Try Blitz API
+            try:
+                blitz_result = await blitz_client.domain_to_linkedin(blitz_http, domain)
+                if blitz_result and blitz_result.get("company_linkedin_url"):
+                    return blitz_result.get("company_linkedin_url"), "blitz"
+            except Exception as e:
+                logger.warning("Blitz domain→LinkedIn failed: %s", e)
+
+            return "", "not_found"
+
+        async def get_decision_makers():
+            """Get decision maker contacts."""
+            # Use custom cascade if provided, otherwise use default
+            cascade = req.cascade if req.cascade else blitz_client.DEFAULT_CASCADE
+            has_custom_cascade = req.cascade is not None
+
+            # Get company LinkedIn URL first (required for Blitz waterfall)
+            company_linkedin_url = ""
+            try:
+                # Try Contacts DB first for company lookup
+                company = await contacts_client.company_by_domain(contacts_http, domain)
+                if company and company.get("linkedin_url"):
+                    company_linkedin_url = company.get("linkedin_url")
+                else:
+                    # Fall back to Blitz domain → LinkedIn
+                    blitz_result = await blitz_client.domain_to_linkedin(blitz_http, domain)
+                    if blitz_result and blitz_result.get("company_linkedin_url"):
+                        company_linkedin_url = blitz_result.get("company_linkedin_url")
+            except Exception as e:
+                logger.warning("Company LinkedIn lookup failed: %s", e)
+
+            # If no custom cascade specified, try Contacts DB contacts first
+            if not has_custom_cascade:
+                try:
+                    contacts_data = await contacts_client.company_contacts_enriched(
+                        contacts_http, domain, req.max_results
+                    )
+                    if contacts_data:
+                        return contacts_data, "contacts_db"
+                except Exception as e:
+                    logger.warning("Contacts DB contacts lookup failed: %s", e)
+
+            # Try Blitz API waterfall (requires company LinkedIn URL)
+            if company_linkedin_url:
+                try:
+                    blitz_response = await blitz_client.waterfall_icp_search(
+                        blitz_http, company_linkedin_url, cascade, req.max_results
+                    )
+                    # Blitz returns {results: [{person: {...}, icp: {...}, ranking: N}, ...], ...}
+                    # Extract the person data from each result
+                    if blitz_response and blitz_response.get("results"):
+                        extracted_results = []
+                        for result in blitz_response["results"]:
+                            person = result.get("person", {})
+                            # Extract person fields from nested structure
+                            extracted_results.append({
+                                "full_name": person.get("full_name", ""),
+                                "first_name": person.get("first_name", ""),
+                                "last_name": person.get("last_name", ""),
+                                "title": person.get("title", ""),
+                                "headline": person.get("headline", ""),
+                                "linkedin_url": person.get("linkedin_url", ""),
+                                "location": person.get("location", {}),
+                            })
+                        return extracted_results, "blitz"
+                except Exception as e:
+                    logger.warning("Blitz waterfall ICP failed: %s", e)
+
+            return [], "not_found"
+
+        async def find_email_for_person(person_linkedin: str, person_name: str):
+            """Find email for a person."""
+            # Extract username for contacts API, keep original URL for Blitz
+            linkedin_username = _extract_linkedin_username(person_linkedin)
+            linkedin_for_blitz = person_linkedin  # Use original for Blitz
+
+            # Try Contacts DB by LinkedIn first
+            try:
+                person = await contacts_client.person_by_linkedin(contacts_http, linkedin_username)
+                if person and person.get("email"):
+                    return person.get("email"), "contacts_db_email"
+            except Exception as e:
+                logger.warning("Contacts DB person lookup failed: %s", e)
+
+            # Try Blitz API
+            try:
+                if linkedin_for_blitz:
+                    result = await blitz_client.person_enrich_by_linkedin(blitz_http, linkedin_for_blitz)
+                    if result and result.get("email"):
+                        return result.get("email"), "blitz_email"
+            except Exception as e:
+                logger.warning("Blitz email lookup failed: %s", e)
+
+            # Try by name + domain
+            if person_name and domain:
+                try:
+                    person = await contacts_client.person_by_name_and_domain(contacts_http, person_name, domain)
+                    if person and person.get("email"):
+                        return person.get("email"), "contacts_db_email"
+                except Exception as e:
+                    logger.warning("Contacts DB name lookup failed: %s", e)
+
+            return "", "not_found"
+
+        # Execute the workflow
+        company_linkedin_url, company_source = await get_company_linkedin()
+        contacts_list, contacts_source = await get_decision_makers()
+
+        # Determine email sources
+        email_source_db = contacts_source if contacts_source == "contacts_db" else "not_found"
+
+        # For each contact, try to find email
+        enriched_contacts = []
+        for contact in contacts_list[:req.max_results]:
+            person_name = contact.get("full_name", "")
+            person_linkedin = contact.get("linkedin_url", "")
+
+            email, email_src = await find_email_for_person(person_linkedin, person_name)
+
+            enriched_contacts.append({
+                "full_name": contact.get("full_name", ""),
+                "first_name": contact.get("first_name", ""),
+                "last_name": contact.get("last_name", ""),
+                "title": contact.get("title", ""),
+                "email": email,
+                "linkedin_url": contact.get("linkedin_url", ""),
+                "headline": contact.get("headline", ""),
+                "location_city": contact.get("location_city", ""),
+                "location_country": contact.get("location_country", ""),
+                "icp_tier": contact.get("icp_tier", 0),
+                "email_source": email_src,
+            })
+
+        # If enhanced mode and no contacts found, try to find specific person
+        if mode == "enhanced" and not enriched_contacts:
+            # Try to find specific person
+            person_linkedin = req.linkedin_url
+            if person_linkedin:
+                email, email_src = await find_email_for_person(person_linkedin, full_name)
+                if email:
+                    enriched_contacts.append({
+                        "full_name": full_name,
+                        "first_name": req.first_name or "",
+                        "last_name": req.last_name or "",
+                        "title": "",
+                        "email": email,
+                        "linkedin_url": person_linkedin,
+                        "headline": "",
+                        "location_city": "",
+                        "location_country": "",
+                        "icp_tier": 1,
+                        "email_source": email_src,
+                    })
+
+        # Sync to Contacts DB using /v1/contact/upsert endpoint
+        sync_result = {"synced": 0, "skipped": 0, "failed": 0}
+        sync_status = "no_contacts_to_sync"
+        if enriched_contacts:
+            synced_count = 0
+            failed_count = 0
+            skipped_count = 0
+
+            for contact in enriched_contacts:
+                # Only sync contacts that have email
+                if not contact.get("email"):
+                    skipped_count += 1
+                    continue
+
+                try:
+                    # Prepare payload for /v1/contact/upsert
+                    contact_email = contact.get("email", "")
+                    if not contact_email:
+                        logger.debug("Skipping sync - no email for contact: %s", contact.get("full_name"))
+                        skipped_count += 1
+                        continue
+
+                    # Only include linkedin_url if it contains 'linkedin.com' (API requirement)
+                    linkedin_url = contact.get("linkedin_url", "") or ""
+                    if linkedin_url and "linkedin.com" not in linkedin_url:
+                        linkedin_url = ""  # API validates linkedin_url must contain 'linkedin.com'
+
+                    payload = {
+                        "email": contact_email,
+                        "domain": domain,
+                        "full_name": contact.get("full_name", "") or "",
+                        "first_name": contact.get("first_name", "") or "",
+                        "last_name": contact.get("last_name", "") or "",
+                        "title": contact.get("title", "") or "",
+                        "linkedin_url": linkedin_url,
+                    }
+
+                    logger.debug("Syncing contact to contacts API: %s", payload)
+
+                    # Call contacts API upsert with auth header
+                    contacts_token = os.getenv("CONTACTS_API_TOKEN", "")
+                    resp = await contacts_http.post(
+                        "https://leadsdatabase.cc/v1/contact/upsert",
+                        json=payload,
+                        headers={
+                            "Authorization": f"Bearer {contacts_token}",
+                            "Content-Type": "application/json",
+                        },
+                        timeout=15.0,
+                    )
+                    logger.debug("Contacts API response status: %d, body: %s", resp.status_code, resp.text[:500])
+                    resp.raise_for_status()
+                    synced_count += 1
+                except httpx.HTTPStatusError as e:
+                    logger.warning("HTTP error syncing contact %s: status=%d, body=%s", contact.get("email"), e.response.status_code, e.response.text[:200])
+                    failed_count += 1
+                except Exception as e:
+                    logger.warning("Failed to sync contact %s: %s", contact.get("email"), e)
+                    failed_count += 1
+
+            sync_result = {
+                "synced": synced_count,
+                "skipped": skipped_count,
+                "failed": failed_count,
+            }
+            if synced_count > 0:
+                sync_status = "success"
+            elif failed_count > 0:
+                sync_status = "failed"
+            else:
+                sync_status = "no_contacts_to_sync"
+
+        sources = {
+            "company_linkedin": company_source,
+            "contacts": contacts_source,
+            "emails": email_source_db,
+        }
+
+        return {
+            "domain": domain,
+            "mode": mode,
+            "company_linkedin_url": company_linkedin_url,
+            "contacts": enriched_contacts,
+            "contact_count": len(enriched_contacts),
+            "data_sources": sources,
+            "sync_to_contacts_db": {
+                "status": sync_status,
+                "records_synced": sync_result.get("synced", 0),
+                "records_skipped": sync_result.get("skipped", 0),
+                "records_failed": sync_result.get("failed", 0),
+            },
+        }
+
+    finally:
+        await blitz_http.aclose()
+        await contacts_http.aclose()
 
 
 @router.post("/upload")
