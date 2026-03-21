@@ -23,7 +23,8 @@ This is a **unified lead generation platform** combining two core tools:
 │   │   ├── routes.py           # Enrichment API endpoints
 │   │   ├── pipeline.py         # Enrichment workflow orchestrator
 │   │   ├── blitz_client.py     # Blitz API wrapper (rate-limited, retry logic)
-│   │   └── contacts_client.py  # Contacts DB fallback client
+│   │   ├── contacts_client.py  # Contacts DB fallback client
+│   │   └── better_enrich_client.py  # BetterEnrich V2 API client
 │   ├── scraper/                # Google Maps scraper module
 │   │   ├── routes.py           # Scraper API endpoints
 │   │   ├── crawler.py          # Async scraper with concurrency control
@@ -54,7 +55,7 @@ Both scraper and enrichment jobs share a unified SQLite database schema with `jo
   - Common: `status` (queued|running|done|failed), `parent_job_id` (for chaining)
 - `job_events` - Progress events for SSE streaming (`seq`, `payload` JSON)
 - `users` - Auth users (email, password_hash bcrypt, is_admin)
-- `daily_api_requests` - API quota tracking for non-admin users (50K/day limit)
+- `daily_api_requests` - API quota tracking for scraper endpoint (50K/day limit for non-admin)
 
 **Thread-local connections:** `db.get_db()` returns per-thread SQLite connections with WAL mode.
 
@@ -74,7 +75,9 @@ Real-time progress streaming to frontend:
 ### Authentication & Authorization
 - **User creation:** CLI only via `backend/create_user.py` (no public registration)
 - **Login:** `POST /api/auth/login` → JWT (HS256, 7-day expiry)
-- **Dependencies:** `Depends(auth.get_current_user)` or `Depends(auth.require_admin)`
+- **API Keys:** `POST /api/api-keys` → Create API key, `GET /api/api-keys` → List keys, `DELETE /api/api-keys/{key_id}` → Delete key
+- **Dependencies:** `Depends(auth.get_current_user)`, `Depends(auth.get_current_user_with_api_key)`, or `Depends(auth.require_admin)`
+- **API Key usage:** Header `X-API-Key: <api_key>` or `Authorization: Bearer <api_key>`
 - **Admin privileges:** Unlimited API quota, view all jobs across users
 
 ## Common Development Commands
@@ -122,7 +125,7 @@ Frontend is pre-built static files. To rebuild frontend (requires separate front
 ## Key Integrations
 
 ### Blitz API (api.blitz-api.ai)
-**Rate limit:** 4 RPS (conservative, API limit is 5 RPS)
+**Rate limit:** 25 RPS (automatic throttling)
 **Endpoints:**
 - `POST /v2/enrichment/domain-to-linkedin` - Domain → company LinkedIn URL
 - `POST /v2/search/waterfall-icp-keyword` - Company LinkedIn → decision makers
@@ -143,7 +146,74 @@ Frontend is pre-built static files. To rebuild frontend (requires separate front
 - `GET /v1/person/by-linkedin?linkedin_url=...` - Person lookup by LinkedIn
 - `GET /v1/person/by-name?name=...&domain=...` - Person lookup by name + domain
 
+### Contacts DB (leadsdatabase.cc)
+**Rate limit:** 75 RPS (automatic throttling)
+**Endpoints:**
+- `GET /v1/company/by-domain` - Domain → company info
+- `GET /v1/company/contacts/enriched` - Company → decision makers with emails
+- `GET /v1/person/by-linkedin` - Person lookup by LinkedIn
+- `GET /v1/person/by-name-and-domain` - Person lookup by name + domain
+
+### BetterEnrich API V2 (app.betterenrich.com)
+**Low-cost endpoint:** `POST /api/v1/find-work-email-low-cost-v2-alt`
+**Rate limit:** 10 RPS (automatic throttling)
+**Function:** `better_enrich_client.find_work_email_v2()` - Used as fallback after Blitz fails
+**API Key:** Stored in `BETTER_ENRICH_API_KEY` env var
+
 ## Critical Implementation Details
+
+### Unified Enrichment Endpoint
+Two versions available: POST (with sync) and GET (without sync).
+
+#### POST /api/enrichment/enrich (with sync)
+Full-featured version that returns contacts AND syncs to internal database.
+
+**Request Body:**
+```json
+{
+  "domain": "google.com",           // optional*
+  "linkedin_url": "...",            // optional*
+  "full_name": "John Doe",         // optional
+  "first_name": "John",            // optional
+  "last_name": "Doe",              // optional
+  "max_results": 5                  // optional, default 5
+}
+```
+*Either `domain` or `linkedin_url` must be provided.
+
+#### GET /api/enrichment/enrich (no sync)
+Lightweight version for simple lookups. Returns contacts but does NOT sync to database.
+
+**Query Parameters:**
+```
+?domain=google.com&max_results=5
+?linkedin_url=https://linkedin.com/in/johndoe
+?domain=google.com&full_name=John%20Doe
+?domain=google.com&linkedin_url=https://linkedin.com/in/johndoe
+```
+
+**Input Modes (both POST and GET):**
+
+| Input | Mode | Flow |
+|-------|------|------|
+| `domain` only | `domain_only` | Contacts DB → Blitz |
+| `linkedin_url` only | `linkedin_only` | Contacts DB → Blitz → BetterEnrich V2 |
+| `domain` + `full_name` | `enhanced` | Contacts DB → Blitz → BetterEnrich V2 → NOT FOUND (no fallback to domain) |
+| `domain` + `linkedin_url` | `enhanced` | Contacts DB → Blitz → BetterEnrich V2 → NOT FOUND (no fallback to domain) |
+| `domain` only | `domain_only` | Contacts DB → Blitz cascade (all decision makers) |
+
+**Enhanced mode behavior:**
+- When `full_name` or `linkedin_url` is provided with domain, the endpoint looks for that SPECIFIC person
+- If person is NOT found in any enrichment source → returns 0 contacts (NOT FOUND)
+- Does NOT fall back to domain cascade → this is intentional behavior
+- Only `domain` only mode returns all decision makers (cascade)
+
+**Important:** Use POST endpoint when you need to sync contacts to the internal database. GET is for quick lookups without persistence.
+
+**Response includes:**
+- `mode`: Detection mode used
+- `data_sources`: Shows source for each data type (contacts_db, blitz, better_enrich)
+- `sync_to_contacts_db`: Sync status (POST: actual sync, GET: "success" but no actual sync)
 
 ### Job Store Pattern
 Both `scraper/job_store.py` and `enrichment/job_store.py` are thin wrappers around `shared.job_store_base.JobStoreBase`. The base class handles:
@@ -178,6 +248,8 @@ SCRAPER_TECH_KEY=<scraper-tech-api-key>
 BLITZ_API_KEY=<blitz-api-key>
 CONTACTS_API_BASE_URL=https://leadsdatabase.cc
 CONTACTS_API_TOKEN=<contacts-api-token>
+BETTER_ENRICH_BASE_URL=https://app.betterenrich.com
+BETTER_ENRICH_API_KEY=<betterenrich-api-key>
 ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
 ```
 
