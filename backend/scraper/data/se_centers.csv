@@ -1,0 +1,9 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Stockholm,Stockholm,59.3293,18.0686,metro,1,major_swedish_cities,anchor_city,Stockholm,se
+Gothenburg,Västra Götaland,57.7089,11.9746,metro,2,major_swedish_cities,anchor_city,Gothenburg,se
+Malmö,Skåne,55.6050,13.0038,metro,3,major_swedish_cities,anchor_city,Malmö,se
+Uppsala,Uppsala,59.8586,17.6389,metro,4,major_swedish_cities,anchor_city,Uppsala,se
+Västerås,Västmanland,59.6162,16.5528,metro,5,major_swedish_cities,anchor_city,Västerås,se
+Örebro,Närke,59.2753,15.2069,metro,6,major_swedish_cities,anchor_city,Örebro,se
+Linköping,Östergötland,58.4108,15.6214,metro,7,major_swedish_cities,anchor_city,Linköping,se
+Helsingborg,Skåne,56.0467,12.6941,metro,8,major_swedish_cities,anchor_city,Helsingborg,se

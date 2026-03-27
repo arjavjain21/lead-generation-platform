@@ -1,0 +1,8 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Vienna,Vienna,48.2082,16.3738,metro,1,major_austrian_cities,anchor_city,Vienna,at
+Graz,Styria,47.0707,15.4395,metro,2,major_austrian_cities,anchor_city,Graz,at
+Linz,Upper Austria,48.3064,14.2855,metro,3,major_austrian_cities,anchor_city,Linz,at
+Salzburg,Salzburg,47.8095,13.0550,metro,4,major_austrian_cities,anchor_city,Salzburg,at
+Innsbruck,Tyrol,47.2692,11.4041,metro,5,major_austrian_cities,anchor_city,Innsbruck,at
+Klagenfurt,Carinthia,46.6365,14.3136,metro,6,major_austrian_cities,anchor_city,Klagenfurt,at
+Villach,Carinthia,46.6110,13.8508,metro,7,major_austrian_cities,anchor_city,Villach,at

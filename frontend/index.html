@@ -171,6 +171,7 @@
             </div>
             <div class="nav-section">
                 <div class="nav-section-title">Resources</div>
+                <a class="nav-item" data-page="apikeys"><span class="nav-icon">🔑</span>API Keys</a>
                 <a class="nav-item" data-page="help"><span class="nav-icon">❓</span>Help & Guide</a>
             </div>
         </nav>
@@ -288,10 +289,23 @@
                         <label>Country</label>
                         <select id="scraperCountry">
                             <option value="us">United States</option>
+                            <option value="ca">Canada</option>
+                            <option value="au">Australia</option>
+                            <option disabled>──────────</option>
                             <option value="gb">United Kingdom</option>
                             <option value="ie">Ireland</option>
-                            <option value="au">Australia</option>
-                            <option value="ca">Canada</option>
+                            <option value="de">Germany</option>
+                            <option value="fr">France</option>
+                            <option value="es">Spain</option>
+                            <option value="it">Italy</option>
+                            <option value="nl">Netherlands</option>
+                            <option value="be">Belgium</option>
+                            <option value="pl">Poland</option>
+                            <option value="se">Sweden</option>
+                            <option value="dk">Denmark</option>
+                            <option value="at">Austria</option>
+                            <option value="ch">Switzerland</option>
+                            <option value="pt">Portugal</option>
                         </select>
                     </div>
                     <div class="filter-group">
@@ -589,6 +603,52 @@ https://linkedin.com/in/johndoe
 https://linkedin.com/in/janesmith</pre>
             </div>
         </div>
+
+        <!-- API Keys Page -->
+        <div class="page" id="page-apikeys">
+            <div class="welcome-card" style="background: linear-gradient(135deg, #1a315d 0%, #122544 100%);">
+                <h2>API Keys</h2>
+                <p>Manage API keys for programmatic access to the Lead Generation Platform.</p>
+            </div>
+
+            <div class="form-card">
+                <h3>Create New API Key</h3>
+                <div style="display: flex; gap: 1rem; align-items: flex-end;">
+                    <div class="form-group" style="flex: 1; margin-bottom: 0;">
+                        <label>Key Name</label>
+                        <input type="text" id="apiKeyName" placeholder="e.g., Production, Testing">
+                    </div>
+                    <button class="btn btn-primary" id="createApiKeyBtn">Create Key</button>
+                </div>
+                <p style="font-size: 0.8rem; color: var(--gray-500); margin-top: 0.5rem;">
+                    The API key will be shown only once. Make sure to copy it immediately.
+                </p>
+            </div>
+
+            <div class="form-card">
+                <h3>Your API Keys</h3>
+                <div id="apiKeysList">
+                    <div class="loading">Loading...</div>
+                </div>
+            </div>
+
+            <div class="help-section">
+                <h3>How to Use API Keys</h3>
+                <p>Include your API key in the <code>X-API-Key</code> header:</p>
+                <pre style="background: var(--gray-50); padding: 1rem; border-radius: 8px; font-size: 0.85rem; overflow-x: auto; margin-top: 0.5rem;">curl -X GET "https://listbuilding.eagleinfoservice.com/api/enrichment/enrich/google.com" \
+  -H "X-API-Key: lgp_your_api_key_here"</pre>
+
+                <p style="margin-top: 1rem;"><strong>Example Response:</strong></p>
+                <pre style="background: var(--gray-50); padding: 1rem; border-radius: 8px; font-size: 0.8rem; overflow-x: auto; margin-top: 0.5rem;">{
+  "domain": "google.com",
+  "company_linkedin_url": "http://www.linkedin.com/company/google",
+  "contacts": [...],
+  "contact_count": 5,
+  "data_sources": { "company_linkedin": "contacts_db", ... },
+  "sync_to_contacts_db": { "status": "success", ... }
+}</pre>
+            </div>
+        </div>
     </main>
     
     <script>
@@ -643,6 +703,7 @@ https://linkedin.com/in/janesmith</pre>
                 // Load data when switching to specific pages
                 if (page === 'scraper') loadScraperJobs();
                 if (page === 'jobs') loadJobs();
+                if (page === 'apikeys') loadApiKeys();
             });
         });
         
@@ -657,7 +718,165 @@ https://linkedin.com/in/janesmith</pre>
                 });
             } catch (e) { console.error('Failed to load options:', e); }
         }
-        
+
+        // API Keys Functions
+        async function loadApiKeys() {
+            const listEl = document.getElementById('apiKeysList');
+            if (!listEl) return;
+
+            try {
+                // Fetch with include_key=true to get plaintext keys for copying
+                const res = await fetch('/api/api-keys?include_key=true', { headers: { 'Authorization': 'Bearer ' + token } });
+                if (!res.ok) { listEl.innerHTML = '<div class="empty-state">Failed to load API keys</div>'; return; }
+                const data = await res.json();
+                const keys = data.api_keys || [];
+
+                if (keys.length === 0) {
+                    listEl.innerHTML = '<div class="empty-state">No API keys yet. Create one above!</div>';
+                    return;
+                }
+
+                listEl.innerHTML = keys.map(key => `
+                    <div style="padding: 0.75rem; border-bottom: 1px solid var(--gray-200);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                            <div>
+                                <div style="font-weight: 500;">${key.name}</div>
+                                <div style="font-size: 0.75rem; color: var(--gray-500);">
+                                    Created: ${new Date(key.created_at).toLocaleDateString()}
+                                    ${key.last_used_at ? ' | Last used: ' + new Date(key.last_used_at).toLocaleDateString() : ''}
+                                </div>
+                            </div>
+                            <div style="display: flex; gap: 0.5rem;">
+                                <button class="btn btn-primary btn-sm" onclick="copyApiKeyByValue('${key.api_key}')">Copy</button>
+                                <button class="btn btn-secondary btn-sm" onclick="deleteApiKey('${key.key_id}')" style="background: #fee2e2; color: #dc2626;">Delete</button>
+                            </div>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 0.5rem;">
+                            <input type="text" value="${key.api_key}" readonly
+                                style="flex: 1; padding: 0.4rem; border: 1px solid var(--gray-300); border-radius: 4px; font-family: monospace; font-size: 0.75rem; background: var(--gray-50);">
+                        </div>
+                    </div>
+                `).join('');
+            } catch (e) {
+                console.error('Failed to load API keys:', e);
+                listEl.innerHTML = '<div class="empty-state">Failed to load API keys</div>';
+            }
+        }
+
+        function copyApiKeyByValue(apiKey) {
+            navigator.clipboard.writeText(apiKey).then(() => {
+                alert('API key copied to clipboard!');
+            });
+        }
+
+        async function createApiKey() {
+            const nameInput = document.getElementById('apiKeyName');
+            const name = nameInput.value.trim();
+            if (!name) { alert('Please enter a name for the API key'); return; }
+
+            const btn = document.getElementById('createApiKeyBtn');
+            btn.disabled = true;
+            btn.textContent = 'Creating...';
+
+            try {
+                const res = await fetch('/api/api-keys', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name })
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    nameInput.value = '';
+                    // Show the new key in the display area
+                    showNewApiKey(data.api_key, data.name);
+                    loadApiKeys();
+                } else {
+                    const err = await res.json();
+                    alert('Failed to create API key: ' + (err.detail || 'Unknown error'));
+                }
+            } catch (e) {
+                alert('Failed to create API key: ' + e.message);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Create Key';
+            }
+        }
+
+        function showNewApiKey(apiKey, keyName) {
+            // Remove any existing new key display
+            const existing = document.getElementById('newApiKeyDisplay');
+            if (existing) existing.remove();
+
+            // Create new key display
+            const display = document.createElement('div');
+            display.id = 'newApiKeyDisplay';
+            display.className = 'form-card';
+            display.style.marginTop = '1rem';
+            display.style.border = '2px solid var(--success)';
+            display.innerHTML = `
+                <h3 style="color: var(--success); margin-bottom: 1rem;">New API Key Created: ${keyName}</h3>
+                <div style="display: flex; gap: 0.5rem; align-items: center;">
+                    <input type="text" id="newApiKeyValue" value="${apiKey}" readonly
+                        style="flex: 1; padding: 0.75rem; border: 1px solid var(--gray-300); border-radius: 6px; font-family: monospace; font-size: 0.85rem; background: var(--gray-50);">
+                    <button class="btn btn-primary" onclick="copyApiKey()">Copy</button>
+                    <button class="btn btn-secondary" onclick="dismissNewApiKey()">Done</button>
+                </div>
+                <p style="font-size: 0.8rem; color: var(--gray-500); margin-top: 0.5rem;">
+                    Save this key securely. You can copy it anytime using this page.
+                </p>
+            `;
+
+            // Insert after the create form
+            const formCard = document.querySelector('#page-apikeys .form-card');
+            if (formCard) {
+                formCard.parentNode.insertBefore(display, formCard.nextSibling);
+            }
+        }
+
+        function copyApiKey() {
+            const input = document.getElementById('newApiKeyValue');
+            input.select();
+            input.setSelectionRange(0, 99999);
+            navigator.clipboard.writeText(input.value).then(() => {
+                const btn = event.target;
+                const originalText = btn.textContent;
+                btn.textContent = 'Copied!';
+                btn.style.background = 'var(--success)';
+                setTimeout(() => {
+                    btn.textContent = originalText;
+                    btn.style.background = '';
+                }, 2000);
+            });
+        }
+
+        function dismissNewApiKey() {
+            const display = document.getElementById('newApiKeyDisplay');
+            if (display) display.remove();
+        }
+
+        async function deleteApiKey(keyId) {
+            if (!confirm('Are you sure you want to delete this API key? This action cannot be undone.')) return;
+
+            try {
+                const res = await fetch('/api/api-keys/' + keyId, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+
+                if (res.ok) {
+                    alert('API key deleted successfully.');
+                    loadApiKeys();
+                } else {
+                    alert('Failed to delete API key');
+                }
+            } catch (e) {
+                alert('Failed to delete API key: ' + e.message);
+            }
+        }
+
+        document.getElementById('createApiKeyBtn')?.addEventListener('click', createApiKey);
+
         // Domain Upload
         const domainUploadZone = document.getElementById('domainUploadZone'), domainFile = document.getElementById('domainFile');
         domainUploadZone.addEventListener('click', () => domainFile.click());

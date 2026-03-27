@@ -1,0 +1,6 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Lisbon,Lisbon,38.7223,-9.1393,metro,1,major_portuguese_cities,anchor_city,Lisbon,pt
+Porto,North,41.1579,-8.6291,metro,2,major_portuguese_cities,anchor_city,Porto,pt
+Vila Nova de Gaia,North,41.1343,-8.6094,metro,3,major_portuguese_cities,anchor_city,Vila Nova de Gaia,pt
+Braga,North,41.5454,-8.4265,metro,4,major_portuguese_cities,anchor_city,Braga,pt
+Coimbra,Center,40.2033,-8.4103,metro,5,major_portuguese_cities,anchor_city,Coimbra,pt

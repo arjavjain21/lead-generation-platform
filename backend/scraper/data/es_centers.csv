@@ -1,0 +1,13 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Madrid,Community of Madrid,40.4168,-3.7038,metro,1,major_spanish_cities,anchor_city,Madrid,es
+Barcelona,Catalonia,41.3851,2.1734,metro,2,major_spanish_cities,anchor_city,Barcelona,es
+Valencia,Valencia,39.4699,-0.3763,metro,3,major_spanish_cities,anchor_city,Valencia,es
+Seville,Andalusia,37.3891,-5.9845,metro,4,major_spanish_cities,anchor_city,Seville,es
+Zaragoza,Aragon,41.6488,-0.8891,metro,5,major_spanish_cities,anchor_city,Zaragoza,es
+Malaga,Andalusia,36.7213,-4.4214,metro,6,major_spanish_cities,anchor_city,Malaga,es
+Murcia,Murcia,37.6050,-1.2204,metro,7,major_spanish_cities,anchor_city,Murcia,es
+Palma,Balearic Islands,39.5696,2.6502,metro,8,major_spanish_cities,anchor_city,Palma,es
+Bilbao,Basque Country,43.2630,-2.9350,metro,9,major_spanish_cities,anchor_city,Bilbao,es
+Las Palmas,Canary Islands,28.1235,-15.4363,metro,10,major_spanish_cities,anchor_city,Las Palmas,es
+Valladolid,Castile and Leon,41.6523,-4.7245,metro,11,major_spanish_cities,anchor_city,Valladolid,es
+Cordoba,Andalusia,37.8882,-4.7794,metro,12,major_spanish_cities,anchor_city,Cordoba,es

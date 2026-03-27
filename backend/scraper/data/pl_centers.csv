@@ -1,0 +1,11 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Warsaw,Masovian,52.2297,21.0122,metro,1,major_polish_cities,anchor_city,Warsaw,pl
+Krakow,Lesser Poland,50.0647,19.9450,metro,2,major_polish_cities,anchor_city,Krakow,pl
+Lodz,Lodz,51.7592,19.4540,metro,3,major_polish_cities,anchor_city,Lodz,pl
+Wroclaw,Lower Silesian,51.1079,17.0385,metro,4,major_polish_cities,anchor_city,Wroclaw,pl
+Poznan,Greater Poland,52.4064,16.9252,metro,5,major_polish_cities,anchor_city,Poznan,pl
+Gdansk,Pomeranian,54.3520,18.6466,metro,6,major_polish_cities,anchor_city,Gdansk,pl
+Szczecin,West Pomeranian,53.4289,14.5530,metro,7,major_polish_cities,anchor_city,Szczecin,pl
+Bydgoszcz,Kuyavian-Pomeranian,53.1235,18.0084,metro,8,major_polish_cities,anchor_city,Bydgoszcz,pl
+Lublin,Lublin,51.2465,22.5684,metro,9,major_polish_cities,anchor_city,Lublin,pl
+Katowice,Silesian,50.2649,19.0238,metro,10,major_polish_cities,anchor_city,Katowice,pl

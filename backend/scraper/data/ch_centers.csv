@@ -1,0 +1,8 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Zurich,Zurich,47.3769,8.5417,metro,1,major_swiss_cities,anchor_city,Zurich,ch
+Geneva,Geneva,46.2044,6.1432,metro,2,major_swiss_cities,anchor_city,Geneva,ch
+Basel,Basel-Stadt,47.5596,7.5886,metro,3,major_swiss_cities,anchor_city,Basel,ch
+Bern,Bern,46.9480,7.4474,metro,4,major_swiss_cities,anchor_city,Bern,ch
+Lausanne,Vaud,46.5197,6.6323,metro,5,major_swiss_cities,anchor_city,Lausanne,ch
+Winterthur,Zurich,47.4972,8.7243,metro,6,major_swiss_cities,anchor_city,Winterthur,ch
+Lucerne,Lucerne,47.0502,8.3093,metro,7,major_swiss_cities,anchor_city,Lucerne,ch

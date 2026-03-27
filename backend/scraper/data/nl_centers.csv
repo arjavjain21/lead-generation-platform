@@ -1,0 +1,9 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Amsterdam,North Holland,52.3676,4.9041,metro,1,major_dutch_cities,anchor_city,Amsterdam,nl
+Rotterdam,South Holland,51.9244,4.4777,metro,2,major_dutch_cities,anchor_city,Rotterdam,nl
+The Hague,South Holland,52.0705,4.3007,metro,3,major_dutch_cities,anchor_city,The Hague,nl
+Utrecht,Utrecht,52.0907,5.1214,metro,4,major_dutch_cities,anchor_city,Utrecht,nl
+Eindhoven,North Brabant,51.4416,5.4697,metro,5,major_dutch_cities,anchor_city,Eindhoven,nl
+Groningen,Groningen,53.2194,6.5665,metro,6,major_dutch_cities,anchor_city,Groningen,nl
+Tilburg,North Brabant,51.5559,5.0883,metro,7,major_dutch_cities,anchor_city,Tilburg,nl
+Breda,North Brabant,51.5719,4.7683,metro,8,major_dutch_cities,anchor_city,Breda,nl

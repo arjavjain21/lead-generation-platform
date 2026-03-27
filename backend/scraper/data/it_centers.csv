@@ -1,0 +1,16 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Rome,Lazio,41.9028,12.4964,metro,1,major_italian_cities,anchor_city,Rome,it
+Milan,Lombardy,45.4642,9.1900,metro,2,major_italian_cities,anchor_city,Milan,it
+Naples,Campania,40.8518,14.2681,metro,3,major_italian_cities,anchor_city,Naples,it
+Turin,Piedmont,45.0703,7.6869,metro,4,major_italian_cities,anchor_city,Turin,it
+Palermo,Sicily,38.1157,13.3615,metro,5,major_italian_cities,anchor_city,Palermo,it
+Genoa,Liguria,44.4056,8.9463,metro,6,major_italian_cities,anchor_city,Genoa,it
+Bologna,Emilia-Romagna,44.4949,11.3426,metro,7,major_italian_cities,anchor_city,Bologna,it
+Florence,Tuscany,43.7696,11.2558,metro,8,major_italian_cities,anchor_city,Florence,it
+Catania,Sicily,37.5079,15.0830,metro,9,major_italian_cities,anchor_city,Catania,it
+Bari,Apulia,41.1258,16.8620,metro,10,major_italian_cities,anchor_city,Bari,it
+Venice,Veneto,45.4408,12.3155,metro,11,major_italian_cities,anchor_city,Venice,it
+Verona,Veneto,45.4380,10.9917,metro,12,major_italian_cities,anchor_city,Verona,it
+Messina,Sicily,38.1938,15.5546,metro,13,major_italian_cities,anchor_city,Messina,it
+Padua,Veneto,45.4064,11.8768,metro,14,major_italian_cities,anchor_city,Padua,it
+Trieste,Friuli-Venezia Giulia,45.6496,13.7768,metro,15,major_italian_cities,anchor_city,Trieste,it

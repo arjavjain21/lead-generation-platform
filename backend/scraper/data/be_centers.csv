@@ -1,0 +1,6 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Brussels,Brussels-Capital,50.8503,4.3517,metro,1,major_belgian_cities,anchor_city,Brussels,be
+Antwerp,Flanders,51.2194,4.4025,metro,2,major_belgian_cities,anchor_city,Antwerp,be
+Ghent,Flanders,51.0543,3.7174,metro,3,major_belgian_cities,anchor_city,Ghent,be
+Charleroi,Wallonia,50.4111,4.4448,metro,4,major_belgian_cities,anchor_city,Charleroi,be
+Liège,Wallonia,50.6326,5.5833,metro,5,major_belgian_cities,anchor_city,Liège,be

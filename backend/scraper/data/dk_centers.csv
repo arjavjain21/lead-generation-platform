@@ -1,0 +1,5 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Copenhagen,Capital Region,55.6761,12.5683,metro,1,major_danish_cities,anchor_city,Copenhagen,dk
+Aarhus,Central Denmark,56.1629,10.2039,metro,2,major_danish_cities,anchor_city,Aarhus,dk
+Odense,Southern Denmark,55.3959,10.3883,metro,3,major_danish_cities,anchor_city,Odense,dk
+Aalborg,North Denmark,57.0488,9.9217,metro,4,major_danish_cities,anchor_city,Aalborg,dk

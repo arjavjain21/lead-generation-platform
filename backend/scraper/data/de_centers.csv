@@ -1,0 +1,21 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Berlin,Berlin,52.5200,13.4050,metro,1,major_german_cities,anchor_city,Berlin,de
+Munich,Bavaria,48.1351,11.5820,metro,2,major_german_cities,anchor_city,Munich,de
+Hamburg,Hamburg,53.5511,9.9937,metro,3,major_german_cities,anchor_city,Hamburg,de
+Frankfurt,Hesse,50.1109,8.6821,metro,4,major_german_cities,anchor_city,Frankfurt,de
+Cologne,North Rhine-Westphalia,50.9375,6.9603,metro,5,major_german_cities,anchor_city,Cologne,de
+Stuttgart,Baden-Württemberg,48.7758,9.1829,metro,6,major_german_cities,anchor_city,Stuttgart,de
+Düsseldorf,North Rhine-Westphalia,51.2277,6.7735,metro,7,major_german_cities,anchor_city,Düsseldorf,de
+Leipzig,Saxony,51.3397,12.3731,metro,8,major_german_cities,anchor_city,Leipzig,de
+Dortmund,North Rhine-Westphalia,51.5136,7.4653,metro,9,major_german_cities,anchor_city,Dortmund,de
+Essen,North Rhine-Westphalia,51.4556,7.0116,metro,10,major_german_cities,anchor_city,Essen,de
+Bremen,Bremen,53.0793,8.8017,metro,11,major_german_cities,anchor_city,Bremen,de
+Dresden,Saxony,51.0504,13.7373,metro,12,major_german_cities,anchor_city,Dresden,de
+Hanover,Lower Saxony,52.3759,9.7320,metro,13,major_german_cities,anchor_city,Hanover,de
+Nuremberg,Bavaria,49.4521,11.0767,metro,14,major_german_cities,anchor_city,Nuremberg,de
+Bochum,North Rhine-Westphalia,51.4818,7.2162,metro,15,major_german_cities,anchor_city,Bochum,de
+Wuppertal,North Rhine-Westphalia,51.2562,7.1508,metro,16,major_german_cities,anchor_city,Wuppertal,de
+Bielefeld,North Rhine-Westphalia,52.0302,8.5325,metro,17,major_german_cities,anchor_city,Bielefeld,de
+Bonn,North Rhine-Westphalia,50.7374,7.0982,metro,18,major_german_cities,anchor_city,Bonn,de
+Münster,North Rhine-Westphalia,51.9607,7.6261,metro,19,major_german_cities,anchor_city,Münster,de
+Karlsruhe,Baden-Württemberg,49.0069,8.4037,metro,20,major_german_cities,anchor_city,Karlsruhe,de

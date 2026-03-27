@@ -1,0 +1,16 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Paris,Ile-de-France,48.8566,2.3522,metro,1,major_french_cities,anchor_city,Paris,fr
+Marseille,Provence-Alpes-Côte d'Azur,43.2965,5.3698,metro,2,major_french_cities,anchor_city,Marseille,fr
+Lyon,Auvergne-Rhône-Alpes,45.7640,4.8357,metro,3,major_french_cities,anchor_city,Lyon,fr
+Toulouse,Occitanie,43.6047,1.4442,metro,4,major_french_cities,anchor_city,Toulouse,fr
+Nice,Côte d'Azur,43.7102,7.2620,metro,5,major_french_cities,anchor_city,Nice,fr
+Nantes,Pays de la Loire,47.2184,-1.5536,metro,6,major_french_cities,anchor_city,Nantes,fr
+Strasbourg,Grand Est,48.5734,7.7521,metro,7,major_french_cities,anchor_city,Strasbourg,fr
+Montpellier,Occitanie,43.6108,3.8768,metro,8,major_french_cities,anchor_city,Montpellier,fr
+Bordeaux,Nouvelle-Aquitaine,44.8378,-0.5792,metro,9,major_french_cities,anchor_city,Bordeaux,fr
+Lille,Hauts-de-France,50.6292,3.0573,metro,10,major_french_cities,anchor_city,Lille,fr
+Rennes,Bretagne,48.1173,-1.6778,metro,11,major_french_cities,anchor_city,Rennes,fr
+Toulon,Provence-Alpes-Côte d'Azur,43.1257,5.9304,metro,12,major_french_cities,anchor_city,Toulon,fr
+Grenoble,Auvergne-Rhône-Alpes,45.1885,5.7245,metro,13,major_french_cities,anchor_city,Grenoble,fr
+Angers,Pays de la Loire,47.4784,-0.5632,metro,14,major_french_cities,anchor_city,Angers,fr
+Dijon,Bourgogne-Franche-Comté,47.3220,5.0414,metro,15,major_french_cities,anchor_city,Dijon,fr
