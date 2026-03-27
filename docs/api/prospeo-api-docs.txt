@@ -1,0 +1,1346 @@
+Enrich Person API
+
+Enrich a person
+This endpoint allows you to enrich a person with its complete accurate B2B profile data, email address and mobile.
+
+Important note: When possible, it is recommended to use our Bulk Enrich Person endpoint instead for faster response time. It allows you to enrich up to 50 persons at once, instead of performing 50 individual requests.
+
+How are credits spent?
+Enriching a person record cost 1 credit per match (person data + company data + email).
+Enriching a person record with a mobile cost 10 credits per match (person data + company data + email + mobile). The email is included for free.
+You can control when you spend credits: only for verified email, only for record with a mobile, etc…
+You won’t be charged if no results are found.
+You won’t be charged if you enrich the same record twice in the lifetime of your account.
+Endpoint
+URL: https://api.prospeo.io/enrich-person 
+Method: POST
+Headers:
+X-KEY: your_api_key
+Content-Type: application/json
+Parameters
+Parameter	Example value	Description
+only_verified_email
+optional	true	Chose if you only want records with a verified email to be returned. Default is false.
+enrich_mobile
+optional	true	Chose if you want to enrich the mobile (if it exists).
+only_verified_mobile
+optional	true	Chose if you only want records with a mobile to be returned. Default is false. If true, enrich_mobile will automatically be true.
+data
+required	See below	The person to enrich. See below for complete details.
+Data parameter
+The data parameter contains the datapoints you have for us to identify the person. We offer the following matching datapoints:
+
+Datapoint	Example value	Description
+first_name
+optional	Roger	The first name of the person
+last_name
+optional	Sterling	The last name of the person
+full_name
+optional	Roger Sterling	The full name of the person
+linkedin_url
+optional	https://www.linkedin.com/in/roger-sterling	The person’s public LinkedIn URL
+email
+optional	roger.sterling@deloitte.com	The work email of the person
+company_name
+optional	Deloitte	The company name
+company_website
+optional	deloitte.com	The company website
+company_linkedin_url
+optional	https://linkedin.com/company/deloitte	The company’s public LinkedIn URL
+person_id
+optional	6f745841665155f554e5f	If enriching from search: the ID of the person from the Search Person API endpoint
+Minimum requirements for matching
+We require at a minimum the below datapoints together in one request (allowing us to accurately identify the person):
+
+first_name + last_name + any of (company_name/company_website/company_linkedin_url)
+full_name + any of (company_name/company_website/company_linkedin_url)
+linkedin_url
+email
+person_id (enrich from Search Person API)
+Important note #1: We advise strongly against using only the company_name for matching. Many company have the same name, and this can result in mismatch/inaccurate results. Whenever possible, try to use at least the company_website.
+
+Important note #2: the more datapoints you submit, the better, so whenever possible, submit everything you have for greater accuracy. For example, it is better to submit company_website and company_name together rather than just one of them.
+
+Enrich records from our search API
+Another way to enrich records is to use the person_id you get from the search results (Search Person API) to this endpoint. This will identify the person and enrich as per your option (only_verified_email, only_verified_mobile, enrich_mobile).
+
+Example requests
+Simple request that always returns a result if a person is matched but does not reveal the mobile (use enrich_mobile:true).
+
+In this example, we used the first_name + last_name to identify the person, and submitted all the company datapoints possible for better accuracy. This request will perform better than a request with only the company_name.
+
+ 
+POST "https://api.prospeo.io/enrich-person"
+X-KEY: "your_api_key"
+Content-Type: "application/json"
+ 
+{
+   "data": {
+       "first_name": "Eva",
+       "last_name": "Kiegler",
+       "company_name": "Intercom",
+       "company_website": "intercom.com",
+       "company_linkedin_url": "https://www.linkedin.com/company/intercom"
+   }
+}
+Response
+This response contains all the possible fields and their example value. When a field is unavailable, it will be null.
+
+Each response contains an person and company object. The company object contains the detail of the current company the lead work at. If the lead has no current job, this field can be null.
+
+You can find the details of every person field here.
+You can find the details of every company field here.
+For error handling, see the error codes at the bottom of the page here.
+
+{
+    "error": false,
+    "free_enrichment": false,
+    "person": {
+        "person_id": "aaaacd817619fba3d254cd64",
+        "first_name": "Eoghan",
+        "last_name": "Mccabe",
+        "full_name": "Eoghan Mccabe",
+        "linkedin_url": "https://www.linkedin.com/in/eoghanmccabe",
+        "current_job_title": "CEO, chairman, and co-founder",
+        "current_job_key": null,
+        "headline": "CEO and founder at Intercom, building Fin.ai",
+        "linkedin_member_id": null,
+        "last_job_change_detected_at": null,
+        "job_history": [
+            {
+                "title": "CEO, chairman, and co-founder",
+                "company_name": "Intercom",
+                "logo_url": "9ded0364-c88a-4789-9d39-2a15ed239edb.jpg",
+                "current": true,
+                "start_year": 2022,
+                "start_month": 10,
+                "end_year": null,
+                "end_month": null,
+                "duration_in_months": 39,
+                "departments": [
+                    "Founder",
+                    "Chief Executive"
+                ],
+                "seniority": "C-Suite",
+                "company_id": "cccc7c7da6116a8830a07100",
+                "job_key": "82981650"
+            },
+            {
+                "title": "Chairman and co-founder",
+                "company_name": "Intercom",
+                "logo_url": "9ded0364-c88a-4789-9d39-2a15ed239edb.jpg",
+                "current": false,
+                "start_year": 2020,
+                "start_month": 7,
+                "end_year": 2022,
+                "end_month": 10,
+                "duration_in_months": 27,
+                "departments": [
+                    "Founder"
+                ],
+                "seniority": "Founder/Owner",
+                "company_id": "cccc7c7da6116a8830a07100",
+                "job_key": "23054356"
+            },
+            {
+                "title": "CEO and co-founder",
+                "company_name": "Intercom",
+                "logo_url": "9ded0364-c88a-4789-9d39-2a15ed239edb.jpg",
+                "current": false,
+                "start_year": 2011,
+                "start_month": 8,
+                "end_year": 2020,
+                "end_month": 7,
+                "duration_in_months": 107,
+                "departments": [
+                    "Founder",
+                    "Chief Executive"
+                ],
+                "seniority": "C-Suite",
+                "company_id": "cccc7c7da6116a8830a07100",
+                "job_key": "68686694"
+            },
+            {
+                "title": "CEO",
+                "company_name": "Exceptional",
+                "logo_url": "2588d75e-d2e7-4fb1-bf31-35cafd119ec0.jpg",
+                "current": false,
+                "start_year": 2008,
+                "start_month": 10,
+                "end_year": 2011,
+                "end_month": 7,
+                "duration_in_months": 33,
+                "departments": [
+                    "Chief Executive"
+                ],
+                "seniority": "C-Suite",
+                "company_id": "ccccd431f3dfa7e88993bb18",
+                "job_key": "80900834"
+            },
+            {
+                "title": "CEO",
+                "company_name": "Contrast",
+                "logo_url": "d4bbee3f-7128-436d-a474-fcac68b989e4.jpg",
+                "current": false,
+                "start_year": 2007,
+                "start_month": 12,
+                "end_year": 2011,
+                "end_month": 7,
+                "duration_in_months": 43,
+                "departments": [
+                    "Chief Executive"
+                ],
+                "seniority": "C-Suite",
+                "company_id": "ccccf3e7f023592ee266a9d8",
+                "job_key": "72014547"
+            }
+        ],
+        "mobile": {
+            "status": "VERIFIED",
+            "revealed": false,
+            "mobile": "+1 415-3**-****",
+            "mobile_national": "(415) 3**-****",
+            "mobile_international": "+1 415-3**-****",
+            "mobile_country": "United States",
+            "mobile_country_code": "US"
+        },
+        "email": {
+            "status": "VERIFIED",
+            "revealed": true,
+            "email": "eoghan.*****@intercom.com",
+            "verification_method": "BOUNCEBAN",
+            "email_mx_provider": "Google"
+        },
+        "location": {
+            "country": "United States",
+            "country_code": "US",
+            "state": "California",
+            "city": "San Francisco",
+            "time_zone": "America/Los_Angeles",
+            "time_zone_offset": -7.0
+        },
+        "skills": []
+    },
+	"company": {
+		"company_id": "cccc7c7da6116a8830a07100",
+		"name": "Intercom",
+		"website": "https://intercom.com",
+		"domain": "intercom.io",
+		"other_websites": [],
+		"description": "Intercom is the only complete AI-first customer service platform, enhancing the customer experience, improving operational efficiency, and scaling with your business every step of the way. \n\nOur AI-first platform is built on a single AI system, with two major components that will allow you to deliver the remarkable customer service you’ve spent decades striving for:\n\nFin AI Agent: The human-quality AI agent that works with any Helpdesk\n\nIntercom Customer Service Platform: The AI-first platform trusted by thousands of support leaders.  \n\nFounded in 2011 and backed by leading venture capitalists, including Kleiner Perkins, Bessemer Venture Partners and Social Capital, Intercom believes there's a new way to do customer service.",
+		"description_seo": "Intercom is the complete AI-first customer service solution, giving exceptional experiences for support teams with AI agent, AI copilot, tickets, phone & more",
+		"description_ai": "Intercom is an AI-first customer service solution that provides exceptional experiences for support teams with AI agent, AI copilot, tickets, phone, and more.",
+		"type": "Private",
+		"industry": "Software Development",
+		"employee_count": 1822,
+		"employee_count_on_prospeo": 437,
+		"employee_range": "1001-2000",
+		"location": {
+			"country": "United States",
+			"country_code": "US",
+			"state": "California",
+			"city": "San Francisco",
+			"raw_address": "55 2nd Street, 4th Floor, San Francisco, California 94105, US"
+		},
+		"sic_codes": [
+			"737"
+		],
+		"naics_codes": [],
+		"email_tech": {
+			"domain": "intercom.io",
+			"mx_provider": "Google"
+		},
+		"linkedin_url": "https://www.linkedin.com/company/intercom",
+		"twitter_url": "https://x.com/intercom",
+		"facebook_url": "https://www.facebook.com/intercominc",
+		"crunchbase_url": "https://www.crunchbase.com/organization/intercom",
+		"instagram_url": "https://www.instagram.com/intercom",
+		"youtube_url": "https://www.youtube.com/c/@intercominc",
+		"phone_hq": {
+			"phone_hq": "+14156733820",
+			"phone_hq_national": "(415) 673-3820",
+			"phone_hq_international": "+14156733820",
+			"phone_hq_country": "United States",
+			"phone_hq_country_code": "US"
+		},
+		"linkedin_id": null,
+		"founded": 2011,
+		"revenue_range": {
+			"min": 100000000,
+			"max": 250000000
+		},
+		"revenue_range_printed": "100M",
+		"keywords": [
+			"Customer Support",
+			"Live Chat",
+			"Marketing Automation",
+			"Customer Relationship Management",
+			"Customer Experience",
+			"Customer Engagement",
+			"Customer Service",
+			"Mobile",
+			"Customer Feedback",
+			"AI",
+			"Helpdesk",
+			"CX",
+			"Chat Bots",
+			"Customer Communication",
+			"Support Automation",
+			"Shared Inbox"
+		],
+		"logo_url": "https://prospeo-static-assets.s3.us-east-1.amazonaws.com/company_logo/9ded0364-c88a-4789-9d39-2a15ed239edb.jpg",
+		"attributes": {
+			"is_b2b": true,
+			"has_demo": false,
+			"has_free_trial": true,
+			"has_downloadable": false,
+			"has_mobile_apps": false,
+			"has_online_reviews": true,
+			"has_pricing": true
+		},
+		"funding": {
+			"count": 2,
+			"total_funding": 125000000,
+			"total_funding_printed": "$125.0M",
+			"latest_funding_date": "2021-01-01T00:00:00",
+			"latest_funding_stage": "Series unknown",
+			"funding_events": [
+				{
+					"amount": null,
+					"amount_printed": null,
+					"raised_at": "2021-01-01T00:00:00",
+					"stage": "Series unknown",
+					"link": "https://www.crunchbase.com/funding_round/intercom-series-unknown--6ce20dfb"
+				},
+				{
+					"amount": 125000000,
+					"amount_printed": "$125,000,000",
+					"raised_at": "2018-04-27T00:00:00",
+					"stage": "Series D",
+					"link": "https://www.crunchbase.com/funding_round/intercom-series-d--15490ce6"
+				}
+			]
+		},
+		"technology": {
+			"count": 43,
+			"technology_names": [
+				"6sense",
+				"theTradeDesk",
+				"Amazon SES",
+				"Contentful",
+				"Node.js",
+				"Tailwind CSS"
+			],
+			"technology_list": [
+				{
+					"name": "6sense",
+					"category": "Marketing automation"
+				},
+				{
+					"name": "theTradeDesk",
+					"category": "Advertising"
+				},
+				{
+					"name": "Amazon SES",
+					"category": "Email"
+				},
+				{
+					"name": "Contentful",
+					"category": "CMS"
+				}
+			]
+		},
+		"job_postings": {
+			"active_count": 3,
+			"active_titles": [
+				"account executive, senior midmarket",
+				"senior product engineer",
+				"senior recruiting coordinator"
+			]
+		}
+	}
+}
+Response details
+Property	Type	Description
+error	boolean	Indicates if an error has occurred. If false, the request was successful. If true, an error has occurred and a error_code property will be present. See below.
+free_enrichment	boolean	Indicates whether you were charged. This will be true if you enriched the record in the past. If you enriched the record in the past, but chose to enrich the mobile this time (with enrich_mobile), it will be false.
+person	object	The person that was matched. See our up-to-date person fields in details here.
+company	object	The current company of the person that was matched. See our up-to-date company fields in details here.
+Error codes
+HTTP code	error_code property	Meaning
+400	NO_MATCH	We couldn’t match the data you provided with a person record. This will also be returned if you used only_verified_email, but the lead didn’t have a verified email, or if you used only_verified_mobile, but the lead didn’t have a mobile.
+400	INVALID_DATAPOINTS	The datapoints you submitted to identify the person are meeting the minimum requirements for matching. See this section.
+400	INSUFFICIENT_CREDITS	You do not have enough credit to perform the request.
+401	INVALID_API_KEY	Invalid API key, check your X-KEY header.
+429	RATE_LIMITED	You hit the rate limit for your current plan.
+400	INVALID_REQUEST	The request your submitted is invalid.
+400	INTERNAL_ERROR	An error occurred on our side, please contact the support.
+
+Bulk Enrich Person API
+
+Enrich up to 50 person records at once
+This endpoint allows you to enrich multiple person’s in one request while staying blazing-fast.
+
+How are credits spent?
+Credit spending using this endpoints depends on the enrichment parameters you submit and the matches that are returned.
+
+The credit system works in the same way as the unique Enrich Person endpoint, and it can be controlled in the same way (using only_verified_email, enrich_mobile, only_verified_mobile).
+
+Please refer to this section of the Enrich Person endpoint to understand how credits are spent.
+
+Endpoint
+URL: https://api.prospeo.io/bulk-enrich-person 
+Method: POST
+Headers:
+X-KEY: your_api_key
+Content-Type: application/json
+Parameters
+The parameters are the same as the unique Enrich Person endpoint, except for the data parameter.
+
+Parameter	Example value	Description
+only_verified_email
+optional	true	Chose if you only want records with a verified email to be returned. Default is false.
+enrich_mobile
+optional	true	Chose if you want to enrich the mobile (if it exists).
+only_verified_mobile
+optional	true	Chose if you only want records with a mobile to be returned. Default is false. If true, enrich_mobile will automatically be true.
+data
+required	See below	The records to enrich (up to 50 at once). See below for complete details.
+Data parameter
+The data parameter for the /bulk-enrich-person endpoint is a list of all the persons you wish to enrich.
+
+The data parameter contains the datapoints you have for us to identify the record. We offer the following matching datapoints:
+
+Datapoint	Example value	Description
+identifier
+required	1234abcd	A random alpha-numeric string generated on your side to identify the specific matching object. This will be used when you parse the response, to attributes which data object represents which match in the response.
+first_name
+optional	Roger	The first name of the person
+last_name
+optional	Sterling	The last name of the person
+full_name
+optional	Roger Sterling	The full name of the person
+linkedin_url
+optional	https://www.linkedin.com/in/roger-sterling	The person’s public LinkedIn URL
+email
+optional	roger.sterling@deloitte.com	The work email of the person
+company_name
+optional	Deloitte	The company name
+company_website
+optional	deloitte.com	The company website
+company_linkedin_url
+optional	https://linkedin.com/company/deloitte	The company’s public LinkedIn URL
+person_id
+optional	6f745841665155f554e5f	If enriching from search: the ID of the person from the /search-person endpoint
+Minimum requirements for matching
+We require at a minimum the below datapoints together in one data object (allowing us to accurately identify the person):
+
+first_name + last_name + any of (company_name/company_website/company_linkedin_url)
+full_name + any of (company_name/company_website/company_linkedin_url)
+linkedin_url
+email
+person_id (enrich from /search-person)
+Important note #1: We advise strongly against using only the company_name for matching. Many company have the same name, and this can result in mismatch/inaccurate results. Whenever possible, try to use at least the company_website.
+
+Important note #2: the more datapoints you submit, the better, so whenever possible, submit everything you have for greater accuracy. For example, it is better to submit company_website and company_linkedin_url together rather than just one of them.
+
+Enrich records from our search API
+Another way to enrich records is to use the person_id you get from the search results (/search-person) to this endpoint. This will identify the person and enrich as per your option (only_verified_email, only_verified_mobile, enrich_mobile).
+
+Example request
+Please refer to this section of the Enrich Person to understand how matching parameters works individually.
+
+Whenever a parameter such as only_verified_email, it will apply to all of the object in the request.
+
+We generated our own identifier (1,2,3,4,5,6,7) so that in case of a match, we can reconcile it with the response.
+
+In the below request, the identifier 4 does not match the minimum matching requirements of a data object. Hence, this record will be ignored and provided in the invalid_datapoints list of the response.
+
+We also enriched the identifier 7 by using its person_id we got from the /search-person endpoint.
+
+POST "https://api.prospeo.io/bulk-enrich-person"
+X-KEY: "your_api_key"
+Content-Type: "application/json"
+ 
+{
+   "only_verified_email": true,
+   "enrich_mobile": true,
+   "data": [
+   	{
+   		"identifier": "1",
+   		"full_name": "Eva Kiegler",
+   		"company_website": "intercom.com"
+   	},
+   	{
+   		"identifier": "2",
+   		"first_name": "Jonah",
+   		"last_name": "Stones",
+   		"linkedin_url":  "https://www.linkedin.com/in/jonah-stones",
+   		"company_name": "Deloitte",
+   		"company_website": "deloitte.com",
+   		"company_linkedin_url": "https://www.linkedin.com/company/deloitte"
+   	},
+   	{
+   		"identifier": "3",
+   		"linkedin_url":  "https://www.linkedin.com/in/micah-sanders"
+   	},
+   	{
+   		"identifier": "4",
+   		"full_name":  "Brandon Stering"
+   	},
+   	{
+   		"identifier": "5",
+   		"email":  "nicolas.b@kpmg.com"
+   	},
+   	{
+   		"identifier": "6",
+   		"full_name":  "Nicole Wonda",
+   		"company_linkedin_url": "https://www.linkedin.com/company/young"
+   	},
+   	{
+   		"identifier": "7",
+   		"person_id":  "6f564548455488874f48e"
+   	},
+   	... up to 50 objects
+   ]
+}
+Response
+The response structure is as follow:
+
+{
+	"error": false,
+	"total_cost": 10,
+	"not_matched": ["2", "3"],
+	"invalid_datapoints": ["4"],
+	"matched": [
+		{
+			"identifier": "1",
+			"person": {
+				...
+			},
+			"company": {
+				...
+			}
+		},
+		{
+			"identifier": "5",
+			"person": {
+				...
+			},
+			"company": {
+				...
+			}
+		},
+		{
+			"identifier": "6",
+			"person": {
+				...
+			},
+			"company": {
+				...
+			}
+		},
+		{
+			"identifier": "7",
+			"person": {
+				...
+			},
+			"company": {
+				...
+			}
+		}
+	]
+}
+Response details
+Property	Type	Description
+error	boolean	Indicates if an error has occurred. If false, the request was successful. If true, an error has occurred and a error_code property will be present. See below.
+total_cost	integer	Indicates the total cost of the request. It varies depending on the matches and the enrich_mobile option. Refer to this section to understand how price is calculated.
+matched	list	This list contains all the matched records as per your requirements (only_verified_email, only_verified_mobile).
+matched.identifier	string	This is the identifier you generated corresponding to the matched record. Use it to know which match is which.
+matched.person	object	The matched person. See our up-to-date person fields in details here.
+matched.company	object	The current company of the matched person. See our up-to-date company fields in details here.
+not_matched	list	This list contains all the identifiers that we couldn’t match given your requirements (only_verified_email, only_verified_mobile).
+invalid_datapoints	list	This list contains all the identifiers that were not meeting our minimum requirements for matching. See this section., so matching wasn’t attempted.
+Error codes
+HTTP code	error_code property	Meaning
+400	INSUFFICIENT_CREDITS	You do not have enough credit to perform the request.
+401	INVALID_API_KEY	Invalid API key, check your X-KEY header.
+429	RATE_LIMITED	You hit the rate limit for your current plan.
+400	INVALID_REQUEST	The request your submitted is invalid.
+400	INTERNAL_ERROR	An error occurred on our side, please contact the support.
+
+
+Enrich Company API
+Enrich a company
+This endpoint allows you to enrich a company with its complete accurate B2B data.
+
+Important note: When possible, it is recommended to use our Bulk Enrich Company endpoint instead for faster response time. It allows you to enrich up to 50 companies at once, instead of performing 50 individual requests.
+
+How are credits spent?
+Enriching a company record cost 1 credit per match.
+You won’t be charged if no results are found.
+You won’t be charged if you enrich the same record twice in the lifetime of your account.
+Endpoint
+URL: https://api.prospeo.io/enrich-company 
+Method: POST
+Headers:
+X-KEY: your_api_key
+Content-Type: application/json
+Parameters
+Parameter	Example value	Description
+data
+required	See below	The company to enrich. See below for complete details.
+Data parameter
+The data parameter contains the datapoints you have for us to identify the company. We offer the following matching datapoints:
+
+Datapoint	Example value	Description
+company_website
+optional	deloitte.com	The company website.
+company_linkedin_url
+optional	https://linkedin.com/company/deloitte	The company’s LinkedIn URL.
+company_name
+optional	Deloitte	The company name. We discourage using solely the company name for enrichment, as many company have the same name. Prioritize the company_website or company_linkedin_url.
+company_id
+optional	cccc7c7da6116a8830a07100	The company_id from a previously enriched company object. You can use this to directly enrich a company by its ID.
+Minimum requirements for matching
+We require at least one of the above datapoints to accurately match a company.
+
+Important note #1: We advise strongly against using only the company_name for matching. Many company have the same name, and this can result in mismatch/inaccurate results. Whenever possible, try to use at least the company_website.
+
+Important note #2: the more datapoints you submit, the better, so whenever possible, submit everything you have for greater accuracy. For example, it is better to submit company_website and company_linkedin_url together rather than just one of them.
+
+Example request
+Simple request that always returns a result if a company is matched.
+
+In this example, we used the company_website. This request will perform better than a request with only the company_name.
+
+POST "https://api.prospeo.io/enrich-company"
+X-KEY: "your_api_key"
+Content-Type: "application/json"
+ 
+{
+   "data": {
+       "company_website": "intercom.com"
+   }
+}
+Response
+This response contains all the possible fields and their example value. When a field is unavailable, it will be null.
+
+You can find the details of every company field here.
+For error handling, see the error codes at the bottom of the page here.
+
+{
+	"error": false,
+	"free_enrichment": false,
+	"company": {
+		"company_id": "cccc7c7da6116a8830a07100",
+		"name": "Intercom",
+		"website": "https://intercom.com",
+		"domain": "intercom.io",
+		"other_websites": [],
+		"description": "Intercom is the only complete AI-first customer service platform, enhancing the customer experience, improving operational efficiency, and scaling with your business every step of the way. \n\nOur AI-first platform is built on a single AI system, with two major components that will allow you to deliver the remarkable customer service you’ve spent decades striving for:\n\nFin AI Agent: The human-quality AI agent that works with any Helpdesk\n\nIntercom Customer Service Platform: The AI-first platform trusted by thousands of support leaders.  \n\nFounded in 2011 and backed by leading venture capitalists, including Kleiner Perkins, Bessemer Venture Partners and Social Capital, Intercom believes there's a new way to do customer service.",
+		"description_seo": "Intercom is the complete AI-first customer service solution, giving exceptional experiences for support teams with AI agent, AI copilot, tickets, phone & more",
+		"description_ai": "Intercom is an AI-first customer service solution that provides exceptional experiences for support teams with AI agent, AI copilot, tickets, phone, and more.",
+		"type": "Private",
+		"industry": "Software Development",
+		"employee_count": 1822,
+		"employee_count_on_prospeo": 437,
+		"employee_range": "1001-2000",
+		"location": {
+			"country": "United States",
+			"country_code": "US",
+			"state": "California",
+			"city": "San Francisco",
+			"raw_address": "55 2nd Street, 4th Floor, San Francisco, California 94105, US"
+		},
+		"sic_codes": [
+			"737"
+		],
+		"naics_codes": [],
+		"email_tech": {
+			"domain": "intercom.io",
+			"mx_provider": "Google"
+		},
+		"linkedin_url": "https://www.linkedin.com/company/intercom",
+		"twitter_url": "https://x.com/intercom",
+		"facebook_url": "https://www.facebook.com/intercominc",
+		"crunchbase_url": "https://www.crunchbase.com/organization/intercom",
+		"instagram_url": "https://www.instagram.com/intercom",
+		"youtube_url": "https://www.youtube.com/c/@intercominc",
+		"phone_hq": {
+			"phone_hq": "+14156733820",
+			"phone_hq_national": "(415) 673-3820",
+			"phone_hq_international": "+14156733820",
+			"phone_hq_country": "United States",
+			"phone_hq_country_code": "US"
+		},
+		"linkedin_id": null,
+		"founded": 2011,
+		"revenue_range": {
+			"min": 100000000,
+			"max": 250000000
+		},
+		"revenue_range_printed": "100M",
+		"keywords": [
+			"Customer Support",
+			"Live Chat",
+			"Marketing Automation",
+			"Customer Relationship Management",
+			"Customer Experience",
+			"Customer Engagement",
+			"Customer Service",
+			"Mobile",
+			"Customer Feedback",
+			"AI",
+			"Helpdesk",
+			"CX",
+			"Chat Bots",
+			"Customer Communication",
+			"Support Automation",
+			"Shared Inbox"
+		],
+		"logo_url": "https://prospeo-static-assets.s3.us-east-1.amazonaws.com/company_logo/9ded0364-c88a-4789-9d39-2a15ed239edb.jpg",
+		"attributes": {
+			"is_b2b": true,
+			"has_demo": false,
+			"has_free_trial": true,
+			"has_downloadable": false,
+			"has_mobile_apps": false,
+			"has_online_reviews": true,
+			"has_pricing": true
+		},
+		"funding": {
+			"count": 2,
+			"total_funding": 125000000,
+			"total_funding_printed": "$125.0M",
+			"latest_funding_date": "2021-01-01T00:00:00",
+			"latest_funding_stage": "Series unknown",
+			"funding_events": [
+				{
+					"amount": null,
+					"amount_printed": null,
+					"raised_at": "2021-01-01T00:00:00",
+					"stage": "Series unknown",
+					"link": "https://www.crunchbase.com/funding_round/intercom-series-unknown--6ce20dfb"
+				},
+				{
+					"amount": 125000000,
+					"amount_printed": "$125,000,000",
+					"raised_at": "2018-04-27T00:00:00",
+					"stage": "Series D",
+					"link": "https://www.crunchbase.com/funding_round/intercom-series-d--15490ce6"
+				}
+			]
+		},
+		"technology": {
+			"count": 43,
+			"technology_names": [
+				"6sense",
+				"theTradeDesk",
+				"Amazon SES",
+				"Contentful",
+				"Node.js",
+				"Tailwind CSS"
+			],
+			"technology_list": [
+				{
+					"name": "6sense",
+					"category": "Marketing automation"
+				},
+				{
+					"name": "theTradeDesk",
+					"category": "Advertising"
+				},
+				{
+					"name": "Amazon SES",
+					"category": "Email"
+				},
+				{
+					"name": "Contentful",
+					"category": "CMS"
+				}
+			]
+		},
+		"job_postings": {
+			"active_count": 3,
+			"active_titles": [
+				"account executive, senior midmarket",
+				"senior product engineer",
+				"senior recruiting coordinator"
+			]
+		}
+	}
+}
+Response details
+Property	Type	Description
+error	boolean	Indicates if an error has occurred. If false, the request was successful. If true, an error has occurred and a error_code property will be present. See below.
+free_enrichment	boolean	Indicates whether you were charged. This will be true if you enriched the record in the past.
+company	object	The matched company. See our up-to-date company fields in details here.
+Error codes
+HTTP code	error_code property	Meaning
+400	NO_MATCH	We couldn’t match the data you provided with a company record.
+400	INSUFFICIENT_CREDITS	You do not have enough credit to perform the request.
+401	INVALID_API_KEY	Invalid API key, check your X-KEY header.
+429	RATE_LIMITED	You hit the rate limit for your current plan.
+400	INVALID_REQUEST	The request your submitted is invalid.
+400	INTERNAL_ERROR	An error occurred on our side, please contact the support.
+
+Bulk Enrich Company API
+Enrich up to 50 company records at once
+This endpoint allows you to enrich multiple company’s in one request while staying blazing-fast.
+
+How are credits spent?
+One credit is spent per matched company.
+You won’t be charged if no results are found.
+You won’t be charged if you enrich the same record twice in the lifetime of your account.
+Endpoint
+URL: https://api.prospeo.io/bulk-enrich-company 
+Method: POST
+Headers:
+X-KEY: your_api_key
+Content-Type: application/json
+Parameters
+Parameter	Example value	Description
+data
+required	See below	The records to enrich (up to 50 at once). See below for complete details.
+Data parameter
+The data parameter for the /bulk-enrich-company endpoint is a list of all the companies you wish to enrich.
+
+The data parameter contains the datapoints you have for us to identify the record. We offer the following matching datapoints:
+
+Datapoint	Example value	Description
+identifier
+required	1234abcd	A random alpha-numeric string generated on your side to identify the specific matching object. This will be used when you parse the response, to attributes which data object represents which match in the response.
+company_name
+optional	Deloitte	The company name
+company_website
+optional	deloitte.com	The company website
+company_linkedin_url
+optional	https://linkedin.com/company/deloitte	The company’s public LinkedIn URL
+company_id
+optional	cccc7c7da6116a8830a07100	The company_id from a previously enriched company object. You can use this to directly enrich a company by its ID.
+Minimum requirements for matching
+We require at least one of the above datapoints to accurately match a company.
+
+Important note #1: We advise strongly against using only the company_name for matching. Many company have the same name, and this can result in mismatch/inaccurate results. Whenever possible, try to use at least the company_website.
+
+Important note #2: the more datapoints you submit, the better, so whenever possible, submit everything you have for greater accuracy. For example, it is better to submit company_website and company_linkedin_url together rather than just one of them.
+
+Example request
+We generated our own identifier (1,2,3,4,5) so that in case of a match, we can reconcile it with the response.
+
+In the below request, the identifier 4 contains an property (full_name). Hence, this record will be ignored and provided in the invalid_datapoints list of the response.
+
+POST "https://api.prospeo.io/bulk-enrich-company"
+X-KEY: "your_api_key"
+Content-Type: "application/json"
+ 
+{
+   "data": [
+   	{
+   		"identifier": "1",
+   		"company_website": "intercom.com"
+   	},
+   	{
+   		"identifier": "2",
+   		"company_linkedin_url": "https://www.linkedin.com/company/deloitte"
+   	},
+   	{
+   		"identifier": "3",
+   		"company_name":  "Milka"
+   	},
+   	{
+   		"identifier": "4",
+   		"full_name":  "Pinterest"
+   	},
+   	... up to 50 objects
+   ]
+}
+Response
+The response structure is as follow:
+
+{
+	"error": false,
+	"total_cost": 10,
+	"not_matched": ["3"],
+	"invalid_datapoints": ["4"],
+	"matched": [
+		{
+			"identifier": "1",
+			"company": {
+				...
+			}
+		},
+		{
+			"identifier": "2",
+			"company": {
+				...
+			}
+		}
+	]
+}
+Response details
+Property	Type	Description
+error	boolean	Indicates if an error has occurred. If false, the request was successful. If true, an error has occurred and a error_code property will be present. See below.
+total_cost	integer	Indicates the total cost of the request. It varies depending on the matches and the enrich_mobile option. Refer to this section to understand how price is calculated.
+matched	list	This list contains all the matched records.
+matched.identifier	string	This is the identifier you generated corresponding to the matched record. Use it to know which match is which.
+matched.company	object	The matched company. See our up-to-date company fields in details here.
+not_matched	list	This list contains all the identifiers that we couldn’t match.
+invalid_datapoints	list	This list contains all the identifiers that were not meeting our minimum requirements for matching. See this section..
+Error codes
+HTTP code	error_code property	Meaning
+400	INSUFFICIENT_CREDITS	You do not have enough credit to perform the request.
+401	INVALID_API_KEY	Invalid API key, check your X-KEY header.
+429	RATE_LIMITED	You hit the rate limit for your current plan.
+400	INVALID_REQUEST	The request your submitted is invalid.
+400	INTERNAL_ERROR	An error occurred on our side, please contact the support.
+
+
+Search Person API
+Search for leads
+This endpoint allows you to perform a precise search against our extensive up-to-date database of contacts and build leads lists.
+
+We offer more than 20 filters that can be used to craft your perfect leads list.
+
+This endpoint does not returns the email and mobile of the persons.
+
+To enrich email and mobile from this endpoint, you can:
+
+submit a person_id you get from the search result to our Enrich Person endpoint.
+submit all of the person_id you get from the search result to our Bulk Enrich Person endpoint. Click here for more info about this process
+In order to keep Prospeo’s infrastructure efficient, the maximum amount of results you can pull using this API is 25,000 (1000 pages of 25 results).
+
+How are credits spent?
+1 credit is spent per search request that returns at least one person.
+There are 25 results per page, hence 1 credit is spent for a maximum of 25 results.
+Endpoint
+URL: https://api.prospeo.io/search-person 
+Method: POST
+Headers:
+X-KEY: your_api_key
+Content-Type: application/json
+Parameters
+Parameter	Example value	Description
+filters
+required	true	The complete filter configuration you want to use. See the Filters Documentation or the filter section below for all details.
+page
+optional	true	The page you want to query for your search. Always defaults to 1 if no page is used.
+How to perform a search?
+There are two ways to build your search filters:
+
+Dashboard UI helper - Use our dashboard to visually build your search and export the JSON payload (described below)
+Filters Documentation - Refer to our complete Filters Documentation for all available filters and their values
+Using the dashboard helper
+Step 1
+Head to our dashboard and build a search with various filters.
+
+Step 2
+Click on the ... in the top-right corner of the search results, and click on API JSON.
+
+Step 3
+A modal will open with the current search payload you built. By using this tool, you can understand what filters does what, and how it is represented through the API.
+
+Step 4
+You can copy the payload and directly re-use it in your request. Here is the example of a request for quick understanding:
+
+curl --location 'https://api.prospeo.io/search-person' \
+--header 'X-KEY: your_api_key' \
+--header 'Content-Type: application/json' \
+--data '{
+    "page": 1,
+    "filters": {
+        "company_industry": {
+            "exclude": [
+                "Semiconductors",
+                "Pet Services"
+            ]
+        },
+        "person_seniority": {
+            "include": [
+                "Founder/Owner"
+            ]
+        },
+        "person_year_of_experience": {
+            "min": 10,
+            "max": 50
+        }
+    }
+}'
+Example of a failed request:
+
+{
+    "error": true,
+	"error_code": "INVALID_FILTERS",
+	"filter_error": "The value `Accountingg` is not supported for the filter `company_industry`."
+}
+The response will contain the results.
+
+Each result will contain:
+
+a person object (see the Person object page for the complete schema)
+if that person has a current job, its corresponding company data (see the Company object page for the complete schema)
+The mobile and email property fo the person wont be present in the response. Use our Enrich person endpoint to reveal/access those. Click here for more info about this process
+
+{
+    "error": false,
+	"results": [
+		{
+			"person": ...
+			"company": ...
+		},
+		{
+			"person": ...
+			"company": ...
+		},
+		{
+			"person": ...
+			"company": ...
+		},
+		... up to 25 per page
+	],
+	"pagination": {
+		"current_page": 1,
+		"per_page": 25,
+		"total_page": 11,
+		"total_count": 271
+	} 
+}
+Final note:
+There are additional search filters available through our API that are not available on the dashboard. Those are: company.names and company.websites. They allow you to pre-filter on a list of companies. More info below.
+Due to technical limitation, there are a few filters on the dashboard search that are unavailable through our public API. Those filters are: company_intent, person_socials, company.company_oids, company.company_list_oids, company.temp_matching_oids
+Paginate the results
+You can use the page parameter to go paginate the complete result set. The maximum pages is always 1000 when using our API. Use the pagination in response to see how many pages exists.
+
+Response details
+Property	Type	Description
+error	boolean	Indicates if an error has occurred. If false, the request was successful. If true, an error has occurred and a error_code property will be present. See below.
+results	list	Contains the current page of results. Up to 25 records per page.
+pagination	object	Contains the information about the pagination. Use it to know if you can turn to the next page.
+Error codes
+HTTP code	error_code property	Meaning
+400	INVALID_FILTERS	The filter configuration you used is not supported. See the filter_error property for more details.
+400	NO_RESULTS	There was no results matching your filters.
+400	INSUFFICIENT_CREDITS	You do not have enough credit to perform the request.
+401	INVALID_API_KEY	Invalid API key, check your X-KEY header.
+429	RATE_LIMITED	You hit the rate limit for your current plan.
+400	INVALID_REQUEST	The request your submitted is invalid.
+400	INTERNAL_ERROR	An error occurred on our side, please contact the support.
+Filters
+To understand how to use our filters, you have two options:
+
+Filters Documentation - Refer to our complete Filters Documentation for all available filters, their types, and accepted values.
+Dashboard UI - Use our dashboard UI as described here to visually build your search and see the generated payload.
+Keep in mind that it is not allowed to perform a search solely with exclude filters for performance reasons.
+
+Search from a list of company websites or names
+There is no option in the UI builder to search using a list of company websites or names. This API still allows you to perform searches using those elements.
+
+The maximum size is 500 websites or names at once.
+
+{
+	"page": 1,
+	"filters": {
+		"company": {
+			"websites": {
+				"include": [
+					"deloitte.com",
+					"https://facebook.com/"
+				]
+			},
+			"names": {
+				"include": [
+					"Walmart",
+					"Microsoft"
+				]
+			}
+		}
+    }
+}
+ENUM filter values
+Many filters are linked to an ENUM, which means that we accept a set list of values.
+
+Below is the list of all the values allowed per filter:
+
+person_departments: Departments
+person_seniority: Seniorities
+company_industries: Industries
+company_headcount_range: Employee ranges
+company_funding: Funding stages
+company_technology: Technologies
+company_email_provider: MX providers
+company_naics: NAICS codes
+company_sics: SIC codes
+Location filter values
+As it can be seen on the dashboard, the company_location and the person_location both takes strings as values.
+
+In order to ensure accuracy, the location strings you submit must match exactly the one you can pull from the dashboard.
+
+We do not accept arbitrary location string such as “nyc”.
+
+Programmatic access: Use our Search Suggestions API to programmatically retrieve valid location values. This endpoint allows you to search for locations and get properly formatted strings that can be used directly in your filters.
+
+Alternatively, build a list of location by inserting them on the filter on the dashboard, look at the generated payload, and re-use those values.
+
+Job title filter values
+The person_job_title filter takes strings as values.
+
+Programmatic access: Use our Search Suggestions API to programmatically retrieve valid job title values. This endpoint returns up to 25 job titles ordered by popularity.
+
+Alternatively, build a list of job titles by inserting them on the filter on the dashboard, look at the generated payload, and re-use those values.
+
+
+Search Company API
+Search for companies
+This endpoint allows you to perform a precise search against our extensive up-to-date database of companies and build account lists.
+
+We offer more than 20 filters that can be used to craft your perfect company list.
+
+In order to keep Prospeo’s infrastructure efficient, the maximum amount of results you can pull using this API is 25,000 (1000 pages of 25 results).
+
+How are credits spent?
+1 credit is spent per search request that returns at least one company.
+There are 25 results per page, hence 1 credit is spent for a maximum of 25 results.
+Endpoint
+URL: https://api.prospeo.io/search-company 
+Method: POST
+Headers:
+X-KEY: your_api_key
+Content-Type: application/json
+Parameters
+Parameter	Example value	Description
+filters
+required	true	The complete filter configuration you want to use. See the Filters Documentation or the filter section below for all details.
+page
+optional	true	The page you want to query for your search. Always defaults to 1 if no page is used.
+How to perform a search?
+There are two ways to build your search filters:
+
+Dashboard UI helper - Use our dashboard to visually build your search and export the JSON payload (described below)
+Filters Documentation - Refer to our complete Filters Documentation for all available filters and their values
+Using the dashboard helper
+Step 1
+Head to our dashboard and build a company search with various filters (ensure to be on the company search page).
+
+Step 2
+Click on the ... in the top-right corner of the search results, and click on API JSON.
+
+Step 3
+A modal will open with the current search payload you built. By using this tool, you can understand what filters does what, and how it is represented through the API.
+
+Step 4
+You can copy the payload and directly re-use it in your request. Here is the example of a request for quick understanding:
+
+curl --location 'https://api.prospeo.io/search-company' \
+--header 'X-KEY: api-key' \
+--header 'Content-Type: application/json' \
+--data '{
+    "page": 1,
+    "filters": {
+        "company_industry": {
+            "exclude": [
+                "Semiconductors",
+                "Pet Services"
+            ]
+        },
+        "company_funding": {
+			"stage": [
+				"Series B", 
+				"Series C"
+			],
+			"funding_date": 365,
+			"last_funding": {
+				"min": "1M", 
+				"max": "10M"
+			},
+			"total_funding": {
+				"min": "10M", 
+				"max": "100M"
+			}
+    	},
+    }
+}'
+The response will contain the results.
+
+Each result will contain a company object (see the Company object page for the complete schema)
+
+{
+    "error": false,
+	"results": [
+		{
+			"company": ...
+		},
+		{
+			"company": ...
+		},
+		{
+			"company": ...
+		},
+		... up to 25 per page
+	],
+	"pagination": {
+		"current_page": 1,
+		"per_page": 25,
+		"total_page": 11,
+		"total_count": 271
+	} 
+}
+Example of a failed request:
+
+{
+    "error": true,
+	"error_code": "INVALID_FILTERS",
+	"filter_error": "The value `Accountingg` is not supported for the filter `company_industry`."
+}
+Final note:
+There are additional search filters available through our API that are not available on the dashboard. Those are: company.names and company.websites. They allow you to pre-filter on a list of companies. More info below.
+Due to technical limitation, there are a few filters on the dashboard search that are unavailable through our public API. Those filters are: company_intent, company.company_oids, company.company_list_oids, company.temp_matching_oids
+Paginate the results
+You can use the page parameter to go paginate the complete result set. The maximum pages is always 1000 when using our API. Use the pagination in response to see how many pages exists.
+
+Response details
+Property	Type	Description
+error	boolean	Indicates if an error has occurred. If false, the request was successful. If true, an error has occurred and a error_code property will be present. See below.
+results	list	Contains the current page of results. Up to 25 records per page.
+pagination	object	Contains the information about the pagination. Use it to know if you can turn to the next page.
+Error codes
+HTTP code	error_code property	Meaning
+400	INVALID_FILTERS	The filter configuration you used is not supported. See the filter_error property for more details.
+400	NO_RESULTS	There was no results matching your filters.
+400	INSUFFICIENT_CREDITS	You do not have enough credit to perform the request.
+401	INVALID_API_KEY	Invalid API key, check your X-KEY header.
+429	RATE_LIMITED	You hit the rate limit for your current plan.
+400	INVALID_REQUEST	The request your submitted is invalid.
+400	INTERNAL_ERROR	An error occurred on our side, please contact the support.
+Filters
+To understand how to use our filters, you have two options:
+
+Filters Documentation - Refer to our complete Filters Documentation for all available filters, their types, and accepted values.
+Dashboard UI - Use our dashboard UI as described here to visually build your search and see the generated payload.
+Keep in mind that it is not allowed to perform a search solely with exclude filters for performance reasons.
+
+Search from a list of company websites or names
+There is no option in the UI builder to search using a list of company websites or names. This API still allows you to perform searches using those elements.
+
+The maximum size is 500 websites or names at once.
+
+{
+	"page": 1,
+	"filters": {
+		"company": {
+			"websites": {
+				"include": [
+					"deloitte.com",
+					"https://facebook.com/"
+				]
+			},
+			"names": {
+				"include": [
+					"Walmart",
+					"Microsoft"
+				]
+			}
+		}
+    }
+}
+ENUM filter values
+Many filters are linked to an ENUM, which means that we accept a set list of values.
+
+Below is the list of all the values allowed per filter:
+
+company_industries: Industries
+company_headcount_range: Employee ranges
+company_funding: Funding stages
+company_technology: Technologies
+company_email_provider: MX providers
+company_naics: NAICS codes
+company_sics: SIC codes
+Location filter values
+As it can be seen on the dashboard, the company_location filter takes strings as values.
+
+In order to ensure accuracy, the location strings you submit must match exactly the one you can pull from the dashboard.
+
+We do not accept arbitrary location string such as “nyc”.
+
+Programmatic access: Use our Search Suggestions API to programmatically retrieve valid location values. This endpoint allows you to search for locations and get properly formatted strings that can be used directly in your filters.
+
+Alternatively, build a list of location by inserting them on the filter on the dashboard, look at the generated payload, and re-use those values.
+
+
+Account Information API
+This endpoint allows you to retrieve information about the current user’s usage, remaining credits, current plan, and next quota renewal date.
+
+This endpoint is free to use.
+
+Endpoint
+GET https://api.prospeo.io/account-information
+
+Endpoint
+URL: https://api.prospeo.io/account-information 
+Method: GET
+Headers:
+X-KEY: your_api_key
+Parameters
+This endpoint does not require any parameters.
+
+Response
+A successful request will return the following information:
+
+{
+    "error": false,
+    "response": {
+        "current_plan": "STARTER",
+        "current_team_members": 1,
+        "remaining_credits": 99,
+        "used_credits": 1,
+        "next_quota_renewal_days": 25,
+        "next_quota_renewal_date": "2023-06-18 20:52:28+00:00"
+    }
+}
+Property	Type	Description
+current_plan	string	The current plan you are subscribed to.
+remaining_credits	integer	The number of credits remaining.
+current_team_members	integer	The number of team members in your team.
+used_credits	integer	The number of credits already used.
+next_quota_renewal_days	integer	The number of days until the next quota renewal.
+next_quota_renewal_date	string	The date and time of the next quota renewal.
+Error codes
+HTTP code	error_code property	Meaning
+401	INVALID_API_KEY	Invalid API key, check your X-KEY header.
+429	RATE_LIMITED	You hit the rate limit for your current plan.
+400	INVALID_REQUEST	The request your submitted is invalid.
+400	INTERNAL_ERROR	An error occurred on our side, please contact the support.
+
+
+
+Rate limits
+Each endpoint is capped by a rate limit to prevent abuse.
+
+The rate limits depends on your team’s plan. More details on our pricing page, below each plan. 
+You can track your rate-limit usage in real-time from your dashboard here. 
+The rate limit is divised in 2 categories:
+
+Enrich endpoints rate limiting
+
+/enrich-person and /enrich-company increase the rate limit by 1 per request
+/bulk-enrich-person and /bulk-enrich-company increase the rate limit by 1 per submitted record
+Search endpoints rate limiting
+
+/search-person and /search-company increase the rate limit by 1 per request
+Track from the dashboard
+
+Rate limit usage chart
+You can easily track in real-time your rate limit usage per endpoint category.
+
+Track from the response
+You can keep track of your rate limit on the current endpoint category by reading our response headers:
+
+x-daily-request-left: Remaining requests for the day
+x-minute-request-left: Remaining requests for the minute
+x-daily-reset-seconds: Seconds until daily limit resets
+x-minute-reset-seconds: Seconds until minute limit resets
+x-daily-rate-limit: Total daily request limit
+x-minute-rate-limit: Total minute request limit
+x-second-rate-limit: Total per-second request limit
+When the limit is reached, we will return a 429 error code.
+

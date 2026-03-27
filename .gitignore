@@ -49,7 +49,8 @@ node_modules/
 .DS_Store
 Thumbs.db
 
-# Logs
+# Logs (except new structured logs folder - will be tracked in archive)
+logs/
 *.log
 
 # Frontend build (regenerate from source)
@@ -59,3 +60,6 @@ frontend/assets/*.css
 # Temp files
 *.tmp
 *.temp
+
+# Archive (not tracked - contains old backups and dated files)
+archive/
