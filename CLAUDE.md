@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a **unified lead generation platform** combining two core tools:
-1. **Google Maps Scraper** - Scrapes business listings from Google Maps via scraper.tech API
-2. **Domain Enrichment** - Enriches domains with decision-maker contacts via Blitz API and Contacts DB fallback
+**Unified Lead Generation Platform** combining:
+1. **Google Maps Scraper** - Scrapes business listings via scraper.tech API
+2. **Domain Enrichment** - Enriches domains with decision-maker contacts via cascading API calls
 
 **Architecture:** FastAPI backend (Python) + React frontend (static build via Nginx reverse proxy)
 **URL:** https://listbuilding.eagleinfoservice.com/
@@ -16,268 +16,198 @@ This is a **unified lead generation platform** combining two core tools:
 
 ```
 /var/www/lead-generation-platform/
-├── backend/                    # FastAPI application
-│   ├── main.py                 # Main FastAPI app, unified routes
-│   ├── data/                   # SQLite DB (jobs.db), uploads/, outputs/
-│   ├── enrichment/             # Domain enrichment module
-│   │   ├── routes.py           # Enrichment API endpoints
-│   │   ├── pipeline.py         # Enrichment workflow orchestrator
-│   │   ├── blitz_client.py     # Blitz API wrapper (rate-limited, retry logic)
-│   │   ├── contacts_client.py  # Contacts DB fallback client
-│   │   └── better_enrich_client.py  # BetterEnrich V2 API client
-│   ├── scraper/                # Google Maps scraper module
-│   │   ├── routes.py           # Scraper API endpoints
-│   │   ├── crawler.py          # Async scraper with concurrency control
-│   │   ├── centers.py          # Region/city center data loader
-│   │   └── data/               # Country CSV files (us_centers_842_high_value.csv, etc.)
-│   ├── shared/                 # Shared utilities
-│   │   ├── auth.py             # JWT auth, user management (bcrypt)
-│   │   ├── db.py               # Unified SQLite connection, schema init
-│   │   └── job_store_base.py   # Base job store for both scraper & enrichment
-│   ├── requirements.txt
-│   └── .env                    # API keys (BLITZ_API_KEY, SCRAPER_TECH_KEY, etc.)
-├── frontend/                   # React build output (static files)
-│   ├── index.html
-│   ├── assets/                 # JS/CSS bundles
-│   └── categories.json         # 4,275+ business categories for autocomplete
-└── health-check.sh             # Systemd health check with auto-restart
+├── backend/
+│   ├── main.py                  # FastAPI app, unified routes, job chaining
+│   ├── data/                     # SQLite DB (jobs.db), uploads/, outputs/
+│   ├── enrichment/               # PRIMARY module - domain enrichment
+│   │   ├── routes.py             # 125K+ lines - ALL enrichment endpoints
+│   │   ├── pipeline.py           # Workflow orchestrator
+│   │   ├── list_builder.py       # List Building Tool (Flow 1, 2, 3)
+│   │   ├── blitz_client.py       # Blitz API wrapper (25 RPS, retry logic)
+│   │   ├── contacts_client.py    # Contacts DB wrapper (75 RPS)
+│   │   ├── better_enrich_client.py
+│   │   └── prospeo_client.py    # Final fallback enrichment
+│   ├── scraper/                  # Google Maps scraper
+│   │   ├── crawler.py           # Async scraper (8 workers)
+│   │   ├── centers.py           # Region/city center data loader
+│   │   └── data/                # Country CSV files
+│   └── shared/
+│       ├── auth.py              # JWT auth, API keys, user management
+│       ├── db.py                # Thread-local SQLite with WAL mode
+│       └── job_store_base.py    # Base class for job stores
+├── frontend/                     # Pre-built static files (React)
+└── health-check.sh
 ```
 
 ## Core Architecture
 
 ### Unified Job System
-Both scraper and enrichment jobs share a unified SQLite database schema with `job_type` discriminator:
+Single SQLite database (`jobs.db`) with `job_type` discriminator ('scraper' | 'enrichment'):
 
-**Database Tables:**
-- `jobs` - Unified job table with `job_type` ('scraper' | 'enrichment')
-  - Scraper fields: `query`, `regions`, `total_tasks`, `done_tasks`, `result_count`
-  - Enrichment fields: `total`, `processed`, `emails_found`, `filename`, `domain_col`
-  - Common: `status` (queued|running|done|failed), `parent_job_id` (for chaining)
-- `job_events` - Progress events for SSE streaming (`seq`, `payload` JSON)
-- `users` - Auth users (email, password_hash bcrypt, is_admin)
-- `daily_api_requests` - API quota tracking for scraper endpoint (50K/day limit for non-admin)
+| Table | Purpose |
+|-------|---------|
+| `jobs` | Job metadata, status, counters |
+| `job_events` | SSE progress events (`seq`, `payload` JSON) |
+| `users` | Email/password (bcrypt) |
+| `api_keys` | API key authentication |
+| `daily_api_requests` | 50K/day quota tracking (non-admin) |
 
-**Thread-local connections:** `db.get_db()` returns per-thread SQLite connections with WAL mode.
+**Thread-local connections:** `db.get_db()` returns per-thread SQLite with WAL mode.
 
 ### Job Chaining
-Scraper jobs can chain directly into enrichment jobs via `POST /api/jobs/{scraper_job_id}/chain`:
-1. Reads scraper output CSV (must have `website` column)
-2. Filters rows with valid domains
-3. Creates enrichment job with `parent_job_id` reference
-4. Runs enrichment pipeline in background
+Scraper → Enrichment via `POST /api/jobs/{scraper_job_id}/chain`:
+1. Reads scraper output CSV (requires `website` column)
+2. Filters valid domains
+3. Creates enrichment job with `parent_job_id`
 
-### Server-Sent Events (SSE)
-Real-time progress streaming to frontend:
-- Per-job `asyncio.Event` signals: `enrichment_routes._job_signals[job_id]`
-- Background jobs call `append_event()` → triggers SSE wake
-- Frontend consumes `GET /api/{scraper|enrichment}/stream/{job_id}`
+### SSE Streaming
+Per-job `asyncio.Event` signals in `enrichment_routes._job_signals[job_id]`:
+- Background jobs call `append_event()` → triggers wake
+- Frontend: `GET /api/{scraper|enrichment}/stream/{job_id}`
 
-### Authentication & Authorization
-- **User creation:** CLI only via `backend/create_user.py` (no public registration)
+### Authentication
+- **User creation:** CLI only (`backend/create_user.py`)
 - **Login:** `POST /api/auth/login` → JWT (HS256, 7-day expiry)
-- **API Keys:** `POST /api/api-keys` → Create API key, `GET /api/api-keys` → List keys, `DELETE /api/api-keys/{key_id}` → Delete key
-- **Dependencies:** `Depends(auth.get_current_user)`, `Depends(auth.get_current_user_with_api_key)`, or `Depends(auth.require_admin)`
-- **API Key usage:** Header `X-API-Key: <api_key>` or `Authorization: Bearer <api_key>`
-- **Admin privileges:** Unlimited API quota, view all jobs across users
+- **API Keys:** `POST /api/api-keys` → Header `X-API-Key: <key>` or `Authorization: Bearer <key>`
+- **Dependencies:** `Depends(auth.get_current_user)`, `Depends(auth.get_current_user_with_api_key)`
 
-## Common Development Commands
+## Common Commands
 
-### Backend Development
 ```bash
 cd /var/www/lead-generation-platform/backend
-
-# Install dependencies
 source venv/bin/activate
-pip install -r requirements.txt
 
-# Run development server (auto-reload)
+# Development
 uvicorn main:app --reload --host 0.0.0.0 --port 8765
-
-# Create new user
 python create_user.py
 
-# Check database
-sqlite3 data/jobs.db "SELECT * FROM jobs ORDER BY created_at DESC LIMIT 5;"
-```
-
-### Service Management
-```bash
-# Check service status
-systemctl status lead-generation-platform.service
-
-# Restart service
+# Service management
 sudo systemctl restart lead-generation-platform.service
-
-# View logs
 journalctl -u lead-generation-platform.service -f
-
-# Health check
 curl http://localhost:8765/api/health
+
+# Database
+sqlite3 data/jobs.db "PRAGMA wal_checkpoint(TRUNCATE);"  # Fix locks
 ```
 
-### Frontend
-Frontend is pre-built static files. To rebuild frontend (requires separate frontend repo):
-```bash
-# Frontend build output goes to: /var/www/lead-generation-platform/frontend/
-# Then reload nginx: sudo systemctl reload nginx
+## API Integrations (Enrichment Cascade)
+
+Each enrichment source has different cost/quality tradeoffs:
+
+| API | Rate Limit | Priority | Purpose |
+|-----|------------|----------|---------|
+| **Contacts DB** | 75 RPS | 1st (free) | Domain → company → contacts with emails |
+| **Blitz** | 25 RPS | 2nd | LinkedIn-based enrichment with title cascade |
+| **BetterEnrich** | 10 RPS | 3rd | Person email, company email |
+| **Prospeo** | 30 RPS | 4th (paid) | Final fallback - person/company enrichment |
+
+### Blitz Cascade (title tiers)
+```
+Tier 1: Owner, CEO, Founder, Co-Founder, President
+Tier 2: C-level (CMO, CTO, COO, VP...)
+Tier 3: Director-level (Director of Marketing, etc.)
 ```
 
-## Key Integrations
+## Enrichment Endpoints
 
-### Blitz API (api.blitz-api.ai)
-**Rate limit:** 25 RPS (automatic throttling)
-**Endpoints:**
-- `POST /v2/enrichment/domain-to-linkedin` - Domain → company LinkedIn URL
-- `POST /v2/search/waterfall-icp-keyword` - Company LinkedIn → decision makers
-- `POST /v2/enrichment/email` - Person LinkedIn → work email
-
-**Retry logic:** Up to 3 retries with exponential backoff (base 2s, cap 60s), respects `Retry-After` header.
-
-**Default cascade:** 3 tiers (Owner/CEO/F → C-level/VP → Director/Head) defined in `blitz_client.DEFAULT_CASCADE`.
-
-### Scraper.tech API
-**Endpoint:** `GET https://api.scraper.tech/searchmaps.php`
-**Auth header:** `Scraper-key: <SCRAPER_TECH_KEY>`
-**Concurrency:** 8 async workers per job
-**Radius filtering:** Haversine distance with query-based heuristics (city-heavy: 100km, rural: 200km)
-
-### Contacts DB (leadsdatabase.cc)
-**Fallback endpoints:**
-- `GET /v1/person/by-linkedin?linkedin_url=...` - Person lookup by LinkedIn
-- `GET /v1/person/by-name?name=...&domain=...` - Person lookup by name + domain
-
-### Contacts DB (leadsdatabase.cc)
-**Rate limit:** 75 RPS (automatic throttling)
-**Endpoints:**
-- `GET /v1/company/by-domain` - Domain → company info
-- `GET /v1/company/contacts/enriched` - Company → decision makers with emails
-- `GET /v1/person/by-linkedin` - Person lookup by LinkedIn
-- `GET /v1/person/by-name-and-domain` - Person lookup by name + domain
-
-### BetterEnrich API V2 (app.betterenrich.com)
-**Low-cost endpoint:** `POST /api/v1/find-work-email-low-cost-v2-alt`
-**Rate limit:** 10 RPS (automatic throttling)
-**Function:** `better_enrich_client.find_work_email_v2()` - Used as fallback after Blitz fails
-**API Key:** Stored in `BETTER_ENRICH_API_KEY` env var
-
-## Critical Implementation Details
-
-### Unified Enrichment Endpoint
-Two versions available: POST (with sync) and GET (without sync).
-
-#### POST /api/enrichment/enrich (with sync)
-Full-featured version that returns contacts AND syncs to internal database.
-
-**Request Body:**
-```json
-{
-  "domain": "google.com",           // optional*
-  "linkedin_url": "...",            // optional*
-  "full_name": "John Doe",         // optional
-  "first_name": "John",            // optional
-  "last_name": "Doe",              // optional
-  "max_results": 5                  // optional, default 5
-}
-```
-*Either `domain` or `linkedin_url` must be provided.
-
-#### GET /api/enrichment/enrich (no sync)
-Lightweight version for simple lookups. Returns contacts but does NOT sync to database.
-
-**Query Parameters:**
-```
-?domain=google.com&max_results=5
-?linkedin_url=https://linkedin.com/in/johndoe
-?domain=google.com&full_name=John%20Doe
-?domain=google.com&linkedin_url=https://linkedin.com/in/johndoe
-```
-
-**Input Modes (both POST and GET):**
+### Unified Enrichment
+**POST** `/api/enrichment/enrich` - Returns contacts AND syncs to database
+**GET** `/api/enrichment/enrich` - Quick lookup without sync
 
 | Input | Mode | Flow |
 |-------|------|------|
-| `domain` only | `domain_only` | Contacts DB → Blitz |
-| `linkedin_url` only | `linkedin_only` | Contacts DB → Blitz → BetterEnrich V2 |
-| `domain` + `full_name` | `enhanced` | Contacts DB → Blitz → BetterEnrich V2 → NOT FOUND (no fallback to domain) |
-| `domain` + `linkedin_url` | `enhanced` | Contacts DB → Blitz → BetterEnrich V2 → NOT FOUND (no fallback to domain) |
-| `domain` only | `domain_only` | Contacts DB → Blitz cascade (all decision makers) |
+| `domain` only | `domain_only` | All decision makers (cascade) |
+| `linkedin_url` only | `linkedin_only` | Specific person via cascade |
+| `domain` + `full_name` or `linkedin_url` | `enhanced` | Specific person only → NOT FOUND if not found |
 
-**Enhanced mode behavior:**
-- When `full_name` or `linkedin_url` is provided with domain, the endpoint looks for that SPECIFIC person
-- If person is NOT found in any enrichment source → returns 0 contacts (NOT FOUND)
-- Does NOT fall back to domain cascade → this is intentional behavior
-- Only `domain` only mode returns all decision makers (cascade)
+**Enhanced mode:** Looks for SPECIFIC person only. Returns 0 contacts if not found (no fallback to domain cascade).
 
-**Important:** Use POST endpoint when you need to sync contacts to the internal database. GET is for quick lookups without persistence.
+### List Building Tool (`enrichment/list_builder.py`)
 
-**Response includes:**
-- `mode`: Detection mode used
-- `data_sources`: Shows source for each data type (contacts_db, blitz, better_enrich)
-- `sync_to_contacts_db`: Sync status (POST: actual sync, GET: "success" but no actual sync)
+**Flow 1:** `POST /api/enrichment/flows/domain-enrich` - Domain CSV → decision makers
+**Flow 2:** `POST /api/enrichment/flows/search` - Company search by criteria
+**Flow 3:** `POST /api/enrichment/flows/linkedin-enrich` - Bulk LinkedIn enrichment
 
-### Job Store Pattern
-Both `scraper/job_store.py` and `enrichment/job_store.py` are thin wrappers around `shared.job_store_base.JobStoreBase`. The base class handles:
-- Unified CRUD operations for both job types
-- Event append with automatic counter updates
-- Parent-child relationship queries
-- Stale job cleanup on server restart
+**Concurrency:** 25 domains, 15 LinkedIn URLs, 5 searches in parallel
 
-### Enrichment Pipeline Flow
-For each domain row (`enrichment/pipeline.py`):
-1. **Blitz:** domain → company LinkedIn URL
-2. **Blitz:** Waterfall ICP search → up to 5 decision makers (titles cascade)
-3. **For each person:**
-   - Blitz: person LinkedIn → work email
-   - Fallback: Contacts DB by LinkedIn URL
-   - Fallback: Contacts DB by name + domain
-4. **If no company LinkedIn found AND has name columns:** Direct Contacts DB lookup by name + domain
+### Job Cancellation
+`POST /api/enrichment/jobs/{job_id}/cancel` sets `_cancelled_jobs[job_id]`, checked by pipelines periodically.
 
-**Concurrency:** 5 domains concurrently, 10 email lookups concurrently (`DOMAIN_CONCURRENCY`, `EMAIL_CONCURRENCY`).
+## Environment Variables
 
-### Scraper Region System
-**USA:** State-based (all 50 states + territories) or city-based (fuzzy search)
-**Non-US:** Center-based selection (lat/lng centers from CSV files)
-**Zoom levels:** [10, 11, 12] for each center/region (progressive radius)
-**Deduplication:** In-memory by `place_id`, fallback to hash(name+website+address)
-
-### Environment Variables
-Required in `backend/.env`:
-```
-JWT_SECRET=<random-secret-key>
-SCRAPER_TECH_KEY=<scraper-tech-api-key>
-BLITZ_API_KEY=<blitz-api-key>
-CONTACTS_API_BASE_URL=https://leadsdatabase.cc
-CONTACTS_API_TOKEN=<contacts-api-token>
-BETTER_ENRICH_BASE_URL=https://app.betterenrich.com
-BETTER_ENRICH_API_KEY=<betterenrich-api-key>
+```bash
+# Required
+JWT_SECRET=<secret>
+SCRAPER_TECH_KEY=<scraper-tech-key>
+BLITZ_API_KEY=<blitz-key>
+CONTACTS_API_TOKEN=<contacts-token>
+BETTER_ENRICH_API_KEY=<betterenrich-key>
+PROSPEO_API_KEY=<prospeo-key>
 ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
+
+# Optional (email notifications)
+SMTP_SERVER, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SENDER_EMAIL, DEFAULT_RECIPIENT
 ```
 
 ## Troubleshooting
 
-### Service Won't Start
 ```bash
-# Check logs
+# Service won't start
 journalctl -u lead-generation-platform.service -n 50
-
-# Verify port availability
 ss -tlnp | grep 8765
 
-# Check .env file exists
-ls -la /var/www/lead-generation-platform/backend/.env
+# Database locked
+cd backend && sqlite3 data/jobs.db "PRAGMA wal_checkpoint(TRUNCATE);"
+
+# Stale running jobs (auto-cleaned on restart)
+sqlite3 data/jobs.db "SELECT job_id, status FROM jobs WHERE status='running';"
 ```
 
-### Database Locked
-SQLite uses WAL mode. If locks persist:
-```bash
-cd /var/www/lead-generation-platform/backend
-sqlite3 data/jobs.db "PRAGMA wal_checkpoint(TRUNCATE);"
-```
+## Scraper Countries
 
-### High Memory Usage
-Check for runaway background jobs:
-```bash
-sqlite3 data/jobs.db "SELECT job_id, status, created_at FROM jobs WHERE status='running';"
-```
+The Google Maps scraper supports multiple countries with geographic center data:
 
-Stale jobs auto-cleanup on server restart via `@app.on_event("startup")` → `cleanup_stale_jobs()`.
+| Code | Country | Cities | Notes |
+|------|---------|--------|-------|
+| us | United States | 842 | Full coverage with offset rings |
+| gb | United Kingdom | 50+ | With offset rings |
+| ie | Ireland | 15 | With offset rings |
+| au | Australia | 31 | With offset rings |
+| ca | Canada | ~30 | With offset rings |
+| de | Germany | 20 | Major cities only |
+| fr | France | 15 | Major cities only |
+| it | Italy | 15 | Major cities only |
+| es | Spain | 12 | Major cities only |
+| nl | Netherlands | 8 | Major cities only |
+| be | Belgium | 5 | Major cities only |
+| pl | Poland | 10 | Major cities only |
+| se | Sweden | 8 | Major cities only |
+| dk | Denmark | 4 | Major cities only |
+| at | Austria | 7 | Major cities only |
+| ch | Switzerland | 7 | Major cities only |
+| pt | Portugal | 5 | Major cities only |
+
+### Adding New Countries
+
+To add a new country to the scraper:
+
+1. Create a CSV file in `backend/scraper/data/` with the schema:
+   ```csv
+   name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+   Berlin,Berlin,52.5200,13.4050,metro,1,major_cities,anchor_city,Berlin,de
+   ```
+
+2. Update `backend/scraper/centers.py`:
+   - Add to `COUNTRY_FILES`: `(DATA_DIR / "xx_centers.csv", "xx")`
+   - Add to `COUNTRY_NAMES`: `"xx": "Country Name"`
+   - Update the order list in `get_countries()`
+
+3. Update `frontend/index.html` country dropdown
+
+### Simplified Approach (European Countries)
+
+European countries use a simplified approach:
+- Major cities only (no offset rings like US/UK)
+- Each city = 1 center, 3 zoom levels (10, 11, 12)
+- Good B2B coverage since most businesses are in major cities
+- Faster to implement and maintain
