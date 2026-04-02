@@ -9,9 +9,19 @@ from typing import Any, Optional
 
 import httpx
 
+from shared.circuit_breaker import get_circuit_breaker, CircuitBreakerError
+
 BLITZ_BASE_URL = "https://api.blitz-api.ai"
 
 logger = logging.getLogger(__name__)
+
+# Circuit breaker for Blitz API
+_blitz_circuit = get_circuit_breaker(
+    "blitz_api",
+    failure_threshold=10,
+    recovery_timeout=60.0,
+    half_open_max_calls=3,
+)
 
 # Retry config: up to 3 retries (4 attempts total), exponential backoff with jitter.
 _MAX_RETRIES = 3
@@ -79,6 +89,11 @@ async def _post_with_retry(
     payload: dict[str, Any],
     timeout: float,
 ) -> dict[str, Any]:
+    # Check circuit breaker before making request
+    if not await _blitz_circuit.can_proceed():
+        logger.warning(f"Blitz API circuit breaker OPEN, failing fast for {url}")
+        raise CircuitBreakerError("blitz_api")
+
     last_exc: Optional[Exception] = None
     for attempt in range(_MAX_RETRIES + 1):
         # Acquire rate limit before each attempt (including retries)
@@ -100,11 +115,17 @@ async def _post_with_retry(
                 # Exhausted retries — raise so the caller can handle it
                 resp.raise_for_status()
             resp.raise_for_status()
+            # Record success with circuit breaker
+            await _blitz_circuit.record_success()
             return resp.json()
-        except httpx.HTTPStatusError:
+        except httpx.HTTPStatusError as e:
+            # Record failure with circuit breaker
+            await _blitz_circuit.record_failure()
             raise
         except Exception as exc:
             last_exc = exc
+            # Record failure with circuit breaker
+            await _blitz_circuit.record_failure()
             if attempt < _MAX_RETRIES:
                 delay = _backoff_delay(attempt, None)
                 logger.warning(
@@ -481,39 +502,29 @@ async def person_enrich_by_linkedin(
     include_phone: bool = False,
 ) -> dict[str, Any]:
     """
-    POST /v2/enrichment/person
-    Enrich a person by LinkedIn URL (simplified interface).
+    POST /v2/enrichment/email
+    Get work email from a LinkedIn profile URL.
 
     Args:
         client: Async HTTP client
         linkedin_url: Person's LinkedIn profile URL
-        include_phone: Include phone number in response
+        include_phone: Include phone number in response (not used, phone requires separate endpoint)
 
     Returns:
         {
             "found": true,
-            "person": {
-                "linkedin_url": "https://linkedin.com/in/johndoe",
-                "full_name": "John Doe",
-                "first_name": "John",
-                "last_name": "Doe",
-                "emails": ["john@acme.com"],
-                "verified_email": "john@acme.com",
-                "phone": "+1234567890" (if requested),
-                "company": {...}
-            }
+            "email": "john@acme.com",
+            "all_emails": ["john@acme.com"]
         }
     Cost: 1 credit on success, 0 if not found.
     """
     payload: dict[str, Any] = {
-        "linkedin_url": linkedin_url,
+        "person_linkedin_url": linkedin_url,
     }
-    if include_phone:
-        payload["phone_number"] = True
 
     return await _post_with_retry(
         client,
-        f"{BLITZ_BASE_URL}/v2/enrichment/person",
+        f"{BLITZ_BASE_URL}/v2/enrichment/email",
         payload,
         timeout=30.0,
     )

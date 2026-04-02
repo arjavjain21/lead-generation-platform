@@ -1,0 +1,827 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Octoparse OpenAPI Document",
+    "version": "1.0.0",
+    "description": ""
+  },
+  "servers": [
+    {
+      "url": "https://openapi.octoparse.com/",
+      "description": "API Server URL"
+    }
+  ],
+  "paths": {
+    "token": {
+      "post": {
+        "tags": ["Access_Token"],
+        "summary": "getToken",
+        "description": "Obtain a New Token",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-04/schema#",
+                "title": "Request Body Example",
+                "type": "object",
+                "properties": {
+                  "username": {
+                    "type": "string",
+                    "description": "Account email address or username"
+                  },
+                  "password": {
+                    "type": "string",
+                    "description": "Account password"
+                  },
+                  "grant_type": {
+                    "type": "string",
+                    "description": "password"
+                  }
+                },
+                "required": ["username", "password", "grant_type"]
+              }
+            }
+          }
+        },
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Response Example",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-04/schema#",
+                  "title": "Response Example",
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "access_token": {"type": "string"},
+                        "expires_in": {"type": "string"},
+                        "token_type": {"type": "string"},
+                        "refresh_token": {"type": "string"}
+                      }
+                    },
+                    "requestId": {"type": "string"}
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error Example",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-04/schema#",
+                  "title": "Error Example",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {"type": "string"},
+                        "message": {"type": "string"}
+                      }
+                    },
+                    "requestId": {"type": "string"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "cloudextraction/task/subtasks": {
+      "get": {
+        "tags": ["Cloud_Extraction"],
+        "summary": "SubtasksStatus",
+        "description": "Get Subtask Status",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "taskId",
+            "description": "Task ID",
+            "required": true,
+            "schema": {"type": "string"}
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "description": "Page number",
+            "required": true,
+            "schema": {"type": "string"}
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "description": "Number of subtasks a page (1 to 20)",
+            "required": true,
+            "schema": {"type": "string"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response Example",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-04/schema#",
+                  "title": "Response Example",
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "subTaskId": {"type": "string"},
+                          "status": {"type": "string"}
+                        }
+                      }
+                    },
+                    "requestId": {"type": "string"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "cloudextraction/statuses": {
+      "post": {
+        "tags": ["Cloud_Extraction"],
+        "summary": "TaskStatus",
+        "description": "Get Task Status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-04/schema#",
+                "title": "Request Body Example",
+                "type": "object",
+                "properties": {
+                  "taskIds": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                  }
+                },
+                "required": ["taskIds"]
+              }
+            }
+          }
+        },
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Response Example",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-04/schema#",
+                  "title": "Response Example",
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "taskId": {"type": "string"},
+                          "taskName": {"type": "string"},
+                          "status": {"type": "string"}
+                        },
+                        "required": ["taskId", "taskName", "status"]
+                      }
+                    },
+                    "requestId": {"type": "string"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "cloudextraction/statuses/v2": {
+      "post": {
+        "tags": ["Cloud_Extraction"],
+        "summary": "TaskStatusV2",
+        "description": "Get Task Status V2",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-04/schema#",
+                "title": "Request Body Example",
+                "type": "object",
+                "properties": {
+                  "taskIds": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                  }
+                },
+                "required": ["taskIds"]
+              }
+            }
+          }
+        },
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Response Example",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-04/schema#",
+                  "title": "Response Example",
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "taskId": {"type": "string"},
+                          "status": {"type": "string"},
+                          "currentTotalExtractCount": {"type": "number"},
+                          "executedTimes": {"type": "number"},
+                          "subTaskCount": {"type": "number"},
+                          "nextExecuteTime": {"type": "string"},
+                          "endExecuteTime": {"type": "string"},
+                          "startExecuteTime": {"type": "string"}
+                        }
+                      }
+                    },
+                    "requestId": {"type": "string"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "cloudextraction/start": {
+      "post": {
+        "tags": ["Cloud_Extraction"],
+        "summary": "cloudextractionStart",
+        "description": "Start Task",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-04/schema#",
+                "title": "Request Body Example",
+                "type": "object",
+                "properties": {
+                  "taskId": {"type": "string", "description": "Task ID"}
+                },
+                "required": ["taskId"]
+              }
+            }
+          }
+        },
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Response Example",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-04/schema#",
+                  "title": "Response Example",
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "lotNo": {"type": "string"},
+                        "status": {"type": "string"}
+                      }
+                    },
+                    "requestId": {"type": "string"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "cloudextraction/stop": {
+      "post": {
+        "tags": ["Cloud_Extraction"],
+        "summary": "cloudextractionStop",
+        "description": "Stop Task",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-04/schema#",
+                "title": "Request Body Example",
+                "type": "object",
+                "properties": {
+                  "taskId": {"type": "string", "description": "Task ID"}
+                },
+                "required": ["taskId"]
+              }
+            }
+          }
+        },
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Response Example",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-04/schema#",
+                  "title": "Response Example",
+                  "type": "object",
+                  "properties": {
+                    "data": {"type": "null"},
+                    "requestId": {"type": "string"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "data/all": {
+      "get": {
+        "tags": ["Data"],
+        "summary": "all",
+        "description": "Get Data by Offset",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "taskId",
+            "description": "Task ID",
+            "required": true,
+            "schema": {"type": "string"}
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "description": "Data offset. When offset=0, you can get data from the first data row.",
+            "required": true,
+            "schema": {"type": "string"}
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "description": "The amount of data rows(range from 1 to 1000).",
+            "required": true,
+            "schema": {"type": "string"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response Example",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-04/schema#",
+                  "title": "Response Example",
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "offset": {"type": "number"},
+                        "total": {"type": "number"},
+                        "restTotal": {"type": "number"},
+                        "data": {
+                          "type": "array",
+                          "items": {"type": "object"}
+                        }
+                      }
+                    },
+                    "requestId": {"type": "string"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "data/lotno/all": {
+      "get": {
+        "tags": ["Data"],
+        "summary": "lotnoAll",
+        "description": "Get Data From a Designated Batch by Offset",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "taskId",
+            "description": "Task Id",
+            "required": true,
+            "schema": {"type": "string"}
+          },
+          {
+            "in": "query",
+            "name": "lotno",
+            "description": "Batch ID",
+            "required": true,
+            "schema": {"type": "string"}
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "description": "Data offset. When offset=0, you can get data from the first data row.",
+            "required": true,
+            "schema": {"type": "string"}
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "description": "The amount of data rows (range from 1 to 1000).",
+            "required": true,
+            "schema": {"type": "string"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response Example"
+          }
+        }
+      }
+    },
+    "data/notexported": {
+      "get": {
+        "tags": ["Data"],
+        "summary": "notexported",
+        "description": "Get Non-Exported Data",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "taskId",
+            "description": "Task ID",
+            "required": true,
+            "schema": {"type": "string"}
+          },
+          {
+            "in": "query",
+            "name": "size",
+            "description": "The amount of data rows(range from 1 to 1000)",
+            "required": true,
+            "schema": {"type": "string"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response Example"
+          }
+        }
+      }
+    },
+    "data/markexported": {
+      "post": {
+        "tags": ["Data"],
+        "summary": "markexported",
+        "description": "Mark Data as Exported",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-04/schema#",
+                "title": "Request Body Example",
+                "type": "object",
+                "properties": {
+                  "taskId": {"type": "string", "description": "Task ID"}
+                },
+                "required": ["taskId"]
+              }
+            }
+          }
+        },
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Response Example"
+          }
+        }
+      }
+    },
+    "data/remove": {
+      "post": {
+        "tags": ["Data"],
+        "summary": "remove",
+        "description": "Remove Data",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-04/schema#",
+                "title": "Request Body Example",
+                "type": "object",
+                "properties": {
+                  "taskId": {"type": "string", "description": "Task ID"}
+                },
+                "required": ["taskId"]
+              }
+            }
+          }
+        },
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Response Example"
+          }
+        }
+      }
+    },
+    "taskGroup": {
+      "get": {
+        "tags": ["Task_Group"],
+        "summary": "taskGroup",
+        "description": "Get Task Group Information",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Response Example",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "http://json-schema.org/draft-04/schema#",
+                  "title": "Response Example",
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "taskGroupId": {"type": "number"},
+                          "taskGroupName": {"type": "string"}
+                        },
+                        "required": ["taskGroupId", "taskGroupName"]
+                      }
+                    },
+                    "requestId": {"type": "string"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "task/search": {
+      "get": {
+        "tags": ["Task"],
+        "summary": "Search",
+        "description": "Search Task",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "taskGroupId",
+            "description": "Task group ID",
+            "required": true,
+            "schema": {"type": "string"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response Example"
+          }
+        }
+      }
+    },
+    "task/copy": {
+      "post": {
+        "tags": ["Task"],
+        "summary": "Copy",
+        "description": "Duplicate Task",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "taskGroupId",
+            "description": "Task group ID (If not specified, the task will be duplicated to the current task group)",
+            "required": true,
+            "schema": {"type": "string"}
+          },
+          {
+            "in": "query",
+            "name": "taskId",
+            "description": "Task ID",
+            "required": true,
+            "schema": {"type": "string"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response Example"
+          }
+        }
+      }
+    },
+    "task/moveToGroup": {
+      "post": {
+        "tags": ["Task"],
+        "summary": "MoveToGroup",
+        "description": "Move Task",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "taskGroupId",
+            "description": "Task group ID",
+            "required": true,
+            "schema": {"type": "string"}
+          },
+          {
+            "in": "query",
+            "name": "taskId",
+            "description": "Task ID",
+            "required": true,
+            "schema": {"type": "string"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response Example"
+          }
+        }
+      }
+    },
+    "task/getActions": {
+      "post": {
+        "tags": ["Task"],
+        "summary": "getActions",
+        "description": "Get Action Parameters",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-04/schema#",
+                "title": "Request Body Example",
+                "type": "object",
+                "properties": {
+                  "taskIds": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                  },
+                  "actionTypes": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                  }
+                },
+                "required": ["taskIds", "actionTypes"]
+              }
+            }
+          }
+        },
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Response Example (LoopAction):"
+          }
+        }
+      }
+    },
+    "task/updateActionProperties": {
+      "post": {
+        "tags": ["Task"],
+        "summary": "updateActionProperties",
+        "description": "Update Action Parameters",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-04/schema#",
+                "title": "Request Body Example (EnterTextAction)",
+                "type": "object",
+                "properties": {
+                  "taskId": {"type": "string", "description": "Task ID"},
+                  "actions": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "actionType": {"type": "string", "description": "Action type"},
+                        "actionId": {"type": "string", "description": "Action API call name"},
+                        "properties": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "name": {"type": "string", "description": "Parameter name"},
+                              "value": {"type": "string", "description": "Parameter value"}
+                            },
+                            "required": ["name", "value"]
+                          }
+                        }
+                      },
+                      "required": ["actionType", "actionId", "properties"]
+                    }
+                  }
+                },
+                "required": ["taskId", "actions"]
+              }
+            }
+          }
+        },
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Response Example"
+          }
+        }
+      }
+    },
+    "task/updateLoopItems": {
+      "post": {
+        "tags": ["Task"],
+        "summary": "updateLoopItems",
+        "description": "Update Loop Item List",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-04/schema#",
+                "title": "Request Body Example",
+                "type": "object",
+                "properties": {
+                  "taskId": {"type": "string", "description": "Task ID"},
+                  "actionId": {"type": "string", "description": "Action API call name"},
+                  "loopType": {"type": "string", "description": "Loop mode (TextList or UrlList)"},
+                  "loopItems": {
+                    "type": "array",
+                    "items": {"type": "string"}
+                  },
+                  "isAppend": {"type": "bool", "description": "Add or replace"}
+                },
+                "required": ["taskId", "actionId", "loopType", "loopItems", "isAppend"]
+              }
+            }
+          }
+        },
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Response Example"
+          }
+        }
+      }
+    },
+    "task/updateTaskParameters": {
+      "post": {
+        "tags": ["Task"],
+        "summary": "updateTaskParameters",
+        "description": "Update Task Parameters",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-04/schema#",
+                "title": "Request Body Example",
+                "type": "object",
+                "properties": {
+                  "taskId": {"type": "string", "description": "Task ID"},
+                  "actions": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "actionType": {"type": "string"},
+                        "actionId": {"type": "string"},
+                        "properties": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "name": {"type": "string"},
+                              "value": {"type": "string"}
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "loopItems": {
+                    "type": "array",
+                    "items": {"type": "object"}
+                  }
+                },
+                "required": ["taskId", "actions", "loopItems"]
+              }
+            }
+          }
+        },
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Response Example"
+          }
+        }
+      }
+    }
+  }
+}

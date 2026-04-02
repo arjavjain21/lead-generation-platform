@@ -1,0 +1,362 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Lead Generation Platform API",
+    "description": "API for enriching domains with decision-maker contacts. Uses internal Contacts DB first, falls back to Blitz API, and automatically syncs results back to the internal database.",
+    "version": "1.0.0",
+    "contact": {
+      "name": "API Support",
+      "email": "support@eagleinfoservice.com"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://listbuilding.eagleinfoservice.com",
+      "description": "Production server"
+    },
+    {
+      "url": "http://localhost:8765",
+      "description": "Local development server"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "paths": {
+    "/api/enrichment/enrich/{domain}": {
+      "get": {
+        "tags": ["Enrichment"],
+        "summary": "Enrich a single domain with decision-maker contacts",
+        "description": "## Overview\nEnrich a domain with decision-maker contacts by:\n1. Checking the internal Contacts DB first\n2. Falling back to Blitz API if not found\n3. Resolving emails via Contacts DB then Blitz\n4. Writing back found contacts to Contacts DB\n\n## Decision Maker Priority (Cascade)\nThe system searches for decision makers in this order:\n- **Tier 1**: Owner, CEO, Founder, Co-Founder, President\n- **Tier 2**: CMO, VP Marketing, VP Sales, Chief Revenue Officer\n- **Tier 3**: Director of Marketing, Director of Sales, Head of Marketing\n\n## Data Sources\nThe response includes `data_sources` showing where each piece of data came from:\n- `contacts_db`: Data found in the internal database\n- `blitz`: Data found via Blitz API (external)\n- `not_found`: No data found\n\n## Write-back\nAll found contacts are automatically synced back to the internal Contacts DB.",
+        "operationId": "enrich_single_domain",
+        "parameters": [
+          {
+            "name": "domain",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "google.com"
+            },
+            "description": "The domain to enrich (e.g., google.com, airbnb.com)"
+          },
+          {
+            "name": "max_results",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 5,
+              "minimum": 1,
+              "maximum": 10
+            },
+            "description": "Maximum number of contacts to return (default: 5)"
+          },
+          {
+            "name": "cascade_json",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "example": "[{\"include_title\": [\"CEO\", \"Founder\"], \"exclude_title\": [\"assistant\"]}]"
+            },
+            "description": "Custom cascade as JSON string to specify which job titles to prioritize"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful enrichment response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "domain": {
+                      "type": "string",
+                      "description": "The enriched domain",
+                      "example": "google.com"
+                    },
+                    "company_linkedin_url": {
+                      "type": "string",
+                      "description": "Company's LinkedIn URL",
+                      "example": "http://www.linkedin.com/company/google"
+                    },
+                    "contacts": {
+                      "type": "array",
+                      "description": "Array of decision-maker contacts",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "full_name": {
+                            "type": "string",
+                            "example": "John Doe"
+                          },
+                          "first_name": {
+                            "type": "string",
+                            "example": "John"
+                          },
+                          "last_name": {
+                            "type": "string",
+                            "example": "Doe"
+                          },
+                          "title": {
+                            "type": "string",
+                            "example": "CEO"
+                          },
+                          "email": {
+                            "type": "string",
+                            "example": "john@google.com"
+                          },
+                          "linkedin_url": {
+                            "type": "string",
+                            "example": "http://www.linkedin.com/in/johndoe"
+                          },
+                          "headline": {
+                            "type": "string",
+                            "example": "CEO at Google"
+                          },
+                          "location_city": {
+                            "type": "string",
+                            "example": "San Francisco"
+                          },
+                          "location_country": {
+                            "type": "string",
+                            "example": "US"
+                          },
+                          "icp_tier": {
+                            "type": "integer",
+                            "description": "ICP tier (1=highest priority)",
+                            "example": 1
+                          },
+                          "email_source": {
+                            "type": "string",
+                            "enum": ["contacts_db_email", "blitz_email", "not_found"],
+                            "description": "Source of the email data"
+                          }
+                        }
+                      }
+                    },
+                    "contact_count": {
+                      "type": "integer",
+                      "example": 5
+                    },
+                    "data_sources": {
+                      "type": "object",
+                      "properties": {
+                        "company_linkedin": {
+                          "type": "string",
+                          "enum": ["contacts_db", "blitz", "not_found"],
+                          "description": "Source of company LinkedIn URL"
+                        },
+                        "contacts": {
+                          "type": "string",
+                          "enum": ["contacts_db", "blitz", "not_found"],
+                          "description": "Source of decision maker contacts"
+                        },
+                        "emails": {
+                          "type": "string",
+                          "enum": ["contacts_db", "blitz", "not_found"],
+                          "description": "Source of email addresses"
+                        }
+                      }
+                    },
+                    "sync_to_contacts_db": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": ["success", "failed", "no_contacts_to_sync"]
+                        },
+                        "records_synced": {
+                          "type": "integer",
+                          "example": 4
+                        },
+                        "records_skipped": {
+                          "type": "integer",
+                          "example": 0
+                        },
+                        "records_failed": {
+                          "type": "integer",
+                          "example": 0
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request parameters",
+            "content": {
+              "application/json": {
+                "example": {
+                  "detail": "Invalid domain format"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "example": {
+                  "detail": "Authentication required."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Login to get JWT token",
+        "description": "Authenticate with email and password to receive a JWT token for API access.",
+        "operationId": "login",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "format": "email",
+                    "example": "user@example.com"
+                  },
+                  "password": {
+                    "type": "string",
+                    "format": "password",
+                    "example": "your_password"
+                  }
+                },
+                "required": ["email", "password"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Login successful - returns JWT token",
+            "content": {
+              "application/json": {
+                "example": {
+                  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                  "user_id": "550e8400-e29b-41d4-a716-446655440000",
+                  "email": "user@example.com",
+                  "is_admin": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid credentials",
+            "content": {
+              "application/json": {
+                "example": {
+                  "detail": "Invalid email or password."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/refresh": {
+      "post": {
+        "tags": ["Authentication"],
+        "summary": "Refresh JWT token",
+        "description": "Get a new JWT token with extended expiration. Requires valid existing token.",
+        "operationId": "refresh_token",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Token refreshed successfully",
+            "content": {
+              "application/json": {
+                "example": {
+                  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                  "user_id": "550e8400-e29b-41d4-a716-446655440000",
+                  "email": "user@example.com",
+                  "is_admin": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/me": {
+      "get": {
+        "tags": ["Authentication"],
+        "summary": "Get current user info",
+        "description": "Returns the profile of the currently authenticated user.",
+        "operationId": "get_current_user",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current user profile",
+            "content": {
+              "application/json": {
+                "example": {
+                  "user_id": "550e8400-e29b-41d4-a716-446655440000",
+                  "email": "user@example.com",
+                  "is_admin": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/enrichment/default-cascade": {
+      "get": {
+        "tags": ["Enrichment"],
+        "summary": "Get default decision-maker cascade",
+        "description": "Returns the default cascade configuration used for prioritizing decision-maker titles.",
+        "operationId": "get_default_cascade",
+        "responses": {
+          "200": {
+            "description": "Default cascade configuration",
+            "content": {
+              "application/json": {
+                "example": {
+                  "cascade": [
+                    {
+                      "include_title": ["Owner", "CEO", "Founder", "Co-Founder", "President"],
+                      "exclude_title": ["assistant", "intern", "junior", "associate"],
+                      "location": ["WORLD"]
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "JWT token obtained from /api/auth/login"
+      }
+    }
+  }
+}

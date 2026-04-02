@@ -12,6 +12,7 @@ import io
 import json
 import logging
 import os
+import re
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -30,6 +31,7 @@ from scraper import routes as scraper_routes
 from enrichment import routes as enrichment_routes
 from enrichment import blitz_client
 from enrichment import job_store
+from phone_enrichment import routes as phone_enrichment_routes
 
 load_dotenv()
 
@@ -74,6 +76,7 @@ app.add_middleware(
 # Include module routers
 app.include_router(scraper_routes.router, tags=["scraper"])
 app.include_router(enrichment_routes.router, tags=["enrichment"])
+app.include_router(phone_enrichment_routes.router, tags=["phone_enrichment"])
 
 # Create a shared router for common endpoints
 shared_router = APIRouter(prefix="/api", tags=["shared"])
@@ -160,6 +163,46 @@ async def refresh_token(current_user: dict = Depends(auth.get_current_user)):
         "email": current_user["email"],
         "is_admin": bool(current_user.get("is_admin", False)),
     }
+
+
+# ---------------------------------------------------------------------------
+# API Key Routes
+# ---------------------------------------------------------------------------
+
+class CreateApiKeyRequest(BaseModel):
+    name: str
+
+
+@shared_router.get("/api-keys")
+async def list_api_keys(
+    current_user: dict = Depends(auth.get_current_user),
+    include_key: bool = False,
+):
+    """List all API keys for the current user. Set include_key=true to get plaintext keys."""
+    keys = auth.get_api_keys(current_user["user_id"], include_key=include_key)
+    return {"api_keys": keys}
+
+
+@shared_router.post("/api-keys")
+async def create_api_key(
+    req: CreateApiKeyRequest,
+    current_user: dict = Depends(auth.get_current_user),
+):
+    """Create a new API key. The key is shown only once - make sure to save it!"""
+    result = auth.create_api_key(current_user["user_id"], req.name)
+    return result
+
+
+@shared_router.delete("/api-keys/{key_id}")
+async def delete_api_key(
+    key_id: str,
+    current_user: dict = Depends(auth.get_current_user),
+):
+    """Delete (revoke) an API key."""
+    deleted = auth.delete_api_key(key_id, current_user["user_id"])
+    if not deleted:
+        raise HTTPException(status_code=404, detail="API key not found.")
+    return {"message": "API key deleted successfully."}
 
 
 @shared_router.get("/quota")
@@ -316,12 +359,18 @@ async def chain_to_enrichment(
     # Convert cascade to JSON for storage
     cascade_json = json.dumps(cascade) if cascade else None
 
+    # Use the scraper job's search keyword for a user-friendly filename
+    query_slug = scraper_job.get("query", "scraper")
+    # Sanitize: lowercase, replace special chars with underscore, limit length
+    query_slug = re.sub(r'[^a-z0-9]+', '_', query_slug.lower().strip())[:30].rstrip('_')
+    filename = f"{query_slug}_{enrichment_job_id[:8]}.csv"
+
     enrichment_store = job_store.get_store()
     enrichment_store.create_enrichment_job(
         job_id=enrichment_job_id,
         user_id=current_user["user_id"],
         total=len(rows_with_domains),
-        filename=f"scraper_{scraper_job_id[:8]}.csv",
+        filename=filename,
         domain_col="website",
         parent_job_id=scraper_job_id,
         name_col=None,

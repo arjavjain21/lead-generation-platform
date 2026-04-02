@@ -167,6 +167,7 @@
                 <a class="nav-item" data-page="domains"><span class="nav-icon">📥</span>Upload Domains</a>
                 <a class="nav-item" data-page="search"><span class="nav-icon">🔍</span>Company Search</a>
                 <a class="nav-item" data-page="linkedin"><span class="nav-icon">🔗</span>LinkedIn Enrich</a>
+                <a class="nav-item" data-page="phones"><span class="nav-icon">📞</span>Phone Enrichment</a>
                 <a class="nav-item" data-page="jobs"><span class="nav-icon">⚡</span>Enrichment Jobs</a>
             </div>
             <div class="nav-section">
@@ -516,7 +517,51 @@
                 <div style="margin-top:1rem;"><button class="btn btn-success btn-sm" id="downloadLinkedinResults" disabled>Download CSV</button></div>
             </div>
         </div>
-        
+
+        <!-- Phone Number Enrichment Page -->
+        <div class="page" id="page-phones">
+            <div class="form-card">
+                <h3>📞 Phone Number Enrichment (via LinkedIn)</h3>
+                <div style="background:#fef3c7;border-left:4px solid #f59e0b;padding:12px;margin-bottom:1rem;border-radius:4px;font-size:0.85rem;color:#92400e;">
+                    <strong>Important:</strong> This feature looks up US phone numbers only using LinkedIn profile URLs.<br>
+                    <strong>How it works:</strong> Upload a CSV with LinkedIn URLs. We'll look up phone numbers for each profile.
+                </div>
+                <div class="upload-zone" id="phoneUploadZone">
+                    <input type="file" id="phoneFile" accept=".csv">
+                    <div class="upload-icon">📞</div>
+                    <div class="upload-text">Drop CSV file or click to browse</div>
+                    <div class="upload-hint">Required column: linkedin_url</div>
+                </div>
+                <div class="file-info" id="phoneFileInfo" style="display:none;">
+                    <span class="file-name" id="phoneFileName"></span>
+                    <span class="file-size" id="phoneFileSize"></span>
+                </div>
+            </div>
+
+            <div class="form-card" id="phoneOptions" style="display:none;">
+                <h3>⚙️ Options</h3>
+                <div class="filters">
+                    <div class="filter-group">
+                        <label>LinkedIn URL Column</label>
+                        <select id="phoneLinkedinCol"></select>
+                    </div>
+                </div>
+                <button class="btn btn-primary" id="startPhoneEnrichment">Enrich Phone Numbers</button>
+            </div>
+
+            <div class="form-card" id="phoneProgress" style="display:none;">
+                <h3>📊 Progress</h3>
+                <div class="stats-grid">
+                    <div class="stat-card"><div class="stat-value" id="phoneTotal">0</div><div class="stat-label">Total URLs</div></div>
+                    <div class="stat-card"><div class="stat-value" id="phoneProcessed">0</div><div class="stat-label">Processed</div></div>
+                    <div class="stat-card"><div class="stat-value" id="phoneFound">0</div><div class="stat-label">Phones Found</div></div>
+                </div>
+                <div class="progress-bar"><div class="progress-fill" id="phoneProgressBar" style="width:0%"></div></div>
+                <div class="progress-text"><span id="phoneProgressText">0%</span><span id="phoneStatus">Running...</span></div>
+                <div style="margin-top:1rem;"><button class="btn btn-success btn-sm" id="downloadPhoneResults" disabled>Download CSV</button></div>
+            </div>
+        </div>
+
         <!-- Jobs Page - Enrichment Jobs Only -->
         <div class="page" id="page-jobs">
             <div class="form-card">
@@ -1263,7 +1308,190 @@ https://linkedin.com/in/janesmith</pre>
             if (res.ok) { const data = await res.json(); currentJobId = data.job_id; document.getElementById('linkedinTotal').textContent = data.total; document.getElementById('linkedinProgress').style.display = 'block'; startProgressStream(currentJobId, 'linkedin'); }
             else alert('Failed to start');
         });
-        
+
+        // Phone Enrichment - File Upload
+        let phoneUploadId = null;
+        let phoneUploadedFile = null; // Store the file blob for job creation
+        let phoneColumns = []; // Store columns for column selection
+        const phoneUploadZone = document.getElementById('phoneUploadZone');
+        const phoneFileInput = document.getElementById('phoneFile');
+
+        phoneUploadZone.addEventListener('click', () => phoneFileInput.click());
+        phoneUploadZone.addEventListener('dragover', (e) => { e.preventDefault(); phoneUploadZone.classList.add('dragover'); });
+        phoneUploadZone.addEventListener('dragleave', () => phoneUploadZone.classList.remove('dragover'));
+        phoneUploadZone.addEventListener('drop', (e) => { e.preventDefault(); phoneUploadZone.classList.remove('dragover'); if (e.dataTransfer.files.length) handlePhoneFile(e.dataTransfer.files[0]); });
+        phoneFileInput.addEventListener('change', () => { if (phoneFileInput.files.length) handlePhoneFile(phoneFileInput.files[0]); });
+
+        function handlePhoneFile(file) {
+            // Show upload progress UI
+            phoneUploadZone.innerHTML = '<div class="upload-content"><div class="spinner"></div><div id="uploadProgressText">Preparing...</div><div id="uploadProgressBar" style="width:100%;height:4px;background:var(--gray-200);border-radius:2px;margin-top:8px;"><div id="uploadProgressFill" style="width:0%;height:100%;background:var(--primary);border-radius:2px;transition:width 0.3s;"></div></div></div>';
+            phoneUploadZone.style.pointerEvents = 'none';
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/enrichment/upload', true);
+            xhr.setRequestHeader('Authorization', 'Bearer ' + token);
+
+            xhr.upload.onprogress = (e) => {
+                if (e.lengthComputable) {
+                    const percent = Math.round((e.loaded / e.total) * 100);
+                    const progressFill = document.getElementById('uploadProgressFill');
+                    const progressText = document.getElementById('uploadProgressText');
+                    if (progressFill) progressFill.style.width = percent + '%';
+                    if (progressText) progressText.textContent = 'Uploading... ' + percent + '%';
+                }
+            };
+
+            xhr.onload = () => {
+                console.log('Upload XHR onload:', xhr.status, xhr.responseText.substring(0, 200));
+                if (xhr.status === 200) {
+                    try {
+                        const data = JSON.parse(xhr.responseText);
+                        phoneUploadId = data.upload_id;
+                        phoneUploadedFile = file;
+                        phoneColumns = data.columns;
+
+                        // Show file info
+                        phoneUploadZone.innerHTML = '<div class="upload-content"><span class="check-icon">&#10003;</span><div>' + (data.filename || 'unknown').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div><small>' + data.row_count + ' rows</small></div>';
+                        document.getElementById('phoneFileName').textContent = data.filename;
+                        document.getElementById('phoneFileSize').textContent = data.row_count + ' rows';
+                        document.getElementById('phoneFileInfo').style.display = 'flex';
+                        const colSelect = document.getElementById('phoneLinkedinCol');
+                        colSelect.innerHTML = '';
+                        // Find best column: prefer dm_linkedin_url, then linkedin_url, then any with linkedin
+                        let bestCol = null;
+                        data.columns.forEach(c => {
+                            const col = c.toLowerCase();
+                            if (col === 'dm_linkedin_url' || col === 'linkedin_url') {
+                                bestCol = c; // Highest priority
+                            } else if (!bestCol && col.includes('linkedin') && !col.includes('company')) {
+                                bestCol = c; // Second priority - person URLs
+                            } else if (!bestCol && col.includes('linkedin')) {
+                                bestCol = c; // Fallback - company URLs (will show warning)
+                            }
+                        });
+                        data.columns.forEach(c => {
+                            const opt = document.createElement('option');
+                            opt.value = c;
+                            opt.textContent = c + (c.toLowerCase().includes('company') && c.toLowerCase().includes('linkedin') ? ' (Company - not recommended)' : '');
+                            if (c === bestCol) opt.selected = true;
+                            colSelect.appendChild(opt);
+                        });
+                        // Show warning if company URL selected
+                        if (bestCol && bestCol.toLowerCase().includes('company')) {
+                            alert('Warning: You selected a Company LinkedIn URL column. Phone enrichment only works with Person URLs (dm_linkedin_url). Please select a person URL column if available.');
+                        }
+                        document.getElementById('phoneOptions').style.display = 'block';
+                        phoneUploadZone.style.pointerEvents = 'auto';
+                    } catch (e) {
+                        console.error('Upload parse error:', e);
+                        alert('Error processing response: ' + e.message);
+                        resetPhoneUploadZone();
+                    }
+                } else {
+                    console.log('Upload failed with status:', xhr.status);
+                    resetPhoneUploadZone();
+                    let errMsg = 'Upload failed (status ' + xhr.status + ')';
+                    try { errMsg = JSON.parse(xhr.responseText).detail || errMsg; } catch(e) {}
+                    alert(errMsg);
+                }
+            };
+
+            xhr.onerror = () => {
+                console.error('Upload network error');
+                resetPhoneUploadZone();
+                alert('Upload failed: Network error');
+            };
+
+            // Timeout after 10 minutes
+            xhr.timeout = 600000;
+            xhr.ontimeout = () => {
+                console.error('Upload timed out');
+                resetPhoneUploadZone();
+                alert('Upload timed out after 10 minutes');
+            };
+
+            xhr.send(formData);
+        }
+
+        function resetPhoneUploadZone() {
+            phoneUploadZone.innerHTML = '<div class="upload-content"><span class="upload-icon">&#8679;</span><div>Drop CSV here or click to upload</div><small>Must have LinkedIn URL column</small></div>';
+            phoneUploadZone.style.pointerEvents = 'auto';
+        }
+
+        // Phone Enrichment - Start
+        let currentPhoneJobId = null;
+        document.getElementById('startPhoneEnrichment').addEventListener('click', async () => {
+            const linkedinCol = document.getElementById('phoneLinkedinCol').value;
+            if (!phoneUploadedFile) { alert('Please upload a file first'); return; }
+            const btn = document.getElementById('startPhoneEnrichment');
+            btn.disabled = true;
+            btn.innerHTML = '<div class="spinner" style="width:16px;height:16px;border-width:2px;"></div> Starting...';
+            const formData = new FormData();
+            formData.append('file', phoneUploadedFile);
+            formData.append('linkedin_col', linkedinCol);
+            const res = await fetch('/api/phone-enrichment/jobs', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token }, body: formData });
+            if (res.ok) {
+                const data = await res.json();
+                currentPhoneJobId = data.job_id;
+                document.getElementById('phoneTotal').textContent = data.total;
+                document.getElementById('phoneProgress').style.display = 'block';
+                btn.disabled = false;
+                btn.innerHTML = 'Start Enrichment';
+                startPhoneProgressStream(currentPhoneJobId);
+            } else {
+                btn.disabled = false;
+                btn.innerHTML = 'Start Enrichment';
+                const err = await res.json();
+                alert('Failed to start: ' + (err.detail || 'Unknown error'));
+            }
+        });
+
+        // Phone Enrichment - Progress Stream (using polling instead of SSE)
+        let phonePollInterval = null;
+        function startPhoneProgressStream(jobId) {
+            if (phonePollInterval) clearInterval(phonePollInterval);
+            phonePollInterval = setInterval(async () => {
+                try {
+                    const res = await fetch('/api/phone-enrichment/jobs/' + jobId, { headers: { 'Authorization': 'Bearer ' + token } });
+                    if (!res.ok) return;
+                    const data = await res.json();
+                    const processed = data.processed || 0, total = data.total || 1, percent = Math.round((processed/total)*100);
+                    document.getElementById('phoneProcessed').textContent = processed;
+                    document.getElementById('phoneFound').textContent = data.phones_found || 0;
+                    document.getElementById('phoneProgressBar').style.width = percent + '%';
+                    document.getElementById('phoneProgressText').textContent = percent + '%';
+                    if (data.status === 'done' || data.status === 'failed') {
+                        clearInterval(phonePollInterval);
+                        document.getElementById('phoneStatus').textContent = data.status === 'done' ? 'Completed' : 'Failed: ' + (data.error || 'Unknown error');
+                        document.getElementById('downloadPhoneResults').disabled = data.status !== 'done';
+                    }
+                } catch (e) {
+                    console.error('Poll error:', e);
+                }
+            }, 2000);
+        }
+
+        // Phone Enrichment - Download
+        document.getElementById('downloadPhoneResults').addEventListener('click', async () => {
+            if (!currentPhoneJobId) return;
+            const btn = document.getElementById('downloadPhoneResults');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;"></span> Downloading...';
+            try {
+                const res = await fetch('/api/phone-enrichment/jobs/' + currentPhoneJobId + '/download', { headers: { 'Authorization': 'Bearer ' + token } });
+                if (!res.ok) { alert('Download failed'); btn.disabled = false; btn.textContent = 'Download CSV'; return; }
+                const blob = await res.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a'); a.href = url; a.download = 'phone_enriched.csv';
+                document.body.appendChild(a); a.click(); window.URL.revokeObjectURL(url); a.remove();
+            } catch (e) { alert('Download error: ' + e.message); }
+            btn.disabled = false;
+            btn.textContent = 'Download CSV';
+        });
+
         // Progress Stream
         function startProgressStream(jobId, type) {
             if (eventSource) eventSource.close();

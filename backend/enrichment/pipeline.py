@@ -2,14 +2,18 @@
 Enrichment pipeline orchestrator.
 
 Per-domain workflow:
-  1. Blitz: domain → company LinkedIn URL
-  2. Blitz: company LinkedIn URL → waterfall ICP (up to 5 decision makers)
-  3. For each person:
+  1. Contacts DB: domain → company LinkedIn URL (primary, free)
+  2. Blitz fallback: domain → company LinkedIn URL (if Contacts DB fails)
+  3. Contacts DB: company → decision makers with emails (primary, free)
+  4. Blitz fallback: decision makers via waterfall ICP (if Contacts DB quality insufficient)
+  5. For each person:
        a. Blitz: person LinkedIn URL → work email
        b. Fallback: Contacts DB by LinkedIn URL
        c. Fallback: Contacts DB by name + domain
-  4. If domain_to_linkedin fails AND input has name columns:
-       d. Contacts DB by name + domain (directly)
+  6. If no decision makers found: BetterEnrich → generic company email (fallback)
+  7. If no email from above: Prospeo → person/company enrichment (final fallback)
+  8. If domain_to_linkedin fails AND input has name columns:
+       Contacts DB by name + domain (directly)
 
 Supports incremental CSV writes for partial downloads.
 """
@@ -26,8 +30,35 @@ import httpx
 
 from . import blitz_client
 from . import contacts_client
+from . import better_enrich_client
+from . import prospeo_client
 
 logger = logging.getLogger(__name__)
+
+
+# Valid provider values for force_provider parameter
+VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "better_enrich", "prospeo"})
+
+
+def _should_skip_provider(provider: str, force_provider: Optional[str]) -> bool:
+    """
+    Determine if a provider should be skipped based on force_provider setting.
+
+    Args:
+        provider: The current provider being considered (e.g., "contacts_db", "blitz")
+        force_provider: The forced provider from request (or None for normal cascade)
+
+    Returns:
+        True if the provider should be skipped, False otherwise
+
+    When force_provider is None, all providers are used (normal cascade).
+    When force_provider is set, only that provider is used.
+    """
+    if not force_provider:
+        return False  # No force, use all providers
+    result = provider != force_provider
+    logger.debug("_should_skip_provider(provider=%s, force_provider=%s) = %s", provider, force_provider, result)
+    return result
 
 # Max concurrent Blitz calls to avoid hammering the API
 DOMAIN_CONCURRENCY = 5
@@ -58,6 +89,11 @@ SOURCE_CONTACTS_DB_CONTACTS = "contacts_db_contacts"      # Decision makers from
 SOURCE_CONTACTS_DB_EMAIL = "contacts_db_email"            # Email from Contacts DB
 SOURCE_BLITZ_LINKEDIN = "blitz_linkedin"                  # Company LinkedIn from Blitz
 SOURCE_BLITZ_CONTACTS = "blitz_contacts"                  # Decision makers from Blitz
+SOURCE_BLITZ_EMAIL = "blitz_email"                        # Email from Blitz
+SOURCE_BETTER_ENRICH_COMPANY = "better_enrich_company"    # Generic company email from BetterEnrich
+SOURCE_BETTER_ENRICH_PERSON = "better_enrich_person"      # Person email from BetterEnrich
+SOURCE_PROSPEO = "prospeo"                               # Email/data from Prospeo
+SOURCE_PROSPEO_PERSON = "prospeo_person"                  # Person email from Prospeo
 
 ENRICHED_COLUMNS = [
     "company_linkedin_url",
@@ -136,6 +172,37 @@ def _error_row(base_row: dict[str, Any], company_linkedin_url: str = "") -> Outp
     return row
 
 
+def _company_email_row(
+    base_row: dict[str, Any],
+    company_linkedin_url: str,
+    email: str,
+    email_source: str,
+) -> OutputRow:
+    """Create a row with generic company email from BetterEnrich."""
+    row = {**base_row, **_empty_enriched()}
+    row["company_linkedin_url"] = company_linkedin_url
+    row["dm_email"] = email
+    row["dm_email_source"] = email_source
+    row["row_status"] = STATUS_ENRICHED
+    return row
+
+
+def _prospeo_company_row(
+    base_row: dict[str, Any],
+    company_linkedin_url: str,
+    company_data: dict[str, Any],
+    source: str,
+) -> OutputRow:
+    """Create a row with company data from Prospeo."""
+    row = {**base_row, **_empty_enriched()}
+    row["company_linkedin_url"] = company_data.get("linkedin_url", company_linkedin_url) or company_linkedin_url
+    row["row_status"] = STATUS_ENRICHED
+    row["dm_email_source"] = source
+    # Store company data in a format that can be synced later
+    row["_prospeo_company"] = company_data
+    return row
+
+
 # ---------------------------------------------------------------------------
 # Per-person email resolution
 # ---------------------------------------------------------------------------
@@ -147,21 +214,29 @@ async def _resolve_email_for_person(
     domain: str,
     input_full_name: str,
     email_semaphore: asyncio.Semaphore,
+    force_provider: Optional[str] = None,
 ) -> tuple[str, str]:
     """
     Returns (email, source).
-    Priority (Contacts DB FIRST):
+    Priority cascade:
       1. Contacts DB by LinkedIn URL
       2. Contacts DB by person's name + domain
       3. Blitz work email from LinkedIn URL
-      4. Contacts DB by name + domain (name from input row, if available)
+      4. BetterEnrich work email (person lookup)
+      5. Prospeo person enrichment
+      6. Contacts DB by name + domain (name from input row, if different)
+
+    Args:
+        force_provider: If set, only use that specific provider.
     """
     linkedin_url = person.get("linkedin_url", "")
     full_name = person.get("full_name", "")
+    first_name = person.get("first_name", "")
+    last_name = person.get("last_name", "")
 
     async with email_semaphore:
         # Step 1: Contacts DB by LinkedIn URL (PRIMARY)
-        if linkedin_url:
+        if linkedin_url and not _should_skip_provider("contacts_db", force_provider):
             try:
                 contacts_data = await contacts_client.person_by_linkedin(
                     contacts_client_inst, linkedin_url
@@ -173,7 +248,7 @@ async def _resolve_email_for_person(
                 logger.warning("Contacts DB LinkedIn lookup failed for %s: %s", linkedin_url, e)
 
         # Step 2: Contacts DB by person's name + domain
-        if full_name and domain:
+        if full_name and domain and not _should_skip_provider("contacts_db", force_provider):
             try:
                 contacts_data = await contacts_client.person_by_name_and_domain(
                     contacts_client_inst, full_name, domain
@@ -185,16 +260,46 @@ async def _resolve_email_for_person(
                 logger.warning("Contacts DB name+domain lookup failed for %s / %s: %s", full_name, domain, e)
 
         # Step 3: Blitz email enrichment (FALLBACK)
-        if linkedin_url:
+        if linkedin_url and not _should_skip_provider("blitz", force_provider):
             try:
                 result = await blitz_client.find_work_email(blitz_client_inst, linkedin_url)
                 if result.get("found") and result.get("email"):
-                    return result["email"], SOURCE_BLITZ
+                    return result["email"], SOURCE_BLITZ_EMAIL
             except Exception as e:
                 logger.warning("Blitz email lookup failed for %s: %s", linkedin_url, e)
 
-        # Step 4: Contacts DB by input row name + domain (if different from person name)
-        if input_full_name and input_full_name != full_name and domain:
+        # Step 4: BetterEnrich person email (NEW - was missing)
+        if full_name and domain and not _should_skip_provider("better_enrich", force_provider):
+            try:
+                result = await better_enrich_client.find_work_email_v2(
+                    blitz_client_inst, full_name, domain
+                )
+                if result and result.get("data", {}).get("email"):
+                    email = result["data"]["email"]
+                    return email, SOURCE_BETTER_ENRICH_PERSON
+            except Exception as e:
+                logger.warning("BetterEnrich person lookup failed for %s / %s: %s", full_name, domain, e)
+
+        # Step 5: Prospeo person enrichment (NEW - was missing)
+        if not _should_skip_provider("prospeo", force_provider):
+            try:
+                result = await prospeo_client.enrich_person(
+                    blitz_client_inst,
+                    linkedin_url=linkedin_url,
+                    full_name=full_name,
+                    first_name=first_name,
+                    last_name=last_name,
+                    company_website=domain,
+                )
+                # Use helper to extract email from Prospeo result
+                email = prospeo_client.extract_email_from_prospeo(result)
+                if email:
+                    return email, SOURCE_PROSPEO_PERSON
+            except Exception as e:
+                logger.warning("Prospeo person enrichment failed for %s / %s: %s", full_name, domain, e)
+
+        # Step 6: Contacts DB by input row name + domain (if different from person name)
+        if input_full_name and input_full_name != full_name and domain and not _should_skip_provider("contacts_db", force_provider):
             try:
                 contacts_data = await contacts_client.person_by_name_and_domain(
                     contacts_client_inst, input_full_name, domain
@@ -222,9 +327,23 @@ async def _enrich_domain(
     max_results: int,
     domain_semaphore: asyncio.Semaphore,
     email_semaphore: asyncio.Semaphore,
+    skip_contacts_db: bool = False,
+    force_provider: Optional[str] = None,  # "contacts_db", "blitz", "better_enrich", "prospeo"
 ) -> list[OutputRow]:
+    """
+    Enrich a domain with decision-maker contacts.
+
+    Args:
+        force_provider: If set, only use that specific provider.
+    """
+    logger.info("_enrich_domain called with force_provider=%s for domain=%s", force_provider, domain)
     company_linkedin_url = ""
     linkedin_source = ""
+
+    # Determine if we should skip Contacts DB for contacts (not for company lookup)
+    # Skip Contacts DB if custom cascade is provided (indicated by skip_contacts_db=True)
+    # or if cascade is not the default
+    use_custom_cascade = skip_contacts_db or cascade != blitz_client.DEFAULT_CASCADE
 
     async with domain_semaphore:
         # Step 1: domain → company LinkedIn URL (Contacts DB FIRST)
@@ -250,7 +369,7 @@ async def _enrich_domain(
 
     if not company_linkedin_url:
         # No company LinkedIn found — try fallback if we have a name
-        if full_name:
+        if full_name and not _should_skip_provider("contacts_db", force_provider):
             try:
                 contacts_data = await contacts_client.person_by_name_and_domain(
                     contacts_http, full_name, domain
@@ -278,47 +397,54 @@ async def _enrich_domain(
                 logger.warning("Contacts DB fallback for no-linkedin failed: %s", e)
         return [_no_linkedin_row(base_row)]
 
-    # Step 2: Get decision makers (Contacts DB FIRST)
+    # Step 2: Get decision makers (Contacts DB FIRST, unless custom cascade or force_provider provided)
     persons: list[dict[str, Any]] = []
     contacts_db_quality_met = False
 
-    async with domain_semaphore:
-        # Try Contacts DB first
-        try:
-            contacts_contacts = await contacts_client.company_contacts_enriched(
-                contacts_http, domain, limit=max_results
-            )
-            if contacts_contacts and len(contacts_contacts) > 0:
-                # Quality check: need at least 1 decision maker AND 1 email
-                emails_count = sum(1 for c in contacts_contacts if c.get("email"))
-                if len(contacts_contacts) >= 1 and emails_count >= 1:
-                    # Convert Contacts DB format to Blitz format for compatibility
-                    persons = []
-                    for contact in contacts_contacts[:max_results]:
-                        person_dict = {
-                            "person": {
-                                "first_name": contact.get("first_name", ""),
-                                "last_name": contact.get("last_name", ""),
-                                "full_name": contact.get("full_name", ""),
-                                "headline": contact.get("headline", ""),
-                                "linkedin_url": contact.get("linkedin_url", ""),
-                                "location": {
-                                    "city": contact.get("city", ""),
-                                    "country_code": contact.get("country_code", ""),
-                                },
-                                "experiences": [],
-                            },
-                            "icp": 0,  # Contacts DB doesn't provide ICP scoring
-                        }
-                        persons.append(person_dict)
+    skip_contacts = _should_skip_provider("contacts_db", force_provider)
+    logger.info("Step 2: force_provider=%s, use_custom_cascade=%s, skip_contacts=%s",
+                force_provider, use_custom_cascade, skip_contacts)
 
-                    contacts_db_quality_met = True
-                    logger.debug("Using Contacts DB for %d decision makers from %s", len(persons), domain)
-        except Exception as e:
-            logger.warning("Contacts DB contacts lookup failed for %s: %s", domain, e)
+    async with domain_semaphore:
+        # Skip Contacts DB contacts lookup if custom cascade is provided OR if force_provider is set
+        if not use_custom_cascade and not skip_contacts:
+            logger.info("Using Contacts DB for decision makers")
+            # Try Contacts DB first
+            try:
+                contacts_contacts = await contacts_client.company_contacts_enriched(
+                    contacts_http, domain, limit=max_results
+                )
+                if contacts_contacts and len(contacts_contacts) > 0:
+                    # Quality check: need at least 1 decision maker AND 1 email
+                    emails_count = sum(1 for c in contacts_contacts if c.get("email"))
+                    if len(contacts_contacts) >= 1 and emails_count >= 1:
+                        # Convert Contacts DB format to Blitz format for compatibility
+                        persons = []
+                        for contact in contacts_contacts[:max_results]:
+                            person_dict = {
+                                "person": {
+                                    "first_name": contact.get("first_name", ""),
+                                    "last_name": contact.get("last_name", ""),
+                                    "full_name": contact.get("full_name", ""),
+                                    "headline": contact.get("headline", ""),
+                                    "linkedin_url": contact.get("linkedin_url", ""),
+                                    "location": {
+                                        "city": contact.get("city", ""),
+                                        "country_code": contact.get("country_code", ""),
+                                    },
+                                    "experiences": [],
+                                },
+                                "icp": 0,  # Contacts DB doesn't provide ICP scoring
+                            }
+                            persons.append(person_dict)
+
+                        contacts_db_quality_met = True
+                        logger.debug("Using Contacts DB for %d decision makers from %s", len(persons), domain)
+            except Exception as e:
+                logger.warning("Contacts DB contacts lookup failed for %s: %s", domain, e)
 
         # Fallback: Blitz API if Contacts DB didn't meet quality threshold
-        if not contacts_db_quality_met:
+        if not contacts_db_quality_met and not _should_skip_provider("blitz", force_provider):
             try:
                 icp_result = await blitz_client.waterfall_icp_search(
                     blitz_http, company_linkedin_url, cascade, max_results
@@ -330,6 +456,44 @@ async def _enrich_domain(
                 return [_error_row(base_row, company_linkedin_url)]
 
     if not persons:
+        # No decision makers found — try BetterEnrich for generic company email
+        if not _should_skip_provider("better_enrich", force_provider):
+            try:
+                be_result = await better_enrich_client.find_company_email(
+                    blitz_http,
+                    website=domain,
+                )
+                if be_result and be_result.get("email"):
+                    logger.info("BetterEnrich company email found for %s: %s", domain, be_result.get("email"))
+                    return [_company_email_row(
+                        base_row,
+                        company_linkedin_url,
+                        be_result.get("email", ""),
+                        SOURCE_BETTER_ENRICH_COMPANY,
+                    )]
+            except Exception as e:
+                logger.debug("BetterEnrich company email lookup failed for %s: %s", domain, e)
+
+        # Final fallback: try Prospeo for company enrichment
+        if not _should_skip_provider("prospeo", force_provider):
+            try:
+                prospeo_result = await prospeo_client.enrich_company(
+                    blitz_http,
+                    company_website=domain,
+                )
+                if prospeo_result:
+                    company_data = prospeo_result.get("company", {})
+                    if company_data:
+                        logger.info("Prospeo found company data for %s", domain)
+                        return [_prospeo_company_row(
+                            base_row,
+                            company_linkedin_url,
+                            company_data,
+                            SOURCE_PROSPEO,
+                        )]
+            except Exception as e:
+                logger.debug("Prospeo company lookup failed for %s: %s", domain, e)
+
         return [_no_contacts_row(base_row, company_linkedin_url)]
 
     # Step 3: resolve email for each person concurrently
@@ -341,6 +505,7 @@ async def _enrich_domain(
             domain,
             full_name,
             email_semaphore,
+            force_provider=force_provider,
         )
         for item in persons
     ]
@@ -388,8 +553,21 @@ async def run_pipeline(
     domain_semaphore = asyncio.Semaphore(DOMAIN_CONCURRENCY)
     email_semaphore = asyncio.Semaphore(EMAIL_CONCURRENCY)
 
-    blitz_http = httpx.AsyncClient()
-    contacts_http = httpx.AsyncClient()
+    # Connection pooling with limits to prevent resource exhaustion
+    # Keepalive connections are reused, max_connections limits total open connections
+    http_limits = httpx.Limits(
+        max_keepalive_connections=20,
+        max_connections=100,
+        keepalive_expiry=30.0,
+    )
+    blitz_http = httpx.AsyncClient(
+        limits=http_limits,
+        timeout=httpx.Timeout(30.0, connect=10.0),
+    )
+    contacts_http = httpx.AsyncClient(
+        limits=http_limits,
+        timeout=httpx.Timeout(30.0, connect=10.0),
+    )
 
     all_output: list[OutputRow] = []
     total = len(rows)

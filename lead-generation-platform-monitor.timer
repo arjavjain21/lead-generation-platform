@@ -1,0 +1,12 @@
+[Unit]
+Description=Lead Generation Platform - Monitoring Timer
+Requires=lead-generation-platform-monitor.service
+
+[Timer]
+# Run every 15 minutes
+OnCalendar=*:0/15
+# Also run 5 minutes after boot
+OnBootSec=5min
+
+[Install]
+WantedBy=timers.target

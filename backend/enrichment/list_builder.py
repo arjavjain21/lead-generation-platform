@@ -22,8 +22,32 @@ import httpx
 
 from . import blitz_client
 from . import contacts_client
+from . import prospeo_client
 
 logger = logging.getLogger(__name__)
+
+
+# Valid provider values for force_provider parameter
+VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "better_enrich", "prospeo"})
+
+
+def _should_skip_provider(provider: str, force_provider: Optional[str]) -> bool:
+    """
+    Determine if a provider should be skipped based on force_provider setting.
+
+    Args:
+        provider: The current provider being considered (e.g., "contacts_db", "blitz")
+        force_provider: The forced provider from request (or None for normal cascade)
+
+    Returns:
+        True if the provider should be skipped, False otherwise
+
+    When force_provider is None, all providers are used (normal cascade).
+    When force_provider is set, only that provider is used.
+    """
+    if not force_provider:
+        return False  # No force, use all providers
+    return provider != force_provider  # Skip if not the forced provider
 
 # Concurrency settings - increased for better throughput
 DOMAIN_CONCURRENCY = 25  # Increased from 5 for faster domain processing
@@ -56,6 +80,7 @@ SOURCE_CONTACTS_DB_DOMAIN = "contacts_db_domain"
 SOURCE_BLITZ_LINKEDIN = "blitz_linkedin"
 SOURCE_BLITZ_NAME = "blitz_name"
 SOURCE_BLITZ_DOMAIN = "blitz_domain"
+SOURCE_PROSPEO = "prospeo"
 SOURCE_NOT_FOUND = "not_found"
 
 
@@ -109,11 +134,15 @@ async def _resolve_person_email(
     person_data: dict[str, Any],
     domain: str,
     input_full_name: str = "",
+    force_provider: Optional[str] = None,
 ) -> tuple[str, str, str, str]:
     """
     Resolve email for a person using Contacts DB first, then Blitz fallback.
 
     Returns: (email, phone, source, verified)
+
+    Args:
+        force_provider: If set, only use that specific provider.
     """
     linkedin_url = person_data.get("linkedin_url", "")
     full_name = person_data.get("full_name", "")
@@ -121,7 +150,7 @@ async def _resolve_person_email(
     last_name = person_data.get("last_name", "")
 
     # Strategy 1: Contacts DB by LinkedIn URL (PRIMARY - FREE)
-    if linkedin_url:
+    if linkedin_url and not _should_skip_provider("contacts_db", force_provider):
         try:
             contacts_data = await contacts_client.person_by_linkedin(
                 contacts_http, linkedin_url
@@ -136,7 +165,7 @@ async def _resolve_person_email(
 
     # Strategy 2: Contacts DB by name + domain (FREE)
     search_name = full_name or input_full_name
-    if search_name and domain:
+    if search_name and domain and not _should_skip_provider("contacts_db", force_provider):
         try:
             contacts_data = await contacts_client.person_by_name_and_domain(
                 contacts_http, search_name, domain
@@ -149,7 +178,7 @@ async def _resolve_person_email(
             logger.debug("Contacts DB name+domain lookup failed: %s", e)
 
     # Strategy 3: Blitz API by LinkedIn URL (PAID)
-    if linkedin_url:
+    if linkedin_url and not _should_skip_provider("blitz", force_provider):
         try:
             result = await blitz_client.find_work_email(blitz_http, linkedin_url)
             if result.get("found") and result.get("email"):
@@ -161,7 +190,7 @@ async def _resolve_person_email(
             logger.debug("Blitz email lookup failed: %s", e)
 
     # Strategy 4: Blitz person enrich by name + domain (PAID)
-    if search_name and domain:
+    if search_name and domain and not _should_skip_provider("blitz", force_provider):
         try:
             result = await blitz_client.person_enrich(
                 blitz_http,
@@ -188,6 +217,26 @@ async def _resolve_person_email(
         except Exception as e:
             logger.debug("Blitz person enrich failed: %s", e)
 
+    # Strategy 5: Prospeo as final fallback (PAID)
+    if not _should_skip_provider("prospeo", force_provider):
+        try:
+            prospeo_result = await prospeo_client.enrich_person(
+                blitz_http,
+                linkedin_url=linkedin_url if linkedin_url else None,
+                full_name=search_name if search_name else None,
+                company_website=domain if domain else None,
+            )
+            if prospeo_result:
+                email = prospeo_client.extract_email_from_prospeo(prospeo_result)
+                person_data = prospeo_result.get("person", {})
+                verified = prospeo_client.extract_verified_status(prospeo_result)
+                phone = person_data.get("mobile", {}).get("mobile", "") if person_data.get("mobile") else ""
+                if email:
+                    logger.debug("Prospeo found email for %s", search_name or linkedin_url)
+                    return email, phone, SOURCE_PROSPEO, verified
+        except Exception as e:
+            logger.debug("Prospeo person enrich failed: %s", e)
+
     return "", "", SOURCE_NOT_FOUND, "unknown"
 
 
@@ -200,11 +249,15 @@ async def _enrich_single_domain(
     include_generic_emails: bool = True,
     domain_semaphore: asyncio.Semaphore = None,
     email_semaphore: asyncio.Semaphore = None,
+    force_provider: Optional[str] = None,
 ) -> list[OutputRow]:
     """
     Enrich a single domain: get company info, generic emails, and decision makers.
 
     Returns list of output rows (one per decision maker + generic emails if requested).
+
+    Args:
+        force_provider: If set, only use that specific provider.
     """
     if not domain_semaphore:
         domain_semaphore = asyncio.Semaphore(DOMAIN_CONCURRENCY)
@@ -340,6 +393,7 @@ async def _enrich_single_domain(
                 contacts_http,
                 person,
                 domain,
+                force_provider=force_provider,
             )
         )
 
@@ -385,6 +439,7 @@ async def run_domain_enrichment(
     max_decision_makers: int = 5,
     include_generic_emails: bool = True,
     on_progress: Callable[[dict[str, Any]], None] = None,
+    force_provider: Optional[str] = None,
 ) -> list[OutputRow]:
     """
     Main entry point for Flow 1: Domain → Generic Emails + Decision Makers
@@ -398,6 +453,7 @@ async def run_domain_enrichment(
         max_decision_makers: Max decision makers per company (default 5)
         include_generic_emails: Whether to include generic emails
         on_progress: Callback for progress updates
+        force_provider: If set, only use that specific provider.
 
     Returns:
         List of enriched output rows
@@ -427,6 +483,7 @@ async def run_domain_enrichment(
                 include_generic_emails,
                 domain_semaphore,
                 email_semaphore,
+                force_provider=force_provider,
             )
 
         if on_progress:
@@ -527,6 +584,7 @@ async def enrich_companies_from_search(
     contacts_http: httpx.AsyncClient,
     max_decision_makers: int = 5,
     on_progress: Callable[[dict[str, Any]], None] = None,
+    force_provider: Optional[str] = None,
 ) -> list[OutputRow]:
     """
     Enrich a list of company search results with decision makers.
@@ -537,6 +595,7 @@ async def enrich_companies_from_search(
         contacts_http: Contacts DB client
         max_decision_makers: Max DMs per company
         on_progress: Progress callback
+        force_provider: If set, only use that specific provider.
 
     Returns:
         List of enriched output rows
@@ -567,6 +626,7 @@ async def enrich_companies_from_search(
             max_decision_makers,
             True,
             domain_semaphore,
+            force_provider=force_provider,
         )
 
         if on_progress:

@@ -52,24 +52,28 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS jobs (
             job_id        TEXT PRIMARY KEY,
             user_id       TEXT,
-            job_type      TEXT NOT NULL,  -- 'scraper' | 'enrichment'
+            job_type      TEXT NOT NULL,  -- 'scraper' | 'enrichment' | 'phone_enrichment'
             status        TEXT NOT NULL DEFAULT 'queued',  -- queued | running | done | failed
             parent_job_id TEXT,          -- FK to jobs.job_id (for chaining)
 
-            -- Scraper-specific fields (NULL for enrichment jobs)
+            -- Scraper-specific fields (NULL for enrichment/phone_enrichment jobs)
             query         TEXT,
             regions       TEXT,          -- JSON
             total_tasks   INTEGER,
             done_tasks    INTEGER,
             result_count  INTEGER,
 
-            -- Enrichment-specific fields (NULL for scraper jobs)
+            -- Enrichment-specific fields (NULL for scraper/phone_enrichment jobs)
             total         INTEGER,       -- Total rows to enrich
             processed     INTEGER,       -- Rows processed
             emails_found  INTEGER,
             filename      TEXT,
             domain_col    TEXT,
             original_filename TEXT,     -- Original uploaded filename (for display)
+
+            -- Phone Enrichment-specific fields (NULL for scraper/enrichment jobs)
+            linkedin_col  TEXT,         -- Column name containing LinkedIn URLs
+            phones_found  INTEGER,     -- Number of phones found
 
             -- Common fields
             error         TEXT,
@@ -109,6 +113,37 @@ def init_db() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_daily_api_requests_user_date
             ON daily_api_requests (user_id, date);
+
+        -- API Keys table for programmatic access
+        CREATE TABLE IF NOT EXISTS api_keys (
+            key_id        TEXT PRIMARY KEY,
+            user_id       TEXT NOT NULL,
+            key_hash      TEXT NOT NULL,
+            key_plain     TEXT NOT NULL,  -- Plain text key for viewing (in production, encrypt this!)
+            name          TEXT NOT NULL,
+            created_at    TEXT NOT NULL,
+            last_used_at  TEXT,
+            is_active     INTEGER NOT NULL DEFAULT 1,
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_api_keys_user
+            ON api_keys (user_id);
+
+        CREATE INDEX IF NOT EXISTS idx_api_keys_hash
+            ON api_keys (key_hash);
+
+        -- Phone Enrichments cache table (stores phone lookup results for caching)
+        CREATE TABLE IF NOT EXISTS phone_enrichments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            linkedin_url TEXT UNIQUE NOT NULL,
+            phone_number TEXT,
+            phone_found INTEGER NOT NULL,  -- 1 = true, 0 = false
+            enriched_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_phone_enrichments_url
+            ON phone_enrichments (linkedin_url);
         """
     )
     c.commit()

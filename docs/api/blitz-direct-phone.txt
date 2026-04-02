@@ -1,0 +1,131 @@
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.blitz-api.ai/llms.txt
+> Use this file to discover all available pages before exploring further.
+
+# Find Mobile & Direct Phone
+
+> Retrieve a direct mobile phone number from a LinkedIn profile URL.
+
+⚠️ **US contacts only** — no international phone coverage.
+
+Requires **Unlimited Phone Numbers** plan ($599/mo).
+
+
+
+## OpenAPI
+
+````yaml /api-reference/v2.openapi.json post /v2/enrichment/phone
+openapi: 3.1.0
+info:
+  title: Blitz API Reference
+  version: 2.0.0
+  description: >-
+    Welcome to the Blitz API Reference.
+
+
+    Use this interactive documentation to explore and test every v2 endpoint.
+    Authentication is required via the `x-api-key` header.
+
+
+    **Base URL**: `https://api.blitz-api.ai`
+
+
+    **Rate limit**: 5 requests per second (all plans).
+
+
+    **Pricing**: All endpoints are unlimited on paid plans ($399+/mo). Free
+    trial accounts receive 1,000 credits.
+servers:
+  - url: https://api.blitz-api.ai
+    description: Production server
+security: []
+tags:
+  - name: Account
+    description: API key info and health check.
+  - name: Waterfall ICP Search
+    description: Priority-based cascade search — find the best-match contact at a company.
+  - name: Employee Finder
+    description: Browse all employees at a single company with filters.
+  - name: Company Search
+    description: Search companies by industry, size, location, and keywords.
+  - name: People Enrichment
+    description: Enrich contacts with verified emails, phones, and reverse lookups.
+  - name: Company Enrichment
+    description: Enrich companies and resolve domain ↔ LinkedIn URL.
+  - name: Utilities
+    description: Helper endpoints (current date/time).
+paths:
+  /v2/enrichment/phone:
+    post:
+      tags:
+        - People Enrichment
+      summary: Find Mobile & Direct Phone
+      description: |-
+        Retrieve a direct mobile phone number from a LinkedIn profile URL.
+
+        ⚠️ **US contacts only** — no international phone coverage.
+
+        Requires **Unlimited Phone Numbers** plan ($599/mo).
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                person_linkedin_url:
+                  type: string
+                  example: https://www.linkedin.com/in/antoine-blitz-5581b7373
+              required:
+                - person_linkedin_url
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                example:
+                  found: true
+                  phone: '+1234567890'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                type: object
+                example:
+                  message: >-
+                    Missing API key, please provide a valid API key in the
+                    'x-api-key' header
+        '402':
+          description: Payment Required
+          content:
+            application/json:
+              schema:
+                type: object
+                example:
+                  message: Insufficient credits balance
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                type: object
+                example:
+                  success: false
+                  message: >-
+                    this is a controlled error. created at
+                    2025-07-11T10:20:00.000Z
+      security:
+        - APIKey: []
+components:
+  securitySchemes:
+    APIKey:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: Your Blitz API Key. Get one from https://app.blitz-api.ai
+
+````
+
+Built with [Mintlify](https://mintlify.com).

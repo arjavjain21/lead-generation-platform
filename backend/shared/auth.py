@@ -29,7 +29,7 @@ from typing import Any, Optional
 
 import bcrypt
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 logger = logging.getLogger(__name__)
@@ -217,3 +217,180 @@ def require_admin(
             detail="Admin access required.",
         )
     return current_user
+
+
+# ---------------------------------------------------------------------------
+# Combined JWT + API Key Authentication
+# ---------------------------------------------------------------------------
+
+async def get_current_user_from_api_key(
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+) -> dict[str, Any]:
+    """
+    Authenticate using either JWT token or API key.
+
+    Checks X-API-Key header first, then falls back to Bearer token.
+    """
+    # Try API key first
+    if x_api_key:
+        user = verify_api_key(x_api_key)
+        if user:
+            return user
+
+    # If no API key, will be handled by get_current_user dependency
+    # This requires either a valid JWT or raises 401
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required. Provide either JWT token or X-API-Key header.",
+        headers={"WWW-Authenticate": "Bearer", "X-API-Key-Optional": "true"},
+    )
+
+
+def get_current_user_with_api_key(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+) -> dict[str, Any]:
+    """
+    Authenticate using either JWT token or API key.
+
+    This is the main authentication dependency that should be used for protected endpoints.
+    """
+    # Try API key first
+    if x_api_key:
+        user = verify_api_key(x_api_key)
+        if user:
+            return user
+
+    # Try JWT token
+    if credentials:
+        return decode_token(credentials.credentials)
+
+    # No valid authentication
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required. Provide either JWT token (Authorization: Bearer) or X-API-Key header.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# API Keys
+# ---------------------------------------------------------------------------
+
+import secrets
+import hashlib
+
+
+def _generate_api_key() -> str:
+    """Generate a secure random API key."""
+    return f"lgp_{secrets.token_urlsafe(32)}"
+
+
+def _hash_api_key(key: str) -> str:
+    """Hash an API key using SHA256 for storage."""
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+def create_api_key(user_id: str, name: str) -> dict[str, Any]:
+    """
+    Create a new API key for a user.
+
+    Returns the full API key along with key metadata.
+    """
+    key_id = str(uuid.uuid4())
+    api_key = _generate_api_key()
+    key_hash = _hash_api_key(api_key)
+    now = _now()
+
+    _conn().execute(
+        "INSERT INTO api_keys (key_id, user_id, key_hash, key_plain, name, created_at, is_active) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (key_id, user_id, key_hash, api_key, name, now, 1),
+    )
+    _conn().commit()
+
+    return {
+        "key_id": key_id,
+        "api_key": api_key,
+        "name": name,
+        "created_at": now,
+    }
+
+
+def get_api_keys(user_id: str, include_key: bool = False) -> list[dict[str, Any]]:
+    """
+    Get all API keys for a user.
+    By default, doesn't include the plaintext key. Set include_key=True to include it.
+    """
+    if include_key:
+        rows = _conn().execute(
+            "SELECT key_id, key_plain, name, created_at, last_used_at, is_active FROM api_keys WHERE user_id = ? ORDER BY created_at DESC",
+            (user_id,),
+        ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["api_key"] = d.pop("key_plain")
+            result.append(d)
+        return result
+    else:
+        rows = _conn().execute(
+            "SELECT key_id, name, created_at, last_used_at, is_active FROM api_keys WHERE user_id = ? ORDER BY created_at DESC",
+            (user_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def delete_api_key(key_id: str, user_id: str) -> bool:
+    """Delete (revoke) an API key. Returns True if deleted, False if not found."""
+    cursor = _conn().execute(
+        "DELETE FROM api_keys WHERE key_id = ? AND user_id = ?",
+        (key_id, user_id),
+    )
+    _conn().commit()
+    return cursor.rowcount > 0
+
+
+def verify_api_key(api_key: str) -> Optional[dict[str, Any]]:
+    """
+    Verify an API key and return the user if valid.
+
+    Also updates the last_used_at timestamp.
+    """
+    key_hash = _hash_api_key(api_key)
+
+    row = _conn().execute(
+        "SELECT key_id, user_id, name, is_active FROM api_keys WHERE key_hash = ? AND is_active = 1",
+        (key_hash,),
+    ).fetchone()
+
+    if not row:
+        return None
+
+    # Update last_used_at
+    _conn().execute(
+        "UPDATE api_keys SET last_used_at = ? WHERE key_id = ?",
+        (_now(), row["key_id"]),
+    )
+    _conn().commit()
+
+    # Get user info
+    user = get_user_by_id(row["user_id"])
+    if not user:
+        return None
+
+    return {
+        "user_id": user["user_id"],
+        "email": user["email"],
+        "is_admin": bool(user.get("is_admin", 0)),
+        "key_id": row["key_id"],
+        "key_name": row["name"],
+    }
+
+
+def get_api_key_by_id(key_id: str, user_id: str) -> Optional[dict[str, Any]]:
+    """Get a specific API key metadata by ID."""
+    row = _conn().execute(
+        "SELECT key_id, name, created_at, last_used_at, is_active FROM api_keys WHERE key_id = ? AND user_id = ?",
+        (key_id, user_id),
+    ).fetchone()
+    return dict(row) if row else None

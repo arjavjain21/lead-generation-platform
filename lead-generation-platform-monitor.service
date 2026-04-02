@@ -1,0 +1,15 @@
+[Unit]
+Description=Lead Generation Platform - Monitoring
+After=network.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/var/www/lead-generation-platform
+ExecStart=/var/www/lead-generation-platform/monitor.sh --quiet
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

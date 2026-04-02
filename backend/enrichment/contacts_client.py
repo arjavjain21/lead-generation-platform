@@ -191,14 +191,14 @@ async def person_by_linkedin(
     client: httpx.AsyncClient, linkedin_url: str
 ) -> Optional[dict[str, Any]]:
     """
-    GET /v1/person/by-linkedin?linkedin_url=<url>
+    GET /v1/person/by-linkedin?li=<url-or-username>
     Returns person dict with email if found, None if 404/not found.
     Includes retry logic for transient errors.
     """
     return await _get_with_retry(
         client,
         f"{_base_url()}/v1/person/by-linkedin",
-        {"linkedin_url": linkedin_url},
+        {"li": linkedin_url},
         timeout=20.0,
     )
 

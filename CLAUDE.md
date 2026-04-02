@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Unified Lead Generation Platform** combining:
 1. **Google Maps Scraper** - Scrapes business listings via scraper.tech API
 2. **Domain Enrichment** - Enriches domains with decision-maker contacts via cascading API calls
+3. **Phone Enrichment** - Enriches LinkedIn profiles with phone numbers via Blitz Direct Phone API
 
 **Architecture:** FastAPI backend (Python) + React frontend (static build via Nginx reverse proxy)
 **URL:** https://listbuilding.eagleinfoservice.com/
@@ -18,31 +19,38 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 /var/www/lead-generation-platform/
 ├── backend/
 │   ├── main.py                  # FastAPI app, unified routes, job chaining
-│   ├── data/                     # SQLite DB (jobs.db), uploads/, outputs/
-│   ├── enrichment/               # PRIMARY module - domain enrichment
-│   │   ├── routes.py             # 125K+ lines - ALL enrichment endpoints
-│   │   ├── pipeline.py           # Workflow orchestrator
-│   │   ├── list_builder.py       # List Building Tool (Flow 1, 2, 3)
-│   │   ├── blitz_client.py       # Blitz API wrapper (25 RPS, retry logic)
-│   │   ├── contacts_client.py    # Contacts DB wrapper (75 RPS)
+│   ├── routes.py                # Scraper API routes
+│   ├── data/                    # SQLite DB (jobs.db), uploads/, outputs/
+│   ├── enrichment/              # Domain enrichment module
+│   │   ├── routes.py            # All enrichment endpoints (~3K lines)
+│   │   ├── pipeline.py          # Workflow orchestrator
+│   │   ├── list_builder.py      # List Building Tool (Flows 1, 2, 3)
+│   │   ├── blitz_client.py      # Blitz API wrapper (25 RPS, retry logic)
+│   │   ├── contacts_client.py   # Contacts DB wrapper (75 RPS)
 │   │   ├── better_enrich_client.py
 │   │   └── prospeo_client.py    # Final fallback enrichment
-│   ├── scraper/                  # Google Maps scraper
+│   ├── phone_enrichment/        # Phone enrichment module (Blitz Direct Phone)
+│   │   ├── routes.py            # Phone enrichment API endpoints
+│   │   ├── pipeline.py          # Phone enrichment workflow
+│   │   └── job_store.py         # Phone enrichment job storage
+│   ├── scraper/                 # Google Maps scraper
 │   │   ├── crawler.py           # Async scraper (8 workers)
 │   │   ├── centers.py           # Region/city center data loader
 │   │   └── data/                # Country CSV files
 │   └── shared/
 │       ├── auth.py              # JWT auth, API keys, user management
 │       ├── db.py                # Thread-local SQLite with WAL mode
-│       └── job_store_base.py    # Base class for job stores
-├── frontend/                     # Pre-built static files (React)
-└── health-check.sh
+│       ├── job_store_base.py    # Base class for job stores
+│       └── circuit_breaker.py   # Circuit breaker for API resilience
+├── frontend/                    # Pre-built static files (React)
+├── *.sh                         # backup.sh, restore.sh, monitor.sh
+└── *.service, *.timer          # Systemd service/timer files
 ```
 
 ## Core Architecture
 
 ### Unified Job System
-Single SQLite database (`jobs.db`) with `job_type` discriminator ('scraper' | 'enrichment'):
+Single SQLite database (`jobs.db`) with `job_type` discriminator ('scraper' | 'enrichment' | 'phone_enrichment'):
 
 | Table | Purpose |
 |-------|---------|
@@ -51,6 +59,8 @@ Single SQLite database (`jobs.db`) with `job_type` discriminator ('scraper' | 'e
 | `users` | Email/password (bcrypt) |
 | `api_keys` | API key authentication |
 | `daily_api_requests` | 50K/day quota tracking (non-admin) |
+
+**Phone enrichment jobs** use `job_type='phone_enrichment'` with additional columns: `linkedin_col`, `phones_found`.
 
 **Thread-local connections:** `db.get_db()` returns per-thread SQLite with WAL mode.
 
@@ -133,6 +143,20 @@ Tier 3: Director-level (Director of Marketing, etc.)
 ### Job Cancellation
 `POST /api/enrichment/jobs/{job_id}/cancel` sets `_cancelled_jobs[job_id]`, checked by pipelines periodically.
 
+### Phone Enrichment (`/api/phone-enrichment`)
+
+Enriches LinkedIn profiles with phone numbers using Blitz Direct Phone API:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/phone-enrichment/jobs` | GET | List phone enrichment jobs |
+| `/api/phone-enrichment/jobs` | POST | Create new job (upload CSV) |
+| `/api/phone-enrichment/jobs/{job_id}` | GET | Get job status |
+| `/api/phone-enrichment/jobs/{job_id}/stream` | GET | SSE progress stream |
+| `/api/phone-enrichment/jobs/{job_id}/download` | GET | Download enriched CSV |
+
+**Create job:** Upload CSV with LinkedIn URLs, auto-detects the URL column or specify via `linkedin_col` query param.
+
 ## Environment Variables
 
 ```bash
@@ -161,7 +185,20 @@ cd backend && sqlite3 data/jobs.db "PRAGMA wal_checkpoint(TRUNCATE);"
 
 # Stale running jobs (auto-cleaned on restart)
 sqlite3 data/jobs.db "SELECT job_id, status FROM jobs WHERE status='running';"
+
+# Monitoring scripts
+./monitor.sh                    # Check system health, running jobs, recent errors
+./backup.sh                     # Backup database and uploads
+./restore.sh <backup_file>      # Restore from backup
 ```
+
+## Monitoring
+
+The platform includes systemd-based monitoring:
+- `lead-generation-platform-monitor.service` - Runs health checks periodically
+- `lead-generation-platform-monitor.timer` - Triggers the monitor service on schedule
+
+The monitor script checks: backend process, Nginx, disk space, stale jobs, recent errors.
 
 ## Scraper Countries
 
