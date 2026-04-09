@@ -149,7 +149,26 @@ async def _resolve_person_email(
     first_name = person_data.get("first_name", "")
     last_name = person_data.get("last_name", "")
 
-    # Strategy 1: Contacts DB by LinkedIn URL (PRIMARY - FREE)
+    # Determine search name (prefer person full_name, fall back to input_full_name)
+    search_name = full_name or input_full_name
+
+    # Strategy 1: Contacts DB by name + domain (PRIMARY - FREE)
+    # When both name and LinkedIn URL are available, prefer name+domain to avoid
+    # returning stale emails from previous employers via person_by_linkedin
+    if search_name and domain and not _should_skip_provider("contacts_db", force_provider):
+        try:
+            contacts_data = await contacts_client.person_by_name_and_domain(
+                contacts_http, search_name, domain
+            )
+            email = contacts_client.extract_email_from_contacts_response(contacts_data)
+            if email:
+                phone = contacts_data.get("phone", "") if contacts_data else ""
+                return email, phone, SOURCE_CONTACTS_DB_NAME, "no"
+        except Exception as e:
+            logger.debug("Contacts DB name+domain lookup failed: %s", e)
+
+    # Strategy 2: Contacts DB by LinkedIn URL (SECONDARY - FREE)
+    # Fall back to LinkedIn if name+domain didn't find email, or if name not available
     if linkedin_url and not _should_skip_provider("contacts_db", force_provider):
         try:
             contacts_data = await contacts_client.person_by_linkedin(
@@ -163,33 +182,8 @@ async def _resolve_person_email(
         except Exception as e:
             logger.debug("Contacts DB LinkedIn lookup failed: %s", e)
 
-    # Strategy 2: Contacts DB by name + domain (FREE)
-    search_name = full_name or input_full_name
-    if search_name and domain and not _should_skip_provider("contacts_db", force_provider):
-        try:
-            contacts_data = await contacts_client.person_by_name_and_domain(
-                contacts_http, search_name, domain
-            )
-            email = contacts_client.extract_email_from_contacts_response(contacts_data)
-            if email:
-                phone = contacts_data.get("phone", "") if contacts_data else ""
-                return email, phone, SOURCE_CONTACTS_DB_NAME, "no"
-        except Exception as e:
-            logger.debug("Contacts DB name+domain lookup failed: %s", e)
-
-    # Strategy 3: Blitz API by LinkedIn URL (PAID)
-    if linkedin_url and not _should_skip_provider("blitz", force_provider):
-        try:
-            result = await blitz_client.find_work_email(blitz_http, linkedin_url)
-            if result.get("found") and result.get("email"):
-                # Blitz email endpoint - check if there's verification info
-                all_emails = result.get("all_emails", [])
-                verified = "yes" if all_emails and all_emails[0].get("verified") else "unknown"
-                return result.get("email", ""), "", SOURCE_BLITZ_LINKEDIN, verified
-        except Exception as e:
-            logger.debug("Blitz email lookup failed: %s", e)
-
-    # Strategy 4: Blitz person enrich by name + domain (PAID)
+    # Strategy 3: Blitz person enrich by name + domain (PRIMARY - PAID)
+    # Prioritize name+domain for the same reason as Contacts DB
     if search_name and domain and not _should_skip_provider("blitz", force_provider):
         try:
             result = await blitz_client.person_enrich(
@@ -216,6 +210,19 @@ async def _resolve_person_email(
                     return email, phone, source, verified
         except Exception as e:
             logger.debug("Blitz person enrich failed: %s", e)
+
+    # Strategy 4: Blitz API by LinkedIn URL (SECONDARY - PAID)
+    # Fall back to LinkedIn if name+domain didn't find email, or if name not available
+    if linkedin_url and not _should_skip_provider("blitz", force_provider):
+        try:
+            result = await blitz_client.find_work_email(blitz_http, linkedin_url)
+            if result.get("found") and result.get("email"):
+                # Blitz email endpoint - check if there's verification info
+                all_emails = result.get("all_emails", [])
+                verified = "yes" if all_emails and all_emails[0].get("verified") else "unknown"
+                return result.get("email", ""), "", SOURCE_BLITZ_LINKEDIN, verified
+        except Exception as e:
+            logger.debug("Blitz email lookup failed: %s", e)
 
     # Strategy 5: Prospeo as final fallback (PAID)
     if not _should_skip_provider("prospeo", force_provider):

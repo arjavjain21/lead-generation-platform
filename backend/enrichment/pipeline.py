@@ -219,12 +219,13 @@ async def _resolve_email_for_person(
     """
     Returns (email, source).
     Priority cascade:
-      1. Contacts DB by LinkedIn URL
-      2. Contacts DB by person's name + domain
-      3. Blitz work email from LinkedIn URL
-      4. BetterEnrich work email (person lookup)
-      5. Prospeo person enrichment
-      6. Contacts DB by name + domain (name from input row, if different)
+      1. Contacts DB by person's name + domain (PRIMARY - avoids stale LinkedIn emails)
+      2. Contacts DB by LinkedIn URL (SECONDARY)
+      3. Blitz person enrich by name + domain (PRIMARY PAID)
+      4. Blitz email from LinkedIn URL (SECONDARY PAID)
+      5. BetterEnrich work email (person lookup)
+      6. Prospeo person enrichment
+      7. Contacts DB by name + domain (name from input row, if different)
 
     Args:
         force_provider: If set, only use that specific provider.
@@ -235,19 +236,9 @@ async def _resolve_email_for_person(
     last_name = person.get("last_name", "")
 
     async with email_semaphore:
-        # Step 1: Contacts DB by LinkedIn URL (PRIMARY)
-        if linkedin_url and not _should_skip_provider("contacts_db", force_provider):
-            try:
-                contacts_data = await contacts_client.person_by_linkedin(
-                    contacts_client_inst, linkedin_url
-                )
-                email = contacts_client.extract_email_from_contacts_response(contacts_data)
-                if email:
-                    return email, SOURCE_CONTACTS_DB_EMAIL
-            except Exception as e:
-                logger.warning("Contacts DB LinkedIn lookup failed for %s: %s", linkedin_url, e)
-
-        # Step 2: Contacts DB by person's name + domain
+        # Step 1: Contacts DB by person's name + domain (PRIMARY - FREE)
+        # When both name and LinkedIn URL are available, prefer name+domain to avoid
+        # returning stale emails from previous employers via person_by_linkedin
         if full_name and domain and not _should_skip_provider("contacts_db", force_provider):
             try:
                 contacts_data = await contacts_client.person_by_name_and_domain(
@@ -259,7 +250,44 @@ async def _resolve_email_for_person(
             except Exception as e:
                 logger.warning("Contacts DB name+domain lookup failed for %s / %s: %s", full_name, domain, e)
 
-        # Step 3: Blitz email enrichment (FALLBACK)
+        # Step 2: Contacts DB by LinkedIn URL (SECONDARY - FREE)
+        # Fall back to LinkedIn if name+domain didn't find email, or if name not available
+        if linkedin_url and not _should_skip_provider("contacts_db", force_provider):
+            try:
+                contacts_data = await contacts_client.person_by_linkedin(
+                    contacts_client_inst, linkedin_url
+                )
+                email = contacts_client.extract_email_from_contacts_response(contacts_data)
+                if email:
+                    return email, SOURCE_CONTACTS_DB_EMAIL
+            except Exception as e:
+                logger.warning("Contacts DB LinkedIn lookup failed for %s: %s", linkedin_url, e)
+
+        # Step 3: Blitz person enrich by name + domain (PRIMARY PAID)
+        # Prioritize name+domain for the same reason as Contacts DB
+        if full_name and domain and not _should_skip_provider("blitz", force_provider):
+            try:
+                result = await blitz_client.person_enrich(
+                    blitz_client_inst,
+                    full_name=full_name,
+                    domain=domain,
+                    include_phone=False,
+                )
+                if result.get("found") and result.get("person"):
+                    person_data = result.get("person", {})
+                    # Check for verified_email field first
+                    verified_email = person_data.get("verified_email", "")
+                    if verified_email:
+                        return verified_email, SOURCE_BLITZ_EMAIL
+                    # Fall back to unverified emails list
+                    emails_list = person_data.get("emails", [])
+                    if emails_list:
+                        return emails_list[0].get("email", ""), SOURCE_BLITZ_EMAIL
+            except Exception as e:
+                logger.warning("Blitz person enrich failed for %s / %s: %s", full_name, domain, e)
+
+        # Step 4: Blitz email from LinkedIn URL (SECONDARY PAID)
+        # Fall back to LinkedIn if name+domain didn't find email, or if name not available
         if linkedin_url and not _should_skip_provider("blitz", force_provider):
             try:
                 result = await blitz_client.find_work_email(blitz_client_inst, linkedin_url)
@@ -268,7 +296,7 @@ async def _resolve_email_for_person(
             except Exception as e:
                 logger.warning("Blitz email lookup failed for %s: %s", linkedin_url, e)
 
-        # Step 4: BetterEnrich person email (NEW - was missing)
+        # Step 5: BetterEnrich person email
         if full_name and domain and not _should_skip_provider("better_enrich", force_provider):
             try:
                 result = await better_enrich_client.find_work_email_v2(
@@ -280,7 +308,7 @@ async def _resolve_email_for_person(
             except Exception as e:
                 logger.warning("BetterEnrich person lookup failed for %s / %s: %s", full_name, domain, e)
 
-        # Step 5: Prospeo person enrichment (NEW - was missing)
+        # Step 6: Prospeo person enrichment
         if not _should_skip_provider("prospeo", force_provider):
             try:
                 result = await prospeo_client.enrich_person(
@@ -298,7 +326,8 @@ async def _resolve_email_for_person(
             except Exception as e:
                 logger.warning("Prospeo person enrichment failed for %s / %s: %s", full_name, domain, e)
 
-        # Step 6: Contacts DB by input row name + domain (if different from person name)
+        # Step 7: Contacts DB by input row name + domain (if different from person name)
+        # This handles edge cases where the input name differs from the person's current name
         if input_full_name and input_full_name != full_name and domain and not _should_skip_provider("contacts_db", force_provider):
             try:
                 contacts_data = await contacts_client.person_by_name_and_domain(
