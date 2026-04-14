@@ -1,0 +1,11 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Oslo,Oslo,59.9139,10.7522,metro,1,major_norwegian_cities,anchor_city,Oslo,no
+Bergen,Vestland,60.3913,5.3221,metro,2,major_norwegian_cities,anchor_city,Bergen,no
+Trondheim,Trøndelag,63.4305,10.3951,metro,3,major_norwegian_cities,anchor_city,Trondheim,no
+Stavanger,Rogaland,58.9699,5.7331,metro,4,major_norwegian_cities,anchor_city,Stavanger,no
+Drammen,Buskerud,59.7441,10.2045,metro,5,major_norwegian_cities,anchor_city,Drammen,no
+Fredrikstad,Viken,59.2182,10.9298,metro,6,major_norwegian_cities,anchor_city,Fredrikstad,no
+Kristiansand,Agder,58.1464,8.0026,metro,7,major_norwegian_cities,anchor_city,Kristiansand,no
+Sandnes,Rogaland,58.9693,5.7331,metro,8,major_norwegian_cities,anchor_city,Sandnes,no
+Tønsberg,Vestfold,59.2675,10.4076,metro,9,major_norwegian_cities,anchor_city,Tønsberg,no
+Ålesund,Møre og Romsdal,62.4722,6.1496,metro,10,major_norwegian_cities,anchor_city,Ålesund,no

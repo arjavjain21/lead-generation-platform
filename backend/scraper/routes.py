@@ -11,14 +11,17 @@ This module provides all scraper-related endpoints:
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import json
 import logging
 import os
+import re
 import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -49,10 +52,11 @@ _cancelled_jobs: set[str] = set()
 
 class StartJobRequest(BaseModel):
     query: str
-    mode: str = "all"          # "all" | "states" | "cities" | "centers"
+    mode: str = "all"          # "all" | "states" | "cities" | "zips"
     country: str = "us"        # ISO 2-letter: us, gb, ie, au, ca
     states: list[str] = []
     cities: list[str] = []
+    zips: list[str] = []       # List of US zip codes (for mode="zips")
     center_ids: list[str] = []  # For non-US: selected center names
     expected_types: list[str] = []
 
@@ -97,6 +101,59 @@ async def search_cities(q: str = Query(default="", max_length=100), country: str
     }
 
 
+@router.post("/regions/parse-zip-csv")
+async def parse_zip_csv(
+    file: UploadFile = File(...),
+):
+    """
+    Parse a CSV file containing zip codes and return the list of zip codes found.
+    Looks for any column containing 5-digit zip codes.
+    """
+    if not file.filename.endswith('.csv'):
+        raise HTTPException(status_code=400, detail="Only CSV files are supported.")
+
+    content = await file.read()
+    try:
+        text = content.decode('utf-8')
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="File must be UTF-8 encoded.")
+
+    reader = csv.DictReader(io.StringIO(text))
+    zips = []
+
+    for row in reader:
+        # Check each column for 5-digit zip codes
+        for col_name, col_value in row.items():
+            if col_value and isinstance(col_value, str):
+                value = col_value.strip()
+                # Check for 5-digit zip code pattern
+                if len(value) == 5 and value.isdigit():
+                    if value not in zips:
+                        zips.append(value)
+                # Check for zip code in format "ZIP - City" or "City, ST ZIP"
+                elif len(value) >= 5:
+                    # Find all 5-digit patterns
+                    found = re.findall(r'\b(\d{5})\b', value)
+                    for z in found:
+                        if z not in zips:
+                            zips.append(z)
+
+    if not zips:
+        raise HTTPException(status_code=400, detail="No valid 5-digit zip codes found in the file.")
+
+    # Validate against our zip database
+    valid, invalid = centers_module.validate_zip_codes(zips)
+
+    return {
+        "zips_found": zips,
+        "count_found": len(zips),
+        "valid_zips": valid,
+        "invalid_zips": invalid,
+        "count_valid": len(valid),
+        "count_invalid": len(invalid),
+    }
+
+
 @router.post("/regions/estimate")
 async def estimate_tasks(req: StartJobRequest, current_user: dict = Depends(auth.get_current_user)):
     """
@@ -112,10 +169,15 @@ async def estimate_tasks(req: StartJobRequest, current_user: dict = Depends(auth
         country=req.country,
         states=req.states,
         cities=req.cities,
+        zips=req.zips,
         center_ids=req.center_ids,
     )
 
-    task_count = centers_module.estimate_task_count(filtered_centers)
+    # For zip codes: each zip = 1 task (zoom 12 only)
+    if req.mode == "zips":
+        task_count = len(filtered_centers)
+    else:
+        task_count = centers_module.estimate_task_count(filtered_centers)
     is_admin = current_user.get("is_admin", False)
     quota_status = db.get_api_quota_status(current_user["user_id"], is_admin)
 
@@ -208,6 +270,7 @@ async def start_job(
         "country": req.country,
         "states": req.states,
         "cities": req.cities,
+        "zips": req.zips,
         "center_ids": req.center_ids,
     }
 
@@ -494,6 +557,7 @@ async def restart_scraper_job(
         country=regions.get("country", "us"),
         states=regions.get("states", []),
         cities=regions.get("cities", []),
+        zips=regions.get("zips", []),
         center_ids=regions.get("center_ids", []),
     )
 
@@ -655,9 +719,16 @@ async def _wait_event(event: asyncio.Event) -> None:
 
 
 def cleanup_stale_jobs() -> None:
-    """Mark jobs as failed if they were running when server restarted."""
+    """Mark jobs as abandoned if they were running when server restarted.
+
+    This status distinguishes from jobs that failed due to errors (user can retry).
+    """
     store = job_store.get_store()
     stale = store.get_stale_running_jobs()
     for job_id in stale:
-        store.set_failed(job_id, "Server restarted while job was running.")
-        logger.warning("Marked stale scraper job %s as failed", job_id)
+        store.set_abandoned(
+            job_id,
+            "Job was abandoned: Server restarted or crashed while processing. "
+            "The job was interrupted before completion. Please retry from the beginning."
+        )
+        logger.warning("Marked stale scraper job %s as abandoned", job_id)

@@ -2,6 +2,26 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## IMPORTANT: Safety & Workflow Guidelines
+
+**BEFORE ANY WORK ON THIS PROJECT, ALWAYS:**
+
+1. Read `.claude/skills/lead-generation-platform-workflow.md` for complete workflow guidelines
+2. Check `Skill` tool for available skills and activate relevant ones:
+   - Bug fixes: `superpowers:systematic-debugging`
+   - New features: `superpowers:brainstorming`
+   - Code changes: `superpowers:requesting-code-review`
+   - Database changes: `everything-claude-code:database-reviewer`
+   - Security-sensitive: `everything-claude-code:security-reviewer`
+
+**ABSOLUTE PROHIBITIONS:**
+- NEVER delete or truncate `jobs.db` database
+- NEVER modify `.env` or commit secrets
+- NEVER kill running background jobs without cause
+- NEVER modify systemd service files without backup
+
+**Quick Safety Reference:** See `.claude/LEAD_GENERATION_SAFETY.md`
+
 ## Project Overview
 
 **Unified Lead Generation Platform** combining:

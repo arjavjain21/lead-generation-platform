@@ -40,6 +40,7 @@ backend/scraper/data/*.csv
 !backend/scraper/data/at_centers.csv
 !backend/scraper/data/ch_centers.csv
 !backend/scraper/data/pt_centers.csv
+!backend/scraper/data/no_centers.csv
 !backend/scraper/data/.gitkeep
 
 # Node modules (if any)

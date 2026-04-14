@@ -568,6 +568,7 @@ async def run_pipeline(
     output_path: Optional[Path] = None,
     cancelled_jobs: Optional[set[str]] = None,
     job_id: Optional[str] = None,
+    check_cancelled: Optional[Callable[[str], bool]] = None,
 ) -> list[OutputRow]:
     """
     Runs the full pipeline over all rows.
@@ -578,6 +579,9 @@ async def run_pipeline(
     for partial download support.
 
     If cancelled_jobs is provided, checks if job_id is in the set and stops processing.
+    If check_cancelled is provided, calls it with job_id to check database status.
+
+    The check_cancelled function should return True if job was cancelled or abandoned.
     """
     domain_semaphore = asyncio.Semaphore(DOMAIN_CONCURRENCY)
     email_semaphore = asyncio.Semaphore(EMAIL_CONCURRENCY)
@@ -618,9 +622,15 @@ async def run_pipeline(
         csv_file.flush()
 
     async def process_row(idx: int, row: dict[str, Any]) -> list[OutputRow]:
-        # Check if job was cancelled
+        # Check if job was cancelled (both in-memory set AND database check)
+        is_cancelled = False
         if cancelled_jobs and job_id and job_id in cancelled_jobs:
-            logger.info("Job %s cancelled, stopping processing at row %d", job_id, idx)
+            is_cancelled = True
+        elif check_cancelled and job_id and check_cancelled(job_id):
+            is_cancelled = True
+
+        if is_cancelled:
+            logger.info("Job %s cancelled or abandoned, stopping processing at row %d", job_id, idx)
             raise RuntimeError(f"Job {job_id} was cancelled")
 
         domain = str(row.get(domain_col, "")).strip()

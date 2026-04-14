@@ -54,6 +54,11 @@ class JobStoreBase:
             columns.append("parent_job_id")
             values.append(parent_job_id)
 
+        # Handle optional display_name for scraper jobs
+        if display_name := kwargs.get("display_name"):
+            columns.append("display_name")
+            values.append(display_name)
+
         # Scraper-specific fields
         if job_type == "scraper":
             columns.extend(["query", "regions", "total_tasks", "done_tasks", "result_count"])
@@ -108,6 +113,14 @@ class JobStoreBase:
         self.conn.execute(
             "UPDATE jobs SET status='failed', error=?, updated_at=? WHERE job_id=?",
             (error, _now(), job_id),
+        )
+        self.conn.commit()
+
+    def set_status(self, job_id: str, status: str) -> None:
+        """Set arbitrary status (e.g., 'partial' for cancelled jobs)."""
+        self.conn.execute(
+            "UPDATE jobs SET status=?, updated_at=? WHERE job_id=?",
+            (status, _now(), job_id),
         )
         self.conn.commit()
 
@@ -213,11 +226,43 @@ class JobStoreBase:
         return row["n"] if row else 0
 
     def get_stale_running_jobs(self) -> list[str]:
-        """Jobs that were 'running' when the server last died — mark them failed on restart."""
+        """Jobs that were 'running' when the server last died — mark them abandoned on restart."""
         rows = self.conn.execute(
             "SELECT job_id FROM jobs WHERE status IN ('running', 'queued')"
         ).fetchall()
         return [r["job_id"] for r in rows]
+
+    def set_abandoned(self, job_id: str, error: str) -> None:
+        """Mark a job as abandoned (server crashed/restarted while processing)."""
+        self.conn.execute(
+            "UPDATE jobs SET status='abandoned', error=?, updated_at=? WHERE job_id=?",
+            (error, _now(), job_id),
+        )
+        self.conn.commit()
+
+    def set_cancelled(self, job_id: str) -> None:
+        """Mark a job as cancelled by user. Stores cancellation time for tracking."""
+        self.conn.execute(
+            "UPDATE jobs SET status='cancelled', cancelled_at=?, updated_at=? WHERE job_id=?",
+            (_now(), _now(), job_id),
+        )
+        self.conn.commit()
+
+    def is_job_cancelled_or_abandoned(self, job_id: str) -> bool:
+        """Check if a job has been cancelled or abandoned (for background task polling)."""
+        row = self.conn.execute(
+            "SELECT status FROM jobs WHERE job_id=?", (job_id,)
+        ).fetchone()
+        if row:
+            return row["status"] in ("cancelled", "abandoned")
+        return False
+
+    def get_job_status(self, job_id: str) -> Optional[str]:
+        """Get current job status from database."""
+        row = self.conn.execute(
+            "SELECT status FROM jobs WHERE job_id=?", (job_id,)
+        ).fetchone()
+        return row["status"] if row else None
 
     def get_child_jobs(self, parent_job_id: str) -> list[dict[str, Any]]:
         """Get all enrichment jobs that were chained from this scraper job."""

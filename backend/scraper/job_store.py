@@ -37,6 +37,7 @@ class ScraperJobStore(JobStoreBase):
         regions: dict[str, Any],
         total_tasks: int,
         parent_job_id: Optional[str] = None,
+        display_name: Optional[str] = None,
     ) -> None:
         """Create a new scraper job."""
         self.create_job(
@@ -47,6 +48,7 @@ class ScraperJobStore(JobStoreBase):
             regions=regions,
             total_tasks=total_tasks,
             parent_job_id=parent_job_id,
+            display_name=display_name,
         )
 
     def list_scraper_jobs(

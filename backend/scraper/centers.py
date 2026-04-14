@@ -35,6 +35,7 @@ COUNTRY_FILES: list[tuple[Path, str]] = [
     (DATA_DIR / "at_centers.csv", "at"),
     (DATA_DIR / "ch_centers.csv", "ch"),
     (DATA_DIR / "pt_centers.csv", "pt"),
+    (DATA_DIR / "no_centers.csv", "no"),
 ]
 
 # Country code -> display name
@@ -57,6 +58,7 @@ COUNTRY_NAMES: dict[str, str] = {
     "at": "Austria",
     "ch": "Switzerland",
     "pt": "Portugal",
+    "no": "Norway",
 }
 
 # ---------------------------------------------------------------------------
@@ -203,7 +205,7 @@ def get_countries() -> list[dict[str, str]]:
                 "name": COUNTRY_NAMES.get(code, code.upper()),
             })
     # Ensure consistent order: Americas, Oceania, Europe
-    order = ["us", "ca", "au", "gb", "ie", "de", "fr", "es", "it", "nl", "be", "pl", "se", "dk", "at", "ch", "pt"]
+    order = ["us", "ca", "au", "gb", "ie", "de", "fr", "es", "it", "nl", "be", "pl", "se", "no", "dk", "at", "ch", "pt"]
     return sorted(result, key=lambda x: (order.index(x["code"]) if x["code"] in order else 99, x["code"]))
 
 
@@ -257,11 +259,15 @@ def get_centers_for_job(
     states: list[str] | None = None,
     cities: list[str] | None = None,
     center_ids: list[str] | None = None,
+    zips: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """
     Returns (centers, errors).
-    - country="us" (or unset): mode "all" | "states" | "cities" (USA-only)
+    - country="us" (or unset): mode "all" | "states" | "cities" | "zips" (USA-only)
     - country in (gb, ie, au, ca): mode "all" = all centers for country; mode "centers" = filter by center_ids
+
+    Args:
+        zips: List of US zip codes (for mode="zips")
     """
     all_centers = get_all_centers()
     errors: list[str] = []
@@ -296,6 +302,13 @@ def get_centers_for_job(
 
     # USA: existing behavior
     us_centers = [c for c in all_centers if c.get("country", "us") == "us"]
+
+    # Handle zip codes mode
+    if mode == "zips":
+        if not zips:
+            return [], ["No zip codes provided."]
+        centers, zip_errors = get_centers_for_zips(zips)
+        return centers, zip_errors
 
     if mode == "all":
         return us_centers, []
@@ -376,3 +389,239 @@ def estimate_task_count(centers: list[dict[str, Any]], zooms: list[int] | None =
     if zooms is None:
         zooms = [10, 11, 12]
     return len(centers) * len(zooms)
+
+
+# ---------------------------------------------------------------------------
+# Job display name generation
+# ---------------------------------------------------------------------------
+
+def _to_snake_case(text: str) -> str:
+    """Convert text to snake_case: lowercase, replace spaces with underscores."""
+    if not text:
+        return ""
+    return text.lower().strip().replace(" ", "_").replace("-", "_")
+
+
+def generate_job_display_name(
+    query: str,
+    country_code: str,
+    mode: str,
+    states: list[str] | None = None,
+    cities: list[str] | None = None,
+) -> str:
+    """
+    Generate a formatted display name for a scraper job.
+
+    Format: {query}-{country}({scope})
+    Examples:
+        - internet_marketing-united_states(all)
+        - lawyers-california(2_states)
+        - restaurants-new_york(5_cities)
+
+    Args:
+        query: Original search query
+        country_code: 2-letter country code (us, gb, ie, etc.)
+        mode: "all" | "states" | "cities"
+        states: List of selected state names (for mode="states")
+        cities: List of selected city names (for mode="cities")
+
+    Returns:
+        Formatted job display name in snake_case
+    """
+    # Convert query to snake_case
+    query_snake = _to_snake_case(query)
+
+    # Get country name and convert to snake_case
+    country_name = COUNTRY_NAMES.get(country_code.lower(), country_code)
+    country_snake = _to_snake_case(country_name)
+
+    # Determine scope suffix
+    if mode == "all":
+        scope_suffix = "(all)"
+    elif mode == "states" and states:
+        count = len(states)
+        scope_suffix = f"({count}_states)"
+    elif mode == "cities" and cities:
+        count = len(cities)
+        scope_suffix = f"({count}_cities)"
+    elif mode == "zips" and (states or cities):  # zips passed as list
+        count = len(states) if states else len(cities)
+        scope_suffix = f"({count}_zips)"
+    else:
+        scope_suffix = "(all)"
+
+    return f"{query_snake}-{country_snake}{scope_suffix}"
+
+
+# ---------------------------------------------------------------------------
+# Zip code geocoding
+# ---------------------------------------------------------------------------
+
+# Lazy-loaded zip code database
+_zip_cache: dict[str, dict[str, Any]] | None = None
+
+
+def _load_zip_database() -> dict[str, dict[str, Any]]:
+    """Load US zip code database lazily. Returns dict: zip_code -> {lat, lng, city, state}."""
+    global _zip_cache
+    if _zip_cache is not None:
+        return _zip_cache
+
+    _zip_cache = {}
+    zip_file = DATA_DIR / "us_zips.csv"
+
+    if zip_file.exists():
+        import csv
+        with open(zip_file, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                zip_code = row["zip"].strip()
+                if zip_code:
+                    _zip_cache[zip_code] = {
+                        "lat": float(row["lat"]),
+                        "lng": float(row["lng"]),
+                        "city": row.get("city", ""),
+                        "state": row.get("state", ""),
+                    }
+
+    return _zip_cache
+
+
+def get_centers_for_zips(zips: list[str]) -> tuple[list[dict[str, Any]], list[str]]:
+    """
+    Convert a list of US zip codes to center dicts.
+
+    Returns (centers, errors):
+    - centers: List of center dicts with lat/lng for valid zip codes
+    - errors: List of error messages for invalid/unknown zip codes
+
+    Args:
+        zips: List of 5-digit US zip codes
+
+    Returns:
+        Tuple of (valid_centers, error_messages)
+    """
+    errors: list[str] = []
+    centers: list[dict[str, Any]] = []
+    seen_zips: set[str] = set()  # Deduplicate
+
+    # Validate zip format (5 digits)
+    for raw_zip in zips:
+        zip_code = raw_zip.strip()
+        if not zip_code:
+            continue
+
+        # Validate format: must be 5 digits
+        if not zip_code.isdigit() or len(zip_code) != 5:
+            errors.append(f"Invalid zip code '{zip_code}': must be exactly 5 digits")
+            continue
+
+        # Deduplicate
+        if zip_code in seen_zips:
+            continue
+        seen_zips.add(zip_code)
+
+        # Look up in database
+        zip_db = _load_zip_database()
+        if zip_code in zip_db:
+            data = zip_db[zip_code]
+            centers.append({
+                "name": zip_code,
+                "state": data["state"],
+                "lat": data["lat"],
+                "lng": data["lng"],
+                "tier": "zip",
+                "center_type": "zip_code",
+                "anchor_city": data["city"],
+                "country": "us",
+            })
+        else:
+            errors.append(f"Zip code '{zip_code}' not found in database")
+
+    return centers, errors
+
+
+def get_zip_coordinates(zip_code: str) -> tuple[float, float] | None:
+    """
+    Get lat/lng coordinates for a single US zip code.
+
+    Args:
+        zip_code: 5-digit US zip code
+
+    Returns:
+        Tuple of (lat, lng) or None if not found
+    """
+    zip_db = _load_zip_database()
+    if zip_code in zip_db:
+        data = zip_db[zip_code]
+        return data["lat"], data["lng"]
+    return None
+
+
+def validate_zip_codes(zips: list[str]) -> tuple[list[str], list[str]]:
+    """
+    Validate a list of zip codes, returning valid and invalid codes.
+
+    Args:
+        zips: List of zip codes (may include duplicates)
+
+    Returns:
+        Tuple of (valid_zips, invalid_zips_with_errors)
+    """
+    valid: list[str] = []
+    invalid: list[str] = []
+
+    for raw_zip in zips:
+        zip_code = raw_zip.strip()
+        if not zip_code:
+            continue
+
+        # Validate format
+        if not zip_code.isdigit() or len(zip_code) != 5:
+            invalid.append(f"'{zip_code}': must be 5 digits")
+            continue
+
+        # Check if in database
+        zip_db = _load_zip_database()
+        if zip_code in zip_db:
+            valid.append(zip_code)
+        else:
+            invalid.append(f"'{zip_code}': not found")
+
+    return valid, invalid
+
+
+def parse_zips_from_string(input_str: str) -> list[str]:
+    """
+    Parse zip codes from a string that can contain both comma-separated
+    and line-separated zip codes.
+
+    Args:
+        input_str: String like "90210\n10001, 10002\n90211"
+
+    Returns:
+        List of cleaned 5-digit zip codes (deduplicated)
+    """
+    if not input_str:
+        return []
+
+    # Split by both commas and newlines
+    parts = input_str.replace(",", "\n").split("\n")
+    zips = []
+
+    for part in parts:
+        # Strip whitespace
+        zip_code = part.strip()
+        # Only include 5-digit codes
+        if zip_code.isdigit() and len(zip_code) == 5:
+            zips.append(zip_code)
+
+    # Return deduplicated list while preserving order
+    seen = set()
+    result = []
+    for z in zips:
+        if z not in seen:
+            seen.add(z)
+            result.append(z)
+
+    return result

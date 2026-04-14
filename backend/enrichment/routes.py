@@ -148,7 +148,19 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
 SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "")
-DEFAULT_RECIPIENT = os.getenv("DEFAULT_RECIPIENT", "arjav@eagleinfoservice.com")
+
+def get_notification_recipients() -> list[str]:
+    """Get list of notification email recipients from environment variables."""
+    recipients = []
+    # Primary recipient
+    primary = os.getenv("DEFAULT_RECIPIENT", "arjav@eagleinfoservice.com")
+    if primary:
+        recipients.append(primary)
+    # Secondary recipient (for Slack channel integration)
+    secondary = os.getenv("SECONDARY_RECIPIENT", "")
+    if secondary:
+        recipients.append(secondary)
+    return recipients
 
 # Cleanup settings
 UPLOAD_RETENTION_DAYS = 7
@@ -164,7 +176,7 @@ MAX_JOBS_PER_USER = 100
 # ---------------------------------------------------------------------------
 
 async def send_job_notification(
-    recipient_email: str,
+    recipients: list[str],
     job_type: str,
     filename: str,
     status: str,
@@ -176,6 +188,10 @@ async def send_job_notification(
     """Send email notification when a job completes or fails."""
     if not SMTP_USER or not SENDER_EMAIL:
         logger.debug("SMTP not configured, skipping email notification")
+        return
+
+    if not recipients:
+        logger.debug("No recipients configured, skipping email notification")
         return
 
     import smtplib
@@ -234,15 +250,15 @@ async def send_job_notification(
     try:
         msg = MIMEMultipart()
         msg["From"] = SENDER_EMAIL
-        msg["To"] = recipient_email
+        msg["To"] = ", ".join(recipients)
         msg["Subject"] = subject
         msg.attach(MIMEText(html_body, "html"))
 
         with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
             server.login(SMTP_USER, SMTP_PASSWORD)
-            server.sendmail(SENDER_EMAIL, recipient_email, msg.as_string())
+            server.sendmail(SENDER_EMAIL, recipients, msg.as_string())
 
-        logger.info("Job notification email sent to %s", recipient_email)
+        logger.info("Job notification email sent to %s", recipients)
     except Exception as e:
         logger.error("Failed to send job notification email: %s", e)
 
@@ -2202,6 +2218,20 @@ async def download_enrichment_result(
     if job_data["status"] in ("queued", "running"):
         raise HTTPException(status_code=202, detail="Job not finished yet.")
 
+    # Handle partial status - allow download of partial results
+    if job_data["status"] == "partial":
+        output_path = job_data.get("output_path") or (OUTPUT_DIR / f"{job_id}.csv")
+        if Path(output_path).exists() and Path(output_path).stat().st_size > 0:
+            original_filename = job_data.get("original_filename") or job_data.get("filename", "results")
+            safe_name = original_filename[:30].replace(" ", "-").replace("/", "-")
+            return FileResponse(
+                path=output_path,
+                media_type="text/csv",
+                filename=f"partial_{safe_name}_{job_id[:8]}.csv",
+            )
+        else:
+            raise HTTPException(status_code=404, detail="Partial output file not found.")
+
     # Check if job failed but has partial output available
     if job_data["status"] == "failed":
         output_path = job_data.get("output_path")
@@ -2309,6 +2339,12 @@ async def _run_job(
             sig.clear()
 
     try:
+        # Create a cancellation check function that queries the database
+        # This ensures cancellation is detected even if in-memory set was cleared
+        def check_job_cancelled(jid: str) -> bool:
+            check_store = job_store.get_store()
+            return check_store.is_job_cancelled_or_abandoned(jid)
+
         output_rows = await pipeline.run_pipeline(
             rows=rows,
             domain_col=domain_col,
@@ -2322,6 +2358,7 @@ async def _run_job(
             output_path=output_path,
             cancelled_jobs=_cancelled_jobs,
             job_id=job_id,
+            check_cancelled=check_job_cancelled,
         )
 
         # If not writing incrementally, write final output
@@ -2345,7 +2382,7 @@ async def _run_job(
         job = store.get_enrichment_job(job_id)
         if job:
             await send_job_notification(
-                recipient_email=DEFAULT_RECIPIENT,
+                recipients=get_notification_recipients(),
                 job_type="enrichment",
                 filename=job.get("original_filename") or job.get("filename", "Unknown"),
                 status="done",
@@ -2358,12 +2395,33 @@ async def _run_job(
         # Handle job cancellation
         if "was cancelled" in str(e):
             logger.info("Enrichment job %s was cancelled by user", job_id)
-            # Job already marked as failed by cancel endpoint
-            # Just ensure cleanup happens in finally block
+            # Clean up cancelled jobs set
+            _cancelled_jobs.discard(job_id)
+
+            # Check if there's partial output
             if output_path.exists():
                 partial_size = output_path.stat().st_size
                 if partial_size > 0:
+                    # Mark as partial - user can download partial results
+                    store.set_status(job_id, "partial")
                     logger.info("Cancelled job %s has partial output available: %d bytes", job_id, partial_size)
+                    # Send partial notification
+                    job = store.get_enrichment_job(job_id)
+                    if job:
+                        await send_job_notification(
+                            recipients=get_notification_recipients(),
+                            job_type="enrichment",
+                            filename=job.get("original_filename") or job.get("filename", "Unknown"),
+                            status="partial",
+                            total=job.get("total", 0),
+                            processed=job.get("processed", 0),
+                            emails_found=job.get("emails_found", 0),
+                        )
+                else:
+                    # No partial output, mark as failed
+                    store.set_failed(job_id, "Job cancelled by user")
+            else:
+                store.set_failed(job_id, "Job cancelled by user")
         else:
             # Other RuntimeErrors should be handled as normal failures
             logger.exception("Enrichment job %s failed with RuntimeError: %s", job_id, e)
@@ -2372,7 +2430,7 @@ async def _run_job(
             job = store.get_enrichment_job(job_id)
             if job:
                 await send_job_notification(
-                    recipient_email=DEFAULT_RECIPIENT,
+                    recipients=get_notification_recipients(),
                     job_type="enrichment",
                     filename=job.get("original_filename") or job.get("filename", "Unknown"),
                     status="failed",
@@ -2414,7 +2472,7 @@ async def _run_job(
                 job = store.get_enrichment_job(job_id)
                 if job:
                     await send_job_notification(
-                        recipient_email=DEFAULT_RECIPIENT,
+                        recipients=get_notification_recipients(),
                         job_type="enrichment",
                         filename=job.get("original_filename") or job.get("filename", "Unknown"),
                         status="failed",
@@ -2429,7 +2487,7 @@ async def _run_job(
             job = store.get_enrichment_job(job_id)
             if job:
                 await send_job_notification(
-                    recipient_email=DEFAULT_RECIPIENT,
+                    recipients=get_notification_recipients(),
                     job_type="enrichment",
                     filename=job.get("original_filename") or job.get("filename", "Unknown"),
                     status="failed",
@@ -2559,8 +2617,8 @@ async def cancel_enrichment_job(
     """
     Cancel a running or queued enrichment job.
 
-    Marks the job as cancelled and removes it from active processing.
-    Background task will check cancellation status and stop processing.
+    Marks the job as cancelled in both the database (persistent) and in-memory set (for fast checking).
+    Background task will check both sources and stop processing.
     """
     store = job_store.get_store()
     job = store.get_job(job_id)
@@ -2577,11 +2635,12 @@ async def cancel_enrichment_job(
     if job["status"] not in ("queued", "running"):
         raise HTTPException(status_code=400, detail="Only running or queued jobs can be cancelled")
 
-    # Mark job as cancelled in database
-    store.set_failed(job_id, "Job cancelled by user")
-
-    # Add to cancelled set so background task knows to stop
+    # Add to in-memory cancelled set for fast checking by background task
     _cancelled_jobs.add(job_id)
+
+    # Also update database for persistence - survives worker restarts
+    # This is the key fix: if workers restart, they'll see the cancelled status
+    store.set_cancelled(job_id)
 
     # Remove from active jobs set
     _active_jobs.discard(job_id)
@@ -2591,22 +2650,29 @@ async def cancel_enrichment_job(
     if sig:
         sig.set()
 
-    logger.info("Enrichment job %s cancelled by user %s", job_id, current_user["user_id"])
+    logger.info("Enrichment job %s cancellation requested by user %s", job_id, current_user["user_id"])
 
     return {
         "job_id": job_id,
         "status": "cancelled",
-        "message": "Job cancelled successfully"
+        "message": "Job has been cancelled. Any partial results can still be downloaded."
     }
 
 
 def cleanup_stale_jobs() -> None:
-    """Mark jobs as failed if they were running when server restarted."""
+    """Mark jobs as abandoned if they were running when server restarted.
+
+    This status distinguishes from jobs that failed due to errors (user can retry).
+    """
     store = job_store.get_store()
     stale = store.get_stale_running_jobs()
     for job_id in stale:
-        store.set_failed(job_id, "Server restarted while job was in progress.")
-        logger.warning("Marked stale enrichment job %s as failed on startup", job_id)
+        store.set_abandoned(
+            job_id,
+            "Job was abandoned: Server restarted or crashed while processing. "
+            "The job was interrupted before completion. Please retry from the beginning."
+        )
+        logger.warning("Marked stale enrichment job %s as abandoned on startup", job_id)
 
 
 # =============================================================================
