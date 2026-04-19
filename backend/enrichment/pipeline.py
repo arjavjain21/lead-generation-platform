@@ -61,7 +61,8 @@ def _should_skip_provider(provider: str, force_provider: Optional[str]) -> bool:
     return result
 
 # Max concurrent Blitz calls to avoid hammering the API
-DOMAIN_CONCURRENCY = 5
+# DOMAIN_CONCURRENCY = 25 (standardized with list_builder.py for consistency)
+DOMAIN_CONCURRENCY = 25  # Was 5, increased to match list_builder.py
 EMAIL_CONCURRENCY = 10
 
 

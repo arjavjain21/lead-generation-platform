@@ -1903,6 +1903,9 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict):
 
                     logger.debug("Syncing contact to contacts API: %s", payload)
 
+                    # Acquire rate limit before upsert to respect 75 RPS limit
+                    await contacts_client._acquire_upsert_rate_limit()
+
                     # Call contacts API upsert with auth header
                     contacts_token = os.getenv("CONTACTS_API_TOKEN", "")
                     resp = await contacts_http.post(

@@ -42,6 +42,27 @@ async def _acquire_contacts_db_rate_limit() -> None:
         _contacts_db_last_request_time = time.monotonic()
 
 
+# Separate rate limiter for upsert/write operations (also 75 RPS to match reads)
+_upsert_rate_limiter_lock = asyncio.Lock()
+_upsert_last_request_time: float = 0.0
+_UPSERT_MIN_INTERVAL = 1.0 / _CONTACTS_DB_RATE_LIMIT_RPS
+
+
+async def _acquire_upsert_rate_limit() -> None:
+    """Ensure upserts don't exceed the rate limit by sleeping if needed."""
+    global _upsert_last_request_time
+
+    async with _upsert_rate_limiter_lock:
+        now = time.monotonic()
+        time_since_last = now - _upsert_last_request_time
+
+        if time_since_last < _UPSERT_MIN_INTERVAL:
+            wait_time = _UPSERT_MIN_INTERVAL - time_since_last
+            await asyncio.sleep(wait_time)
+
+        _upsert_last_request_time = time.monotonic()
+
+
 def _base_url() -> str:
     import os
     return os.getenv("CONTACTS_API_BASE_URL", "https://leadsdatabase.cc").rstrip("/")
@@ -427,6 +448,9 @@ async def upsert_business_record_async(
     last_exc: Optional[Exception] = None
 
     for attempt in range(_MAX_RETRIES + 1):
+        # Acquire rate limit before each upsert attempt
+        await _acquire_upsert_rate_limit()
+
         try:
             resp = await client.post(
                 f"{_base_url()}/v1/persons/upsert",
