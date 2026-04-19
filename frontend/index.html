@@ -740,7 +740,7 @@ https://linkedin.com/in/janesmith</pre>
     <script>
         // State
         let token = localStorage.getItem('token'), user = null;
-        let domainUploadId = null, linkedinUploadId = null, currentJobId = null, eventSource = null;
+        let domainUploadId = null, linkedinUploadId = null, currentJobId = null, eventSource = null, currentScraperDisplayName = null;
         
         // Auth
         const authModal = document.getElementById('authModal');
@@ -1379,6 +1379,7 @@ https://linkedin.com/in/janesmith</pre>
                 if (res.ok) {
                     const data = await res.json();
                     currentJobId = data.job_id;
+                    currentScraperDisplayName = data.display_name || null;
                     document.getElementById('scraperTotal').textContent = data.total_tasks || data.total || 0;
                     document.getElementById('scraperProgress').style.display = 'block';
                     startScraperProgressStream(currentJobId);
@@ -1422,7 +1423,13 @@ https://linkedin.com/in/janesmith</pre>
 
         // Download scraper results
         document.getElementById('downloadScraperResults').addEventListener('click', function() {
-            if (currentJobId) downloadFile(currentJobId, 'scraper_results.csv');
+            if (currentJobId) {
+                // Use display_name for filename if available, otherwise fallback to generic name
+                const filename = currentScraperDisplayName
+                    ? currentScraperDisplayName + '_results.csv'
+                    : 'scraper_results.csv';
+                downloadFile(currentJobId, filename);
+            }
         });
 
         // Chain to enrichment
@@ -1861,22 +1868,36 @@ https://linkedin.com/in/janesmith</pre>
             });
         });
 
-        // Download scraper job - use query as filename
+        // Download scraper job - use display_name or query as filename
         async function downloadScraperJob(jobId, btn) {
             if (btn) {
                 btn.disabled = true;
                 btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;"></span> Downloading...';
             }
             try {
-                // First get job details to find query
+                // First get job details to find display_name
                 const jobRes = await fetch('/api/scraper/jobs', { headers: { 'Authorization': 'Bearer ' + token } });
                 let filename = 'scraper_job';
                 if (jobRes.ok) {
                     const data = await jobRes.json();
                     const job = data.jobs?.find(j => j.job_id === jobId);
-                    if (job && job.query) {
-                        // Sanitize query for filename
-                        filename = job.query.replace(/[^a-z0-9]/gi, '_').substring(0, 30);
+                    if (job) {
+                        // Prefer display_name (e.g., 'elementary_school-canada(all)')
+                        if (job.display_name) {
+                            filename = job.display_name;
+                        } else if (job.query) {
+                            // Fallback to query if no display_name
+                            filename = job.query.replace(/[^a-z0-9]/gi, '_').substring(0, 30);
+                        }
+                        // Also include country code if available
+                        if (job.regions) {
+                            try {
+                                const regions = JSON.parse(job.regions);
+                                if (regions.country) {
+                                    filename = filename + '_' + regions.country.toUpperCase();
+                                }
+                            } catch (e) {}
+                        }
                     }
                 }
                 const res = await fetch('/api/scraper/jobs/' + jobId + '/download', { headers: { 'Authorization': 'Bearer ' + token } });
@@ -1885,7 +1906,7 @@ https://linkedin.com/in/janesmith</pre>
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = filename + '_scraper_' + jobId.substr(0,8) + '.csv';
+                a.download = filename + '_scraper.csv';
                 a.click();
                 URL.revokeObjectURL(url);
             } catch (e) { alert('Error: ' + e.message); }

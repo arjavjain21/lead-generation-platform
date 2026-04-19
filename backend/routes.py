@@ -388,6 +388,7 @@ async def start_job(
         "job_id": job_id,
         "total_tasks": total_tasks,
         "center_count": len(filtered_centers),
+        "display_name": display_name,
         "warnings": errors,
     }
 
