@@ -408,6 +408,7 @@ def generate_job_display_name(
     mode: str,
     states: list[str] | None = None,
     cities: list[str] | None = None,
+    zips: list[str] | None = None,
 ) -> str:
     """
     Generate a formatted display name for a scraper job.
@@ -444,8 +445,8 @@ def generate_job_display_name(
     elif mode == "cities" and cities:
         count = len(cities)
         scope_suffix = f"({count}_cities)"
-    elif mode == "zips" and (states or cities):  # zips passed as list
-        count = len(states) if states else len(cities)
+    elif mode == "zips" and zips:
+        count = len(zips)
         scope_suffix = f"({count}_zips)"
     else:
         scope_suffix = "(all)"
