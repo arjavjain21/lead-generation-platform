@@ -369,6 +369,7 @@
                 </div>
                 <div class="progress-bar"><div class="progress-fill" id="scraperProgressBar" style="width:0%"></div></div>
                 <div class="progress-text"><span id="scraperProgressText">0%</span><span id="scraperStatus">Initializing...</span></div>
+                <div id="scraperRegion" style="margin-top:0.5rem;font-size:0.8rem;color:var(--gray-500);height:1.2em;"></div>
                 <div style="margin-top:1rem;">
                     <button class="btn btn-success btn-sm" id="downloadScraperResults" disabled>Download CSV</button>
                     <button class="btn btn-secondary btn-sm" id="chainToEnrichment" disabled>Chain to Enrichment</button>
@@ -1402,6 +1403,14 @@ https://linkedin.com/in/janesmith</pre>
                 document.getElementById('scraperProgressText').textContent = pct + '%';
                 document.getElementById('scraperStatus').textContent = data.status || 'Running...';
 
+                // Display current region being scraped
+                const regionEl = document.getElementById('scraperRegion');
+                if (data.center_name) {
+                    regionEl.textContent = '📍 ' + data.center_name + (data.center_state ? ', ' + data.center_state : '') + (data.zoom ? ' (zoom ' + data.zoom + ')' : '');
+                } else {
+                    regionEl.textContent = '';
+                }
+
                 if (data.status === 'done' || data.status === 'failed') {
                     eventSource.close();
                     document.getElementById('downloadScraperResults').disabled = false;
@@ -1835,7 +1844,7 @@ https://linkedin.com/in/janesmith</pre>
                             const shortError = job.error.length > 60 ? job.error.substring(0, 60) + '...' : job.error;
                             errorInfo = '<div class="job-error" style="font-size: 0.7rem; color: #dc2626; margin-top: 4px; cursor: help;" title="' + fullError + '">' + shortError + '</div>';
                         }
-                        return '<div class="job-card"><div class="job-info"><h4>' + (job.query || 'Scraper Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.done_tasks||0) + '/' + (job.total_tasks||0) + ' | ' + (job.result_count||0) + ' results</div>' + errorInfo + '</div><div class="actions">' + actions + '</div></div>';
+                        return '<div class="job-card"><div class="job-info"><h4>' + (job.display_name || job.query || 'Scraper Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.done_tasks||0) + '/' + (job.total_tasks||0) + ' | ' + (job.result_count||0) + ' results' + (job.regions ? ' | ' + JSON.parse(job.regions).country?.toUpperCase() : '') + '</div>' + errorInfo + '</div><div class="actions">' + actions + '</div></div>';
                     }).join('');
                 } else jobsList.innerHTML = '<div class="empty-state">Failed to load</div>';
             } catch (e) { console.error('Failed to load scraper jobs:', e); jobsList.innerHTML = '<div class="empty-state">Error</div>'; }
