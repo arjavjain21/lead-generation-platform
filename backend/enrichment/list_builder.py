@@ -124,6 +124,19 @@ def _current_title(experiences: list[dict]) -> str:
     return ""
 
 
+def _normalize_source(source: str) -> str:
+    """Map raw source value to provider group."""
+    if source.startswith("contacts_db"):
+        return "contacts_db"
+    elif source.startswith("blitz"):
+        return "blitz"
+    elif source.startswith("better_enrich"):
+        return "better_enrich"
+    elif source.startswith("prospeo"):
+        return "prospeo"
+    return source
+
+
 # =============================================================================
 # Flow 1: Domain → Generic Emails + Decision Makers
 # =============================================================================
@@ -494,6 +507,13 @@ async def run_domain_enrichment(
             )
 
         if on_progress:
+            # Collect source counts from results
+            source_counts: dict[str, int] = {}
+            for r in result:
+                source = r.get("dm_email_source", "")
+                if source:
+                    provider = _normalize_source(source)
+                    source_counts[provider] = source_counts.get(provider, 0) + 1
             emails_found = sum(1 for r in result if r.get("dm_email"))
             on_progress({
                 "index": idx,
@@ -502,6 +522,7 @@ async def run_domain_enrichment(
                 "status": result[0].get("row_status", STATUS_ERROR),
                 "contacts_found": len(result),
                 "emails_found": emails_found,
+                "source_counts": source_counts,
             })
 
         return result
@@ -637,6 +658,13 @@ async def enrich_companies_from_search(
         )
 
         if on_progress:
+            # Collect source counts from results (all from Blitz company search)
+            source_counts: dict[str, int] = {}
+            for r in result:
+                source = r.get("dm_email_source", "")
+                if source:
+                    provider = _normalize_source(source)
+                    source_counts[provider] = source_counts.get(provider, 0) + 1
             emails_found = sum(1 for r in result if r.get("dm_email"))
             on_progress({
                 "index": idx,
@@ -645,6 +673,7 @@ async def enrich_companies_from_search(
                 "status": result[0].get("row_status", STATUS_ERROR),
                 "contacts_found": len(result),
                 "emails_found": emails_found,
+                "source_counts": source_counts,
             })
 
         return result
@@ -787,12 +816,19 @@ async def run_linkedin_enrichment(
             )
 
         if on_progress:
+            # Collect source counts from result
+            source_counts: dict[str, int] = {}
+            source = result.get("dm_email_source", "")
+            if source:
+                provider = _normalize_source(source)
+                source_counts[provider] = 1
             on_progress({
                 "index": idx,
                 "total": total,
                 "linkedin_url": linkedin_url,
                 "status": result.get("row_status", STATUS_ERROR),
                 "email_found": bool(result.get("dm_email")),
+                "source_counts": source_counts,
             })
 
         return result
