@@ -138,6 +138,54 @@ _job_signals: dict[str, asyncio.Event] = {}
 # Set of jobs that have been cancelled by user
 _cancelled_jobs: set[str] = set()
 
+
+# ---------------------------------------------------------------------------
+# Helper functions for stats recording
+# ---------------------------------------------------------------------------
+
+def _record_unified_enrich_stats(
+    contacts: list[dict],
+    domain: str,
+    current_user: dict,
+) -> None:
+    """
+    Record source statistics for API-only enrichment calls.
+
+    This helper aggregates email sources from contacts and records them
+    in the enrichment_stats table for tracking purposes.
+
+    Args:
+        contacts: List of contact dictionaries with email_source field
+        domain: The domain being enriched (used in job_id)
+        current_user: Current authenticated user dict
+    """
+    try:
+        from . import stats_store
+
+        raw_sources = [c.get("email_source", "") for c in contacts if c.get("email")]
+        if not raw_sources:
+            return
+
+        source_counts = stats_store.EnrichmentStatsStore.aggregate_by_provider(raw_sources)
+        if not source_counts:
+            return
+
+        # Build a job_id that identifies this API call
+        # Use domain + mode indicator for uniqueness
+        identifier = domain.replace(".", "_") if domain else "no_domain"
+        job_id = f"api_unified_{identifier}"
+
+        stats_store.EnrichmentStatsStore.record_stats(
+            job_id=job_id,
+            user_id=current_user.get("user_id"),
+            source_counts=source_counts,
+            contacts_count=len(contacts),
+        )
+    except Exception:
+        # Silently ignore stats recording errors - don't break the API response
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Configuration: SMTP and cleanup settings
 # ---------------------------------------------------------------------------
@@ -541,6 +589,23 @@ async def enrich_single_domain(
         sync_status = "success"
     else:
         sync_status = "no_contacts_to_sync"
+
+    # Record source stats for API-only call
+    try:
+        from . import stats_store
+
+        raw_sources = [c.get("email_source", "") for c in contacts if c.get("email")]
+        if raw_sources:
+            source_counts = stats_store.EnrichmentStatsStore.aggregate_by_provider(raw_sources)
+            if source_counts:
+                stats_store.EnrichmentStatsStore.record_stats(
+                    job_id=f"api_direct_{domain}",
+                    user_id=current_user.get("user_id"),
+                    source_counts=source_counts,
+                    contacts_count=len(contacts),
+                )
+    except Exception as stats_err:
+        logger.warning("Failed to record source stats for enrich_single_domain: %s", stats_err)
 
     return {
         "domain": domain,
@@ -1438,6 +1503,9 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict):
                 sync_status = "success"
                 sync_result = {"synced": len(contacts), "skipped": 0, "failed": 0}
 
+            # Record source stats for API-only call
+            _record_unified_enrich_stats(contacts, domain, current_user)
+
             return {
                 "domain": domain,
                 "mode": mode,
@@ -1639,6 +1707,9 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict):
                     # Clean up temp file
                     if 'tmp_path' in dir() and tmp_path.exists():
                         tmp_path.unlink(missing_ok=True)
+
+            # Record source stats for API-only call
+            _record_unified_enrich_stats(contacts, domain, current_user)
 
             return {
                 "domain": domain,
@@ -1946,6 +2017,9 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict):
             sources["contacts"] = contacts_source
         if sources.get("company_linkedin") in ("not_found", None):
             sources["company_linkedin"] = company_source
+
+        # Record source stats for API-only call
+        _record_unified_enrich_stats(enriched_contacts, domain, current_user)
 
         return {
             "domain": domain,
