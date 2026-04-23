@@ -150,8 +150,35 @@ class JobStoreBase:
             values = [_now(), done_delta, result_delta, job_id]
         elif job_type == "enrichment":
             emails_delta = event.get("emails_found", 0)
-            updates.extend(["processed = processed + 1", "emails_found = emails_found + ?"])
-            values = [_now(), emails_delta, job_id]
+            source_counts = event.get("source_counts", {})
+
+            updates = ["updated_at = ?", "processed = processed + 1", "emails_found = emails_found + ?"]
+            values = [_now(), emails_delta]
+
+            # Update source-specific columns on jobs table
+            if source_counts:
+                col_map = {
+                    "contacts_db": "emails_contacts_db",
+                    "blitz": "emails_blitz",
+                    "better_enrich": "emails_better_enrich",
+                    "prospeo": "emails_prospeo",
+                }
+                for source, count in source_counts.items():
+                    col = col_map.get(source)
+                    if col:
+                        updates.append(f"{col} = {col} + ?")
+                        values.append(count)
+
+            values.append(job_id)
+
+            # Record to enrichment_stats table for detailed tracking
+            if source_counts:
+                from enrichment import stats_store
+                stats_store.EnrichmentStatsStore.record_stats(
+                    job_id=job_id,
+                    user_id=job.get("user_id"),
+                    source_counts=source_counts,
+                )
 
         c.execute(
             f"UPDATE jobs SET {','.join(updates)} WHERE job_id = ?",

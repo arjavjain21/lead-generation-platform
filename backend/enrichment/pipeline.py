@@ -60,6 +60,27 @@ def _should_skip_provider(provider: str, force_provider: Optional[str]) -> bool:
     logger.debug("_should_skip_provider(provider=%s, force_provider=%s) = %s", provider, force_provider, result)
     return result
 
+
+def _normalize_source(source: str) -> str:
+    """Map raw source value to provider group.
+
+    Args:
+        source: Raw source string (e.g., "blitz_email", "contacts_db_email")
+
+    Returns:
+        Provider group (e.g., "blitz", "contacts_db") or original source if unknown
+    """
+    if source.startswith("contacts_db"):
+        return "contacts_db"
+    elif source.startswith("blitz"):
+        return "blitz"
+    elif source.startswith("better_enrich"):
+        return "better_enrich"
+    elif source.startswith("prospeo"):
+        return "prospeo"
+    return source
+
+
 # Max concurrent Blitz calls to avoid hammering the API
 # DOMAIN_CONCURRENCY = 25 (standardized with list_builder.py for consistency)
 DOMAIN_CONCURRENCY = 25  # Was 5, increased to match list_builder.py
@@ -662,6 +683,14 @@ async def run_pipeline(
                 email_semaphore,
             )
 
+        # Collect source counts from this row's results
+        source_counts: dict[str, int] = {}
+        for r in result_rows:
+            source = r.get("dm_email_source", "")
+            if source:
+                provider = _normalize_source(source)
+                source_counts[provider] = source_counts.get(provider, 0) + 1
+
         emails_found = sum(1 for r in result_rows if r.get("dm_email"))
         await on_progress(
             {
@@ -671,6 +700,7 @@ async def run_pipeline(
                 "status": result_rows[0].get("row_status", STATUS_ERROR),
                 "contacts_found": len(result_rows),
                 "emails_found": emails_found,
+                "source_counts": source_counts,
             }
         )
 
