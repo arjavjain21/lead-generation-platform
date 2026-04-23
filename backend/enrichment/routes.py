@@ -3198,3 +3198,45 @@ async def get_search_options(_current_user: dict = Depends(auth.get_current_user
             {"code": "APAC", "name": "Asia-Pacific"},
         ],
     }
+
+
+# --- Source Statistics Endpoint ---
+
+@router.get("/stats/sources")
+async def get_source_stats(
+    start_date: Optional[str] = Query(None, description="Start date (ISO format)"),
+    end_date: Optional[str] = Query(None, description="End date (ISO format)"),
+    current_user: dict = Depends(auth.get_current_user),
+):
+    """
+    Get aggregated enrichment source statistics.
+
+    Returns counts of emails found per source provider.
+    """
+    from . import stats_store
+
+    # Admin can see all, regular users see only their own
+    user_id = None
+    if not current_user.get("is_admin"):
+        user_id = current_user.get("user_id")
+
+    totals = stats_store.EnrichmentStatsStore.get_total_stats(
+        user_id=user_id,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    grand_total = sum(totals.values()) if totals else 0
+
+    return {
+        "totals": totals,
+        "grand_total": grand_total,
+        "breakdown": {
+            source: {
+                "count": count,
+                "percentage": round(count / grand_total * 100, 1) if grand_total > 0 else 0,
+            }
+            for source, count in totals.items()
+        },
+        "date_range": {"start": start_date, "end": end_date},
+    }
