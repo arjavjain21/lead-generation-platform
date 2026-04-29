@@ -36,6 +36,7 @@ COUNTRY_FILES: list[tuple[Path, str]] = [
     (DATA_DIR / "ch_centers.csv", "ch"),
     (DATA_DIR / "pt_centers.csv", "pt"),
     (DATA_DIR / "no_centers.csv", "no"),
+    (DATA_DIR / "nz_centers.csv", "nz"),
 ]
 
 # Country code -> display name
@@ -59,6 +60,7 @@ COUNTRY_NAMES: dict[str, str] = {
     "ch": "Switzerland",
     "pt": "Portugal",
     "no": "Norway",
+    "nz": "New Zealand",
 }
 
 # ---------------------------------------------------------------------------
@@ -205,7 +207,7 @@ def get_countries() -> list[dict[str, str]]:
                 "name": COUNTRY_NAMES.get(code, code.upper()),
             })
     # Ensure consistent order: Americas, Oceania, Europe
-    order = ["us", "ca", "au", "gb", "ie", "de", "fr", "es", "it", "nl", "be", "pl", "se", "no", "dk", "at", "ch", "pt"]
+    order = ["us", "ca", "au", "nz", "gb", "ie", "de", "fr", "es", "it", "nl", "be", "pl", "se", "no", "dk", "at", "ch", "pt"]
     return sorted(result, key=lambda x: (order.index(x["code"]) if x["code"] in order else 99, x["code"]))
 
 

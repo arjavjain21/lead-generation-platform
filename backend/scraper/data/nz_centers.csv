@@ -1,0 +1,41 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Auckland,Auckland,-36.8485,174.7633,metro,1,major_nz_cities,anchor_city,Auckland,nz
+Auckland - North,Auckland,-36.6685,174.7633,metro_offset,1,derived,offset_ring,Auckland,nz
+Auckland - South,Auckland,-37.0285,174.7633,metro_offset,1,derived,offset_ring,Auckland,nz
+Auckland - East,Auckland,-36.8485,175.0033,metro_offset,1,derived,offset_ring,Auckland,nz
+Auckland - West,Auckland,-36.8485,174.5233,metro_offset,1,derived,offset_ring,Auckland,nz
+Wellington,Wellington,-41.2924,174.7787,metro,2,major_nz_cities,anchor_city,Wellington,nz
+Wellington - North,Wellington,-41.1124,174.7787,metro_offset,2,derived,offset_ring,Wellington,nz
+Wellington - South,Wellington,-41.4724,174.7787,metro_offset,2,derived,offset_ring,Wellington,nz
+Wellington - East,Wellington,-41.2924,175.0187,metro_offset,2,derived,offset_ring,Wellington,nz
+Wellington - West,Wellington,-41.2924,174.5387,metro_offset,2,derived,offset_ring,Wellington,nz
+Christchurch,Canterbury,-43.5321,172.6362,metro,3,major_nz_cities,anchor_city,Christchurch,nz
+Christchurch - North,Canterbury,-43.3521,172.6362,metro_offset,3,derived,offset_ring,Christchurch,nz
+Christchurch - South,Canterbury,-43.7121,172.6362,metro_offset,3,derived,offset_ring,Christchurch,nz
+Christchurch - East,Canterbury,-43.5321,172.8762,metro_offset,3,derived,offset_ring,Christchurch,nz
+Christchurch - West,Canterbury,-43.5321,172.3962,metro_offset,3,derived,offset_ring,Christchurch,nz
+Hamilton,Waikato,-37.7870,175.2793,metro,4,major_nz_cities,anchor_city,Hamilton,nz
+Hamilton - North,Waikato,-37.6070,175.2793,metro_offset,4,derived,offset_ring,Hamilton,nz
+Hamilton - South,Waikato,-37.9670,175.2793,metro_offset,4,derived,offset_ring,Hamilton,nz
+Hamilton - East,Waikato,-37.7870,175.5193,metro_offset,4,derived,offset_ring,Hamilton,nz
+Hamilton - West,Waikato,-37.7870,175.0393,metro_offset,4,derived,offset_ring,Hamilton,nz
+Tauranga,Bay of Plenty,-37.6878,176.1651,metro,5,major_nz_cities,anchor_city,Tauranga,nz
+Tauranga - North,Bay of Plenty,-37.5078,176.1651,metro_offset,5,derived,offset_ring,Tauranga,nz
+Tauranga - South,Bay of Plenty,-37.8678,176.1651,metro_offset,5,derived,offset_ring,Tauranga,nz
+Tauranga - East,Bay of Plenty,-37.6878,176.4051,metro_offset,5,derived,offset_ring,Tauranga,nz
+Tauranga - West,Bay of Plenty,-37.6878,175.9251,metro_offset,5,derived,offset_ring,Tauranga,nz
+Dunedin,Otago,-45.8788,170.5028,metro,6,major_nz_cities,anchor_city,Dunedin,nz
+Dunedin - North,Otago,-45.6988,170.5028,metro_offset,6,derived,offset_ring,Dunedin,nz
+Dunedin - South,Otago,-46.0588,170.5028,metro_offset,6,derived,offset_ring,Dunedin,nz
+Dunedin - East,Otago,-45.8788,170.7428,metro_offset,6,derived,offset_ring,Dunedin,nz
+Dunedin - West,Otago,-45.8788,170.2628,metro_offset,6,derived,offset_ring,Dunedin,nz
+Palmerston North,Manawatū-Whanganui,-40.3525,175.6102,metro,7,major_nz_cities,anchor_city,Palmerston North,nz
+Palmerston North - North,Manawatū-Whanganui,-40.1725,175.6102,metro_offset,7,derived,offset_ring,Palmerston North,nz
+Palmerston North - South,Manawatū-Whanganui,-40.5325,175.6102,metro_offset,7,derived,offset_ring,Palmerston North,nz
+Palmerston North - East,Manawatū-Whanganui,-40.3525,175.8502,metro_offset,7,derived,offset_ring,Palmerston North,nz
+Palmerston North - West,Manawatū-Whanganui,-40.3525,175.3702,metro_offset,7,derived,offset_ring,Palmerston North,nz
+Nelson,Nelson,-41.2706,173.2840,metro,8,major_nz_cities,anchor_city,Nelson,nz
+Nelson - North,Nelson,-41.0906,173.2840,metro_offset,8,derived,offset_ring,Nelson,nz
+Nelson - South,Nelson,-41.4506,173.2840,metro_offset,8,derived,offset_ring,Nelson,nz
+Nelson - East,Nelson,-41.2706,173.5240,metro_offset,8,derived,offset_ring,Nelson,nz
+Nelson - West,Nelson,-41.2706,173.0440,metro_offset,8,derived,offset_ring,Nelson,nz
