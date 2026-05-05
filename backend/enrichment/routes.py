@@ -148,6 +148,26 @@ _cancelled_jobs: set[str] = set()
 
 
 # ---------------------------------------------------------------------------
+# Enrichment Providers
+# ---------------------------------------------------------------------------
+
+@router.get("/providers")
+async def get_enrichment_providers(
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """
+    Return list of currently enabled enrichment providers.
+
+    Used by frontend to dynamically render the data sources list
+    without needing to update HTML when providers change.
+
+    Returns:
+        {"providers": ["contacts_db", "blitz", "better_enrich"]}
+    """
+    return {"providers": providers.get_enabled_providers()}
+
+
+# ---------------------------------------------------------------------------
 # Helper functions for stats recording
 # ---------------------------------------------------------------------------
 
