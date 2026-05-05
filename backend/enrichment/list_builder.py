@@ -22,13 +22,12 @@ import httpx
 
 from . import blitz_client
 from . import contacts_client
-from . import prospeo_client
 
 logger = logging.getLogger(__name__)
 
 
 # Valid provider values for force_provider parameter
-VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "better_enrich", "prospeo"})
+VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "better_enrich"})
 
 
 def _should_skip_provider(provider: str, force_provider: Optional[str]) -> bool:
@@ -80,7 +79,6 @@ SOURCE_CONTACTS_DB_DOMAIN = "contacts_db_domain"
 SOURCE_BLITZ_LINKEDIN = "blitz_linkedin"
 SOURCE_BLITZ_NAME = "blitz_name"
 SOURCE_BLITZ_DOMAIN = "blitz_domain"
-SOURCE_PROSPEO = "prospeo"
 SOURCE_NOT_FOUND = "not_found"
 
 
@@ -236,26 +234,6 @@ async def _resolve_person_email(
                 return result.get("email", ""), "", SOURCE_BLITZ_LINKEDIN, verified
         except Exception as e:
             logger.debug("Blitz email lookup failed: %s", e)
-
-    # Strategy 5: Prospeo as final fallback (PAID)
-    if not _should_skip_provider("prospeo", force_provider):
-        try:
-            prospeo_result = await prospeo_client.enrich_person(
-                blitz_http,
-                linkedin_url=linkedin_url if linkedin_url else None,
-                full_name=search_name if search_name else None,
-                company_website=domain if domain else None,
-            )
-            if prospeo_result:
-                email = prospeo_client.extract_email_from_prospeo(prospeo_result)
-                person_data = prospeo_result.get("person", {})
-                verified = prospeo_client.extract_verified_status(prospeo_result)
-                phone = person_data.get("mobile", {}).get("mobile", "") if person_data.get("mobile") else ""
-                if email:
-                    logger.debug("Prospeo found email for %s", search_name or linkedin_url)
-                    return email, phone, SOURCE_PROSPEO, verified
-        except Exception as e:
-            logger.debug("Prospeo person enrich failed: %s", e)
 
     return "", "", SOURCE_NOT_FOUND, "unknown"
 
