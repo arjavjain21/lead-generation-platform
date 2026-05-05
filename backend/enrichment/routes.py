@@ -36,7 +36,6 @@ from . import job_store
 from . import pipeline
 from . import list_builder
 from . import better_enrich_client
-from . import prospeo_client
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import sync_contacts
@@ -100,7 +99,7 @@ def _titles_to_cascade(titles: str) -> list[dict]:
 
 
 # Valid provider values for force_provider parameter
-VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "better_enrich", "prospeo"})
+VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "better_enrich"})
 
 
 def _should_skip_provider(provider: str, force_provider: Optional[str]) -> bool:
@@ -383,7 +382,7 @@ class StartJobRequest(BaseModel):
     last_name_col: Optional[str] = None
     cascade: Optional[list[dict[str, Any]]] = None
     max_results: int = 5
-    # Force a specific provider: "contacts_db", "blitz", "better_enrich", "prospeo"
+    # Force a specific provider: "contacts_db", "blitz", "better_enrich"
     # If None, uses normal cascade
     force_provider: Optional[str] = None
 
@@ -392,7 +391,7 @@ class ChainJobRequest(BaseModel):
     """Request to chain enrichment from a scraper job output."""
     cascade: Optional[list[dict[str, Any]]] = None
     max_results: int = 5
-    # Force a specific provider: "contacts_db", "blitz", "better_enrich", "prospeo"
+    # Force a specific provider: "contacts_db", "blitz", "better_enrich"
     # If None, uses normal cascade
     force_provider: Optional[str] = None
 
@@ -638,7 +637,7 @@ class UnifiedEnrichRequest(BaseModel):
     cascade: Optional[list[dict]] = None
     # Simple titles: comma-separated list of titles (e.g., "CEO,CTO,HR") - auto-converts to cascade
     titles: Optional[str] = None
-    # Force a specific provider: "contacts_db", "blitz", "better_enrich", "prospeo"
+    # Force a specific provider: "contacts_db", "blitz", "better_enrich"
     # If None, uses normal cascade
     force_provider: Optional[str] = None
 
@@ -846,45 +845,6 @@ async def unified_enrich(
                 except Exception as e:
                     logger.debug("BetterEnrich V2 LinkedIn lookup failed: %s", e)
 
-            # Step 4: Final fallback - Try Prospeo (works with just linkedin_url)
-            # Prospeo can work with only linkedin_url, so run this regardless of domain
-            if not contacts or not any(c.get("email") for c in contacts):
-                try:
-                    prospeo_result = await prospeo_client.enrich_person(
-                        blitz_http,
-                        linkedin_url=req.linkedin_url,
-                        company_website=domain if domain else None,
-                    )
-                    if prospeo_result:
-                        person_data = prospeo_result.get("person", {})
-                        email = prospeo_client.extract_email_from_prospeo(prospeo_result)
-                        if person_data:
-                            if not contacts:
-                                contacts.append({
-                                    "full_name": person_data.get("full_name", full_name or ""),
-                                    "first_name": person_data.get("first_name", ""),
-                                    "last_name": person_data.get("last_name", ""),
-                                    "title": person_data.get("current_job_title", ""),
-                                    "email": email,
-                                    "linkedin_url": req.linkedin_url or "",
-                                    "headline": person_data.get("headline", ""),
-                                    "location_city": person_data.get("location", {}).get("city", "") if person_data.get("location") else "",
-                                    "location_country": person_data.get("location", {}).get("country", "") if person_data.get("location") else "",
-                                    "icp_tier": 1,
-                                    "email_source": "prospeo",
-                                })
-                            else:
-                                for contact in contacts:
-                                    if not contact.get("email"):
-                                        contact["email"] = email
-                                        contact["email_source"] = "prospeo"
-                                        break
-                            sources["contacts"] = "prospeo"
-                            sources["emails"] = "prospeo"
-                            logger.info("Prospeo found person data for %s", req.linkedin_url)
-                except Exception as e:
-                    logger.debug("Prospeo LinkedIn lookup failed: %s", e)
-
         elif mode == "domain_only":
             # Domain-only: Use existing pipeline (Contacts DB → Blitz)
             # Use custom cascade if provided, otherwise use default
@@ -971,23 +931,6 @@ async def unified_enrich(
                         logger.info("BetterEnrich company email found for %s: %s", domain, be_result.get("email"))
                 except Exception as e:
                     logger.debug("BetterEnrich company email lookup failed for %s: %s", domain, e)
-
-            # Step 3: If still no contacts found, try Prospeo as final fallback
-            # Skip if force_provider is set and it's not "prospeo"
-            if not contacts and not _should_skip_provider("prospeo", req.force_provider):
-                try:
-                    prospeo_result = await prospeo_client.enrich_company(
-                        blitz_http,
-                        company_website=domain,
-                    )
-                    if prospeo_result:
-                        company_data = prospeo_result.get("company", {})
-                        if company_data:
-                            sources["contacts"] = "prospeo"
-                            sources["emails"] = "prospeo"
-                            logger.info("Prospeo found company data for %s", domain)
-                except Exception as e:
-                    logger.debug("Prospeo company lookup failed for %s: %s", domain, e)
 
         else:
             # Enhanced mode: Try Contacts DB, Blitz, then BetterEnrich as fallback
@@ -1179,49 +1122,6 @@ async def unified_enrich(
                         except Exception as e:
                             logger.debug("BetterEnrich V2 lookup failed: %s", e)
 
-            # Final fallback: Try Prospeo if no contacts or no emails found
-            # Skip if force_provider is set and it's not "prospeo"
-            if (not contacts or not any(c.get("email") for c in contacts)) and not _should_skip_provider("prospeo", req.force_provider):
-                    try:
-                        # Try Prospeo with available data
-                        prospeo_result = await prospeo_client.enrich_person(
-                            blitz_http,
-                            linkedin_url=req.linkedin_url if req.linkedin_url else None,
-                            full_name=full_name if full_name else None,
-                            company_website=domain if domain else None,
-                        )
-                        if prospeo_result:
-                            person_data = prospeo_result.get("person", {})
-                            email = prospeo_client.extract_email_from_prospeo(prospeo_result)
-                            if person_data:
-                                if not contacts:
-                                    contacts.append({
-                                        "full_name": person_data.get("full_name", full_name or ""),
-                                        "first_name": person_data.get("first_name", ""),
-                                        "last_name": person_data.get("last_name", ""),
-                                        "title": person_data.get("current_job_title", ""),
-                                        "email": email,
-                                        "linkedin_url": person_data.get("linkedin_url", req.linkedin_url or ""),
-                                        "headline": person_data.get("headline", ""),
-                                        "location_city": person_data.get("location", {}).get("city", "") if person_data.get("location") else "",
-                                        "location_country": person_data.get("location", {}).get("country", "") if person_data.get("location") else "",
-                                        "icp_tier": 1,
-                                        "email_source": "prospeo",
-                                    })
-                                else:
-                                    # Update first contact with Prospeo data if no email
-                                    for contact in contacts:
-                                        if not contact.get("email"):
-                                            contact["email"] = email
-                                            contact["email_source"] = "prospeo"
-                                            break
-
-                                sources["contacts"] = "prospeo"
-                                sources["emails"] = "prospeo"
-                                logger.info("Prospeo found person data for %s", full_name or domain)
-                    except Exception as e:
-                        logger.debug("Prospeo person lookup failed: %s", e)
-
     finally:
         await blitz_http.aclose()
         await contacts_http.aclose()
@@ -1316,7 +1216,7 @@ async def unified_enrich_get(
     max_results: int = Query(5, ge=1, le=10, description="Maximum contacts to return"),
     cascade_json: str = Query(None, description="Custom cascade as JSON string"),
     titles: str = Query(None, description="Simple titles filter (comma-separated, e.g., 'CEO,CTO,HR')"),
-    force_provider: str = Query(None, description="Force specific provider: contacts_db, blitz, better_enrich, or prospeo"),
+    force_provider: str = Query(None, description="Force specific provider: contacts_db, blitz, better_enrich"),
     current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """
@@ -1366,7 +1266,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict):
         req: UnifiedEnrichRequest with optional force_provider parameter
         current_user: Current authenticated user
 
-    force_provider: If set, only use that specific provider ("contacts_db", "blitz", "better_enrich", "prospeo")
+    force_provider: If set, only use that specific provider ("contacts_db", "blitz", "better_enrich")
     """
     # DEBUG: Log force_provider to verify it's being received
     logger.info("DEBUG _unified_enrich_logic: force_provider=%s (type=%s)", req.force_provider, type(req.force_provider).__name__)
@@ -1861,7 +1761,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict):
         # Determine email sources
         email_source_db = contacts_source if contacts_source == "contacts_db" else "not_found"
 
-        # Initialize sources dict - will be updated by BetterEnrich/Prospeo if used
+        # Initialize sources dict - will be updated by BetterEnrich if used
         sources = {"company_linkedin": "not_found", "contacts": "not_found", "emails": "not_found"}
 
         # For each contact, try to find email
@@ -2010,7 +1910,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict):
             else:
                 sync_status = "no_contacts_to_sync"
 
-        # Only use defaults if sources weren't already set by BetterEnrich/Prospeo
+        # Only use defaults if sources weren't already set by BetterEnrich
         if sources.get("emails") in ("not_found", None):
             sources["emails"] = email_source_db
         if sources.get("contacts") in ("not_found", None):
