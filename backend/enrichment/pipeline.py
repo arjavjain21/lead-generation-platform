@@ -30,6 +30,7 @@ from . import blitz_client
 from . import contacts_client
 from . import better_enrich_client
 from . import prospeo_client
+from . import providers
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "better_enrich"})
 
 def _should_skip_provider(provider: str, force_provider: Optional[str]) -> bool:
     """
-    Determine if a provider should be skipped based on force_provider setting.
+    Determine if a provider should be skipped.
 
     Args:
         provider: The current provider being considered (e.g., "contacts_db", "blitz")
@@ -49,14 +50,22 @@ def _should_skip_provider(provider: str, force_provider: Optional[str]) -> bool:
     Returns:
         True if the provider should be skipped, False otherwise
 
-    When force_provider is None, all providers are used (normal cascade).
-    When force_provider is set, only that provider is used.
+    Checks:
+      1. Is the provider globally disabled in ENABLED_PROVIDERS?
+      2. If force_provider is set, does it match the current provider?
     """
-    if not force_provider:
-        return False  # No force, use all providers
-    result = provider != force_provider
-    logger.debug("_should_skip_provider(provider=%s, force_provider=%s) = %s", provider, force_provider, result)
-    return result
+    # First check: is the provider globally disabled?
+    if not providers.is_provider_enabled(provider):
+        logger.debug("_should_skip_provider: %s disabled in ENABLED_PROVIDERS", provider)
+        return True
+
+    # Second check: force_provider constraint
+    if force_provider:
+        result = provider != force_provider
+        logger.debug("_should_skip_provider(provider=%s, force_provider=%s) = %s", provider, force_provider, result)
+        return result
+
+    return False
 
 
 def _normalize_source(source: str) -> str:
