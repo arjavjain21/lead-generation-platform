@@ -63,5 +63,8 @@ frontend/assets/*.css
 *.tmp
 *.temp
 
+# Worktrees (isolated development workspaces)
+.worktrees/
+
 # Archive (not tracked - contains old backups and dated files)
 archive/
