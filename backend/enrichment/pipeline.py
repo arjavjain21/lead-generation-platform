@@ -2,18 +2,16 @@
 Enrichment pipeline orchestrator.
 
 Per-domain workflow:
-  1. Contacts DB: domain → company LinkedIn URL (primary, free)
-  2. Blitz fallback: domain → company LinkedIn URL (if Contacts DB fails)
-  3. Contacts DB: company → decision makers with emails (primary, free)
-  4. Blitz fallback: decision makers via waterfall ICP (if Contacts DB quality insufficient)
-  5. For each person:
-       a. Blitz: person LinkedIn URL → work email
-       b. Fallback: Contacts DB by LinkedIn URL
-       c. Fallback: Contacts DB by name + domain
-  6. If no decision makers found: BetterEnrich → generic company email (fallback)
-  7. If no email from above: return not_found
-  8. If domain_to_linkedin fails AND input has name columns:
-       Contacts DB by name + domain (directly)
+  1. domain → company LinkedIn URL (Contacts DB PRIMARY, Blitz fallback)
+  2. company → decision makers (Contacts DB PRIMARY, Blitz fallback)
+  3. For each person (_resolve_email_for_person):
+       a. Contacts DB by name + domain
+       b. Contacts DB by LinkedIn URL
+       c. Blitz by name + domain
+       d. Blitz by LinkedIn URL
+       e. BetterEnrich person email
+  4. If no decision makers found: BetterEnrich company email (final fallback)
+  5. If no email from above: return not_found
 
 Supports incremental CSV writes for partial downloads.
 """
@@ -77,7 +75,7 @@ def _normalize_source(source: str) -> str:
     elif source.startswith("better_enrich"):
         return "better_enrich"
     elif source.startswith("prospeo"):
-        return "prospeo"
+        return "prospeo"  # Historical: old rows may have prospeo as dm_email_source
     return source
 
 
@@ -313,7 +311,7 @@ async def _resolve_email_for_person(
             except Exception as e:
                 logger.warning("BetterEnrich person lookup failed for %s / %s: %s", full_name, domain, e)
 
-        # Step 7: Contacts DB by input row name + domain (if different from person name)
+        # Step 6: Contacts DB by input row name + domain (if different from person name)
         # This handles edge cases where the input name differs from the person's current name
         if input_full_name and input_full_name != full_name and domain and not _should_skip_provider("contacts_db", force_provider):
             try:
