@@ -36,6 +36,7 @@ from . import job_store
 from . import pipeline
 from . import list_builder
 from . import better_enrich_client
+from . import providers
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import sync_contacts
@@ -104,7 +105,7 @@ VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "better_enrich"})
 
 def _should_skip_provider(provider: str, force_provider: Optional[str]) -> bool:
     """
-    Determine if a provider should be skipped based on force_provider setting.
+    Determine if a provider should be skipped.
 
     Args:
         provider: The current provider being considered (e.g., "contacts_db", "blitz")
@@ -113,12 +114,20 @@ def _should_skip_provider(provider: str, force_provider: Optional[str]) -> bool:
     Returns:
         True if the provider should be skipped, False otherwise
 
-    When force_provider is None, all providers are used (normal cascade).
-    When force_provider is set, only that provider is used.
+    Checks:
+      1. Is the provider globally disabled in ENABLED_PROVIDERS?
+      2. If force_provider is set, does it match the current provider?
     """
-    if not force_provider:
-        return False  # No force, use all providers
-    return provider != force_provider  # Skip if not the forced provider
+    # First check: is the provider globally disabled?
+    if not providers.is_provider_enabled(provider):
+        logger.debug("_should_skip_provider: %s disabled in ENABLED_PROVIDERS", provider)
+        return True
+
+    # Second check: force_provider constraint
+    if force_provider:
+        return provider != force_provider
+
+    return False
 
 
 DATA_DIR = Path(__file__).parent.parent / "data"
