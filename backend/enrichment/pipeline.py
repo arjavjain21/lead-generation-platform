@@ -11,7 +11,7 @@ Per-domain workflow:
        b. Fallback: Contacts DB by LinkedIn URL
        c. Fallback: Contacts DB by name + domain
   6. If no decision makers found: BetterEnrich → generic company email (fallback)
-  7. If no email from above: Prospeo → person/company enrichment (final fallback)
+  7. If no email from above: return not_found
   8. If domain_to_linkedin fails AND input has name columns:
        Contacts DB by name + domain (directly)
 
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 # Valid provider values for force_provider parameter
-VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "better_enrich", "prospeo"})
+VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "better_enrich"})
 
 
 def _should_skip_provider(provider: str, force_provider: Optional[str]) -> bool:
@@ -114,8 +114,6 @@ SOURCE_BLITZ_CONTACTS = "blitz_contacts"                  # Decision makers from
 SOURCE_BLITZ_EMAIL = "blitz_email"                        # Email from Blitz
 SOURCE_BETTER_ENRICH_COMPANY = "better_enrich_company"    # Generic company email from BetterEnrich
 SOURCE_BETTER_ENRICH_PERSON = "better_enrich_person"      # Person email from BetterEnrich
-SOURCE_PROSPEO = "prospeo"                               # Email/data from Prospeo
-SOURCE_PROSPEO_PERSON = "prospeo_person"                  # Person email from Prospeo
 
 ENRICHED_COLUMNS = [
     "company_linkedin_url",
@@ -209,20 +207,6 @@ def _company_email_row(
     return row
 
 
-def _prospeo_company_row(
-    base_row: dict[str, Any],
-    company_linkedin_url: str,
-    company_data: dict[str, Any],
-    source: str,
-) -> OutputRow:
-    """Create a row with company data from Prospeo."""
-    row = {**base_row, **_empty_enriched()}
-    row["company_linkedin_url"] = company_data.get("linkedin_url", company_linkedin_url) or company_linkedin_url
-    row["row_status"] = STATUS_ENRICHED
-    row["dm_email_source"] = source
-    # Store company data in a format that can be synced later
-    row["_prospeo_company"] = company_data
-    return row
 
 
 # ---------------------------------------------------------------------------
@@ -246,8 +230,7 @@ async def _resolve_email_for_person(
       3. Blitz person enrich by name + domain (PRIMARY PAID)
       4. Blitz email from LinkedIn URL (SECONDARY PAID)
       5. BetterEnrich work email (person lookup)
-      6. Prospeo person enrichment
-      7. Contacts DB by name + domain (name from input row, if different)
+      6. Contacts DB by name + domain (name from input row, if different)
 
     Args:
         force_provider: If set, only use that specific provider.
@@ -330,24 +313,6 @@ async def _resolve_email_for_person(
             except Exception as e:
                 logger.warning("BetterEnrich person lookup failed for %s / %s: %s", full_name, domain, e)
 
-        # Step 6: Prospeo person enrichment
-        if not _should_skip_provider("prospeo", force_provider):
-            try:
-                result = await prospeo_client.enrich_person(
-                    blitz_client_inst,
-                    linkedin_url=linkedin_url,
-                    full_name=full_name,
-                    first_name=first_name,
-                    last_name=last_name,
-                    company_website=domain,
-                )
-                # Use helper to extract email from Prospeo result
-                email = prospeo_client.extract_email_from_prospeo(result)
-                if email:
-                    return email, SOURCE_PROSPEO_PERSON
-            except Exception as e:
-                logger.warning("Prospeo person enrichment failed for %s / %s: %s", full_name, domain, e)
-
         # Step 7: Contacts DB by input row name + domain (if different from person name)
         # This handles edge cases where the input name differs from the person's current name
         if input_full_name and input_full_name != full_name and domain and not _should_skip_provider("contacts_db", force_provider):
@@ -379,7 +344,7 @@ async def _enrich_domain(
     domain_semaphore: asyncio.Semaphore,
     email_semaphore: asyncio.Semaphore,
     skip_contacts_db: bool = False,
-    force_provider: Optional[str] = None,  # "contacts_db", "blitz", "better_enrich", "prospeo"
+    force_provider: Optional[str] = None,  # "contacts_db", "blitz", "better_enrich"
 ) -> list[OutputRow]:
     """
     Enrich a domain with decision-maker contacts.
@@ -524,26 +489,6 @@ async def _enrich_domain(
                     )]
             except Exception as e:
                 logger.debug("BetterEnrich company email lookup failed for %s: %s", domain, e)
-
-        # Final fallback: try Prospeo for company enrichment
-        if not _should_skip_provider("prospeo", force_provider):
-            try:
-                prospeo_result = await prospeo_client.enrich_company(
-                    blitz_http,
-                    company_website=domain,
-                )
-                if prospeo_result:
-                    company_data = prospeo_result.get("company", {})
-                    if company_data:
-                        logger.info("Prospeo found company data for %s", domain)
-                        return [_prospeo_company_row(
-                            base_row,
-                            company_linkedin_url,
-                            company_data,
-                            SOURCE_PROSPEO,
-                        )]
-            except Exception as e:
-                logger.debug("Prospeo company lookup failed for %s: %s", domain, e)
 
         return [_no_contacts_row(base_row, company_linkedin_url)]
 
