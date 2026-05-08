@@ -24,10 +24,11 @@ from psycopg2 import sql
 
 # Config
 SQLITE_DB = "/var/www/lead-generation-platform/backend/data/jobs.db"
-PG_HOST = "localhost"
+PG_HOST = "127.0.0.1"  # TCP/IP to use scram-sha-256 (password auth)
 PG_PORT = 5433
 PG_DB = "lead_gen"
 PG_USER = "postgres"
+PG_PASSWORD = "leadgen_migrate_2024"  # Set above via ALTER USER
 CSV_PATH = "/tmp/scraped_places_migrate.csv"
 
 # Schema — exact mirror of SQLite scraped_places
@@ -36,8 +37,8 @@ DROP TABLE IF EXISTS scraped_places CASCADE;
 
 CREATE TABLE scraped_places (
     id                        SERIAL PRIMARY KEY,
-    dedupe_key                VARCHAR(512) NOT NULL,
-    job_id                    VARCHAR(64) NOT NULL,
+    dedupe_key                VARCHAR(512),  -- NOT NULL removed: some rows have NULL dedupe_key
+    job_id                    VARCHAR(64),   -- NOT NULL removed: smoke-test rows have NULL job_id
     job_created_at            TIMESTAMPTZ,
     query                     TEXT,
     center_name               TEXT,
@@ -111,14 +112,16 @@ def export_sqlite_to_csv(csv_path):
     import sqlite3
 
     # Get column names
-    conn = sqlite3.connect(SQLITE_DB)
-    conn.execute("PRAGMA journal_mode=OFF")  # Faster export
+    conn = sqlite3.connect(SQLITE_DB, timeout=30)
+    # Note: we intentionally do NOT set PRAGMA journal_mode=OFF here
+    # because the backend app holds a write lock via its WAL-mode connection.
+    # WAL mode allows concurrent reads, so we just proceed without changing it.
     cursor = conn.execute("PRAGMA table_info(scraped_places)")
     cols = [row[1] for row in cursor]
     conn.close()
 
     # Export
-    conn = sqlite3.connect(SQLITE_DB)
+    conn = sqlite3.connect(SQLITE_DB, timeout=30)
     cursor = conn.execute(f"SELECT {','.join(cols)} FROM scraped_places")
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
@@ -154,7 +157,7 @@ def migrate():
 
     # Step 3: Connect to PG and create schema
     print("[3/6] Creating schema in PostgreSQL...")
-    pg_conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, dbname=PG_DB, user=PG_USER)
+    pg_conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, dbname=PG_DB, user=PG_USER, password=PG_PASSWORD)
     pg_conn.autocommit = True
     cursor = pg_conn.cursor()
 

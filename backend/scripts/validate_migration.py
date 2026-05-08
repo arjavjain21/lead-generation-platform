@@ -15,10 +15,11 @@ import sqlite3
 import psycopg2
 
 SQLITE_DB = "/var/www/lead-generation-platform/backend/data/jobs.db"
-PG_HOST = "localhost"
+PG_HOST = "127.0.0.1"  # TCP/IP for scram-sha-256 password auth
 PG_PORT = 5433
 PG_DB = "lead_gen"
 PG_USER = "postgres"
+PG_PASSWORD = "leadgen_migrate_2024"
 
 
 def validate():
@@ -31,8 +32,11 @@ def validate():
     sqlite_count = sqlite_conn.execute("SELECT COUNT(*) FROM scraped_places").fetchone()[0]
     sqlite_conn.close()
 
-    pg_conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, dbname=PG_DB, user=PG_USER)
-    pg_count = pg_conn.execute("SELECT COUNT(*) FROM scraped_places").fetchone()[0]
+    pg_conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, dbname=PG_DB, user=PG_USER, password=PG_PASSWORD)
+    cur = pg_conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM scraped_places")
+    pg_count = cur.fetchone()[0]
+    cur.close()
     pg_conn.close()
 
     if pg_count == sqlite_count:
@@ -42,22 +46,28 @@ def validate():
         errors.append("Row count mismatch")
 
     # 2. Sample row
-    pg_conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, dbname=PG_DB, user=PG_USER)
-    row = pg_conn.execute("SELECT name, city, website, dedupe_key FROM scraped_places LIMIT 1").fetchone()
+    pg_conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, dbname=PG_DB, user=PG_USER, password=PG_PASSWORD)
+    cur = pg_conn.cursor()
+    cur.execute("SELECT name, city, website, dedupe_key FROM scraped_places LIMIT 1")
+    row = cur.fetchone()
+    cur.close()
+    pg_conn.close()
     if row:
         print(f"[PASS] Sample row: name={row[0]!r}, city={row[1]!r}, website={row[2]!r}")
     else:
         print("[FAIL] No sample rows found")
         errors.append("No sample rows")
-    pg_conn.close()
 
     # 3. Indexes
-    pg_conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, dbname=PG_DB, user=PG_USER)
-    indexes = pg_conn.execute("""
+    pg_conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, dbname=PG_DB, user=PG_USER, password=PG_PASSWORD)
+    cur = pg_conn.cursor()
+    cur.execute("""
         SELECT indexname FROM pg_indexes
         WHERE tablename = 'scraped_places'
         ORDER BY indexname
-    """).fetchall()
+    """)
+    indexes = cur.fetchall()
+    cur.close()
     pg_conn.close()
 
     expected_indexes = [
@@ -74,10 +84,13 @@ def validate():
             errors.append(f"Missing index: {idx}")
 
     # 4. Key columns have data
-    pg_conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, dbname=PG_DB, user=PG_USER)
-    website_count = pg_conn.execute(
+    pg_conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, dbname=PG_DB, user=PG_USER, password=PG_PASSWORD)
+    cur = pg_conn.cursor()
+    cur.execute(
         "SELECT COUNT(website) FROM scraped_places WHERE website IS NOT NULL AND website != ''"
-    ).fetchone()[0]
+    )
+    website_count = cur.fetchone()[0]
+    cur.close()
     pg_conn.close()
 
     print(f"[INFO] Rows with website: {website_count:,}")
