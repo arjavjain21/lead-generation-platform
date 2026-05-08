@@ -62,6 +62,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 │       ├── db.py                # Thread-local SQLite with WAL mode
 │       ├── job_store_base.py    # Base class for job stores
 │       └── circuit_breaker.py   # Circuit breaker for API resilience
+├── scripts/
+│   ├── migrate_scraped_places_to_pg.py  # One-time SQLite → PG migration (Phase 1)
+│   └── validate_migration.py             # Post-migration validation
 ├── frontend/                    # Pre-built static files (React)
 ├── *.sh                         # backup.sh, restore.sh, monitor.sh
 └── *.service, *.timer          # Systemd service/timer files
@@ -193,6 +196,28 @@ ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
 SMTP_SERVER, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SENDER_EMAIL, DEFAULT_RECIPIENT
 ```
 
+## PostgreSQL Companion Database
+
+A PostgreSQL 16 cluster on `/mnt/disk` hosts the `lead_gen` database — a companion to SQLite for enriched data and future website enrichment.
+
+| Property | Value |
+|----------|-------|
+| Cluster | `/mnt/disk/postgresql/16/main` |
+| Port | **5433** (independent from existing PG on 5432) |
+| Database | `lead_gen` |
+| Connection | `postgresql://postgres@localhost:5433/lead_gen` |
+| Table | `scraped_places` |
+| Row count | ~980,585 |
+
+**Important:** This cluster is isolated from the existing 25 PostgreSQL databases on port 5432. They are completely unaffected.
+
+**Managing columns:** New enrichment columns are added directly via `ALTER TABLE` in PostgreSQL — no application code changes needed.
+
+**Future sync (Phase 2+):**
+- `backend/scripts/csv_to_sqlite_loader.py` — loads scraper CSV output into SQLite `scraped_places`
+- `backend/scripts/sqlite_to_pg_sync.py` — continuous sync from SQLite to PostgreSQL
+- `backend/scripts/pg_to_sqlite_sync.py` — enrichment write-back from PostgreSQL to SQLite
+
 ## Troubleshooting
 
 ```bash
@@ -202,6 +227,15 @@ ss -tlnp | grep 8765
 
 # Database locked
 cd backend && sqlite3 data/jobs.db "PRAGMA wal_checkpoint(TRUNCATE);"
+
+# PostgreSQL (port 5433) — verify cluster is up
+sudo pg_lsclusters
+
+# PostgreSQL — connect to lead_gen database
+sudo -u postgres psql -p 5433 lead_gen
+
+# PostgreSQL — check row counts
+sudo -u postgres psql -p 5433 lead_gen -c "SELECT COUNT(*) FROM scraped_places;"
 
 # Stale running jobs (auto-cleaned on restart)
 sqlite3 data/jobs.db "SELECT job_id, status FROM jobs WHERE status='running';"
