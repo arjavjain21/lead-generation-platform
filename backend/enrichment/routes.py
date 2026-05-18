@@ -2398,20 +2398,34 @@ async def _run_job(
             )
 
     except RuntimeError as e:
-        # Handle job cancellation
-        if "was cancelled" in str(e):
-            logger.info("Enrichment job %s was cancelled by user", job_id)
-            # Clean up cancelled jobs set
-            _cancelled_jobs.discard(job_id)
+        # Handle job cancellation and abandonment
+        error_msg = str(e)
+        is_abandoned = "was abandoned" in error_msg
+        is_user_cancelled = "was cancelled by user" in error_msg
 
-            # Check if there's partial output
+        if is_abandoned:
+            logger.info("Enrichment job %s was abandoned (server restart)", job_id)
+            _cancelled_jobs.discard(job_id)
+            final_error = "Job was abandoned due to server restart. Please retry from the jobs page."
+
             if output_path.exists():
                 partial_size = output_path.stat().st_size
                 if partial_size > 0:
-                    # Mark as partial - user can download partial results
+                    store.set_status(job_id, "partial")
+                    logger.info("Abandoned job %s has partial output: %d bytes", job_id, partial_size)
+                else:
+                    store.set_failed(job_id, final_error)
+            else:
+                store.set_failed(job_id, final_error)
+        elif is_user_cancelled:
+            logger.info("Enrichment job %s was cancelled by user", job_id)
+            _cancelled_jobs.discard(job_id)
+
+            if output_path.exists():
+                partial_size = output_path.stat().st_size
+                if partial_size > 0:
                     store.set_status(job_id, "partial")
                     logger.info("Cancelled job %s has partial output available: %d bytes", job_id, partial_size)
-                    # Send partial notification
                     job = store.get_enrichment_job(job_id)
                     if job:
                         await send_job_notification(
@@ -2424,7 +2438,6 @@ async def _run_job(
                             emails_found=job.get("emails_found", 0),
                         )
                 else:
-                    # No partial output, mark as failed
                     store.set_failed(job_id, "Job cancelled by user")
             else:
                 store.set_failed(job_id, "Job cancelled by user")
@@ -2996,19 +3009,28 @@ async def _run_domain_enrich_job(
             )
 
     except RuntimeError as e:
-        if "was cancelled" in str(e):
-            logger.info("Domain enrich job %s was cancelled by user", job_id)
+        error_msg = str(e)
+        if "was cancelled" in error_msg or "was abandoned" in error_msg:
+            # Check what kind of cancellation it was
+            if "abandoned" in error_msg:
+                final_error = "Job was abandoned due to server restart. Please retry from the jobs page."
+            elif "cancelled by user" in error_msg:
+                final_error = "Job was cancelled by user."
+            else:
+                final_error = error_msg
+
+            logger.info("Domain enrich job %s stopped: %s", job_id, final_error)
             _cancelled_jobs.discard(job_id)
 
             if output_path.exists():
                 partial_size = output_path.stat().st_size
                 if partial_size > 0:
                     store.set_status(job_id, "partial")
-                    logger.info("Cancelled job %s has partial output: %d bytes", job_id, partial_size)
+                    logger.info("Job %s has partial output: %d bytes", job_id, partial_size)
                 else:
-                    store.set_failed(job_id, "Job cancelled by user")
+                    store.set_failed(job_id, final_error)
             else:
-                store.set_failed(job_id, "Job cancelled by user")
+                store.set_failed(job_id, final_error)
         else:
             logger.exception("Domain enrich job %s failed: %s", job_id, e)
             store.set_failed(job_id, f"Job failed: {str(e)}")

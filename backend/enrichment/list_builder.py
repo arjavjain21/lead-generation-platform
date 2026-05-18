@@ -598,11 +598,24 @@ async def run_domain_enrichment(
         """Check if job was cancelled and raise exception if so."""
         if job_id:
             if cancelled_jobs and job_id in cancelled_jobs:
-                logger.info("Job %s cancelled (in-memory), stopping", job_id)
-                raise RuntimeError(f"Job {job_id} was cancelled (in-memory)")
+                logger.info("Job %s cancelled (in-memory set), stopping", job_id)
+                raise RuntimeError(f"Job {job_id} was cancelled by user")
             if check_cancelled and check_cancelled(job_id):
-                logger.info("Job %s cancelled (DB check), stopping", job_id)
-                raise RuntimeError(f"Job {job_id} was cancelled (DB check)")
+                # Check why it was cancelled
+                check_store = job_store.get_store()
+                job = check_store.get_job(job_id)
+                if job:
+                    status = job.get("status", "unknown")
+                    error = job.get("error", "")
+                    if status == "abandoned":
+                        logger.info("Job %s found abandoned (server restart), stopping", job_id)
+                        raise RuntimeError(f"Job {job_id} was abandoned due to server restart. Please retry.")
+                    elif status == "cancelled":
+                        logger.info("Job %s found cancelled (by user), stopping", job_id)
+                        raise RuntimeError(f"Job {job_id} was cancelled by user")
+                    else:
+                        logger.info("Job %s cancelled (DB status=%s), stopping", job_id, status)
+                        raise RuntimeError(f"Job {job_id} was cancelled (status: {status})")
 
     # Process in batches to allow cancellation between batches
     BATCH_SIZE = 50  # Process 50 rows at a time

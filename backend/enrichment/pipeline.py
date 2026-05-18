@@ -598,14 +598,35 @@ async def run_pipeline(
     async def process_row(idx: int, row: dict[str, Any]) -> list[OutputRow]:
         # Check if job was cancelled (both in-memory set AND database check)
         is_cancelled = False
+        cancel_reason = "unknown"
         if cancelled_jobs and job_id and job_id in cancelled_jobs:
             is_cancelled = True
+            cancel_reason = "cancelled by user"
         elif check_cancelled and job_id and check_cancelled(job_id):
             is_cancelled = True
+            # Determine reason
+            from shared import db as shared_db
+            from shared.job_store_base import JobStoreBase
+            check_store = JobStoreBase(shared_db.get_db())
+            job = check_store.get_job(job_id)
+            if job:
+                if job.get("status") == "abandoned":
+                    cancel_reason = "abandoned due to server restart"
+                elif job.get("status") == "cancelled":
+                    cancel_reason = "cancelled by user"
+                else:
+                    cancel_reason = f"cancelled (status: {job.get('status')})"
+            else:
+                cancel_reason = "cancelled"
 
         if is_cancelled:
-            logger.info("Job %s cancelled or abandoned, stopping processing at row %d", job_id, idx)
-            raise RuntimeError(f"Job {job_id} was cancelled")
+            logger.info("Job %s %s, stopping processing at row %d", job_id, cancel_reason, idx)
+            if "abandoned" in cancel_reason:
+                raise RuntimeError(f"Job {job_id} was abandoned due to server restart. Please retry.")
+            elif "user" in cancel_reason:
+                raise RuntimeError(f"Job {job_id} was cancelled by user")
+            else:
+                raise RuntimeError(f"Job {job_id} was {cancel_reason}")
 
         domain = str(row.get(domain_col, "")).strip()
 
