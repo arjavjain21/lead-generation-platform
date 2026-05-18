@@ -255,9 +255,17 @@ class JobStoreBase:
         return row["n"] if row else 0
 
     def get_stale_running_jobs(self) -> list[str]:
-        """Jobs that were 'running' when the server last died — mark them abandoned on restart."""
+        """
+        Jobs that were 'running' when the server last died — mark them abandoned on restart.
+
+        Only considers jobs that have been running for more than 60 seconds to avoid
+        false positives from jobs that were just created/restarted (which may still be
+        initializing when a service restart happens).
+        """
         rows = self.conn.execute(
-            "SELECT job_id FROM jobs WHERE status IN ('running', 'queued')"
+            """SELECT job_id FROM jobs
+               WHERE status IN ('running', 'queued')
+               AND datetime(created_at) < datetime('now', '-60 seconds')"""
         ).fetchall()
         return [r["job_id"] for r in rows]
 
