@@ -394,6 +394,43 @@
                         </select>
                     </div>
                 </div>
+
+                <!-- Provider Selection -->
+                <div class="form-card" style="margin-top:1rem;padding:12px;background:#f8fafc;border:1px solid #e2e8f0;">
+                    <h4 style="margin:0 0 8px 0;font-size:0.9rem;color:#1a315d;">Data Sources</h4>
+                    <p style="margin:0 0 10px 0;font-size:0.8rem;color:#64748b;">Select enrichment providers. Internal Database runs first (always enabled).</p>
+                    <div class="filters">
+                        <div class="filter-group" style="flex-direction:column;align-items:flex-start;">
+                            <label style="display:flex;align-items:center;gap:8px;cursor:not-allowed;">
+                                <input type="checkbox" id="provider_contacts_db" checked disabled style="width:16px;height:16px;">
+                                <span style="font-weight:600;">Internal Database (Free)</span>
+                                <span style="font-size:0.75rem;color:#64748b;">Always used</span>
+                            </label>
+                        </div>
+                        <div class="filter-group" style="flex-direction:column;align-items:flex-start;">
+                            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                                <input type="checkbox" id="provider_blitz" checked style="width:16px;height:16px;">
+                                <span style="font-weight:600;">Blitz API</span>
+                                <span style="font-size:0.75rem;color:#64748b;">Runs if Internal DB has no data</span>
+                            </label>
+                        </div>
+                        <div class="filter-group" style="flex-direction:column;align-items:flex-start;">
+                            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                                <input type="checkbox" id="provider_better_enrich" checked style="width:16px;height:16px;">
+                                <span style="font-weight:600;">Better Enrich</span>
+                                <span style="font-size:0.75rem;color:#64748b;">Runs if Blitz has no data</span>
+                            </label>
+                        </div>
+                        <div class="filter-group" style="flex-direction:column;align-items:flex-start;">
+                            <label style="display:flex;align-items:center;gap:8px;cursor:not-allowed;opacity:0.5;">
+                                <input type="checkbox" id="provider_prospeo" disabled style="width:16px;height:16px;">
+                                <span style="font-weight:600;">Prospeo</span>
+                                <span style="font-size:0.75rem;color:#64748b;">Coming soon (admin can enable)</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
                 <button class="btn btn-primary" id="startDomainEnrichment">Start Enrichment</button>
             </div>
             
@@ -603,9 +640,80 @@ https://linkedin.com/in/janesmith</pre>
             </div>
         </div>
     </main>
-    
+
     <script>
+        // =============================================================================
+        // Hash-based Router for SPA navigation
+        // =============================================================================
+
+        const ROUTES = {
+            '': 'home',
+            'home': 'home',
+            'gmaps': 'scraper',
+            'upload': 'domains',
+            'company-search': 'search',
+            'linkedin': 'linkedin',
+            'phone-enrich': 'phone',
+            'enrichment-jobs': 'jobs',
+            'help': 'help',
+            'api-keys': 'apikeys',
+        };
+
+        function getRouteFromHash() {
+            const hash = window.location.hash.replace('#', '').replace(/^\//, '');
+            return hash || '';
+        }
+
+        function navigateToPage(page) {
+            const route = Object.keys(ROUTES).find(k => ROUTES[k] === page) || page;
+            const newHash = '#/' + route;
+
+            // Update hash (this will trigger hashchange event)
+            window.location.hash = newHash;
+
+            return page;
+        }
+
+        function handleHashChange() {
+            const hash = getRouteFromHash();
+            const pageId = ROUTES[hash] || 'home';
+
+            // Update active states
+            document.querySelectorAll('.nav-item').forEach(n => {
+                n.classList.toggle('active', n.dataset.page === pageId);
+            });
+            document.querySelectorAll('.flow-card').forEach(f => {
+                f.classList.toggle('active', f.dataset.page === pageId);
+            });
+
+            // Show/hide pages
+            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+            const pageEl = document.getElementById('page-' + pageId);
+            if (pageEl) {
+                pageEl.classList.add('active');
+            }
+        }
+
+        // Listen for hash changes (browser back/forward, manual URL changes)
+        window.addEventListener('hashchange', handleHashChange);
+
+        // Also handle popstate for back/forward buttons
+        window.addEventListener('popstate', handleHashChange);
+
+        // Initialize on page load
+        window.addEventListener('DOMContentLoaded', () => {
+            // If no hash, set default
+            if (!window.location.hash) {
+                history.replaceState(null, '', '#/');
+            }
+            // Navigate to current hash
+            handleHashChange();
+        });
+
+        // =============================================================================
         // State
+        // =============================================================================
+
         let token = localStorage.getItem('token'), user = null;
         let domainUploadId = null, linkedinUploadId = null, currentJobId = null, eventSource = null;
         
@@ -642,17 +750,13 @@ https://linkedin.com/in/janesmith</pre>
         
         document.getElementById('logoutBtn').addEventListener('click', () => { localStorage.removeItem('token'); token = null; user = null; showAuth(); });
         
-        // Navigation
+        // Navigation - use router for all nav items
         document.querySelectorAll('.nav-item, .flow-card').forEach(el => {
-            el.addEventListener('click', () => {
+            el.addEventListener('click', (e) => {
+                e.preventDefault();
                 const page = el.dataset.page;
                 if (!page) return;
-                document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-                document.querySelectorAll('.flow-card').forEach(f => f.classList.remove('active'));
-                document.querySelector(`.nav-item[data-page="${page}"]`)?.classList.add('active');
-                document.querySelector(`.flow-card[data-page="${page}"]`)?.classList.add('active');
-                document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-                document.getElementById('page-' + page).classList.add('active');
+                navigateToPage(page);
             });
         });
         
@@ -684,8 +788,25 @@ https://linkedin.com/in/janesmith</pre>
         }
         
         document.getElementById('startDomainEnrichment').addEventListener('click', async () => {
-            const domainCol = document.getElementById('domainCol').value, maxResults = parseInt(document.getElementById('maxResults').value);
-            const res = await fetch('/api/enrichment/by-domains', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify({ upload_id: domainUploadId, domain_col: domainCol, max_results: maxResults }) });
+            const domainCol = document.getElementById('domainCol').value;
+            const maxResults = parseInt(document.getElementById('maxResults').value);
+
+            // Collect selected providers (contacts_db is always sent but backend enforces it)
+            const providers = [];
+            if (document.getElementById('provider_blitz').checked) providers.push('blitz');
+            if (document.getElementById('provider_better_enrich').checked) providers.push('better_enrich');
+            if (document.getElementById('provider_prospeo').checked) providers.push('prospeo');
+
+            const res = await fetch('/api/enrichment/flows/domain-enrich', {
+                method: 'POST',
+                headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    upload_id: domainUploadId,
+                    domain_col: domainCol,
+                    max_results: maxResults,
+                    providers: providers.length > 0 ? providers : null
+                })
+            });
             if (res.ok) { const data = await res.json(); currentJobId = data.job_id; document.getElementById('domainTotal').textContent = data.total; document.getElementById('domainProgress').style.display = 'block'; startProgressStream(currentJobId, 'domain'); }
             else alert('Failed to start');
         });

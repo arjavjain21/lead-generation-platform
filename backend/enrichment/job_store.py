@@ -6,6 +6,7 @@ Adds enrichment-specific operations and ensures proper job_type handling.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Optional
 
@@ -37,8 +38,11 @@ class EnrichmentJobStore(JobStoreBase):
         last_name_col: Optional[str] = None,
         cascade_config: Optional[str] = None,
         max_results: Optional[int] = None,
+        selected_providers: Optional[list[str]] = None,
     ) -> None:
         """Create a new enrichment job."""
+        # Convert list to JSON string for storage
+        providers_json = json.dumps(selected_providers) if selected_providers else ""
         self.create_job(
             job_id=job_id,
             user_id=user_id,
@@ -53,6 +57,7 @@ class EnrichmentJobStore(JobStoreBase):
             last_name_col=last_name_col,
             cascade_config=cascade_config,
             max_results=max_results,
+            selected_providers=providers_json,
         )
 
     def list_enrichment_jobs(

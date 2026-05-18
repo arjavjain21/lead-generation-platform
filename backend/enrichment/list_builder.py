@@ -22,6 +22,7 @@ import httpx
 
 from . import blitz_client
 from . import contacts_client
+from . import better_enrich_client
 from . import providers
 
 logger = logging.getLogger(__name__)
@@ -31,13 +32,18 @@ logger = logging.getLogger(__name__)
 VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "better_enrich"})
 
 
-def _should_skip_provider(provider: str, force_provider: Optional[str]) -> bool:
+def _should_skip_provider(
+    provider: str,
+    force_provider: Optional[str] = None,
+    selected_providers: Optional[list[str]] = None,
+) -> bool:
     """
     Determine if a provider should be skipped.
 
     Args:
         provider: The current provider being considered (e.g., "contacts_db", "blitz")
         force_provider: The forced provider from request (or None for normal cascade)
+        selected_providers: List of user-selected providers to use (or None for all enabled)
 
     Returns:
         True if the provider should be skipped, False otherwise
@@ -45,15 +51,24 @@ def _should_skip_provider(provider: str, force_provider: Optional[str]) -> bool:
     Checks:
       1. Is the provider globally disabled in ENABLED_PROVIDERS?
       2. If force_provider is set, does it match the current provider?
+      3. If selected_providers is set, is the provider in the list?
     """
-    # First check: is the provider globally disabled?
+    # force_provider takes precedence - if set, only use that provider
+    if force_provider:
+        return provider != force_provider
+
+    # If selected_providers is set, it takes precedence over global enablement
+    # This allows user to disable a globally-enabled provider
+    if selected_providers is not None:
+        # contacts_db is ALWAYS included (mandatory first step) - cannot be skipped
+        if provider == "contacts_db":
+            return False
+        return provider not in selected_providers
+
+    # No user selection - use global enablement check
     if not providers.is_provider_enabled(provider):
         logger.debug("_should_skip_provider: %s disabled in ENABLED_PROVIDERS", provider)
         return True
-
-    # Second check: force_provider constraint
-    if force_provider:
-        return provider != force_provider
 
     return False
 
@@ -88,12 +103,38 @@ SOURCE_CONTACTS_DB_DOMAIN = "contacts_db_domain"
 SOURCE_BLITZ_LINKEDIN = "blitz_linkedin"
 SOURCE_BLITZ_NAME = "blitz_name"
 SOURCE_BLITZ_DOMAIN = "blitz_domain"
+SOURCE_BETTER_ENRICH = "better_enrich"
 SOURCE_NOT_FOUND = "not_found"
 
 
 # =============================================================================
 # Helper Functions
 # =============================================================================
+
+# All enrichment columns (for output ordering)
+ENRICHED_COLUMNS = [
+    "company_linkedin_url",
+    "company_name",
+    "company_industry",
+    "company_employee_count",
+    "dm_first_name",
+    "dm_last_name",
+    "dm_full_name",
+    "dm_title",
+    "dm_job_level",
+    "dm_job_function",
+    "dm_linkedin_url",
+    "dm_email",
+    "dm_email_source",
+    "dm_email_verified",
+    "dm_phone",
+    "dm_headline",
+    "dm_location_city",
+    "dm_location_country",
+    "dm_icp_tier",
+    "row_status",
+]
+
 
 def _empty_enriched() -> dict[str, Any]:
     """Return empty enriched columns."""
@@ -155,6 +196,7 @@ async def _resolve_person_email(
     domain: str,
     input_full_name: str = "",
     force_provider: Optional[str] = None,
+    selected_providers: Optional[list[str]] = None,
 ) -> tuple[str, str, str, str]:
     """
     Resolve email for a person using Contacts DB first, then Blitz fallback.
@@ -163,6 +205,7 @@ async def _resolve_person_email(
 
     Args:
         force_provider: If set, only use that specific provider.
+        selected_providers: List of user-selected providers to use (or None for all enabled).
     """
     linkedin_url = person_data.get("linkedin_url", "")
     full_name = person_data.get("full_name", "")
@@ -175,7 +218,7 @@ async def _resolve_person_email(
     # Strategy 1: Contacts DB by name + domain (PRIMARY - FREE)
     # When both name and LinkedIn URL are available, prefer name+domain to avoid
     # returning stale emails from previous employers via person_by_linkedin
-    if search_name and domain and not _should_skip_provider("contacts_db", force_provider):
+    if search_name and domain and not _should_skip_provider("contacts_db", force_provider, selected_providers):
         try:
             contacts_data = await contacts_client.person_by_name_and_domain(
                 contacts_http, search_name, domain
@@ -189,7 +232,7 @@ async def _resolve_person_email(
 
     # Strategy 2: Contacts DB by LinkedIn URL (SECONDARY - FREE)
     # Fall back to LinkedIn if name+domain didn't find email, or if name not available
-    if linkedin_url and not _should_skip_provider("contacts_db", force_provider):
+    if linkedin_url and not _should_skip_provider("contacts_db", force_provider, selected_providers):
         try:
             contacts_data = await contacts_client.person_by_linkedin(
                 contacts_http, linkedin_url
@@ -204,7 +247,7 @@ async def _resolve_person_email(
 
     # Strategy 3: Blitz person enrich by name + domain (PRIMARY - PAID)
     # Prioritize name+domain for the same reason as Contacts DB
-    if search_name and domain and not _should_skip_provider("blitz", force_provider):
+    if search_name and domain and not _should_skip_provider("blitz", force_provider, selected_providers):
         try:
             result = await blitz_client.person_enrich(
                 blitz_http,
@@ -233,7 +276,7 @@ async def _resolve_person_email(
 
     # Strategy 4: Blitz API by LinkedIn URL (SECONDARY - PAID)
     # Fall back to LinkedIn if name+domain didn't find email, or if name not available
-    if linkedin_url and not _should_skip_provider("blitz", force_provider):
+    if linkedin_url and not _should_skip_provider("blitz", force_provider, selected_providers):
         try:
             result = await blitz_client.find_work_email(blitz_http, linkedin_url)
             if result.get("found") and result.get("email"):
@@ -243,6 +286,18 @@ async def _resolve_person_email(
                 return result.get("email", ""), "", SOURCE_BLITZ_LINKEDIN, verified
         except Exception as e:
             logger.debug("Blitz email lookup failed: %s", e)
+
+    # Strategy 5: Better Enrich by name + domain (TERTIARY - PAID)
+    # Only try if name is available and Better Enrich is selected
+    if search_name and domain and not _should_skip_provider("better_enrich", force_provider, selected_providers):
+        try:
+            result = await better_enrich_client.find_work_email_v2(contacts_http, search_name, domain)
+            if result and result.get("data", {}).get("email"):
+                email = result["data"]["email"]
+                logger.debug("Better Enrich found email for %s: %s", search_name, email)
+                return email, "", SOURCE_BETTER_ENRICH, "unknown"
+        except Exception as e:
+            logger.debug("Better Enrich lookup failed: %s", e)
 
     return "", "", SOURCE_NOT_FOUND, "unknown"
 
@@ -257,6 +312,7 @@ async def _enrich_single_domain(
     domain_semaphore: asyncio.Semaphore = None,
     email_semaphore: asyncio.Semaphore = None,
     force_provider: Optional[str] = None,
+    selected_providers: Optional[list[str]] = None,
 ) -> list[OutputRow]:
     """
     Enrich a single domain: get company info, generic emails, and decision makers.
@@ -265,6 +321,7 @@ async def _enrich_single_domain(
 
     Args:
         force_provider: If set, only use that specific provider.
+        selected_providers: List of user-selected providers to use (or None for all enabled).
     """
     if not domain_semaphore:
         domain_semaphore = asyncio.Semaphore(DOMAIN_CONCURRENCY)
@@ -401,6 +458,7 @@ async def _enrich_single_domain(
                 person,
                 domain,
                 force_provider=force_provider,
+                selected_providers=selected_providers,
             )
         )
 
@@ -447,6 +505,10 @@ async def run_domain_enrichment(
     include_generic_emails: bool = True,
     on_progress: Callable[[dict[str, Any]], None] = None,
     force_provider: Optional[str] = None,
+    selected_providers: Optional[list[str]] = None,
+    cancelled_jobs: Optional[set[str]] = None,
+    check_cancelled: Optional[Callable[[str], bool]] = None,
+    job_id: Optional[str] = None,
 ) -> list[OutputRow]:
     """
     Main entry point for Flow 1: Domain → Generic Emails + Decision Makers
@@ -461,6 +523,10 @@ async def run_domain_enrichment(
         include_generic_emails: Whether to include generic emails
         on_progress: Callback for progress updates
         force_provider: If set, only use that specific provider.
+        selected_providers: List of user-selected providers to use (or None for all enabled).
+        cancelled_jobs: Set of cancelled job IDs (checked in-memory)
+        check_cancelled: Function to check if job is cancelled (DB check)
+        job_id: Job ID for cancellation tracking
 
     Returns:
         List of enriched output rows
@@ -475,6 +541,9 @@ async def run_domain_enrichment(
     total = len(rows)
 
     async def process_row(idx: int, row: dict[str, Any]) -> list[OutputRow]:
+        # Note: Cancellation is now checked at batch level, not per-row
+        # This allows the batch to finish but stops subsequent batches
+
         domain = str(row.get(domain_col, "")).strip()
 
         if not domain:
@@ -491,42 +560,78 @@ async def run_domain_enrichment(
                 domain_semaphore,
                 email_semaphore,
                 force_provider=force_provider,
+                selected_providers=selected_providers,
             )
 
-        if on_progress:
-            # Collect source counts from results
-            source_counts: dict[str, int] = {}
-            for r in result:
-                source = r.get("dm_email_source", "")
-                if source:
-                    provider = _normalize_source(source)
-                    source_counts[provider] = source_counts.get(provider, 0) + 1
-            emails_found = sum(1 for r in result if r.get("dm_email"))
-            on_progress({
-                "index": idx,
-                "total": total,
-                "domain": domain,
-                "status": result[0].get("row_status", STATUS_ERROR),
-                "contacts_found": len(result),
-                "emails_found": emails_found,
-                "source_counts": source_counts,
-            })
+        # Call progress callback with exception handling
+        # This prevents progress callback errors from crashing the entire batch
+        try:
+            if on_progress:
+                # Collect source counts from results
+                source_counts: dict[str, int] = {}
+                for r in result:
+                    source = r.get("dm_email_source", "")
+                    if source:
+                        provider = _normalize_source(source)
+                        source_counts[provider] = source_counts.get(provider, 0) + 1
+                emails_found = sum(1 for r in result if r.get("dm_email"))
+                progress_event = {
+                    "index": idx,
+                    "total": total,
+                    "domain": domain,
+                    "status": result[0].get("row_status", STATUS_ERROR),
+                    "contacts_found": len(result),
+                    "emails_found": emails_found,
+                    "source_counts": source_counts,
+                }
+                # Handle both sync and async callbacks
+                if asyncio.iscoroutinefunction(on_progress):
+                    await on_progress(progress_event)
+                else:
+                    on_progress(progress_event)
+        except Exception as prog_err:
+            logger.warning("Progress callback failed for domain %s: %s", domain, prog_err)
 
         return result
 
-    # Process all rows
-    tasks = [process_row(i, row) for i, row in enumerate(rows)]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    async def check_cancelled_and_raise():
+        """Check if job was cancelled and raise exception if so."""
+        if job_id:
+            if cancelled_jobs and job_id in cancelled_jobs:
+                logger.info("Job %s cancelled (in-memory), stopping", job_id)
+                raise RuntimeError(f"Job {job_id} was cancelled (in-memory)")
+            if check_cancelled and check_cancelled(job_id):
+                logger.info("Job %s cancelled (DB check), stopping", job_id)
+                raise RuntimeError(f"Job {job_id} was cancelled (DB check)")
+
+    # Process in batches to allow cancellation between batches
+    BATCH_SIZE = 50  # Process 50 rows at a time
+    all_output = []
+
+    for batch_start in range(0, total, BATCH_SIZE):
+        # Check cancellation at start of each batch
+        await check_cancelled_and_raise()
+
+        batch_end = min(batch_start + BATCH_SIZE, total)
+        batch_rows = rows[batch_start:batch_end]
+
+        # Process batch concurrently
+        tasks = [process_row(batch_start + i, row) for i, row in enumerate(batch_rows)]
+        batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Collect batch results
+        for result in batch_results:
+            if isinstance(result, Exception):
+                # Check if it's a cancellation error - if so, stop immediately
+                if "was cancelled" in str(result):
+                    logger.info("Job %s cancellation raised, stopping batch processing", job_id)
+                    raise result
+                logger.error("Row processing failed: %s", result)
+            else:
+                all_output.extend(result)
 
     await blitz_http.aclose()
     await contacts_http.aclose()
-
-    # Collect results
-    for result in results:
-        if isinstance(result, Exception):
-            logger.error("Row processing failed: %s", result)
-        else:
-            all_output.extend(result)
 
     return all_output
 

@@ -2572,6 +2572,15 @@ async def restart_enrichment_job(
     if not cascade:
         cascade = blitz_client.DEFAULT_CASCADE
 
+    # Parse selected_providers from original job (for restart with provider selection)
+    selected_providers = None
+    providers_json = original_job.get('selected_providers', '')
+    if providers_json:
+        try:
+            selected_providers = json.loads(providers_json)
+        except Exception as e:
+            logger.warning("Failed to parse selected_providers for job %s: %s", job_id, e)
+
     # Create new job
     new_job_id = str(uuid.uuid4())
     store.create_enrichment_job(
@@ -2587,26 +2596,42 @@ async def restart_enrichment_job(
         last_name_col=original_job.get('last_name_col'),
         cascade_config=cascade_json,
         max_results=original_job.get('max_results', 5),
+        selected_providers=selected_providers,
     )
 
     # Set up signals and background task
     _job_signals[new_job_id] = asyncio.Event()
     _active_jobs.add(new_job_id)
 
-    background_tasks.add_task(
-        _run_job,
-        job_id=new_job_id,
-        rows=rows,
-        domain_col=original_job['domain_col'],
-        name_col=original_job.get('name_col'),
-        first_name_col=original_job.get('first_name_col'),
-        last_name_col=original_job.get('last_name_col'),
-        cascade=cascade,
-        max_results=original_job.get('max_results', 5),
-        write_incremental=True,
-    )
+    # Use _run_domain_enrich_job if selected_providers is set (new provider selection feature)
+    # Otherwise, use _run_job (old pipeline-based enrichment)
+    if selected_providers is not None:
+        background_tasks.add_task(
+            _run_domain_enrich_job,
+            job_id=new_job_id,
+            rows=rows,
+            domain_col=original_job['domain_col'],
+            name_col=original_job.get('name_col'),
+            first_name_col=original_job.get('first_name_col'),
+            last_name_col=original_job.get('last_name_col'),
+            max_results=original_job.get('max_results', 5),
+            selected_providers=selected_providers,
+        )
+    else:
+        background_tasks.add_task(
+            _run_job,
+            job_id=new_job_id,
+            rows=rows,
+            domain_col=original_job['domain_col'],
+            name_col=original_job.get('name_col'),
+            first_name_col=original_job.get('first_name_col'),
+            last_name_col=original_job.get('last_name_col'),
+            cascade=cascade,
+            max_results=original_job.get('max_results', 5),
+            write_incremental=True,
+        )
 
-    logger.info("Restarted enrichment job %s as new job %s", job_id, new_job_id)
+    logger.info("Restarted enrichment job %s as new job %s with providers %s", job_id, new_job_id, selected_providers)
 
     return {
         "job_id": new_job_id,
@@ -2791,6 +2816,206 @@ async def enrich_by_domains(
     )
 
     return {"job_id": job_id, "total": len(rows), "flow": "domain_enrichment"}
+
+
+class ProviderToggleRequest(BaseModel):
+    """Request with optional provider selection for Flow 1 using list_builder."""
+    upload_id: str
+    domain_col: str
+    name_col: Optional[str] = None
+    first_name_col: Optional[str] = None
+    last_name_col: Optional[str] = None
+    max_results: int = 5
+    # List of providers to use (e.g., ["blitz", "better_enrich"])
+    # contacts_db is always used first and cannot be disabled
+    # If None, all enabled providers are used
+    providers: Optional[list[str]] = None
+
+
+@router.post("/flows/domain-enrich")
+async def domain_enrich_with_providers(
+    req: ProviderToggleRequest,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(auth.get_current_user),
+):
+    """
+    Flow 1: Domain → Generic Emails + Decision Makers
+
+    This endpoint uses the list_builder pipeline with provider selection.
+    Provider selection allows users to choose which enrichment providers to use.
+
+    Cascade order: Contacts DB (always) → (selected providers in order)
+    Stop on first hit - if a provider finds contacts, later providers are skipped.
+    """
+    upload_path = UPLOAD_DIR / f"{req.upload_id}.csv"
+    if not upload_path.exists():
+        raise HTTPException(status_code=404, detail="Upload not found.")
+
+    df = pd.read_csv(str(upload_path), skipinitialspace=True)
+    if req.domain_col not in df.columns:
+        raise HTTPException(
+            status_code=400, detail=f"Column '{req.domain_col}' not found in CSV."
+        )
+
+    rows = df.fillna("").astype(str).to_dict(orient="records")
+
+    # Read metadata
+    metadata_path = UPLOAD_DIR / f"{req.upload_id}.metadata.json"
+    original_filename = ""
+    if metadata_path.exists():
+        try:
+            metadata = json.loads(metadata_path.read_text())
+            original_filename = metadata.get("original_filename", "")
+        except Exception:
+            pass
+
+    # Validate providers if provided
+    if req.providers:
+        invalid = [p for p in req.providers if p not in list_builder.VALID_PROVIDERS]
+        if invalid:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid providers: {invalid}. Valid: {list(list_builder.VALID_PROVIDERS)}"
+            )
+
+    job_id = str(uuid.uuid4())
+    store = job_store.get_store()
+
+    store.create_enrichment_job(
+        job_id=job_id,
+        user_id=current_user["user_id"],
+        total=len(rows),
+        filename=str(req.upload_id),
+        domain_col=req.domain_col,
+        original_filename=original_filename,
+        name_col=req.name_col,
+        first_name_col=req.first_name_col,
+        last_name_col=req.last_name_col,
+        cascade_config=None,
+        max_results=req.max_results,
+        selected_providers=req.providers,
+    )
+
+    _job_signals[job_id] = asyncio.Event()
+    _active_jobs.add(job_id)
+
+    background_tasks.add_task(
+        _run_domain_enrich_job,
+        job_id=job_id,
+        rows=rows,
+        domain_col=req.domain_col,
+        name_col=req.name_col,
+        first_name_col=req.first_name_col,
+        last_name_col=req.last_name_col,
+        max_results=req.max_results,
+        selected_providers=req.providers,
+    )
+
+    return {"job_id": job_id, "total": len(rows), "flow": "domain_enrichment"}
+
+
+async def _run_domain_enrich_job(
+    job_id: str,
+    rows: list[dict[str, Any]],
+    domain_col: str,
+    name_col: Optional[str],
+    first_name_col: Optional[str],
+    last_name_col: Optional[str],
+    max_results: int,
+    selected_providers: Optional[list[str]] = None,
+):
+    """Background task to run domain enrichment using list_builder."""
+    store = job_store.get_store()
+    store.set_running(job_id)
+    seq = [0]
+
+    output_path = OUTPUT_DIR / f"{job_id}.csv"
+
+    async def on_progress(e: dict[str, Any]):
+        try:
+            # Get fresh store instance and commit immediately
+            progress_store = job_store.get_store()
+            progress_store.append_event(job_id, seq[0], e)
+            # Force commit to ensure event is saved
+            progress_store.conn.commit()
+            seq[0] += 1
+            sig = _job_signals.get(job_id)
+            if sig:
+                sig.set()
+                sig.clear()
+        except Exception as prog_err:
+            logger.error("Progress callback failed for job %s: %s", job_id, prog_err)
+
+    try:
+        # Check job cancellation
+        def check_job_cancelled(jid: str) -> bool:
+            check_store = job_store.get_store()
+            return check_store.is_job_cancelled_or_abandoned(jid)
+
+        output_rows = await list_builder.run_domain_enrichment(
+            rows=rows,
+            domain_col=domain_col,
+            name_col=name_col,
+            first_name_col=first_name_col,
+            last_name_col=last_name_col,
+            max_decision_makers=max_results,
+            include_generic_emails=True,
+            on_progress=on_progress,
+            selected_providers=selected_providers,
+            cancelled_jobs=_cancelled_jobs,
+            check_cancelled=check_job_cancelled,
+            job_id=job_id,
+        )
+
+        # Write output
+        if output_rows:
+            out_df = pd.DataFrame(output_rows)
+            input_cols = [c for c in out_df.columns if c not in list_builder.ENRICHED_COLUMNS]
+            ordered = input_cols + [c for c in list_builder.ENRICHED_COLUMNS if c in out_df.columns]
+            out_df[ordered].to_csv(str(output_path), index=False)
+        else:
+            output_path.write_text("")
+
+        store.set_done(job_id, str(output_path))
+        logger.info("Domain enrich job %s completed, %d output rows", job_id, len(output_rows))
+
+        # Sync results back to Contacts DB (async, non-blocking)
+        asyncio.create_task(_run_background_sync(job_id, output_path))
+
+        # Send notification
+        job = store.get_enrichment_job(job_id)
+        if job:
+            await send_job_notification(
+                recipients=get_notification_recipients(),
+                job_type="enrichment",
+                filename=job.get("original_filename") or job.get("filename", "Unknown"),
+                status="done",
+                total=job.get("total", 0),
+                processed=job.get("processed", 0),
+                emails_found=job.get("emails_found", 0)
+            )
+
+    except RuntimeError as e:
+        if "was cancelled" in str(e):
+            logger.info("Domain enrich job %s was cancelled by user", job_id)
+            _cancelled_jobs.discard(job_id)
+
+            if output_path.exists():
+                partial_size = output_path.stat().st_size
+                if partial_size > 0:
+                    store.set_status(job_id, "partial")
+                    logger.info("Cancelled job %s has partial output: %d bytes", job_id, partial_size)
+                else:
+                    store.set_failed(job_id, "Job cancelled by user")
+            else:
+                store.set_failed(job_id, "Job cancelled by user")
+        else:
+            logger.exception("Domain enrich job %s failed: %s", job_id, e)
+            store.set_failed(job_id, f"Job failed: {str(e)}")
+
+    except Exception as e:
+        logger.exception("Domain enrich job %s crashed: %s", job_id, e)
+        store.set_failed(job_id, f"Job crashed: {str(e)}")
 
 
 # --- Flow 2: Company Search & Enrich ---

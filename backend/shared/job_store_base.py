@@ -73,7 +73,8 @@ class JobStoreBase:
         # Enrichment-specific fields
         elif job_type == "enrichment":
             columns.extend(["total", "processed", "emails_found", "filename", "domain_col", "original_filename",
-                           "name_col", "first_name_col", "last_name_col", "cascade_config", "max_results"])
+                           "name_col", "first_name_col", "last_name_col", "cascade_config", "max_results",
+                           "selected_providers"])
             values.extend([
                 kwargs.get("total", 0),
                 0,
@@ -86,6 +87,7 @@ class JobStoreBase:
                 kwargs.get("last_name_col", ""),
                 kwargs.get("cascade_config", ""),
                 kwargs.get("max_results", 5),
+                kwargs.get("selected_providers", ""),
             ])
 
         placeholders = ",".join(["?" for _ in columns])
