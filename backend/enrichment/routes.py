@@ -2552,8 +2552,9 @@ async def restart_enrichment_job(
     if not _owns_job(original_job, current_user):
         raise HTTPException(status_code=403, detail="Access denied")
 
-    if original_job["status"] != "failed":
-        raise HTTPException(status_code=400, detail="Only failed jobs can be restarted")
+    if original_job["status"] not in ("failed", "abandoned"):
+        raise HTTPException(status_code=400,
+            detail="Only failed or abandoned jobs can be restarted")
 
     # Read the original CSV file (kept in uploads/)
     upload_path = UPLOAD_DIR / f"{original_job['filename']}.csv"
@@ -2571,6 +2572,29 @@ async def restart_enrichment_job(
         raise HTTPException(status_code=400, detail=f"Domain column '{domain_col}' not found in CSV")
 
     rows = df.fillna("").astype(str).to_dict(orient="records")
+
+    # Handle output file from previous run (rename to partial)
+    output_path = OUTPUT_DIR / f"{original_job['job_id']}.csv"
+    if output_path.exists():
+        partial_path = OUTPUT_DIR / f"{original_job['job_id']}_partial.csv"
+        output_path.rename(partial_path)
+        logger.info("Renamed previous output to %s", partial_path)
+
+    # Get unprocessed row indices if restarting from abandoned job
+    unprocessed_indices = None
+    if original_job["status"] == "abandoned":
+        store = job_store.get_store()
+        total_rows = len(rows)
+        unprocessed_indices = store.get_unprocessed_indices(total_rows, original_job['job_id'])
+        logger.info("Job %s abandoned at row %d/%d, resuming with %d unprocessed rows",
+                    job_id, total_rows - len(unprocessed_indices), total_rows, len(unprocessed_indices))
+
+        if unprocessed_indices:
+            # Filter rows to only unprocessed
+            rows = [rows[i] for i in unprocessed_indices]
+        else:
+            # No checkpoints means full re-process
+            logger.info("No checkpoints found for job %s, full re-process", job_id)
 
     # Parse cascade configuration from JSON
     cascade = None
@@ -2594,6 +2618,10 @@ async def restart_enrichment_job(
         except Exception as e:
             logger.warning("Failed to parse selected_providers for job %s: %s", job_id, e)
 
+    # Update restart count
+    store = job_store.get_store()
+    new_restart_count = store.increment_restart_count(job_id)
+
     # Create new job
     new_job_id = str(uuid.uuid4())
     store.create_enrichment_job(
@@ -2611,6 +2639,11 @@ async def restart_enrichment_job(
         max_results=original_job.get('max_results', 5),
         selected_providers=selected_providers,
     )
+
+    # If we have unprocessed indices, write checkpoints for them so new job can track progress
+    if unprocessed_indices:
+        for idx in unprocessed_indices:
+            store.write_checkpoint(new_job_id, idx)
 
     # Set up signals and background task
     _job_signals[new_job_id] = asyncio.Event()
