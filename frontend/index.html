@@ -1680,8 +1680,10 @@ https://linkedin.com/in/janesmith</pre>
                     }
                 });
                 document.getElementById('linkedinOptions').style.display = 'block';
+            } else {
+                const err = await res.json().catch(() => ({}));
+                alert('Upload failed: ' + (err.detail || res.statusText || 'Unknown error'));
             }
-            else alert('Upload failed');
         }
         
         document.getElementById('startLinkedinEnrichment').addEventListener('click', async () => {
