@@ -1676,7 +1676,7 @@ https://linkedin.com/in/janesmith</pre>
                     }
                     // Auto-select company column (prefer any with 'linkedin' and 'company')
                     if (col.includes('linkedin') && col.includes('company')) {
-                        optCompany.querySelector('option[value="' + c + '"]').selected = true;
+                        companyColSelect.querySelector('option[value="' + c + '"]').selected = true;
                     }
                 });
                 document.getElementById('linkedinOptions').style.display = 'block';
