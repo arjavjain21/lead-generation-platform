@@ -2339,6 +2339,12 @@ async def _run_job(
         progress_store = job_store.get_store()
         progress_store.append_event(job_id, seq[0], e)
         seq[0] += 1
+
+        # Write checkpoint every 100 rows for incremental resume
+        row_index = e.get("index", 0)
+        if row_index % 100 == 0:
+            progress_store.write_checkpoint(job_id, row_index)
+
         sig = _job_signals.get(job_id)
         if sig:
             sig.set()
@@ -3306,6 +3312,12 @@ async def _run_linkedin_job(
         progress_store = job_store.get_store()
         progress_store.append_event(job_id, seq[0], e)
         seq[0] += 1
+
+        # Write checkpoint every 100 rows for incremental resume
+        row_index = e.get("index", 0)
+        if row_index % 100 == 0:
+            progress_store.write_checkpoint(job_id, row_index)
+
         sig = _job_signals.get(job_id)
         if sig:
             sig.set()
@@ -3459,6 +3471,12 @@ async def _run_linkedin_v2_job(
         progress_store = job_store.get_store()
         progress_store.append_event(job_id, seq[0], e)
         seq[0] += 1
+
+        # Write checkpoint every 100 rows for incremental resume
+        row_index = e.get("index", 0)
+        if row_index % 100 == 0:
+            progress_store.write_checkpoint(job_id, row_index)
+
         sig = _job_signals.get(job_id)
         if sig:
             sig.set()
