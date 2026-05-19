@@ -2754,6 +2754,15 @@ class LinkedInEnrichRequest(BaseModel):
     include_company: bool = True
 
 
+class LinkedInV2Request(BaseModel):
+    """Request model for unified LinkedIn enrichment (personal + company)."""
+    upload_id: str
+    personal_linkedin_col: Optional[str] = None
+    company_linkedin_col: Optional[str] = None
+    max_dms: int = 5
+    include_company: bool = True
+
+
 # --- Flow 1: Domain Enrichment (Extended) ---
 
 @router.post("/by-domains")
@@ -3287,6 +3296,166 @@ async def _run_linkedin_job(
 
     except Exception as e:
         logger.exception("LinkedIn enrichment job %s failed: %s", job_id, e)
+        if output_path.exists() and output_path.stat().st_size > 0:
+            store.set_done(job_id, str(output_path))
+        else:
+            store.set_failed(job_id, str(e))
+
+    finally:
+        _active_jobs.discard(job_id)
+        sig = _job_signals.pop(job_id, None)
+        if sig:
+            sig.set()
+
+
+# --- Unified LinkedIn Enrichment (personal + company) ---
+
+@router.post("/by-linkedin-v2")
+async def enrich_by_linkedin_v2(
+    req: LinkedInV2Request,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(auth.get_current_user),
+):
+    """
+    Unified enrichment using personal and/or company LinkedIn URLs.
+
+    Accepts a CSV upload and supports two LinkedIn columns:
+    - personal_linkedin_col: personal LinkedIn profile URLs
+    - company_linkedin_col: company LinkedIn Page URLs
+
+    At least one column must be provided. The endpoint calls
+    list_builder.run_unified_linkedin_enrichment() in the background.
+    """
+    # Step 1: Validate at least one column is provided
+    if not req.personal_linkedin_col and not req.company_linkedin_col:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one of personal_linkedin_col or company_linkedin_col must be provided.",
+        )
+
+    # Step 2: Locate upload CSV
+    upload_path = UPLOAD_DIR / f"{req.upload_id}.csv"
+    if not upload_path.exists():
+        raise HTTPException(status_code=404, detail="Upload not found.")
+
+    # Step 3: Read CSV and validate columns
+    df = pd.read_csv(str(upload_path), skipinitialspace=True)
+
+    if req.personal_linkedin_col and req.personal_linkedin_col not in df.columns:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Column '{req.personal_linkedin_col}' not found in CSV.",
+        )
+    if req.company_linkedin_col and req.company_linkedin_col not in df.columns:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Column '{req.company_linkedin_col}' not found in CSV.",
+        )
+
+    rows = df.fillna("").astype(str).to_dict(orient="records")
+
+    # Step 4: Count valid rows (rows with at least one URL)
+    valid_count = sum(
+        1
+        for r in rows
+        if (req.personal_linkedin_col and str(r.get(req.personal_linkedin_col, "")).strip())
+        or (req.company_linkedin_col and str(r.get(req.company_linkedin_col, "")).strip())
+    )
+
+    # Step 5: Read original filename from metadata
+    metadata_path = UPLOAD_DIR / f"{req.upload_id}.metadata.json"
+    original_filename = ""
+    if metadata_path.exists():
+        try:
+            metadata = json.loads(metadata_path.read_text())
+            original_filename = metadata.get("original_filename", "")
+        except Exception:
+            pass
+
+    # Step 6: Create enrichment job
+    job_id = str(uuid.uuid4())
+    store = job_store.get_store()
+
+    store.create_enrichment_job(
+        job_id=job_id,
+        user_id=current_user["user_id"],
+        total=valid_count,
+        filename=str(req.upload_id),
+        domain_col=None,
+        original_filename=original_filename,
+        name_col=None,
+        first_name_col=None,
+        last_name_col=None,
+        cascade_config=None,
+        max_results=req.max_dms,
+    )
+
+    _job_signals[job_id] = asyncio.Event()
+    _active_jobs.add(job_id)
+
+    # Step 7: Start background task
+    background_tasks.add_task(
+        _run_linkedin_v2_job,
+        job_id=job_id,
+        rows=rows,
+        personal_linkedin_col=req.personal_linkedin_col,
+        company_linkedin_col=req.company_linkedin_col,
+        max_dms=req.max_dms,
+        include_company=req.include_company,
+    )
+
+    return {"job_id": job_id, "total": valid_count, "flow": "linkedin_v2_enrichment"}
+
+
+async def _run_linkedin_v2_job(
+    job_id: str,
+    rows: list[dict[str, Any]],
+    personal_linkedin_col: Optional[str],
+    company_linkedin_col: Optional[str],
+    max_dms: int,
+    include_company: bool,
+):
+    """Background task to run unified LinkedIn (personal + company) enrichment job."""
+    store = job_store.get_store()
+    store.set_running(job_id)
+    seq = [0]
+
+    output_path = OUTPUT_DIR / f"{job_id}.csv"
+
+    async def on_progress(e: dict[str, Any]):
+        progress_store = job_store.get_store()
+        progress_store.append_event(job_id, seq[0], e)
+        seq[0] += 1
+        sig = _job_signals.get(job_id)
+        if sig:
+            sig.set()
+            sig.clear()
+
+    try:
+        output_rows = await list_builder.run_unified_linkedin_enrichment(
+            rows=rows,
+            personal_col=personal_linkedin_col,
+            company_col=company_linkedin_col,
+            max_dms=max_dms,
+            include_company=include_company,
+            on_progress=on_progress,
+        )
+
+        if output_rows:
+            out_df = pd.DataFrame(output_rows)
+            out_df.to_csv(str(output_path), index=False)
+        else:
+            output_path.write_text("")
+
+        store.set_done(job_id, str(output_path))
+        logger.info(
+            "LinkedIn v2 enrichment job %s completed, %d output rows",
+            job_id,
+            len(output_rows),
+        )
+
+    except Exception as e:
+        logger.exception("LinkedIn v2 enrichment job %s failed: %s", job_id, e)
         if output_path.exists() and output_path.stat().st_size > 0:
             store.set_done(job_id, str(output_path))
         else:
