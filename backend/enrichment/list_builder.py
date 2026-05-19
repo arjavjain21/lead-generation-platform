@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import logging
+import urllib.parse
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -127,6 +128,7 @@ SOURCE_BLITZ_LINKEDIN = "blitz_linkedin"
 SOURCE_BLITZ_NAME = "blitz_name"
 SOURCE_BLITZ_DOMAIN = "blitz_domain"
 SOURCE_BETTER_ENRICH = "better_enrich"
+SOURCE_BLITZ_COMPANY = "blitz_company"
 SOURCE_NOT_FOUND = "not_found"
 
 
@@ -976,3 +978,264 @@ async def run_linkedin_enrichment(
             all_output.append(result)
 
     return all_output
+
+
+# =============================================================================
+# UNIFIED LINKEDIN ENRICHMENT (Personal + Company URLs)
+# =============================================================================
+
+# Local cascade constants (same as blitz_client.DEFAULT_CASCADE but defined
+# locally so this module can use them directly without importing from blitz_client)
+CASCADE_TIER_1 = {
+    "include_title": ["Owner", "CEO", "Founder", "Co-Founder", "President"],
+    "exclude_title": ["assistant", "intern", "junior", "associate"],
+    "location": ["WORLD"],
+    "include_headline_search": False,
+}
+CASCADE_TIER_2 = {
+    "include_title": ["CMO", "VP Marketing", "VP Sales", "Chief Revenue Officer",
+                      "Chief Marketing Officer", "VP of Marketing", "VP of Sales"],
+    "exclude_title": ["assistant", "intern", "junior"],
+    "location": ["WORLD"],
+    "include_headline_search": False,
+}
+CASCADE_TIER_3 = {
+    "include_title": ["Director of Marketing", "Director of Sales", "Head of Marketing",
+                      "Head of Sales", "Head of Growth", "Marketing Director", "Sales Director"],
+    "exclude_title": ["assistant", "intern", "junior"],
+    "location": ["WORLD"],
+    "include_headline_search": False,
+}
+DEFAULT_CASCADE = [CASCADE_TIER_1, CASCADE_TIER_2, CASCADE_TIER_3]
+
+
+async def _enrich_by_company_waterfall(
+    blitz_http: httpx.AsyncClient,
+    company_url: str,
+    cascade: list[dict[str, Any]],
+    max_dms: int = 5,
+    semaphore: asyncio.Semaphore = None,
+) -> list[dict[str, Any]]:
+    """
+    Use Blitz waterfall_icp_search to find decision makers from company LinkedIn URL.
+
+    Returns list of person dictionaries with: first_name, last_name, full_name,
+    title, job_level, linkedin_url, email, verified_email.
+    """
+    if not semaphore:
+        semaphore = asyncio.Semaphore(LINKEDIN_CONCURRENCY)
+
+    results = []
+    async with semaphore:
+        try:
+            response = await blitz_client.waterfall_icp_search(
+                blitz_http,
+                company_linkedin_url=company_url,
+                cascade=cascade,
+                max_results=max_dms,
+            )
+
+            if response.get("results"):
+                for result in response["results"]:
+                    person = result.get("person", {})
+                    first_name = person.get("first_name", "")
+                    last_name = person.get("last_name", "")
+                    full_name = person.get("full_name", "") or f"{first_name} {last_name}".strip()
+
+                    # Try verified_email first, fallback to emails list
+                    verified_email = person.get("verified_email", "")
+                    if not verified_email and person.get("emails"):
+                        emails_list = person["emails"]
+                        verified_email = emails_list[0].get("email", "") if isinstance(emails_list, list) and emails_list else ""
+
+                    results.append({
+                        "first_name": first_name,
+                        "last_name": last_name,
+                        "full_name": full_name,
+                        "title": person.get("title", ""),
+                        "job_level": _get_job_level(person.get("title", "")),
+                        "linkedin_url": person.get("linkedin_url", ""),
+                        "email": verified_email,
+                        "verified_email": verified_email,
+                        "headline": person.get("headline", ""),
+                        "location_city": person.get("location", {}).get("city", "") if isinstance(person.get("location"), dict) else "",
+                        "location_country": person.get("location", {}).get("country_code", "") if isinstance(person.get("location"), dict) else "",
+                        "icp_tier": result.get("icp", ""),
+                        "ranking": result.get("ranking", 0),
+                    })
+        except Exception as e:
+            logger.debug("Company waterfall search failed for %s: %s", company_url, e)
+
+    return results
+
+
+def _get_job_level(title: str) -> str:
+    """Map title to job level for output column."""
+    title_lower = title.lower()
+    if any(t in title_lower for t in ["owner", "ceo", "founder", "co-founder", "president"]):
+        return "owner"
+    elif any(t in title_lower for t in ["chief", "vp ", "vice president"]):
+        return "vp"
+    elif "director" in title_lower or "head of" in title_lower:
+        return "director"
+    elif any(t in title_lower for t in ["manager", "lead", "head"]):
+        return "manager"
+    return "other"
+
+
+async def run_unified_linkedin_enrichment(
+    rows: list[dict[str, Any]],
+    personal_col: Optional[str] = None,
+    company_col: Optional[str] = None,
+    max_dms: int = 5,
+    include_company: bool = True,
+    on_progress: Optional[Callable[[dict[str, Any]], None]] = None,
+) -> list[OutputRow]:
+    """
+    Unified enrichment for CSV with personal and/or company LinkedIn URLs.
+
+    Args:
+        rows: List of input rows from CSV
+        personal_col: Column name containing personal LinkedIn URLs (optional)
+        company_col: Column name containing company LinkedIn URLs (optional)
+        max_dms: Max decision makers to return from company waterfall (default 5)
+        include_company: Include company details in output
+        on_progress: Callback for progress updates
+
+    Returns:
+        List of enriched output rows (can be > len(rows) due to waterfall expansion)
+    """
+    semaphore = asyncio.Semaphore(LINKEDIN_CONCURRENCY)
+    blitz_http = httpx.AsyncClient()
+    contacts_http = httpx.AsyncClient()
+
+    all_output: list[OutputRow] = []
+    total = len(rows)
+
+    for idx, row in enumerate(rows):
+        personal_url = str(row.get(personal_col, "")).strip() if personal_col else ""
+        company_url = str(row.get(company_col, "")).strip() if company_col else ""
+
+        # Skip if neither URL is present
+        if not personal_url and not company_url:
+            output_row = {**row, **_empty_enriched(), "row_status": STATUS_SKIPPED}
+            all_output.append(output_row)
+            if on_progress:
+                on_progress({
+                    "index": idx,
+                    "total": total,
+                    "status": STATUS_SKIPPED,
+                    "email_found": False,
+                    "source_counts": {},
+                })
+            continue
+
+        # Track if we found any data
+        found_data = False
+
+        # Step 1: Try personal URL enrichment
+        if personal_url and "linkedin.com" in personal_url:
+            person_result = await _enrich_single_linkedin(
+                blitz_http, contacts_http, row, personal_url,
+                include_company=include_company, semaphore=semaphore
+            )
+
+            # If we got email from personal URL, use it
+            if person_result.get("dm_email") or person_result.get("row_status") == STATUS_ENRICHED:
+                all_output.append(person_result)
+                found_data = True
+
+                if on_progress:
+                    source = person_result.get("dm_email_source", "")
+                    provider = _normalize_source(source) if source else "unknown"
+                    on_progress({
+                        "index": idx,
+                        "total": total,
+                        "status": person_result.get("row_status", STATUS_ENRICHED),
+                        "email_found": bool(person_result.get("dm_email")),
+                        "source_counts": {provider: 1},
+                    })
+            elif person_result.get("row_status") == STATUS_NO_CONTACTS:
+                # Personal URL found but no contacts - continue to company fallback
+                pass
+
+        # Step 2: If personal failed or not provided, try company waterfall
+        if not found_data and company_url and "linkedin.com" in company_url:
+            # Try company waterfall to get decision makers
+            company_dms = await _enrich_by_company_waterfall(
+                blitz_http, company_url, DEFAULT_CASCADE, max_dms, semaphore
+            )
+
+            if company_dms:
+                # Create one output row per decision maker
+                for dm in company_dms:
+                    output_row = {
+                        **row,
+                        "dm_first_name": dm.get("first_name", ""),
+                        "dm_last_name": dm.get("last_name", ""),
+                        "dm_full_name": dm.get("full_name", ""),
+                        "dm_title": dm.get("title", ""),
+                        "dm_job_level": dm.get("job_level", ""),
+                        "dm_linkedin_url": dm.get("linkedin_url", ""),
+                        "dm_email": dm.get("email", ""),
+                        "dm_email_verified": "yes" if dm.get("verified_email") else "no",
+                        "dm_headline": dm.get("headline", ""),
+                        "dm_location_city": dm.get("location_city", ""),
+                        "dm_location_country": dm.get("location_country", ""),
+                        "dm_icp_tier": dm.get("icp_tier", ""),
+                        "company_linkedin_url": company_url,
+                        "row_status": STATUS_ENRICHED if dm.get("email") else STATUS_NO_CONTACTS,
+                        "dm_email_source": SOURCE_BLITZ_COMPANY,
+                    }
+                    if include_company:
+                        output_row["company_name"] = _extract_company_name_from_url(company_url)
+
+                    all_output.append(output_row)
+                    found_data = True
+
+                    if on_progress:
+                        on_progress({
+                            "index": idx,
+                            "total": total,
+                            "status": STATUS_ENRICHED,
+                            "email_found": bool(dm.get("email")),
+                            "source_counts": {"blitz_company": 1},
+                        })
+            else:
+                # Company waterfall also failed
+                output_row = {**row, **_empty_enriched(), "row_status": STATUS_NOT_FOUND}
+                output_row["company_linkedin_url"] = company_url if company_url else ""
+                all_output.append(output_row)
+                found_data = True
+
+                if on_progress:
+                    on_progress({
+                        "index": idx,
+                        "total": total,
+                        "status": STATUS_NOT_FOUND,
+                        "email_found": False,
+                        "source_counts": {},
+                    })
+
+        # Step 3: If no URLs at all, mark as skipped
+        if not found_data:
+            output_row = {**row, **_empty_enriched(), "row_status": STATUS_SKIPPED}
+            all_output.append(output_row)
+
+    await blitz_http.aclose()
+    await contacts_http.aclose()
+
+    return all_output
+
+
+def _extract_company_name_from_url(url: str) -> str:
+    """Extract company name from LinkedIn company URL."""
+    if not url:
+        return ""
+    # URL format: https://www.linkedin.com/company/acme-corp
+    parts = url.split("/company/")
+    if len(parts) > 1:
+        name = parts[-1].rstrip("/")
+        # Decode URL encoding
+        return urllib.parse.unquote(name.replace("-", " ").replace("_", " ").title())
+    return ""
