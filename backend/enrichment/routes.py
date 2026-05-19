@@ -3467,7 +3467,7 @@ async def _run_linkedin_v2_job(
 
     output_path = OUTPUT_DIR / f"{job_id}.csv"
 
-    async def on_progress(e: dict[str, Any]):
+    def on_progress(e: dict[str, Any]):
         progress_store = job_store.get_store()
         progress_store.append_event(job_id, seq[0], e)
         seq[0] += 1
@@ -3480,7 +3480,6 @@ async def _run_linkedin_v2_job(
         sig = _job_signals.get(job_id)
         if sig:
             sig.set()
-            sig.clear()
 
     try:
         output_rows = await list_builder.run_unified_linkedin_enrichment(
