@@ -543,16 +543,38 @@
             
             <div class="form-card" id="linkedinOptions" style="display:none;">
                 <h3>⚙️ Options</h3>
+                <div style="background:#f0f9ff;border-left:4px solid #1a315d;padding:12px;margin-bottom:1rem;border-radius:4px;font-size:0.85rem;color:#374151;">
+                    <strong>Tip:</strong> Select columns for personal LinkedIn URLs (e.g., linkedin.com/in/...) and/or company URLs (e.g., linkedin.com/company/...). Personal URLs are enriched first; company waterfall is used as fallback.
+                </div>
                 <div class="filters">
                     <div class="filter-group">
-                        <label>LinkedIn Column</label>
-                        <select id="linkedinCol"></select>
+                        <label>Personal LinkedIn Column (Optional)</label>
+                        <select id="linkedinPersonalCol">
+                            <option value="">-- Select Column --</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label>Company LinkedIn Column (Optional)</label>
+                        <select id="linkedinCompanyCol">
+                            <option value="">-- Select Column --</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label>Max Decision Makers (for company URLs)</label>
+                        <select id="linkedinMaxDms">
+                            <option value="3">3</option>
+                            <option value="5" selected>5</option>
+                            <option value="10">10</option>
+                        </select>
                     </div>
                     <div class="filter-group">
                         <label style="display:flex;align-items:center;gap:0.5rem;">
-                            <input type="checkbox" id="includeCompany" checked> Include Company Details
+                            <input type="checkbox" id="linkedinIncludeCompany" checked> Include Company Details
                         </label>
                     </div>
+                </div>
+                <div style="margin-top:1rem;color:#6b7280;font-size:0.85rem;">
+                    At least one column must be selected.
                 </div>
                 <button class="btn btn-primary" id="startLinkedinEnrichment">Start Enrichment</button>
             </div>
@@ -1620,13 +1642,71 @@ https://linkedin.com/in/janesmith</pre>
         async function handleLinkedinFile(file) {
             const formData = new FormData(); formData.append('file', file);
             const res = await fetch('/api/enrichment/upload', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token }, body: formData });
-            if (res.ok) { const data = await res.json(); linkedinUploadId = data.upload_id; document.getElementById('linkedinFileName').textContent = data.filename; document.getElementById('linkedinFileSize').textContent = data.row_count + ' rows'; document.getElementById('linkedinFileInfo').style.display = 'flex'; const colSelect = document.getElementById('linkedinCol'); colSelect.innerHTML = ''; data.columns.forEach(c => { const opt = document.createElement('option'); opt.value = c; opt.textContent = c; if (c.toLowerCase().includes('linkedin')) opt.selected = true; colSelect.appendChild(opt); }); document.getElementById('linkedinOptions').style.display = 'block'; }
+            if (res.ok) {
+                const data = await res.json();
+                linkedinUploadId = data.upload_id;
+                document.getElementById('linkedinFileName').textContent = data.filename;
+                document.getElementById('linkedinFileSize').textContent = data.row_count + ' rows';
+                document.getElementById('linkedinFileInfo').style.display = 'flex';
+
+                // Populate personal LinkedIn column dropdown
+                const personalColSelect = document.getElementById('linkedinPersonalCol');
+                personalColSelect.innerHTML = '<option value="">-- Select Column --</option>';
+                // Populate company LinkedIn column dropdown
+                const companyColSelect = document.getElementById('linkedinCompanyCol');
+                companyColSelect.innerHTML = '<option value="">-- Select Column --</option>';
+
+                data.columns.forEach(c => {
+                    const col = c.toLowerCase();
+                    const optPersonal = document.createElement('option');
+                    optPersonal.value = c;
+                    optPersonal.textContent = c;
+                    personalColSelect.appendChild(optPersonal);
+
+                    const optCompany = document.createElement('option');
+                    optCompany.value = c;
+                    optCompany.textContent = c;
+                    companyColSelect.appendChild(optCompany);
+
+                    // Auto-select personal column (prefer dm_linkedin_url, linkedin_url, any with 'linkedin' but not 'company')
+                    if (col === 'dm_linkedin_url' || col === 'linkedin_url') {
+                        optPersonal.selected = true;
+                    } else if (!personalColSelect.querySelector('option[selected]') && col.includes('linkedin') && !col.includes('company')) {
+                        optPersonal.selected = true;
+                    }
+                    // Auto-select company column (prefer any with 'linkedin' and 'company')
+                    if (col.includes('linkedin') && col.includes('company')) {
+                        optCompany.querySelector('option[value="' + c + '"]').selected = true;
+                    }
+                });
+                document.getElementById('linkedinOptions').style.display = 'block';
+            }
             else alert('Upload failed');
         }
         
         document.getElementById('startLinkedinEnrichment').addEventListener('click', async () => {
-            const linkedinCol = document.getElementById('linkedinCol').value, includeCompany = document.getElementById('includeCompany').checked;
-            const res = await fetch('/api/enrichment/by-linkedin', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify({ upload_id: linkedinUploadId, linkedin_col: linkedinCol, include_company: includeCompany }) });
+            const personalCol = document.getElementById('linkedinPersonalCol').value;
+            const companyCol = document.getElementById('linkedinCompanyCol').value;
+            const maxDms = document.getElementById('linkedinMaxDms').value;
+            const includeCompany = document.getElementById('linkedinIncludeCompany').checked;
+
+            // Validate at least one column is selected
+            if (!personalCol && !companyCol) {
+                alert('Please select at least one LinkedIn column (personal or company).');
+                return;
+            }
+
+            const res = await fetch('/api/enrichment/by-linkedin-v2', {
+                method: 'POST',
+                headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    upload_id: linkedinUploadId,
+                    personal_linkedin_col: personalCol || null,
+                    company_linkedin_col: companyCol || null,
+                    max_dms: parseInt(maxDms),
+                    include_company: includeCompany
+                })
+            });
             if (res.ok) { const data = await res.json(); currentJobId = data.job_id; document.getElementById('linkedinTotal').textContent = data.total; document.getElementById('linkedinProgress').style.display = 'block'; startProgressStream(currentJobId, 'linkedin'); }
             else alert('Failed to start');
         });
