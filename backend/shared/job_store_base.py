@@ -308,3 +308,88 @@ class JobStoreBase:
             (parent_job_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def write_checkpoint(self, job_id: str, row_index: int) -> None:
+        """
+        Write a checkpoint for a processed row.
+
+        Args:
+            job_id: The job identifier
+            row_index: The index of the processed row (0-based)
+        """
+        now = _now()
+        self.conn.execute(
+            "INSERT OR REPLACE INTO job_checkpoints (job_id, row_index, processed_at) VALUES (?, ?, ?)",
+            (job_id, row_index, now),
+        )
+        self.conn.commit()
+
+    def get_processed_indices(self, job_id: str) -> set[int]:
+        """
+        Get all processed row indices for a job.
+
+        Args:
+            job_id: The job identifier
+
+        Returns:
+            Set of processed row indices
+        """
+        rows = self.conn.execute(
+            "SELECT row_index FROM job_checkpoints WHERE job_id=? ORDER BY row_index",
+            (job_id,),
+        ).fetchall()
+        return {row[0] for row in rows}
+
+    def get_unprocessed_indices(self, total_rows: int, job_id: str) -> list[int]:
+        """
+        Get list of unprocessed row indices.
+
+        Args:
+            total_rows: Total number of rows in the input
+            job_id: The job identifier
+
+        Returns:
+            List of unprocessed indices in ascending order
+        """
+        processed = self.get_processed_indices(job_id)
+        return [i for i in range(total_rows) if i not in processed]
+
+    def increment_restart_count(self, job_id: str) -> int:
+        """
+        Increment the restart count for a job.
+
+        Args:
+            job_id: The job identifier
+
+        Returns:
+            The new restart count
+        """
+        self.conn.execute(
+            "UPDATE jobs SET restart_count = restart_count + 1 WHERE job_id=?",
+            (job_id,),
+        )
+        self.conn.commit()
+
+        cursor = self.conn.execute(
+            "SELECT restart_count FROM jobs WHERE job_id=?",
+            (job_id,),
+        )
+        row = cursor.fetchone()
+        return row[0] if row else 0
+
+    def cleanup_checkpoints(self, job_id: str) -> int:
+        """
+        Remove all checkpoints for a job (used after job completion).
+
+        Args:
+            job_id: The job identifier
+
+        Returns:
+            Number of checkpoints deleted
+        """
+        cursor = self.conn.execute(
+            "DELETE FROM job_checkpoints WHERE job_id=?",
+            (job_id,),
+        )
+        self.conn.commit()
+        return cursor.rowcount
