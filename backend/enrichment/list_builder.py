@@ -28,6 +28,29 @@ from . import providers
 logger = logging.getLogger(__name__)
 
 
+def _is_company_linkedin_url(url: str) -> bool:
+    """Check if LinkedIn URL is a company page (not personal profile)."""
+    if not url or "linkedin.com" not in url:
+        return False
+    return "/company/" in url or "/school/" in url or "/organization/" in url
+
+
+def _is_personal_linkedin_url(url: str) -> bool:
+    """Check if LinkedIn URL is a personal profile."""
+    if not url or "linkedin.com" not in url:
+        return False
+    return "/in/" in url
+
+
+def _detect_linkedin_url_type(url: str) -> str:
+    """Detect if URL is 'personal', 'company', or 'unknown'."""
+    if _is_company_linkedin_url(url):
+        return "company"
+    elif _is_personal_linkedin_url(url):
+        return "personal"
+    return "unknown"
+
+
 # Valid provider values for force_provider parameter
 VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "better_enrich"})
 
