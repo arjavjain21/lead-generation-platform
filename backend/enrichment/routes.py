@@ -2802,7 +2802,18 @@ class LinkedInV2Request(BaseModel):
     include_company: bool = True
 
 
-# --- Flow 1: Domain Enrichment (Extended) ---
+# =============================================================================
+# LEGACY ENDPOINTS
+# These endpoints are kept for backward compatibility but are NOT used by
+# the current frontend. The frontend now uses:
+#   - /flows/domain-enrich (with provider selection)
+#   - /by-linkedin-v2 (unified LinkedIn enrichment)
+#
+# To revert: Update frontend to call these endpoints instead of the new ones.
+# =============================================================================
+
+# --- Legacy Flow 1: Domain Enrichment (Extended) ---
+# FRONTEND NOW USES: /flows/domain-enrich (with provider selection)
 
 @router.post("/by-domains")
 async def enrich_by_domains(
@@ -2811,13 +2822,16 @@ async def enrich_by_domains(
     current_user: dict = Depends(auth.get_current_user),
 ):
     """
-    Flow 1: Domain → Generic Emails + Decision Makers
+    [LEGACY] Flow 1: Domain → Generic Emails + Decision Makers
+
+    DEPRECATED: Use /flows/domain-enrich instead for provider selection.
 
     Upload a CSV with domains and get:
     - Generic emails per domain
     - Up to 5 decision makers per company
 
     This extends the existing enrichment endpoint with additional options.
+    Uses _run_job (pipeline-based) instead of _run_domain_enrich_job.
     """
     upload_path = UPLOAD_DIR / f"{req.upload_id}.csv"
     if not upload_path.exists():
@@ -3131,12 +3145,16 @@ async def search_and_enrich(
     current_user: dict = Depends(auth.get_current_user),
 ):
     """
-    Flow 2b: Search companies + Enrich
+    [LEGACY] Flow 2b: Search companies + Enrich
+
+    DEPRECATED: This endpoint does not support provider selection.
+    Use /flows/domain-enrich instead after extracting domains.
 
     1. Search for companies matching criteria
     2. Enrich each company with decision makers and emails
 
     Returns a job_id for tracking the enrichment process.
+    Uses _run_job (pipeline-based) instead of _run_domain_enrich_job.
     """
     # First, search for companies
     async with httpx.AsyncClient() as client:
@@ -3225,7 +3243,8 @@ async def search_and_enrich(
     }
 
 
-# --- Flow 3: LinkedIn Enrichment ---
+# --- Legacy Flow 3: LinkedIn Enrichment ---
+# FRONTEND NOW USES: /by-linkedin-v2 (unified personal + company LinkedIn)
 
 @router.post("/by-linkedin")
 async def enrich_by_linkedin(
@@ -3234,13 +3253,17 @@ async def enrich_by_linkedin(
     current_user: dict = Depends(auth.get_current_user),
 ):
     """
-    Flow 3: LinkedIn URLs → Full Enrichment
+    [LEGACY] Flow 3: LinkedIn URLs → Full Enrichment
+
+    DEPRECATED: Use /by-linkedin-v2 instead for personal + company URL support.
 
     Upload a CSV with LinkedIn URLs and get fully enriched data:
     - Person details (name, title, company)
     - Work email
     - Phone (if available)
     - Company details
+
+    Uses _run_linkedin_job (pipeline-based) instead of _run_linkedin_v2_job.
     """
     upload_path = UPLOAD_DIR / f"{req.upload_id}.csv"
     if not upload_path.exists():
