@@ -384,17 +384,19 @@ async def chain_to_enrichment(
     enrichment_routes._job_signals[enrichment_job_id] = asyncio.Event()
     enrichment_routes._active_jobs.add(enrichment_job_id)
 
+    # Use _run_domain_enrich_job which supports all enabled providers
+    # (Contacts DB + Blitz + Better Enrich) instead of _run_job which uses
+    # the older pipeline with custom cascade. Pass None to use all enabled providers.
     background_tasks.add_task(
-        enrichment_routes._run_job,
+        enrichment_routes._run_domain_enrich_job,
         job_id=enrichment_job_id,
         rows=rows_with_domains,
         domain_col="website",
         name_col=None,
         first_name_col=None,
         last_name_col=None,
-        cascade=cascade,
         max_results=req.max_results,
-        write_incremental=True,
+        selected_providers=None,  # None = use all enabled providers
     )
 
     return {
