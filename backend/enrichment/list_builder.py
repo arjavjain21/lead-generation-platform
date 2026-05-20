@@ -1193,14 +1193,16 @@ async def run_unified_linkedin_enrichment(
                     all_output.append(output_row)
                     found_data = True
 
-                    if on_progress:
-                        on_progress({
-                            "index": idx,
-                            "total": total,
-                            "status": STATUS_ENRICHED,
-                            "email_found": bool(dm.get("email")),
-                            "source_counts": {"blitz_company": 1},
-                        })
+                # Send ONE progress event for the company row (not one per DM)
+                if on_progress:
+                    emails_found = sum(1 for dm in company_dms if dm.get("email"))
+                    on_progress({
+                        "index": idx,
+                        "total": total,
+                        "status": STATUS_ENRICHED,
+                        "email_found": emails_found,
+                        "source_counts": {"blitz_company": emails_found} if emails_found else {},
+                    })
             else:
                 # Company waterfall also failed
                 output_row = {**row, **_empty_enriched(), "row_status": STATUS_NOT_FOUND}
