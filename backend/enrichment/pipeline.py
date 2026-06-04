@@ -31,6 +31,7 @@ from . import contacts_client
 from . import better_enrich_client
 from . import prospeo_client
 from . import providers
+from . import mailtester_client
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +132,9 @@ ENRICHED_COLUMNS = [
     "dm_linkedin_url",
     "dm_email",
     "dm_email_source",
+    "dm_email_verified",
+    "mailtester_code",
+    "mailtester_message",
     "dm_headline",
     "dm_location_city",
     "dm_location_country",
@@ -159,6 +163,7 @@ def _build_person_row(
     icp_tier: int,
     email: str,
     email_source: str,
+    verification_info: Optional[dict[str, Any]] = None,
 ) -> OutputRow:
     loc = person.get("location") or {}
     experiences = person.get("experiences") or []
@@ -176,6 +181,17 @@ def _build_person_row(
     row["dm_location_country"] = loc.get("country_code", "")
     row["dm_icp_tier"] = icp_tier
     row["row_status"] = STATUS_ENRICHED if email else STATUS_NO_CONTACTS
+
+    # Add verification status if available
+    if verification_info:
+        row["dm_email_verified"] = verification_info.get("dm_email_verified", "unknown")
+        row["mailtester_code"] = verification_info.get("mailtester_code", "")
+        row["mailtester_message"] = verification_info.get("mailtester_message", "")
+    else:
+        row["dm_email_verified"] = "unknown"
+        row["mailtester_code"] = ""
+        row["mailtester_message"] = ""
+
     return row
 
 
@@ -228,9 +244,10 @@ async def _resolve_email_for_person(
     input_full_name: str,
     email_semaphore: asyncio.Semaphore,
     force_provider: Optional[str] = None,
-) -> tuple[str, str]:
+    validate_email: bool = True,
+) -> tuple[str, str, dict[str, Any]]:
     """
-    Returns (email, source).
+    Returns (email, source, verification_info).
     Priority cascade:
       1. Contacts DB by person's name + domain (PRIMARY - avoids stale LinkedIn emails)
       2. Contacts DB by LinkedIn URL (SECONDARY)
@@ -241,11 +258,24 @@ async def _resolve_email_for_person(
 
     Args:
         force_provider: If set, only use that specific provider.
+        validate_email: If True, verify Contacts DB emails with mailtester.
+
+    verification_info dict contains:
+        - dm_email_verified: "yes", "no", "unknown"
+        - mailtester_code: "ok", "mb", "ko", "unavailable", ""
+        - mailtester_message: Message from mailtester
     """
     linkedin_url = person.get("linkedin_url", "")
     full_name = person.get("full_name", "")
     first_name = person.get("first_name", "")
     last_name = person.get("last_name", "")
+
+    # Initialize verification info
+    verification_info: dict[str, Any] = {
+        "dm_email_verified": "unknown",
+        "mailtester_code": "",
+        "mailtester_message": "",
+    }
 
     async with email_semaphore:
         # Step 1: Contacts DB by person's name + domain (PRIMARY - FREE)
@@ -258,7 +288,38 @@ async def _resolve_email_for_person(
                 )
                 email = contacts_client.extract_email_from_contacts_response(contacts_data)
                 if email:
-                    return email, SOURCE_CONTACTS_DB_EMAIL
+                    # Verify email with mailtester if enabled
+                    if validate_email:
+                        try:
+                            result = await mailtester_client.verify_email(
+                                blitz_client_inst, email
+                            )
+                            verification_info["dm_email_verified"] = "yes" if result["valid"] else "no"
+                            verification_info["mailtester_code"] = result["code"]
+                            verification_info["mailtester_message"] = result["message"]
+
+                            if result["valid"]:
+                                # Email is valid - use it
+                                logger.debug("Email verified: %s (code: %s)", email, result["code"])
+                                return email, SOURCE_CONTACTS_DB_EMAIL, verification_info
+                            else:
+                                # Email is invalid - mark in Contacts DB and continue
+                                logger.info("Email verification failed: %s (code: %s) - marking invalid", email, result["code"])
+                                await contacts_client.mark_email_invalid(
+                                    contacts_client_inst,
+                                    email=email,
+                                    domain=domain,
+                                )
+                                # Continue to next provider
+                        except RuntimeError:
+                            # Mailtester unavailable - FAIL OPEN
+                            logger.warning("Mailtester unavailable for %s - accepting without verification", email)
+                            verification_info["mailtester_code"] = "unavailable"
+                            verification_info["dm_email_verified"] = "unknown"
+                            return email, SOURCE_CONTACTS_DB_EMAIL, verification_info
+                    else:
+                        # Verification disabled - use email as-is
+                        return email, SOURCE_CONTACTS_DB_EMAIL, verification_info
             except Exception as e:
                 logger.warning("Contacts DB name+domain lookup failed for %s / %s: %s", full_name, domain, e)
 
@@ -271,7 +332,37 @@ async def _resolve_email_for_person(
                 )
                 email = contacts_client.extract_email_from_contacts_response(contacts_data)
                 if email:
-                    return email, SOURCE_CONTACTS_DB_EMAIL
+                    # Verify email with mailtester if enabled
+                    if validate_email:
+                        try:
+                            result = await mailtester_client.verify_email(
+                                blitz_client_inst, email
+                            )
+                            verification_info["dm_email_verified"] = "yes" if result["valid"] else "no"
+                            verification_info["mailtester_code"] = result["code"]
+                            verification_info["mailtester_message"] = result["message"]
+
+                            if result["valid"]:
+                                # Email is valid - use it
+                                logger.debug("Email verified: %s (code: %s)", email, result["code"])
+                                return email, SOURCE_CONTACTS_DB_EMAIL, verification_info
+                            else:
+                                # Email is invalid - mark in Contacts DB and continue
+                                logger.info("Email verification failed: %s (code: %s) - marking invalid", email, result["code"])
+                                await contacts_client.mark_email_invalid(
+                                    contacts_client_inst,
+                                    email=email,
+                                )
+                                # Continue to next provider
+                        except RuntimeError:
+                            # Mailtester unavailable - FAIL OPEN
+                            logger.warning("Mailtester unavailable for %s - accepting without verification", email)
+                            verification_info["mailtester_code"] = "unavailable"
+                            verification_info["dm_email_verified"] = "unknown"
+                            return email, SOURCE_CONTACTS_DB_EMAIL, verification_info
+                    else:
+                        # Verification disabled - use email as-is
+                        return email, SOURCE_CONTACTS_DB_EMAIL, verification_info
             except Exception as e:
                 logger.warning("Contacts DB LinkedIn lookup failed for %s: %s", linkedin_url, e)
 
@@ -290,11 +381,13 @@ async def _resolve_email_for_person(
                     # Check for verified_email field first
                     verified_email = person_data.get("verified_email", "")
                     if verified_email:
-                        return verified_email, SOURCE_BLITZ_EMAIL
+                        verification_info["dm_email_verified"] = "yes"
+                        return verified_email, SOURCE_BLITZ_EMAIL, verification_info
                     # Fall back to unverified emails list
                     emails_list = person_data.get("emails", [])
                     if emails_list:
-                        return emails_list[0].get("email", ""), SOURCE_BLITZ_EMAIL
+                        verification_info["dm_email_verified"] = "no"
+                        return emails_list[0].get("email", ""), SOURCE_BLITZ_EMAIL, verification_info
             except Exception as e:
                 logger.warning("Blitz person enrich failed for %s / %s: %s", full_name, domain, e)
 
@@ -304,7 +397,8 @@ async def _resolve_email_for_person(
             try:
                 result = await blitz_client.find_work_email(blitz_client_inst, linkedin_url)
                 if result.get("found") and result.get("email"):
-                    return result["email"], SOURCE_BLITZ_EMAIL
+                    verification_info["dm_email_verified"] = "yes"  # Blitz emails are verified
+                    return result["email"], SOURCE_BLITZ_EMAIL, verification_info
             except Exception as e:
                 logger.warning("Blitz email lookup failed for %s: %s", linkedin_url, e)
 
@@ -316,7 +410,8 @@ async def _resolve_email_for_person(
                 )
                 if result and result.get("data", {}).get("email"):
                     email = result["data"]["email"]
-                    return email, SOURCE_BETTER_ENRICH_PERSON
+                    verification_info["dm_email_verified"] = "unknown"  # BetterEnrich verification status unknown
+                    return email, SOURCE_BETTER_ENRICH_PERSON, verification_info
             except Exception as e:
                 logger.warning("BetterEnrich person lookup failed for %s / %s: %s", full_name, domain, e)
 
@@ -329,11 +424,42 @@ async def _resolve_email_for_person(
                 )
                 email = contacts_client.extract_email_from_contacts_response(contacts_data)
                 if email:
-                    return email, SOURCE_CONTACTS_DB_EMAIL
+                    # Verify email with mailtester if enabled
+                    if validate_email:
+                        try:
+                            result = await mailtester_client.verify_email(
+                                blitz_client_inst, email
+                            )
+                            verification_info["dm_email_verified"] = "yes" if result["valid"] else "no"
+                            verification_info["mailtester_code"] = result["code"]
+                            verification_info["mailtester_message"] = result["message"]
+
+                            if result["valid"]:
+                                # Email is valid - use it
+                                logger.debug("Email verified: %s (code: %s)", email, result["code"])
+                                return email, SOURCE_CONTACTS_DB_EMAIL, verification_info
+                            else:
+                                # Email is invalid - mark in Contacts DB and continue
+                                logger.info("Email verification failed: %s (code: %s) - marking invalid", email, result["code"])
+                                await contacts_client.mark_email_invalid(
+                                    contacts_client_inst,
+                                    email=email,
+                                    domain=domain,
+                                )
+                                # Continue to not found
+                        except RuntimeError:
+                            # Mailtester unavailable - FAIL OPEN
+                            logger.warning("Mailtester unavailable for %s - accepting without verification", email)
+                            verification_info["mailtester_code"] = "unavailable"
+                            verification_info["dm_email_verified"] = "unknown"
+                            return email, SOURCE_CONTACTS_DB_EMAIL, verification_info
+                    else:
+                        # Verification disabled - use email as-is
+                        return email, SOURCE_CONTACTS_DB_EMAIL, verification_info
             except Exception as e:
                 logger.warning("Contacts DB input name lookup failed: %s", e)
 
-        return "", SOURCE_NOT_FOUND
+        return "", SOURCE_NOT_FOUND, verification_info
 
 
 # ---------------------------------------------------------------------------
@@ -352,12 +478,14 @@ async def _enrich_domain(
     email_semaphore: asyncio.Semaphore,
     skip_contacts_db: bool = False,
     force_provider: Optional[str] = None,  # "contacts_db", "blitz", "better_enrich"
+    validate_email: bool = True,  # NEW PARAMETER
 ) -> list[OutputRow]:
     """
     Enrich a domain with decision-maker contacts.
 
     Args:
         force_provider: If set, only use that specific provider.
+        validate_email: If True, verify Contacts DB emails with mailtester.
     """
     logger.info("_enrich_domain called with force_provider=%s for domain=%s", force_provider, domain)
     company_linkedin_url = ""
@@ -509,17 +637,18 @@ async def _enrich_domain(
             full_name,
             email_semaphore,
             force_provider=force_provider,
+            validate_email=validate_email,
         )
         for item in persons
     ]
     email_results = await asyncio.gather(*tasks)
 
     output_rows: list[OutputRow] = []
-    for item, (email, source) in zip(persons, email_results):
+    for item, (email, source, verification_info) in zip(persons, email_results):
         person = item.get("person", {})
         icp_tier = item.get("icp", 0)
         output_rows.append(
-            _build_person_row(base_row, company_linkedin_url, person, icp_tier, email, source)
+            _build_person_row(base_row, company_linkedin_url, person, icp_tier, email, source, verification_info)
         )
 
     return output_rows
@@ -543,6 +672,7 @@ async def run_pipeline(
     cancelled_jobs: Optional[set[str]] = None,
     job_id: Optional[str] = None,
     check_cancelled: Optional[Callable[[str], bool]] = None,
+    validate_email: bool = True,  # NEW PARAMETER
 ) -> list[OutputRow]:
     """
     Runs the full pipeline over all rows.
@@ -654,6 +784,7 @@ async def run_pipeline(
                 max_results,
                 domain_semaphore,
                 email_semaphore,
+                validate_email=validate_email,
             )
 
         # Collect source counts from this row's results

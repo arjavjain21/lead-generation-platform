@@ -95,6 +95,9 @@ class ChainJobRequest(BaseModel):
     """Request to chain enrichment from a scraper job."""
     cascade: Optional[list[dict[str, Any]]] = None
     max_results: int = 5
+    # Optional list of provider names to use (e.g. ["contacts_db", "blitz", "better_enrich"]).
+    # If None, uses all enabled providers from enrichment/providers.py.
+    providers: Optional[list[str]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +389,8 @@ async def chain_to_enrichment(
 
     # Use _run_domain_enrich_job which supports all enabled providers
     # (Contacts DB + Blitz + Better Enrich) instead of _run_job which uses
-    # the older pipeline with custom cascade. Pass None to use all enabled providers.
+    # the older pipeline with custom cascade. Pass req.providers if specified,
+    # otherwise None to use all enabled providers from enrichment/providers.py.
     background_tasks.add_task(
         enrichment_routes._run_domain_enrich_job,
         job_id=enrichment_job_id,
@@ -396,7 +400,7 @@ async def chain_to_enrichment(
         first_name_col=None,
         last_name_col=None,
         max_results=req.max_results,
-        selected_providers=None,  # None = use all enabled providers
+        selected_providers=req.providers,  # None = all, or specific list
     )
 
     return {

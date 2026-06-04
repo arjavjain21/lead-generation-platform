@@ -223,28 +223,39 @@ def get_anchor_cities() -> list[dict[str, Any]]:
 
 
 def search_cities(query: str, country: str = "us") -> list[dict[str, Any]]:
-    """Search anchor cities by partial name or state match for the given country."""
+    """Search cities by partial name or state match for the given country.
+
+    For US: searches all 29,546 cities from zip code database.
+    For other countries: searches anchor cities only.
+    """
     q = query.strip().lower()
     country = (country or "us").strip().lower()
 
-    # Get anchor cities for the specified country
+    # For US, use the full city database from zip codes
     if country == "us":
-        anchors = get_anchor_cities()
+        all_cities = get_all_us_cities()
+        # Add lat/lng for search compatibility (will be populated on demand)
+        return _search_cities_in_list(all_cities, q)
     else:
+        # For other countries, use anchor cities
         anchors = [c for c in get_all_centers() if c.get("center_type") == "anchor_city" and c.get("country", "us") == country]
+        return _search_cities_in_list(anchors, q)
 
-    if not q:
-        return anchors[:50]
+
+def _search_cities_in_list(cities: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
+    """Helper function to search within a list of cities."""
+    if not query:
+        return cities[:50]
 
     exact_prefix: list[dict[str, Any]] = []
     partial: list[dict[str, Any]] = []
 
-    for c in anchors:
+    for c in cities:
         name_lower = c["name"].lower()
         state_lower = c.get("state", "").lower()
-        if name_lower.startswith(q):
+        if name_lower.startswith(query):
             exact_prefix.append(c)
-        elif q in name_lower or q in state_lower:
+        elif query in name_lower or query in state_lower:
             partial.append(c)
 
     results = exact_prefix + partial
@@ -305,12 +316,22 @@ def get_centers_for_job(
     # USA: existing behavior
     us_centers = [c for c in all_centers if c.get("country", "us") == "us"]
 
-    # Handle zip codes mode
+    # Handle zip/postal codes mode
     if mode == "zips":
         if not zips:
-            return [], ["No zip codes provided."]
-        centers, zip_errors = get_centers_for_zips(zips)
-        return centers, zip_errors
+            return [], ["No zip/postal codes provided."]
+
+        # Route to appropriate handler based on country
+        if country_code == "gb":
+            centers, zip_errors = get_centers_for_uk_postcodes(zips)
+            return centers, zip_errors
+        elif country_code == "ca":
+            centers, zip_errors = get_centers_for_ca_postal_codes(zips)
+            return centers, zip_errors
+        else:
+            # US zip codes (default)
+            centers, zip_errors = get_centers_for_zips(zips)
+            return centers, zip_errors
 
     if mode == "all":
         return us_centers, []
@@ -343,17 +364,34 @@ def get_centers_for_job(
         seen_names: set[str] = set()
 
         for raw_city in cities:
+            # Skip empty strings
+            if not raw_city or not raw_city.strip():
+                continue
+
+            # First try to find anchor city centers
             city_centers = _find_centers_for_city(raw_city, us_centers)
+
+            # If no anchor centers found, try dynamic centers from zip database
             if not city_centers:
+                city_centers = get_centers_for_city_name(raw_city)
+
+            if not city_centers:
+                # Still no centers - suggest alternatives
                 anchors = get_anchor_cities()
                 anchor_names = [c["name"] for c in anchors]
                 suggestions = difflib.get_close_matches(raw_city, anchor_names, n=3, cutoff=0.4)
                 hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
                 errors.append(f"No centers found for city '{raw_city}'.{hint}")
             else:
+                # Add all centers, but deduplicate anchor city centers
+                # Dynamic centers (city_dynamic type) can have duplicates
                 for c in city_centers:
                     key = f"{c['name']}|{c['state']}"
-                    if key not in seen_names:
+                    # For dynamic centers, allow multiple entries for the same city
+                    # For anchor centers, deduplicate by name|state
+                    if c.get('center_type') == 'city_dynamic':
+                        matched.append(c)
+                    elif key not in seen_names:
                         seen_names.add(key)
                         matched.append(c)
 
@@ -628,3 +666,607 @@ def parse_zips_from_string(input_str: str) -> list[str]:
             result.append(z)
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# UK Postcode database (lazy-loaded)
+# ---------------------------------------------------------------------------
+
+_uk_postcode_cache: dict[str, dict[str, Any]] | None = None
+
+
+def _load_uk_postcode_database() -> dict[str, dict[str, Any]]:
+    """Load UK postcode database lazily. Returns dict: postcode -> {lat, lng, city, region}."""
+    global _uk_postcode_cache
+    if _uk_postcode_cache is not None:
+        return _uk_postcode_cache
+
+    _uk_postcode_cache = {}
+    postcode_file = DATA_DIR / "uk_postcodes.csv"
+
+    if postcode_file.exists():
+        import csv
+        with open(postcode_file, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                postcode = row["postcode"].strip().upper()
+                if postcode:
+                    _uk_postcode_cache[postcode] = {
+                        "lat": float(row["lat"]),
+                        "lng": float(row["lng"]),
+                        "city": row.get("city", ""),
+                        "region": row.get("region", ""),
+                    }
+
+    return _uk_postcode_cache
+
+
+def get_centers_for_uk_postcodes(postcodes: list[str]) -> tuple[list[dict[str, Any]], list[str]]:
+    """
+    Convert a list of UK postcodes to center dicts.
+
+    Returns (centers, errors):
+    - centers: List of center dicts with lat/lng for valid postcodes
+    - errors: List of error messages for invalid/unknown postcodes
+
+    Args:
+        postcodes: List of UK postcodes (format: AA9A 9AA or A9A 9AA)
+
+    Returns:
+        Tuple of (valid_centers, error_messages)
+    """
+    errors: list[str] = []
+    centers: list[dict[str, Any]] = []
+    seen_postcodes: set[str] = set()
+
+    # UK postcode regex (accepts both outward codes and full postcodes)
+    # Outward code: A(A)N(N)(A) (e.g., SW1A, M9, S5)
+    # Full postcode: A(A)N(N)(A) NAA (e.g., SW1A 1AA, M9 4AA)
+    import re
+    uk_postcode_pattern = re.compile(r'^[A-Z]{1,2}[0-9][A-Z0-9]?( ?[0-9][A-Z]{2})?$')
+
+    for raw_postcode in postcodes:
+        postcode = raw_postcode.strip().upper()
+        if not postcode:
+            continue
+
+        # Validate format
+        if not uk_postcode_pattern.match(postcode):
+            errors.append(f"Invalid UK postcode '{raw_postcode}': format should be like 'SW1A 1AA' or 'M1 1AA'")
+            continue
+
+        # Normalize: ensure space between outward and inward codes
+        if " " not in postcode and len(postcode) >= 5:
+            postcode = postcode[:-3] + " " + postcode[-3:]
+
+        # Deduplicate
+        if postcode in seen_postcodes:
+            continue
+        seen_postcodes.add(postcode)
+
+        # Look up in database
+        postcode_db = _load_uk_postcode_database()
+        if postcode in postcode_db:
+            data = postcode_db[postcode]
+            centers.append({
+                "name": postcode,
+                "state": data["region"] or "Unknown",
+                "lat": data["lat"],
+                "lng": data["lng"],
+                "tier": "postcode",
+                "center_type": "uk_postcode",
+                "anchor_city": data["city"] or "Unknown",
+                "country": "gb",
+            })
+        else:
+            errors.append(f"UK postcode '{postcode}' not found in database")
+
+    return centers, errors
+
+
+def validate_uk_postcodes(postcodes: list[str]) -> tuple[list[str], list[str]]:
+    """
+    Validate a list of UK postcodes, returning valid and invalid codes.
+
+    Args:
+        postcodes: List of UK postcodes (may include duplicates)
+
+    Returns:
+        Tuple of (valid_postcodes, invalid_postcodes_with_errors)
+    """
+    valid: list[str] = []
+    invalid: list[str] = []
+    import re
+    # UK postcode regex (accepts both outward codes and full postcodes)
+    uk_postcode_pattern = re.compile(r'^[A-Z]{1,2}[0-9][A-Z0-9]?( ?[0-9][A-Z]{2})?$')
+
+    for raw_postcode in postcodes:
+        postcode = raw_postcode.strip().upper()
+        if not postcode:
+            continue
+
+        # Validate format
+        if not uk_postcode_pattern.match(postcode):
+            invalid.append(f"'{raw_postcode}': invalid format")
+            continue
+
+        # For full postcodes with inward code, normalize to ensure space
+        # For outward codes only, keep as is
+        if " " in postcode:
+            # Full postcode - ensure it has a space
+            parts = postcode.split()
+            if len(parts) == 2:
+                normalized = parts[0] + " " + parts[1]
+            else:
+                normalized = postcode
+        else:
+            # Outward code only - keep as is
+            normalized = postcode
+
+        # Check if in database
+        postcode_db = _load_uk_postcode_database()
+        if normalized in postcode_db:
+            valid.append(normalized)
+        else:
+            invalid.append(f"'{raw_postcode}': not found in database")
+
+    return valid, invalid
+
+
+def parse_uk_postcodes_from_string(input_str: str) -> list[str]:
+    """
+    Parse UK postcodes from a string that can contain both comma-separated
+    and line-separated postcodes.
+
+    Args:
+        input_str: String like "SW1A 1AA\nEH1 1PT, M1 1AA"
+
+    Returns:
+        List of cleaned UK postcodes (deduplicated, normalized)
+    """
+    if not input_str:
+        return []
+
+    # Split by both commas and newlines
+    parts = input_str.replace(",", "\n").split("\n")
+    postcodes = []
+    import re
+    uk_postcode_pattern = re.compile(r'^[A-Z]{1,2}[0-9][A-Z0-9]? ?[0-9][A-Z]{2}$')
+
+    for part in parts:
+        # Strip whitespace and uppercase
+        postcode = part.strip().upper()
+        # Validate format
+        if postcode and uk_postcode_pattern.match(postcode):
+            # Normalize: ensure space
+            if " " not in postcode and len(postcode) >= 5:
+                postcode = postcode[:-3] + " " + postcode[-3:]
+            postcodes.append(postcode)
+
+    # Return deduplicated list while preserving order
+    seen = set()
+    result = []
+    for pc in postcodes:
+        if pc not in seen:
+            seen.add(pc)
+            result.append(pc)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Canada Postal Code database (lazy-loaded)
+# ---------------------------------------------------------------------------
+
+_ca_postal_code_cache: dict[str, dict[str, Any]] | None = None
+
+
+def _load_ca_postal_code_database() -> dict[str, dict[str, Any]]:
+    """Load Canada postal code database lazily. Returns dict: postal_code -> {lat, lng, city, province}."""
+    global _ca_postal_code_cache
+    if _ca_postal_code_cache is not None:
+        return _ca_postal_code_cache
+
+    _ca_postal_code_cache = {}
+    postal_code_file = DATA_DIR / "ca_postcodes.csv"
+
+    if postal_code_file.exists():
+        import csv
+        with open(postal_code_file, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                postal_code = row["postal_code"].strip().upper()
+                if postal_code:
+                    _ca_postal_code_cache[postal_code] = {
+                        "lat": float(row["lat"]),
+                        "lng": float(row["lng"]),
+                        "city": row.get("city", ""),
+                        "province": row.get("province", ""),
+                    }
+
+    return _ca_postal_code_cache
+
+
+def get_centers_for_ca_postal_codes(postal_codes: list[str]) -> tuple[list[dict[str, Any]], list[str]]:
+    """
+    Convert a list of Canada postal codes/FSAs to center dicts.
+
+    Returns (centers, errors):
+    - centers: List of center dicts with lat/lng for valid postal codes
+    - errors: List of error messages for invalid/unknown postal codes
+
+    Args:
+        postal_codes: List of Canada postal codes (format: ANA or ANA NAN)
+
+    Returns:
+        Tuple of (valid_centers, error_messages)
+    """
+    errors: list[str] = []
+    centers: list[dict[str, Any]] = []
+    seen_postal_codes: set[str] = set()
+
+    # Canada postal code regex (accepts both FSA and full postal code)
+    import re
+    ca_postal_code_pattern = re.compile(r'^[A-Z][0-9][A-Z]( ?[0-9][A-Z][0-9])?$')
+
+    for raw_postal_code in postal_codes:
+        postal_code = raw_postal_code.strip().upper()
+        if not postal_code:
+            continue
+
+        # Validate format
+        if not ca_postal_code_pattern.match(postal_code):
+            errors.append(f"Invalid Canada postal code '{raw_postal_code}': format should be like 'K1A' or 'K1A 0A1'")
+            continue
+
+        # For full postal codes with inward code, normalize to ensure space
+        # For FSAs only, keep as is
+        if " " in postal_code:
+            # Full postal code - ensure it has a space
+            parts = postal_code.split()
+            if len(parts) == 2:
+                normalized = parts[0] + " " + parts[1]
+            else:
+                normalized = postal_code
+        else:
+            # FSA only - keep as is
+            normalized = postal_code
+
+        # Deduplicate
+        if normalized in seen_postal_codes:
+            continue
+        seen_postal_codes.add(normalized)
+
+        # Look up in database
+        postal_code_db = _load_ca_postal_code_database()
+        if normalized in postal_code_db:
+            data = postal_code_db[normalized]
+            centers.append({
+                "name": normalized,
+                "state": data["province"] or "Unknown",
+                "lat": data["lat"],
+                "lng": data["lng"],
+                "tier": "postal_code",
+                "center_type": "ca_postal_code",
+                "anchor_city": data["city"] or "Unknown",
+                "country": "ca",
+            })
+        else:
+            errors.append(f"Canada postal code '{normalized}' not found in database")
+
+    return centers, errors
+
+
+def validate_ca_postal_codes(postal_codes: list[str]) -> tuple[list[str], list[str]]:
+    """
+    Validate a list of Canada postal codes, returning valid and invalid codes.
+
+    Args:
+        postal_codes: List of Canada postal codes (may include duplicates)
+
+    Returns:
+        Tuple of (valid_postal_codes, invalid_postal_codes_with_errors)
+    """
+    valid: list[str] = []
+    invalid: list[str] = []
+    import re
+    # Canada postal code regex (accepts both FSA and full postal code)
+    ca_postal_code_pattern = re.compile(r'^[A-Z][0-9][A-Z]( ?[0-9][A-Z][0-9])?$')
+
+    for raw_postal_code in postal_codes:
+        postal_code = raw_postal_code.strip().upper()
+        if not postal_code:
+            continue
+
+        # Validate format
+        if not ca_postal_code_pattern.match(postal_code):
+            invalid.append(f"'{raw_postal_code}': invalid format")
+            continue
+
+        # Normalize for database lookup
+        normalized = postal_code
+        if " " in normalized:
+            # Full postal code with space - keep as is
+            pass
+        else:
+            # Could be FSA (3 chars) or full postal code without space
+            if len(normalized) == 3:
+                # FSA only - keep as is
+                pass
+            elif len(normalized) == 6:
+                # Full postal code without space - add space
+                normalized = normalized[:3] + " " + normalized[3:]
+
+        # Check if in database
+        postal_code_db = _load_ca_postal_code_database()
+        if normalized in postal_code_db:
+            valid.append(normalized)
+        else:
+            invalid.append(f"'{raw_postal_code}': not found in database")
+
+    return valid, invalid
+
+
+def parse_ca_postal_codes_from_string(input_str: str) -> list[str]:
+    """
+    Parse Canada postal codes from a string that can contain both comma-separated
+    and line-separated postal codes.
+
+    Args:
+        input_str: String like "K1A 0A1\nM5H 2N2, V6B 2W6"
+
+    Returns:
+        List of cleaned Canada postal codes (deduplicated, normalized)
+    """
+    if not input_str:
+        return []
+
+    # Split by both commas and newlines
+    parts = input_str.replace(",", "\n").split("\n")
+    postal_codes = []
+    import re
+    ca_postal_code_pattern = re.compile(r'^[A-Z][0-9][A-Z] ?[0-9][A-Z][0-9]$')
+
+    for part in parts:
+        # Strip whitespace and uppercase
+        postal_code = part.strip().upper()
+        # Validate format
+        if postal_code and ca_postal_code_pattern.match(postal_code):
+            # Normalize: ensure space
+            if " " not in postal_code:
+                postal_code = postal_code[:3] + " " + postal_code[3:]
+            postal_codes.append(postal_code)
+
+    # Return deduplicated list while preserving order
+    seen = set()
+    result = []
+    for pc in postal_codes:
+        if pc not in seen:
+            seen.add(pc)
+            result.append(pc)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# City-to-Zip/Postal Code Mapping
+# ---------------------------------------------------------------------------
+
+def get_zips_for_cities(cities: list[str]) -> tuple[dict[str, list[str]], list[str]]:
+    """
+    Get all zip codes for a list of cities (US only).
+
+    Args:
+        cities: List of city names (can include state like "Charleston, SC")
+
+    Returns:
+        Tuple of (city_zips_map, errors)
+        - city_zips_map: Dict mapping {city_state: [zip_codes]}
+        - errors: List of error messages for cities not found
+    """
+    import csv
+
+    zip_db = _load_zip_database()
+    city_zips_map: dict[str, list[str]] = {}
+    errors: list[str] = []
+
+    for city_input in cities:
+        city_input = city_input.strip()
+        if not city_input:
+            continue
+
+        # Parse city input - could be "Charleston" or "Charleston, SC"
+        parts = [p.strip() for p in city_input.split(',')]
+        city_name = parts[0].lower()
+        state = parts[1].upper() if len(parts) > 1 else None
+
+        # Find matching zips
+        matched_zips = []
+        for zip_code, data in zip_db.items():
+            zip_city = data['city'].lower()
+            zip_state = data['state']
+
+            # Check if city matches (and state if provided)
+            if zip_city == city_name:
+                if state is None or zip_state == state:
+                    matched_zips.append(zip_code)
+
+        # Use the city_state format for the key
+        if state:
+            # Use the first matched zip to get the proper city name
+            first_matched_city = None
+            for zip_code, data in zip_db.items():
+                if zip_code in matched_zips:
+                    first_matched_city = data['city']
+                    break
+            city_key = f"{first_matched_city or city_input}, {state}"
+        else:
+            city_key = city_input
+
+        if matched_zips:
+            if city_key not in city_zips_map:
+                city_zips_map[city_key] = []
+            city_zips_map[city_key].extend(matched_zips)
+            # Deduplicate
+            city_zips_map[city_key] = list(set(city_zips_map[city_key]))
+            # Sort for consistency
+            city_zips_map[city_key].sort()
+        else:
+            errors.append(f"City '{city_input}' not found in database")
+
+    return city_zips_map, errors
+
+
+def get_all_us_cities() -> list[dict[str, Any]]:
+    """
+    Get all US cities from the zip code database.
+
+    Returns:
+        List of city dicts with name, state, zip_count, lat, lng
+    """
+    import csv
+
+    zip_file = DATA_DIR / "us_zips.csv"
+    cities_dict: dict[str, dict[str, Any]] = {}
+
+    with open(zip_file, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            city = row['city'].strip()
+            state = row['state'].strip()
+            city_state = f"{city}, {state}"
+
+            if city_state not in cities_dict:
+                cities_dict[city_state] = {
+                    "name": city,
+                    "state": state,
+                    "zip_codes": [],
+                    "zip_count": 0,
+                    "lat": float(row['lat']),
+                    "lng": float(row['lng'])
+                }
+            cities_dict[city_state]["zip_codes"].append(row['zip'])
+
+    # Convert to list and count
+    cities_list = []
+    for city_state, data in cities_dict.items():
+        data["zip_count"] = len(data["zip_codes"])
+        # Keep only zip_count, don't include all zips in response
+        del data["zip_codes"]
+        cities_list.append(data)
+
+    # Sort by zip_count (most zips first) then by name
+    cities_list.sort(key=lambda x: (-x["zip_count"], x["name"]))
+
+    return cities_list
+
+
+def get_centers_for_city_name(raw_city: str) -> list[dict[str, Any]]:
+    """
+    Create center objects from a city name using the zip code database.
+
+    This bridges the gap between the expanded city search (29,546 cities)
+    and the scraper's center-based system (142 anchor cities).
+
+    Args:
+        raw_city: City name, optionally with state (e.g., "Charleston" or "Charleston, WV")
+
+    Returns:
+        List of center objects that can be used by the scraper
+    """
+    import csv
+    from collections import defaultdict
+
+    # Parse city and state from input
+    parts = [p.strip() for p in raw_city.split(',')]
+    city_input = parts[0]
+    state_input = parts[1] if len(parts) > 1 else None
+
+    # Read zip database and group by state
+    zip_file = DATA_DIR / "us_zips.csv"
+    cities_by_state = defaultdict(list)  # state -> list of (zip, lat, lng)
+
+    with open(zip_file, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            zip_city = row['city'].strip()
+            zip_state = row['state'].strip()
+
+            # Match by city (and state if provided)
+            if zip_city.lower() == city_input.lower():
+                if state_input is None or zip_state.lower() == state_input.lower():
+                    cities_by_state[zip_state].append({
+                        'zip': row['zip'],
+                        'lat': float(row['lat']),
+                        'lng': float(row['lng'])
+                    })
+
+    if not cities_by_state:
+        return []
+
+    # If multiple states match, pick the one with most zips (largest city)
+    if state_input is None and len(cities_by_state) > 1:
+        # Find state with most zips
+        target_state = max(cities_by_state.keys(), key=lambda s: len(cities_by_state[s]))
+        zips_data = cities_by_state[target_state]
+        city_name = city_input
+        state_name = target_state
+    elif state_input:
+        # State was specified, use that state's data
+        target_state = state_input
+        zips_data = cities_by_state.get(state_input, [])
+        city_name = city_input
+        state_name = state_input
+    else:
+        # Only one state matched
+        target_state = list(cities_by_state.keys())[0]
+        zips_data = cities_by_state[target_state]
+        city_name = city_input
+        state_name = target_state
+
+    if not zips_data:
+        return []
+
+    # Calculate average coordinates
+    num_zips = len(zips_data)
+    avg_lat = sum(z['lat'] for z in zips_data) / num_zips
+    avg_lng = sum(z['lng'] for z in zips_data) / num_zips
+
+    # Create centers based on city size
+    max_centers = min(10, num_zips)
+    centers = []
+
+    if num_zips <= 5:
+        # Small city: one center with zoom 12
+        centers.append({
+            "name": city_name,
+            "state": state_name,
+            "country": "us",
+            "lat": avg_lat,
+            "lng": avg_lng,
+            "zoom": 12,
+            "center_type": "city_dynamic",
+            "anchor_city": city_name,
+            "zip_count": num_zips
+        })
+    else:
+        # Large city: multiple centers at zoom 11
+        step = max(1, num_zips // max_centers)
+        for i in range(0, num_zips, step):
+            if len(centers) >= max_centers:
+                break
+            centers.append({
+                "name": city_name,
+                "state": state_name,
+                "country": "us",
+                "lat": avg_lat,
+                "lng": avg_lng,
+                "zoom": 11,
+                "center_type": "city_dynamic",
+                "anchor_city": city_name,
+                "zip_count": num_zips
+            })
+
+    return centers
+
+

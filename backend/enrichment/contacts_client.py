@@ -495,3 +495,86 @@ async def upsert_business_record_async(
                 return None
 
     return None
+
+
+async def mark_email_invalid(
+    client: httpx.AsyncClient,
+    *,
+    email: str,
+    person_id: Optional[str] = None,
+    domain: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """
+    Mark an email as invalid by upserting with empty email field.
+
+    This effectively removes the invalid email from Contacts DB while
+    preserving the person record for future updates.
+
+    Args:
+        client: Async HTTP client
+        email: The invalid email to clear
+        person_id: Optional person_id for targeted update
+        domain: Optional domain for lookup-based update
+
+    Returns:
+        API response on success, None on failure
+    """
+    if not email:
+        return None
+
+    # Prepare payload with empty email to mark as invalid
+    payload: dict[str, Any] = {"email": ""}
+
+    # If we have person_id, use it for targeted update
+    if person_id:
+        payload["person_id"] = person_id
+
+    # If we have domain, include it for lookup
+    if domain:
+        payload["domain"] = domain
+
+    last_exc: Optional[Exception] = None
+
+    for attempt in range(_MAX_RETRIES + 1):
+        await _acquire_upsert_rate_limit()
+
+        try:
+            resp = await client.post(
+                f"{_base_url()}/v1/persons/upsert",
+                headers=_headers(),
+                json=payload,
+                timeout=30.0,
+            )
+
+            if resp.status_code == 404:
+                logger.debug("Cannot mark email invalid - person not found: %s", email)
+                return None
+
+            if _should_retry(resp.status_code):
+                delay = _backoff_delay(attempt, None)
+                if attempt < _MAX_RETRIES:
+                    logger.warning(
+                        "Contacts DB upsert returned %d marking invalid (attempt %d/%d)",
+                        resp.status_code, attempt + 1, _MAX_RETRIES + 1,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                logger.error("Contacts DB upsert returned %d, exhausted retries", resp.status_code)
+                return None
+
+            resp.raise_for_status()
+            logger.info("Marked email as invalid in Contacts DB: %s", email)
+            return resp.json()
+
+        except Exception as exc:
+            last_exc = exc
+            if attempt < _MAX_RETRIES:
+                delay = _backoff_delay(attempt)
+                logger.warning(
+                    "Contacts DB upsert error marking invalid (attempt %d/%d): %s",
+                    attempt + 1, _MAX_RETRIES + 1, exc,
+                )
+                await asyncio.sleep(delay)
+
+    logger.error("Failed to mark email invalid after retries: %s", email)
+    return None

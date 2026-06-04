@@ -29,7 +29,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, U
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
-from shared import auth
+from shared import auth, db
 from . import blitz_client
 from . import contacts_client
 from . import job_store
@@ -414,6 +414,10 @@ class StartJobRequest(BaseModel):
     # Force a specific provider: "contacts_db", "blitz", "better_enrich"
     # If None, uses normal cascade
     force_provider: Optional[str] = None
+    # Enable email verification with mailtester for Contacts DB emails
+    # If True, Contacts DB emails are verified before being returned
+    # Invalid emails are marked in Contacts DB and cascade continues to Blitz
+    validate_email: bool = True
 
 
 class ChainJobRequest(BaseModel):
@@ -2113,6 +2117,7 @@ async def start_enrichment_job(
         cascade=cascade,
         max_results=req.max_results,
         write_incremental=True,  # Enable incremental writes for partial downloads
+        validate_email=req.validate_email,  # NEW PARAMETER
     )
 
     return {"job_id": job_id, "total": len(rows)}
@@ -2326,6 +2331,7 @@ async def _run_job(
     cascade: list[dict[str, Any]],
     max_results: int,
     write_incremental: bool = False,
+    validate_email: bool = True,  # NEW PARAMETER
 ):
     store = job_store.get_store()
     store.set_running(job_id)
@@ -2371,6 +2377,7 @@ async def _run_job(
             cancelled_jobs=_cancelled_jobs,
             job_id=job_id,
             check_cancelled=check_job_cancelled,
+            validate_email=validate_email,
         )
 
         # If not writing incrementally, write final output
@@ -2562,13 +2569,41 @@ async def restart_enrichment_job(
         raise HTTPException(status_code=400,
             detail="Only failed or abandoned jobs can be restarted")
 
-    # Read the original CSV file (kept in uploads/)
-    upload_path = UPLOAD_DIR / f"{original_job['filename']}.csv"
-    if not upload_path.exists():
+    # Prevent duplicate restarts - check if there's already an active restart
+    active_statuses = ("running", "queued", "pending")
+    existing_restart = store.conn.execute(
+        "SELECT job_id, status FROM jobs WHERE parent_job_id = ? AND status IN (?, ?, ?) LIMIT 1",
+        (job_id, active_statuses[0], active_statuses[1], active_statuses[2])
+    ).fetchone()
+    if existing_restart:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A restart for this job is already in progress (job_id: {existing_restart['job_id']}, status: {existing_restart['status']}). Please wait for it to complete or cancel it first."
+        )
+
+    # Read the original CSV file
+    # For chained jobs (from scraper), the file is in outputs/ from the parent scraper job
+    # For uploaded files, the file is in uploads/
+    filename = original_job['filename']
+    upload_path = UPLOAD_DIR / f"{filename}.csv"
+    csv_path = upload_path if upload_path.exists() else None
+
+    # If not in uploads, check if this is a chained job and look at parent's output
+    if csv_path is None and original_job.get('parent_job_id'):
+        parent_job_id = original_job['parent_job_id']
+        # Check if parent is a scraper job with output
+        parent_conn = db.get_db()
+        parent_row = parent_conn.execute(
+            "SELECT job_id, output_path FROM jobs WHERE job_id = ?", (parent_job_id,)
+        ).fetchone()
+        if parent_row and parent_row['output_path']:
+            csv_path = Path(parent_row['output_path'])
+
+    if csv_path is None or not csv_path.exists():
         raise HTTPException(status_code=404, detail="Original CSV file not found")
 
     try:
-        df = pd.read_csv(str(upload_path), skipinitialspace=True)
+        df = pd.read_csv(str(csv_path), skipinitialspace=True)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not read original CSV: {e}")
 
@@ -3222,17 +3257,17 @@ async def search_and_enrich(
     _job_signals[job_id] = asyncio.Event()
     _active_jobs.add(job_id)
 
+    # Use _run_domain_enrich_job for provider selection support
     background_tasks.add_task(
-        _run_job,
+        _run_domain_enrich_job,
         job_id=job_id,
         rows=rows,
         domain_col=domain_col,
         name_col=None,
         first_name_col=None,
         last_name_col=None,
-        cascade=blitz_client.DEFAULT_CASCADE,
         max_results=req.max_decision_makers,
-        write_incremental=True,
+        selected_providers=None,  # None = use all enabled providers
     )
 
     return {

@@ -25,6 +25,7 @@ from . import blitz_client
 from . import contacts_client
 from . import better_enrich_client
 from . import providers
+from . import mailtester_client
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +153,8 @@ ENRICHED_COLUMNS = [
     "dm_email",
     "dm_email_source",
     "dm_email_verified",
+    "mailtester_code",
+    "mailtester_message",
     "dm_phone",
     "dm_headline",
     "dm_location_city",
@@ -222,20 +225,27 @@ async def _resolve_person_email(
     input_full_name: str = "",
     force_provider: Optional[str] = None,
     selected_providers: Optional[list[str]] = None,
-) -> tuple[str, str, str, str]:
+    validate_email: bool = True,  # NEW PARAMETER
+) -> tuple[str, str, str, str, str, str]:
     """
     Resolve email for a person using Contacts DB first, then Blitz fallback.
 
-    Returns: (email, phone, source, verified)
+    Returns: (email, phone, source, verified, mailtester_code, mailtester_message)
 
     Args:
         force_provider: If set, only use that specific provider.
         selected_providers: List of user-selected providers to use (or None for all enabled).
+        validate_email: If True, verify Contacts DB emails with mailtester.
     """
     linkedin_url = person_data.get("linkedin_url", "")
     full_name = person_data.get("full_name", "")
     first_name = person_data.get("first_name", "")
     last_name = person_data.get("last_name", "")
+
+    # Initialize verification fields
+    mailtester_code = ""
+    mailtester_message = ""
+    verified = "unknown"
 
     # Determine search name (prefer person full_name, fall back to input_full_name)
     search_name = full_name or input_full_name
@@ -251,7 +261,37 @@ async def _resolve_person_email(
             email = contacts_client.extract_email_from_contacts_response(contacts_data)
             if email:
                 phone = contacts_data.get("phone", "") if contacts_data else ""
-                return email, phone, SOURCE_CONTACTS_DB_NAME, "no"
+
+                # Verify email with mailtester if enabled
+                if validate_email:
+                    try:
+                        result = await mailtester_client.verify_email(blitz_http, email)
+                        mailtester_code = result["code"]
+                        mailtester_message = result["message"]
+                        verified = "yes" if result["valid"] else "no"
+
+                        if result["valid"]:
+                            # Email is valid - use it
+                            logger.debug("Email verified: %s (code: %s)", email, result["code"])
+                            return email, phone, SOURCE_CONTACTS_DB_NAME, verified, mailtester_code, mailtester_message
+                        else:
+                            # Email is invalid - mark in Contacts DB and continue
+                            logger.info("Email verification failed: %s (code: %s) - marking invalid", email, result["code"])
+                            await contacts_client.mark_email_invalid(
+                                contacts_http,
+                                email=email,
+                                domain=domain,
+                            )
+                            # Continue to next strategy
+                    except RuntimeError:
+                        # Mailtester unavailable - FAIL OPEN
+                        logger.warning("Mailtester unavailable for %s - accepting without verification", email)
+                        mailtester_code = "unavailable"
+                        verified = "unknown"
+                        return email, phone, SOURCE_CONTACTS_DB_NAME, verified, mailtester_code, mailtester_message
+                else:
+                    # Verification disabled - use email as-is
+                    return email, phone, SOURCE_CONTACTS_DB_NAME, "no", "", ""
         except Exception as e:
             logger.debug("Contacts DB name+domain lookup failed: %s", e)
 
@@ -265,8 +305,36 @@ async def _resolve_person_email(
             email = contacts_client.extract_email_from_contacts_response(contacts_data)
             if email:
                 phone = contacts_data.get("phone", "") if contacts_data else ""
-                # Contacts DB emails are from internal database - mark as unverified (no verification check)
-                return email, phone, SOURCE_CONTACTS_DB_LINKEDIN, "no"
+
+                # Verify email with mailtester if enabled
+                if validate_email:
+                    try:
+                        result = await mailtester_client.verify_email(blitz_http, email)
+                        mailtester_code = result["code"]
+                        mailtester_message = result["message"]
+                        verified = "yes" if result["valid"] else "no"
+
+                        if result["valid"]:
+                            # Email is valid - use it
+                            logger.debug("Email verified: %s (code: %s)", email, result["code"])
+                            return email, phone, SOURCE_CONTACTS_DB_LINKEDIN, verified, mailtester_code, mailtester_message
+                        else:
+                            # Email is invalid - mark in Contacts DB and continue
+                            logger.info("Email verification failed: %s (code: %s) - marking invalid", email, result["code"])
+                            await contacts_client.mark_email_invalid(
+                                contacts_http,
+                                email=email,
+                            )
+                            # Continue to next strategy
+                    except RuntimeError:
+                        # Mailtester unavailable - FAIL OPEN
+                        logger.warning("Mailtester unavailable for %s - accepting without verification", email)
+                        mailtester_code = "unavailable"
+                        verified = "unknown"
+                        return email, phone, SOURCE_CONTACTS_DB_LINKEDIN, verified, mailtester_code, mailtester_message
+                else:
+                    # Verification disabled - use email as-is
+                    return email, phone, SOURCE_CONTACTS_DB_LINKEDIN, "no", "", ""
         except Exception as e:
             logger.debug("Contacts DB LinkedIn lookup failed: %s", e)
 
@@ -295,7 +363,7 @@ async def _resolve_person_email(
                 phone = person.get("phone", "")
                 if email:
                     source = SOURCE_BLITZ_NAME
-                    return email, phone, source, verified
+                    return email, phone, source, verified, "", ""
         except Exception as e:
             logger.debug("Blitz person enrich failed: %s", e)
 
@@ -308,7 +376,7 @@ async def _resolve_person_email(
                 # Blitz email endpoint - check if there's verification info
                 all_emails = result.get("all_emails", [])
                 verified = "yes" if all_emails and all_emails[0].get("verified") else "unknown"
-                return result.get("email", ""), "", SOURCE_BLITZ_LINKEDIN, verified
+                return result.get("email", ""), "", SOURCE_BLITZ_LINKEDIN, verified, "", ""
         except Exception as e:
             logger.debug("Blitz email lookup failed: %s", e)
 
@@ -320,11 +388,11 @@ async def _resolve_person_email(
             if result and result.get("data", {}).get("email"):
                 email = result["data"]["email"]
                 logger.debug("Better Enrich found email for %s: %s", search_name, email)
-                return email, "", SOURCE_BETTER_ENRICH, "unknown"
+                return email, "", SOURCE_BETTER_ENRICH, "unknown", "", ""
         except Exception as e:
             logger.debug("Better Enrich lookup failed: %s", e)
 
-    return "", "", SOURCE_NOT_FOUND, "unknown"
+    return "", "", SOURCE_NOT_FOUND, "unknown", "", ""
 
 
 async def _enrich_single_domain(
@@ -338,6 +406,7 @@ async def _enrich_single_domain(
     email_semaphore: asyncio.Semaphore = None,
     force_provider: Optional[str] = None,
     selected_providers: Optional[list[str]] = None,
+    validate_email: bool = True,  # NEW PARAMETER
 ) -> list[OutputRow]:
     """
     Enrich a single domain: get company info, generic emails, and decision makers.
@@ -484,13 +553,14 @@ async def _enrich_single_domain(
                 domain,
                 force_provider=force_provider,
                 selected_providers=selected_providers,
+                validate_email=validate_email,
             )
         )
 
     email_results = await asyncio.gather(*tasks)
 
     # Build output rows
-    for item, (email, phone, source, verified) in zip(persons, email_results):
+    for item, (email, phone, source, verified, mailtester_code, mailtester_message) in zip(persons, email_results):
         person = item.get("person", {})
         icp_tier = item.get("icp", 0)
 
@@ -507,6 +577,8 @@ async def _enrich_single_domain(
         row["dm_email"] = email
         row["dm_email_source"] = source
         row["dm_email_verified"] = verified
+        row["mailtester_code"] = mailtester_code
+        row["mailtester_message"] = mailtester_message
         row["dm_phone"] = phone
         row["dm_headline"] = person.get("headline", "")
         loc = person.get("location", {})
@@ -534,6 +606,7 @@ async def run_domain_enrichment(
     cancelled_jobs: Optional[set[str]] = None,
     check_cancelled: Optional[Callable[[str], bool]] = None,
     job_id: Optional[str] = None,
+    validate_email: bool = True,  # NEW PARAMETER
 ) -> list[OutputRow]:
     """
     Main entry point for Flow 1: Domain → Generic Emails + Decision Makers
@@ -586,6 +659,7 @@ async def run_domain_enrichment(
                 email_semaphore,
                 force_provider=force_provider,
                 selected_providers=selected_providers,
+                validate_email=validate_email,
             )
 
         # Call progress callback with exception handling
@@ -785,6 +859,7 @@ async def enrich_companies_from_search(
             True,
             domain_semaphore,
             force_provider=force_provider,
+            validate_email=validate_email,
         )
 
         if on_progress:

@@ -320,7 +320,7 @@
                             <option value="all">All Regions</option>
                             <option value="states">Specific States</option>
                             <option value="cities">Specific Cities</option>
-                            <option value="zips">Zip Codes (US Only)</option>
+                            <option value="zips" id="zipsModeOption">Zip Codes (US Only)</option>
                         </select>
                     </div>
                 </div>
@@ -336,22 +336,28 @@
                         <label>Search Cities (type to search)</label>
                         <input type="text" id="scraperCitySearch" placeholder="Start typing city name..." autocomplete="off">
                         <div id="scraperCitiesList" style="display:none;margin-top:4px;max-height:150px;overflow-y:auto;border:1px solid var(--gray-300);border-radius:8px;padding:0.5rem;background:white;"></div>
+                        <div style="margin-top:0.5rem;">
+                            <a href="#" id="downloadCitiesTemplate" style="font-size:0.85rem;color:var(--primary-500);text-decoration:none;">📥 Download cities template CSV</a>
+                        </div>
                     </div>
                 </div>
                 <div class="filters" id="scraperZipsContainer" style="display:none;">
                     <div class="filter-group" style="grid-column: span 2;">
-                        <label>Enter US Zip Codes (one per line or comma-separated)</label>
+                        <label id="scraperZipsLabel">Enter US Zip Codes (one per line or comma-separated)</label>
                         <textarea id="scraperZipsInput" placeholder="90210&#10;10001&#10;90211, 10002" rows="6" style="width:100%;padding:0.75rem;border:1px solid var(--gray-300);border-radius:8px;font-size:0.875rem;resize:vertical;"></textarea>
                         <div id="scraperZipsValidation" style="margin-top:0.5rem;font-size:0.8rem;"></div>
                     </div>
                     <div class="filter-group" style="grid-column: span 2;">
-                        <label>Or upload a CSV file with zip codes</label>
+                        <label id="scraperZipsUploadLabel">Or upload a CSV file with zip codes</label>
                         <div class="upload-zone" id="scraperZipsUploadZone" style="padding:1rem;min-height:80px;">
                             <input type="file" id="scraperZipsFile" accept=".csv" style="display:none;">
                             <div class="upload-icon">📁</div>
-                            <div class="upload-text">Drop ZIP CSV or click to browse</div>
+                            <div class="upload-text" id="scraperZipsUploadText">Drop ZIP CSV or click to browse</div>
                         </div>
                         <div id="scraperZipsFileInfo" style="margin-top:0.5rem;font-size:0.8rem;color:var(--gray-600);"></div>
+                        <div style="margin-top:0.5rem;">
+                            <a href="#" id="downloadZipsTemplate" style="font-size:0.85rem;color:var(--primary-500);text-decoration:none;">📥 Download zip codes template CSV</a>
+                        </div>
                     </div>
                 </div>
                 <div style="margin-top:1rem;">
@@ -372,6 +378,30 @@
                 <div style="margin-top:1rem;">
                     <button class="btn btn-success btn-sm" id="downloadScraperResults" disabled>Download CSV</button>
                     <button class="btn btn-secondary btn-sm" id="chainToEnrichment" disabled>Chain to Enrichment</button>
+                </div>
+            </div>
+
+            <!-- Chain to Enrichment Provider Selection Modal -->
+            <div id="chainProviderModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;align-items:center;justify-content:center;">
+                <div style="background:white;border-radius:12px;padding:24px;max-width:400px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+                    <h3 style="margin:0 0 16px 0;font-size:1.1rem;color:#1a315d;">Chain to Enrichment</h3>
+                    <p style="margin:0 0 16px 0;font-size:0.85rem;color:#64748b;">Select data sources for enrichment (Internal Database always used):</p>
+                    <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:20px;">
+                        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+                            <input type="checkbox" id="chain_provider_blitz" checked style="width:18px;height:18px;">
+                            <span style="font-weight:500;">Blitz API</span>
+                            <span style="font-size:0.75rem;color:#64748b;margin-left:auto;">LinkedIn-based</span>
+                        </label>
+                        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+                            <input type="checkbox" id="chain_provider_better_enrich" checked style="width:18px;height:18px;">
+                            <span style="font-weight:500;">Better Enrich</span>
+                            <span style="font-size:0.75rem;color:#64748b;margin-left:auto;">Fallback</span>
+                        </label>
+                    </div>
+                    <div style="display:flex;gap:10px;justify-content:flex-end;">
+                        <button class="btn btn-secondary btn-sm" id="chainCancelBtn" style="padding:8px 16px;">Cancel</button>
+                        <button class="btn btn-primary btn-sm" id="chainConfirmBtn" style="padding:8px 16px;">Start Enrichment</button>
+                    </div>
                 </div>
             </div>
 
@@ -782,7 +812,7 @@ https://linkedin.com/in/janesmith</pre>
     <script>
         // State
         let token = localStorage.getItem('token'), user = null;
-        let domainUploadId = null, linkedinUploadId = null, currentJobId = null, eventSource = null, currentScraperDisplayName = null;
+        let domainUploadId = null, linkedinUploadId = null, currentJobId = null, eventSource = null, currentScraperDisplayName = null, currentJobRegions = null;
         
         // Auth
         const authModal = document.getElementById('authModal');
@@ -1231,12 +1261,49 @@ https://linkedin.com/in/janesmith</pre>
             const modeSelect = document.getElementById('scraperMode');
             const statesOption = modeSelect.querySelector('option[value="states"]');
             const citiesOption = modeSelect.querySelector('option[value="cities"]');
-
-            // Zip codes option is US-only
             const zipsOption = modeSelect.querySelector('option[value="zips"]');
 
-            if (country !== 'us') {
-                // Hide states, cities, and zips options for non-US countries
+            if (country === 'us') {
+                // US: show states, cities, and zips options
+                if (statesOption) {
+                    statesOption.style.display = '';
+                    statesOption.textContent = 'Specific States';
+                }
+                if (citiesOption) {
+                    citiesOption.style.display = '';
+                    citiesOption.textContent = 'Specific Cities';
+                }
+                if (zipsOption) {
+                    zipsOption.style.display = '';
+                    zipsOption.textContent = 'Zip Codes';
+                }
+                updatePostalCodesLabels('us');
+            } else if (country === 'gb') {
+                // UK: show cities and postcodes options, hide states
+                if (statesOption) statesOption.style.display = 'none';
+                if (citiesOption) {
+                    citiesOption.style.display = '';
+                    citiesOption.textContent = 'Specific Cities';
+                }
+                if (zipsOption) {
+                    zipsOption.style.display = '';
+                    zipsOption.textContent = 'Postcodes';
+                }
+                updatePostalCodesLabels('gb');
+            } else if (country === 'ca') {
+                // Canada: show cities and postal codes options, hide states
+                if (statesOption) statesOption.style.display = 'none';
+                if (citiesOption) {
+                    citiesOption.style.display = '';
+                    citiesOption.textContent = 'Specific Cities';
+                }
+                if (zipsOption) {
+                    zipsOption.style.display = '';
+                    zipsOption.textContent = 'Postal Codes';
+                }
+                updatePostalCodesLabels('ca');
+            } else {
+                // Other countries: hide states, cities, and zips options
                 if (statesOption) statesOption.style.display = 'none';
                 if (citiesOption) citiesOption.style.display = 'none';
                 if (zipsOption) zipsOption.style.display = 'none';
@@ -1248,11 +1315,31 @@ https://linkedin.com/in/janesmith</pre>
                 document.getElementById('scraperStatesContainer').style.display = 'none';
                 document.getElementById('scraperCitiesContainer').style.display = 'none';
                 document.getElementById('scraperZipsContainer').style.display = 'none';
-            } else {
-                // Show all options for US
-                if (statesOption) statesOption.style.display = '';
-                if (citiesOption) citiesOption.style.display = '';
-                if (zipsOption) zipsOption.style.display = '';
+            }
+        }
+
+        // Update postal/zip code labels based on country
+        function updatePostalCodesLabels(country) {
+            const label = document.getElementById('scraperZipsLabel');
+            const uploadLabel = document.getElementById('scraperZipsUploadLabel');
+            const uploadText = document.getElementById('scraperZipsUploadText');
+            const textarea = document.getElementById('scraperZipsInput');
+
+            if (country === 'us') {
+                if (label) label.textContent = 'Enter US Zip Codes (one per line or comma-separated)';
+                if (uploadLabel) uploadLabel.textContent = 'Or upload a CSV file with zip codes';
+                if (uploadText) uploadText.textContent = 'Drop ZIP CSV or click to browse';
+                if (textarea) textarea.placeholder = '90210\\n10001\\n90211, 10002';
+            } else if (country === 'gb') {
+                if (label) label.textContent = 'Enter UK Postcode Areas - one per line (format: M9, S5, WV98)';
+                if (uploadLabel) uploadLabel.textContent = 'Or upload a CSV file with postcode areas';
+                if (uploadText) uploadText.textContent = 'Drop Postcode CSV or click to browse';
+                if (textarea) textarea.placeholder = 'M9\\nS5\\nWV98';
+            } else if (country === 'ca') {
+                if (label) label.textContent = 'Enter Canada Postal Areas - one per line (format: T0B, T1A, V6B)';
+                if (uploadLabel) uploadLabel.textContent = 'Or upload a CSV file with postal areas';
+                if (uploadText) uploadText.textContent = 'Drop Postal Area CSV or click to browse';
+                if (textarea) textarea.placeholder = 'T0B\\nT1A\\nV6B';
             }
         }
 
@@ -1267,25 +1354,53 @@ https://linkedin.com/in/janesmith</pre>
             document.getElementById('scraperZipsContainer').style.display = (mode === 'zips') ? 'block' : 'none';
         });
 
-        // Real-time zip code validation
+        // Real-time zip/postal code validation
         function validateZipCodes(input) {
             const validationDiv = document.getElementById('scraperZipsValidation');
+            const country = document.getElementById('scraperCountry').value;
+
             if (!input.trim()) {
                 validationDiv.innerHTML = '';
                 validationDiv.style.color = '';
                 return { valid: [], invalid: [], validCount: 0 };
             }
 
-            // Parse zip codes: split by comma, newline, or both
+            // Parse codes: split by comma, newline, or both
             const parts = input.split(/[,\n]/).map(s => s.trim()).filter(s => s);
             const valid = [];
             const invalid = [];
 
-            parts.forEach(zip => {
-                if (/^\d{5}$/.test(zip)) {
-                    valid.push(zip);
+            let regex, itemName, placeholderExample;
+            if (country === 'us') {
+                regex = /^\d{5}$/;
+                itemName = '5 digits';
+                placeholderExample = '90210\\n10001\\n90211, 10002';
+            } else if (country === 'gb') {
+                // Accept outward codes only (M9, S5) or full postcodes (SW1A 1AA)
+                regex = /^[A-Z]{1,2}[0-9][A-Z0-9]?(\s?[0-9][A-Z]{2})?$/;
+                itemName = 'format like M9 or SW1A 1AA';
+                placeholderExample = 'M9\\nS5\\nWV98';
+            } else if (country === 'ca') {
+                // Accept FSAs only (T0B, T1A) or full postal codes (K1A 0A1)
+                regex = /^[A-Z][0-9][A-Z](\s?[0-9][A-Z][0-9])?$/;
+                itemName = 'format like T0B or K1A 0A1';
+                placeholderExample = 'T0B\\nT1A\\nV6B';
+            } else {
+                regex = /^.+$/;
+                itemName = 'valid code';
+                placeholderExample = '';
+            }
+
+            // Update textarea placeholder
+            const textarea = document.getElementById('scraperZipsInput');
+            if (textarea) textarea.placeholder = placeholderExample;
+
+            parts.forEach(code => {
+                const upperCode = code.toUpperCase();
+                if (regex.test(upperCode)) {
+                    valid.push(upperCode);
                 } else {
-                    invalid.push(zip);
+                    invalid.push(code);
                 }
             });
 
@@ -1293,13 +1408,20 @@ https://linkedin.com/in/janesmith</pre>
             const invalidCount = invalid.length;
 
             if (invalidCount > 0) {
-                validationDiv.innerHTML = `<span style="color: var(--danger);">Invalid: ${invalid.slice(0, 5).join(', ')}${invalidCount > 5 ? '...' : ''} (must be 5 digits)</span>`;
+                let helpText = '';
+                if (country === 'gb') {
+                    helpText = ' (use outward codes like M9, S5)';
+                } else if (country === 'ca') {
+                    helpText = ' (use postal areas like T0B, T1A)';
+                }
+                validationDiv.innerHTML = `<span style="color: var(--danger);">Invalid: ${invalid.slice(0, 5).join(', ')}${invalidCount > 5 ? '...' : ''} (must be ${itemName})${helpText}</span>`;
             }
 
+            const itemLabel = country === 'us' ? 'zip code' : (country === 'gb' ? 'postcode' : 'postal code');
             if (validCount > 0 && invalidCount === 0) {
-                validationDiv.innerHTML = `<span style="color: var(--success);">${validCount} zip code${validCount > 1 ? 's' : ''} detected</span>`;
+                validationDiv.innerHTML = `<span style="color: var(--success);">${validCount} ${itemLabel}${validCount > 1 ? 's' : ''} detected</span>`;
             } else if (validCount > 0 && invalidCount > 0) {
-                validationDiv.innerHTML += `<br><span style="color: var(--success);">${validCount} valid zip code${validCount > 1 ? 's' : ''}</span>`;
+                validationDiv.innerHTML += `<br><span style="color: var(--success);">${validCount} valid ${itemLabel}${validCount > 1 ? 's' : ''}</span>`;
             }
 
             return { valid, invalid, validCount };
@@ -1342,8 +1464,17 @@ https://linkedin.com/in/janesmith</pre>
             const formData = new FormData();
             formData.append('file', file);
 
+            // Determine endpoint based on country
+            const country = document.getElementById('scraperCountry').value;
+            let endpoint = '/api/scraper/regions/parse-zip-csv';
+            if (country === 'gb') {
+                endpoint = '/api/scraper/regions/parse-uk-postcode-csv';
+            } else if (country === 'ca') {
+                endpoint = '/api/scraper/regions/parse-ca-postal-csv';
+            }
+
             try {
-                const res = await fetch('/api/scraper/regions/parse-zip-csv', {
+                const res = await fetch(endpoint, {
                     method: 'POST',
                     headers: { 'Authorization': 'Bearer ' + token },
                     body: formData
@@ -1353,23 +1484,24 @@ https://linkedin.com/in/janesmith</pre>
                     const data = await res.json();
                     const countValid = data.count_valid || 0;
                     const countInvalid = data.count_invalid || 0;
-                    const validZips = data.valid_zips || [];
+                    const validCodes = data.valid_zips || data.valid_postcodes || data.valid_postal_codes || [];
 
-                    scraperZipsFromCsv = validZips;
+                    scraperZipsFromCsv = validCodes;
 
-                    // Update textarea with zip codes
+                    // Update textarea with codes
                     const textarea = document.getElementById('scraperZipsInput');
-                    textarea.value = validZips.join('\n');
+                    textarea.value = validCodes.join('\n');
                     validateZipCodes(textarea.value);
 
                     // Update file info
-                    scraperZipsFileInfo.innerHTML = `<span style="color: var(--success);">${file.name}: ${countValid} valid zip codes${countInvalid > 0 ? ', ' + countInvalid + ' invalid' : ''}</span>`;
+                    const codeLabel = country === 'us' ? 'zip codes' : (country === 'gb' ? 'postcodes' : 'postal codes');
+                    scraperZipsFileInfo.innerHTML = `<span style="color: var(--success);">${file.name}: ${countValid} valid ${codeLabel}${countInvalid > 0 ? ', ' + countInvalid + ' invalid' : ''}</span>`;
 
                     // Update upload zone to show success
                     const uploadIcon = scraperZipsUploadZone.querySelector('.upload-icon');
                     const uploadText = scraperZipsUploadZone.querySelector('.upload-text');
                     if (uploadIcon) uploadIcon.textContent = '✓';
-                    if (uploadText) uploadText.textContent = 'CSV loaded - ' + countValid + ' zip codes';
+                    if (uploadText) uploadText.textContent = 'CSV loaded - ' + countValid + ' ' + codeLabel;
                 } else {
                     const err = await res.json();
                     alert('Error parsing CSV: ' + (err.detail || 'Unknown error'));
@@ -1433,7 +1565,7 @@ https://linkedin.com/in/janesmith</pre>
                                 tag.style.borderRadius = '4px';
                                 tag.style.fontSize = '12px';
                                 tag.style.margin = '2px';
-                                tag.setAttribute('data-city', cityName);
+                                tag.setAttribute('data-city', displayText);  // Store full "City, State"
                                 tag.innerHTML = displayText + ' <span style="cursor:pointer;margin-left:4px;" onclick="this.parentElement.remove()">×</span>';
                                 selected.appendChild(tag);
                                 // Clear and hide the search after selection
@@ -1498,7 +1630,10 @@ https://linkedin.com/in/janesmith</pre>
                     container.querySelectorAll('span').forEach(span => {
                         // Use data-city attribute if available, otherwise fall back to text
                         const cityName = span.getAttribute('data-city') || span.textContent.replace('×', '').trim();
-                        selectedCities.push(cityName);
+                        // Filter out empty strings
+                        if (cityName && cityName.trim() !== '') {
+                            selectedCities.push(cityName);
+                        }
                     });
                 }
                 if (selectedCities.length === 0) { alert('Please select at least one city'); return; }
@@ -1527,6 +1662,14 @@ https://linkedin.com/in/janesmith</pre>
                     const data = await res.json();
                     currentJobId = data.job_id;
                     currentScraperDisplayName = data.display_name || null;
+                    // Track full regions for filename
+                    currentJobRegions = {
+                        mode: mode,
+                        country: country,
+                        states: payload.states || [],
+                        cities: payload.cities || [],
+                        zips: payload.zips || []
+                    };
                     document.getElementById('scraperTotal').textContent = data.total_tasks || data.total || 0;
                     document.getElementById('scraperProgress').style.display = 'block';
                     startScraperProgressStream(currentJobId);
@@ -1568,25 +1711,65 @@ https://linkedin.com/in/janesmith</pre>
             eventSource.onerror = function() { eventSource.close(); };
         }
 
+        // Template download handlers
+        document.getElementById('downloadCitiesTemplate').addEventListener('click', function(e) {
+            e.preventDefault();
+            const country = document.getElementById('scraperCountry').value;
+            const templateType = country === 'us' ? 'us_cities' : country === 'gb' ? 'uk_postcodes' : country === 'ca' ? 'ca_postal_codes' : 'us_cities';
+            window.location.href = `/api/scraper/regions/download-template?template_type=${templateType}`;
+        });
+
+        document.getElementById('downloadZipsTemplate').addEventListener('click', function(e) {
+            e.preventDefault();
+            const country = document.getElementById('scraperCountry').value;
+            const templateType = country === 'us' ? 'us_zips' : country === 'gb' ? 'uk_postcodes' : country === 'ca' ? 'ca_postal_codes' : 'us_zips';
+            window.location.href = `/api/scraper/regions/download-template?template_type=${templateType}`;
+        });
+
         // Download scraper results
         document.getElementById('downloadScraperResults').addEventListener('click', function() {
             if (currentJobId) {
-                // Use display_name for filename if available, otherwise fallback to generic name
-                const filename = currentScraperDisplayName
-                    ? currentScraperDisplayName + '_results.csv'
-                    : 'scraper_results.csv';
+                // Build filename from query and location
+                const query = document.getElementById('scraperQuery').value.replace(/[^a-z0-9]/gi, '_').substring(0, 30) || 'search';
+                const location = getLocationDisplay(JSON.stringify(currentJobRegions)).replace(/[^a-z0-9]/gi, '_').substring(0, 30) || 'US';
+                const filename = query + '_' + location + '_results.csv';
                 downloadFile(currentJobId, filename);
             }
         });
 
-        // Chain to enrichment
-        document.getElementById('chainToEnrichment').addEventListener('click', async function() {
+        // Chain to enrichment - show modal with provider selection
+        document.getElementById('chainToEnrichment').addEventListener('click', function() {
             if (!currentJobId) return;
+            // Show the provider selection modal
+            document.getElementById('chainProviderModal').style.display = 'flex';
+        });
+
+        // Cancel chain modal
+        document.getElementById('chainCancelBtn').addEventListener('click', function() {
+            document.getElementById('chainProviderModal').style.display = 'none';
+        });
+
+        // Confirm chain to enrichment with selected providers
+        document.getElementById('chainConfirmBtn').addEventListener('click', async function() {
+            document.getElementById('chainProviderModal').style.display = 'none';
+            // Use pendingChainJobId if set (from history table), otherwise currentJobId (from progress panel)
+            const jobId = pendingChainJobId || currentJobId;
+            if (!jobId) return;
+
+            // Collect selected providers (contacts_db is always enabled on backend)
+            const providers = [];
+            if (document.getElementById('chain_provider_blitz').checked) providers.push('blitz');
+            if (document.getElementById('chain_provider_better_enrich').checked) providers.push('better_enrich');
+
             try {
-                const res = await fetch('/api/enrichment/by-scraper-job', {
+                const res = await fetch('/api/jobs/' + jobId + '/chain', {
                     method: 'POST',
                     headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ scraper_job_id: currentJobId })
+                    body: JSON.stringify({
+                        cascade: null,
+                        max_results: 5,
+                        providers: providers.length > 0 ? providers : null
+                    })
                 });
                 if (res.ok) {
                     const data = await res.json();
@@ -1597,6 +1780,8 @@ https://linkedin.com/in/janesmith</pre>
                     alert('Failed: ' + (err.detail || 'Unknown error'));
                 }
             } catch (e) { alert('Error: ' + e.message); }
+            // Clear pending chain job ID after execution
+            pendingChainJobId = null;
         });
 
         // Search
@@ -2064,6 +2249,42 @@ https://linkedin.com/in/janesmith</pre>
             }
         }
 
+        // Helper: Build location display string from regions
+        function getLocationDisplay(regions) {
+            if (!regions) return '';
+            try {
+                const r = JSON.parse(regions);
+                if (!r) return '';
+
+                const country = r.country ? r.country.toUpperCase() : '';
+                let location = '';
+
+                if (r.mode === 'all') {
+                    location = 'All ' + (country === 'US' ? 'United States' : country);
+                } else if (r.mode === 'states' && r.states && r.states.length > 0) {
+                    // Show first 2 states, add count if more
+                    const shown = r.states.slice(0, 2).join(', ');
+                    location = r.states.length > 2
+                        ? `${shown} +${r.states.length - 2} more (${country})`
+                        : `${shown} (${country})`;
+                } else if (r.mode === 'cities' && r.cities && r.cities.length > 0) {
+                    // Show first 2 cities with states, add count if more
+                    const shown = r.cities.slice(0, 2).join(', ');
+                    location = r.cities.length > 2
+                        ? `${shown} +${r.cities.length - 2} more (${country})`
+                        : `${shown} (${country})`;
+                } else if (r.mode === 'zips' && r.zips && r.zips.length > 0) {
+                    location = `${r.zips.length} zip/postal code${r.zips.length > 1 ? 's' : ''} (${country})`;
+                } else {
+                    location = country;
+                }
+
+                return location;
+            } catch (e) {
+                return '';
+            }
+        }
+
         // Load scraper jobs with improved status handling
         async function loadScraperJobs() {
             const jobsList = document.getElementById('scraperJobsList');
@@ -2096,7 +2317,7 @@ https://linkedin.com/in/janesmith</pre>
                             const shortError = job.error.length > 60 ? job.error.substring(0, 60) + '...' : job.error;
                             errorInfo = '<div class="job-error" style="font-size: 0.7rem; color: #dc2626; margin-top: 4px; cursor: help;" title="' + fullError + '">' + shortError + '</div>';
                         }
-                        return '<div class="job-card"><div class="job-info"><h4>' + (job.display_name || job.query || 'Scraper Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.done_tasks||0) + '/' + (job.total_tasks||0) + ' | ' + (job.result_count||0) + ' results' + (job.regions ? ' | ' + JSON.parse(job.regions).country?.toUpperCase() : '') + '</div>' + errorInfo + '</div><div class="actions">' + actions + '</div></div>';
+                        return '<div class="job-card"><div class="job-info"><h4>' + (job.display_name || job.query || 'Scraper Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.done_tasks||0) + '/' + (job.total_tasks||0) + ' | ' + (job.result_count||0) + ' results' + (job.regions ? ' | ' + getLocationDisplay(job.regions) : '') + '</div>' + errorInfo + '</div><div class="actions">' + actions + '</div></div>';
                     }).join('');
                 } else jobsList.innerHTML = '<div class="empty-state">Failed to load</div>';
             } catch (e) { console.error('Failed to load scraper jobs:', e); jobsList.innerHTML = '<div class="empty-state">Error</div>'; }
@@ -2113,36 +2334,24 @@ https://linkedin.com/in/janesmith</pre>
             });
         });
 
-        // Download scraper job - use display_name or query as filename
+        // Download scraper job - use query + location as filename
         async function downloadScraperJob(jobId, btn) {
             if (btn) {
                 btn.disabled = true;
                 btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;"></span> Downloading...';
             }
             try {
-                // First get job details to find display_name
+                // First get job details to build filename
                 const jobRes = await fetch('/api/scraper/jobs', { headers: { 'Authorization': 'Bearer ' + token } });
                 let filename = 'scraper_job';
                 if (jobRes.ok) {
                     const data = await jobRes.json();
                     const job = data.jobs?.find(j => j.job_id === jobId);
                     if (job) {
-                        // Prefer display_name (e.g., 'elementary_school-canada(all)')
-                        if (job.display_name) {
-                            filename = job.display_name;
-                        } else if (job.query) {
-                            // Fallback to query if no display_name
-                            filename = job.query.replace(/[^a-z0-9]/gi, '_').substring(0, 30);
-                        }
-                        // Also include country code if available
-                        if (job.regions) {
-                            try {
-                                const regions = JSON.parse(job.regions);
-                                if (regions.country) {
-                                    filename = filename + '_' + regions.country.toUpperCase();
-                                }
-                            } catch (e) {}
-                        }
+                        // Build filename from query and location
+                        const query = job.query ? job.query.replace(/[^a-z0-9]/gi, '_').substring(0, 30) : 'search';
+                        const location = getLocationDisplay(job.regions).replace(/[^a-z0-9]/gi, '_').substring(0, 30);
+                        filename = query + '_' + location;
                     }
                 }
                 const res = await fetch('/api/scraper/jobs/' + jobId + '/download', { headers: { 'Authorization': 'Bearer ' + token } });
@@ -2151,7 +2360,7 @@ https://linkedin.com/in/janesmith</pre>
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = filename + '_scraper.csv';
+                a.download = filename + '_results.csv';
                 a.click();
                 URL.revokeObjectURL(url);
             } catch (e) { alert('Error: ' + e.message); }
@@ -2177,14 +2386,30 @@ https://linkedin.com/in/janesmith</pre>
             } catch (e) { alert('Error: ' + e.message); }
         }
 
-        // Chain scraper job to enrichment
+        // Chain scraper job to enrichment (from history table)
+        let pendingChainJobId = null;
         async function chainScraperToEnrichment(jobId) {
-            if (!confirm('Start enrichment job with this scraper results? This will find emails for the scraped companies.')) return;
+            pendingChainJobId = jobId;
+            // Show the provider selection modal
+            document.getElementById('chainProviderModal').style.display = 'flex';
+        }
+
+        // Handle chain confirm from both buttons (progress panel and history table)
+        async function executeChainEnrichment(jobId) {
             try {
+                // Collect selected providers (contacts_db is always enabled on backend)
+                const providers = [];
+                if (document.getElementById('chain_provider_blitz').checked) providers.push('blitz');
+                if (document.getElementById('chain_provider_better_enrich').checked) providers.push('better_enrich');
+
                 const res = await fetch('/api/jobs/' + jobId + '/chain', {
                     method: 'POST',
                     headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ cascade: null, max_results: 5 })
+                    body: JSON.stringify({
+                        cascade: null,
+                        max_results: 5,
+                        providers: providers.length > 0 ? providers : null
+                    })
                 });
                 if (res.ok) {
                     const data = await res.json();

@@ -56,7 +56,7 @@ class StartJobRequest(BaseModel):
     country: str = "us"        # ISO 2-letter: us, gb, ie, au, ca
     states: list[str] = []
     cities: list[str] = []
-    zips: list[str] = []       # List of US zip codes (for mode="zips")
+    zips: list[str] = []       # US zip codes, UK postcodes, or Canada postal codes (for mode="zips")
     center_ids: list[str] = []  # For non-US: selected center names
     expected_types: list[str] = []
 
@@ -152,6 +152,268 @@ async def parse_zip_csv(
         "count_valid": len(valid),
         "count_invalid": len(invalid),
     }
+
+
+@router.post("/regions/parse-uk-postcode-csv")
+async def parse_uk_postcode_csv(
+    file: UploadFile = File(...),
+):
+    """
+    Parse a CSV file containing UK postcodes and return the list of postcodes found.
+    Looks for any column containing UK postcodes (format: AA9A 9AA or similar).
+    """
+    if not file.filename.endswith('.csv'):
+        raise HTTPException(status_code=400, detail="Only CSV files are supported.")
+
+    content = await file.read()
+    try:
+        text = content.decode('utf-8')
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="File must be UTF-8 encoded.")
+
+    reader = csv.DictReader(io.StringIO(text))
+    postcodes = []
+
+    for row in reader:
+        # Check each column for UK postcodes
+        for col_name, col_value in row.items():
+            if col_value and isinstance(col_value, str):
+                value = col_value.strip()
+                # UK postcode pattern: A(A)N(N)(A) NAA
+                # Match with or without space
+                matches = re.findall(r'\b[A-Z]{1,2}[0-9][A-Z0-9]? ?[0-9][A-Z]{2}\b', value.upper())
+                for pc in matches:
+                    # Normalize: ensure space
+                    if " " not in pc and len(pc) >= 5:
+                        pc = pc[:-3] + " " + pc[-3:]
+                    if pc not in postcodes:
+                        postcodes.append(pc)
+
+    if not postcodes:
+        raise HTTPException(status_code=400, detail="No valid UK postcodes found in the file.")
+
+    # Validate against our postcode database
+    valid, invalid = centers_module.validate_uk_postcodes(postcodes)
+
+    return {
+        "postcodes_found": postcodes,
+        "count_found": len(postcodes),
+        "valid_postcodes": valid,
+        "invalid_postcodes": invalid,
+        "count_valid": len(valid),
+        "count_invalid": len(invalid),
+    }
+
+
+@router.post("/regions/parse-ca-postal-csv")
+async def parse_ca_postal_csv(
+    file: UploadFile = File(...),
+):
+    """
+    Parse a CSV file containing Canada postal codes and return the list of postal codes found.
+    Looks for any column containing Canada postal codes (format: ANA NAN).
+    """
+    if not file.filename.endswith('.csv'):
+        raise HTTPException(status_code=400, detail="Only CSV files are supported.")
+
+    content = await file.read()
+    try:
+        text = content.decode('utf-8')
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="File must be UTF-8 encoded.")
+
+    reader = csv.DictReader(io.StringIO(text))
+    postal_codes = []
+
+    for row in reader:
+        # Check each column for Canada postal codes
+        for col_name, col_value in row.items():
+            if col_value and isinstance(col_value, str):
+                value = col_value.strip()
+                # Canada postal code pattern: ANA NAN
+                matches = re.findall(r'\b[A-Z][0-9][A-Z] ?[0-9][A-Z][0-9]\b', value.upper())
+                for pc in matches:
+                    # Normalize: ensure space
+                    if " " not in pc:
+                        pc = pc[:3] + " " + pc[3:]
+                    if pc not in postal_codes:
+                        postal_codes.append(pc)
+
+    if not postal_codes:
+        raise HTTPException(status_code=400, detail="No valid Canada postal codes found in the file.")
+
+    # Validate against our postal code database
+    valid, invalid = centers_module.validate_ca_postal_codes(postal_codes)
+
+    return {
+        "postal_codes_found": postal_codes,
+        "count_found": len(postal_codes),
+        "valid_postal_codes": valid,
+        "invalid_postal_codes": invalid,
+        "count_valid": len(valid),
+        "count_invalid": len(invalid),
+    }
+
+
+@router.get("/regions/cities")
+async def list_all_cities(country: str = Query(default="us", description="ISO 2-letter country code")):
+    """
+    Get all cities available for zip/postal code mapping.
+
+    For US, returns all cities from the zip code database (29,546 cities).
+    For other countries, returns the list of centers.
+    """
+    if country.lower() == "us":
+        cities = centers_module.get_all_us_cities()
+        # Sort by zip count (most zips first) then alphabetically
+        cities.sort(key=lambda x: (-x["zip_count"], x["name"]))
+        return {
+            "cities": cities,
+            "total": len(cities),
+            "country": "us"
+        }
+    else:
+        # For other countries, return centers
+        centers = centers_module.get_centers_for_country(country)
+        city_list = []
+        seen_cities = set()
+        for center in centers:
+            city_state = f"{center.get('name', '')}, {center.get('state', '')}"
+            if city_state not in seen_cities and center.get('name'):
+                seen_cities.add(city_state)
+                city_list.append({
+                    "name": center["name"],
+                    "state": center.get("state", ""),
+                    "lat": center["lat"],
+                    "lng": center["lng"]
+                })
+        city_list.sort(key=lambda x: x["name"])
+        return {
+            "cities": city_list,
+            "total": len(city_list),
+            "country": country
+        }
+
+
+class CitiesToZipsRequest(BaseModel):
+    cities: list[str]
+    country: str = "us"
+
+
+@router.post("/regions/cities-to-zips")
+async def cities_to_zips(req: CitiesToZipsRequest):
+    """
+    Convert a list of cities to their corresponding zip/postal codes.
+
+    For US, maps cities to all zip codes in those cities.
+    For UK/Canada, maps cities to available postcode/FSA areas.
+
+    Returns mapping of cities to their codes and any errors.
+    """
+    if not req.cities:
+        raise HTTPException(status_code=400, detail="No cities provided.")
+
+    if req.country.lower() == "us":
+        city_zips_map, errors = centers_module.get_zips_for_cities(req.cities)
+
+        # Flatten all zips
+        all_zips = []
+        for zips in city_zips_map.values():
+            all_zips.extend(zips)
+
+        return {
+            "city_zips_map": city_zips_map,
+            "all_zips": all_zips,
+            "total_zips": len(all_zips),
+            "errors": errors
+        }
+    else:
+        # For UK/Canada, try to match city names to postcode areas
+        # This is a simple implementation - could be enhanced
+        errors = []
+        city_codes_map = {}
+
+        if req.country.lower() == "gb":
+            pc_db = centers_module._load_uk_postcode_database()
+            for city_input in req.cities:
+                city_input = city_input.strip().lower()
+                matched_codes = []
+
+                for postcode, data in pc_db.items():
+                    if city_input in postcode.lower() or city_input in data.get('city', '').lower():
+                        matched_codes.append(postcode)
+
+                if matched_codes:
+                    # Use the original city name as key
+                    city_name = req.cities[req.cities.index(city_input)]
+                    city_codes_map[city_name] = matched_codes
+                else:
+                    errors.append(f"City '{city_input}' not found in UK postcode database")
+
+        elif req.country.lower() == "ca":
+            pc_db = centers_module._load_ca_postal_code_database()
+            for city_input in req.cities:
+                city_input = city_input.strip().lower()
+                matched_codes = []
+
+                for postal_code, data in pc_db.items():
+                    if city_input in postal_code or city_input in data.get('city', '').lower():
+                        matched_codes.append(postal_code)
+
+                if matched_codes:
+                    city_name = req.cities[req.cities.index(city_input)]
+                    city_codes_map[city_name] = matched_codes
+                else:
+                    errors.append(f"City '{city_input}' not found in Canada postal code database")
+
+        all_codes = []
+        for codes in city_codes_map.values():
+            all_codes.extend(codes)
+
+        return {
+            "city_codes_map": city_codes_map,
+            "all_codes": all_codes,
+            "total_codes": len(all_codes),
+            "errors": errors,
+            "country": req.country
+        }
+
+
+@router.get("/regions/download-template")
+async def download_template(template_type: str = Query(default="us_cities")):
+    """
+    Download a template CSV file for the specified type.
+
+    Available templates:
+    - us_cities: US cities template
+    - us_zips: US zip codes template
+    - uk_postcodes: UK postcode areas template
+    - ca_postal_codes: Canada postal areas template
+    """
+    templates = {
+        "us_cities": ("us_cities_template.csv", "text/csv", "US_Cities_Template.csv"),
+        "us_zips": ("us_zips_template.csv", "text/csv", "US_Zip_Codes_Template.csv"),
+        "uk_postcodes": ("uk_postcodes_template.csv", "text/csv", "UK_Postcode_Areas_Template.csv"),
+        "ca_postal_codes": ("ca_postal_codes_template.csv", "text/csv", "Canada_Postal_Areas_Template.csv"),
+    }
+
+    if template_type not in templates:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid template type. Available: {list(templates.keys())}"
+        )
+
+    template_file, content_type, download_name = templates[template_type]
+    template_path = DATA_DIR / "templates" / template_file
+
+    if not template_path.exists():
+        raise HTTPException(status_code=404, detail=f"Template file not found: {template_file}")
+
+    return FileResponse(
+        path=str(template_path),
+        filename=download_name,
+        media_type=content_type
+    )
 
 
 @router.post("/regions/estimate")
