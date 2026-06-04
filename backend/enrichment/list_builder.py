@@ -384,13 +384,19 @@ async def _resolve_person_email(
     # Only try if name is available and Better Enrich is selected
     if search_name and domain and not _should_skip_provider("better_enrich", force_provider, selected_providers):
         try:
-            result = await better_enrich_client.find_work_email_v2(contacts_http, search_name, domain)
-            if result and result.get("data", {}).get("email"):
-                email = result["data"]["email"]
-                logger.debug("Better Enrich found email for %s: %s", search_name, email)
-                return email, "", SOURCE_BETTER_ENRICH, "unknown", "", ""
+            result = await better_enrich_client.find_work_email_v3(contacts_http, search_name, domain, linkedin_url)
+            if result and result.get("email"):
+                email = result["email"]
+                # V3 provides email_status - map to verified status
+                email_status = result.get("email_status", "verified")
+                if email_status in ("verified", "valid"):
+                    verified = "yes"
+                else:
+                    verified = "unknown"
+                logger.debug("Better Enrich V3 found email for %s: %s (status: %s)", search_name, email, email_status)
+                return email, "", SOURCE_BETTER_ENRICH, verified, "", ""
         except Exception as e:
-            logger.debug("Better Enrich lookup failed: %s", e)
+            logger.debug("Better Enrich V3 lookup failed: %s", e)
 
     return "", "", SOURCE_NOT_FOUND, "unknown", "", ""
 

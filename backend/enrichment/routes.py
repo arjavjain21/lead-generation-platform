@@ -845,14 +845,15 @@ async def unified_enrich(
                 except Exception as e:
                     logger.debug("Blitz LinkedIn email lookup failed: %s", e)
 
-            # Step 3: Try BetterEnrich V2 as fallback (requires full_name AND domain)
-            # BetterEnrich V2 requires domain, so only try when domain is available
+            # Step 3: Try BetterEnrich V3 as fallback (requires full_name AND domain)
+            # BetterEnrich V3 requires domain, so only try when domain is available
             if full_name and domain and (not contacts or not any(c.get("email") for c in contacts)):
                 try:
-                    be_result = await better_enrich_client.find_work_email_v2(
+                    be_result = await better_enrich_client.find_work_email_v3(
                         blitz_http,
                         full_name=full_name,
                         company_domain=domain,
+                        linkedin_url=req.linkedin_url,
                     )
                     if be_result and be_result.get("email"):
                         if contacts:
@@ -874,9 +875,9 @@ async def unified_enrich(
                             })
                         sources["contacts"] = "better_enrich"
                         sources["emails"] = "better_enrich"
-                        logger.info("BetterEnrich V2 found email via LinkedIn: %s", be_result.get("email"))
+                        logger.info("BetterEnrich V3 found email via LinkedIn: %s", be_result.get("email"))
                 except Exception as e:
-                    logger.debug("BetterEnrich V2 LinkedIn lookup failed: %s", e)
+                    logger.debug("BetterEnrich V3 LinkedIn lookup failed: %s", e)
 
         elif mode == "domain_only":
             # Domain-only: Use existing pipeline (Contacts DB → Blitz)
@@ -1106,17 +1107,18 @@ async def unified_enrich(
                 except Exception as e:
                     logger.debug("Blitz person enrichment failed: %s", e)
 
-            # Step 3: If still no email, try BetterEnrich V2 as final fallback
-            # BetterEnrich V2 requires both full_name and domain
+            # Step 3: If still no email, try BetterEnrich V3 as final fallback
+            # BetterEnrich V3 requires both full_name and domain
             # Skip if force_provider is set and it's not "better_enrich"
             if full_name and domain and not _should_skip_provider("better_enrich", req.force_provider):
-                # If no contacts found at all but we have full_name, try BetterEnrich V2 directly
+                # If no contacts found at all but we have full_name, try BetterEnrich V3 directly
                 if not contacts:
                     try:
-                        be_result = await better_enrich_client.find_work_email_v2(
+                        be_result = await better_enrich_client.find_work_email_v3(
                             blitz_http,
                             full_name=full_name,
                             company_domain=domain,
+                            linkedin_url=req.linkedin_url,
                         )
                         if be_result and be_result.get("email"):
                             contacts.append({
@@ -1134,26 +1136,27 @@ async def unified_enrich(
                             })
                             sources["contacts"] = "better_enrich"
                             sources["emails"] = "better_enrich"
-                            logger.info("BetterEnrich V2 found email for %s: %s", full_name, be_result.get("email"))
+                            logger.info("BetterEnrich V3 found email for %s: %s", full_name, be_result.get("email"))
                     except Exception as e:
-                        logger.debug("BetterEnrich V2 lookup failed: %s", e)
+                        logger.debug("BetterEnrich V3 lookup failed: %s", e)
 
                 # Also try to enhance existing contacts without emails
                 for contact in contacts:
                     if not contact.get("email") and full_name:
                         try:
-                            be_result = await better_enrich_client.find_work_email_v2(
+                            be_result = await better_enrich_client.find_work_email_v3(
                                 blitz_http,
                                 full_name=full_name,
                                 company_domain=domain,
+                                linkedin_url=req.linkedin_url,
                             )
                             if be_result and be_result.get("email"):
                                 contact["email"] = be_result.get("email")
                                 contact["email_source"] = "better_enrich"
                                 sources["emails"] = "better_enrich"
-                                logger.info("BetterEnrich V2 found email for %s: %s", full_name, be_result.get("email"))
+                                logger.info("BetterEnrich V3 found email for %s: %s", full_name, be_result.get("email"))
                         except Exception as e:
-                            logger.debug("BetterEnrich V2 lookup failed: %s", e)
+                            logger.debug("BetterEnrich V3 lookup failed: %s", e)
 
     finally:
         await blitz_http.aclose()
@@ -1401,12 +1404,12 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict):
                     except Exception as e:
                         logger.warning("Blitz lookup failed: %s", e)
 
-            # Step 3: Try BetterEnrich V2 as fallback (only if no email found)
+            # Step 3: Try BetterEnrich V3 as fallback (only if no email found)
             if not contacts or not contacts[0].get("email"):
                 if full_name and not _should_skip_provider("better_enrich", req.force_provider):
                     try:
-                        be_result = await better_enrich_client.find_work_email_v2(
-                            contacts_http, full_name, domain
+                        be_result = await better_enrich_client.find_work_email_v3(
+                            contacts_http, full_name, domain, req.linkedin_url
                         )
                         if be_result and be_result.get("email"):
                             if not contacts:
@@ -1427,7 +1430,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict):
                             sources["contacts"] = "better_enrich"
                             sources["emails"] = "better_enrich"
                     except Exception as e:
-                        logger.warning("BetterEnrich V2 lookup failed: %s", e)
+                        logger.warning("BetterEnrich V3 lookup failed: %s", e)
 
             # Sync contacts to DB
             sync_result = {"synced": 0, "skipped": 0, "failed": 0}
@@ -1577,10 +1580,10 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict):
                 except Exception as e:
                     logger.debug("Blitz person enrichment failed: %s", e)
 
-            # Step 3: If still no email, try BetterEnrich V2 as final fallback
+            # Step 3: If still no email, try BetterEnrich V3 as final fallback
             if full_name and domain and not contacts and not _should_skip_provider("better_enrich", req.force_provider):
                 try:
-                    be_result = await better_enrich_client.find_work_email_v2(blitz_http, full_name=full_name, company_domain=domain)
+                    be_result = await better_enrich_client.find_work_email_v3(blitz_http, full_name=full_name, company_domain=domain, linkedin_url=req.linkedin_url)
                     if be_result and be_result.get("email"):
                         contacts.append({
                             "full_name": full_name,
@@ -1597,9 +1600,9 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict):
                         })
                         sources["contacts"] = "better_enrich"
                         sources["emails"] = "better_enrich"
-                        logger.info("BetterEnrich V2 found email for %s: %s", full_name, be_result.get("email"))
+                        logger.info("BetterEnrich V3 found email for %s: %s", full_name, be_result.get("email"))
                 except Exception as e:
-                    logger.debug("BetterEnrich V2 lookup failed: %s", e)
+                    logger.debug("BetterEnrich V3 lookup failed: %s", e)
 
             # Sync contacts to DB (ACTUAL sync - this was a BUG before!)
             sync_result = {"synced": 0, "skipped": 0, "failed": 0}

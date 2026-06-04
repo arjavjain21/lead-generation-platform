@@ -402,18 +402,24 @@ async def _resolve_email_for_person(
             except Exception as e:
                 logger.warning("Blitz email lookup failed for %s: %s", linkedin_url, e)
 
-        # Step 5: BetterEnrich person email
+        # Step 5: BetterEnrich person email (V3 with built-in verification)
         if full_name and domain and not _should_skip_provider("better_enrich", force_provider):
             try:
-                result = await better_enrich_client.find_work_email_v2(
-                    blitz_client_inst, full_name, domain
+                result = await better_enrich_client.find_work_email_v3(
+                    blitz_client_inst, full_name, domain, linkedin_url
                 )
-                if result and result.get("data", {}).get("email"):
-                    email = result["data"]["email"]
-                    verification_info["dm_email_verified"] = "unknown"  # BetterEnrich verification status unknown
+                if result and result.get("email"):
+                    email = result["email"]
+                    # V3 provides email_status - map to dm_email_verified
+                    email_status = result.get("email_status", "verified")
+                    if email_status in ("verified", "valid"):
+                        verification_info["dm_email_verified"] = "yes"
+                    else:
+                        verification_info["dm_email_verified"] = "unknown"
+                    logger.info("BetterEnrich V3 found email for %s: %s (status: %s)", full_name, email, email_status)
                     return email, SOURCE_BETTER_ENRICH_PERSON, verification_info
             except Exception as e:
-                logger.warning("BetterEnrich person lookup failed for %s / %s: %s", full_name, domain, e)
+                logger.warning("BetterEnrich V3 person lookup failed for %s / %s: %s", full_name, domain, e)
 
         # Step 6: Contacts DB by input row name + domain (if different from person name)
         # This handles edge cases where the input name differs from the person's current name
