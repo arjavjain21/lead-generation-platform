@@ -136,6 +136,9 @@
         .status-partial { background: #e0f2fe; color: #0284c7; }
         
         .btn-sm { padding: 0.4rem 0.75rem; font-size: 0.75rem; }
+        .filter-tab { padding: 0.4rem 0.75rem; font-size: 0.75rem; background: var(--gray-100); border: 1px solid var(--gray-300); border-radius: 6px; cursor: pointer; transition: all 0.15s; }
+        .filter-tab:hover { background: var(--gray-200); }
+        .filter-tab.active { background: var(--primary); color: white; border-color: var(--primary); }
         .actions { display: flex; gap: 0.5rem; }
         
         .loading { display: flex; align-items: center; justify-content: center; padding: 2rem; color: var(--gray-500); }
@@ -405,10 +408,62 @@
                 </div>
             </div>
 
+            <!-- Cache Results Modal -->
+            <div id="cacheModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;align-items:center;justify-content:center;">
+                <div style="background:white;border-radius:12px;padding:24px;max-width:500px;width:90%;box-shadow:0 25px 50px rgba(0,0,0,0.3);">
+                    <h3 style="margin:0 0 16px 0;">✓ Cached Results Available</h3>
+                    <div style="background:#f0fdf4;border-left:4px solid #16a34a;padding:12px;border-radius:8px;margin-bottom:16px;">
+                        <p style="margin:0 0 8px 0;font-size:0.9rem;color:#166534;">
+                            Found <strong id="cacheResultCount">0</strong> results from <span id="cacheDate"></span>
+                            (<span id="cacheDaysOld">0</span> days old)
+                        </p>
+                        <p id="cachePartialWarning" style="margin:0;font-size:0.8rem;color:#ca8a04;display:none;">
+                            ⚠️ Partial results: <span id="cachePercentage">0</span>% complete
+                        </p>
+                    </div>
+                    <div style="display:flex;gap:8px;">
+                        <button class="btn btn-success btn-sm" id="useCachedBtn">Use Cached Results</button>
+                        <button class="btn btn-primary btn-sm" id="scrapeFreshBtn">Scrape Fresh (Ignore Cache)</button>
+                    </div>
+                    <button id="closeCacheModal" style="margin-top:12px;background:none;border:none;color:#6b7280;cursor:pointer;width:100%;">Cancel</button>
+                </div>
+            </div>
+
+            <!-- Resume Job Modal -->
+            <div id="resumeModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;align-items:center;justify-content:center;">
+                <div style="background:white;border-radius:12px;padding:24px;max-width:500px;width:90%;box-shadow:0 25px 50px rgba(0,0,0,0.3);">
+                    <h3 style="margin:0 0 16px 0;">↻ Resume Scraper Job</h3>
+                    <div id="resumeInfo" style="margin-bottom:16px;"></div>
+                    <div style="margin:16px 0;">
+                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                            <input type="checkbox" id="includePrevious" checked>
+                            Include previous results in output
+                        </label>
+                    </div>
+                    <div style="display:flex;gap:8px;">
+                        <button class="btn btn-success btn-sm" id="confirmResume">Start Resume</button>
+                        <button class="btn btn-secondary btn-sm" id="closeResumeModal">Cancel</button>
+                    </div>
+                </div>
+            </div>
+
             <div class="form-card" id="scraperJobsCard">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
                     <h3 style="margin:0;">📋 Recent Scraper Jobs</h3>
                     <button class="btn btn-secondary btn-sm" onclick="loadScraperJobs()">Refresh</button>
+                </div>
+                <!-- Status Filter Tabs -->
+                <div style="display:flex;gap:0.5rem;margin-bottom:1rem;flex-wrap:wrap;">
+                    <button class="filter-tab active" data-status="all" onclick="filterScraperJobs('all')">All</button>
+                    <button class="filter-tab" data-status="done" onclick="filterScraperJobs('done')">Done</button>
+                    <button class="filter-tab" data-status="running" onclick="filterScraperJobs('running')">Running</button>
+                    <button class="filter-tab" data-status="failed" onclick="filterScraperJobs('failed')">Failed</button>
+                    <button class="filter-tab" data-status="abandoned" onclick="filterScraperJobs('abandoned')">Abandoned</button>
+                    <button class="filter-tab" data-status="cancelled" onclick="filterScraperJobs('cancelled')">Cancelled</button>
+                </div>
+                <!-- Search Box -->
+                <div style="margin-bottom:1rem;">
+                    <input type="text" id="jobSearchInput" placeholder="Search jobs by query..." style="width:100%;padding:0.5rem;border:1px solid var(--gray-300);border-radius:6px;font-size:0.875rem;" oninput="filterScraperJobs()">
                 </div>
                 <div id="scraperJobsList"></div>
             </div>
@@ -810,23 +865,75 @@ https://linkedin.com/in/janesmith</pre>
     </main>
     
     <script>
-        // State
-        let token = localStorage.getItem('token'), user = null;
-        let domainUploadId = null, linkedinUploadId = null, currentJobId = null, eventSource = null, currentScraperDisplayName = null, currentJobRegions = null;
-        
-        // Auth
-        const authModal = document.getElementById('authModal');
-        if (token) checkAuth(); else showAuth();
-        
-        function showAuth() { authModal.classList.add('active'); }
-        function hideAuth() { authModal.classList.remove('active'); }
+        // Wait for DOM to be fully loaded before running any code
+        document.addEventListener('DOMContentLoaded', function() {
+            // State
+            let token = localStorage.getItem('token'), user = null;
+            let domainUploadId = null, linkedinUploadId = null, currentJobId = null, eventSource = null, currentScraperDisplayName = null, currentJobRegions = null;
+            let allScraperJobs = []; // Store all scraper jobs for filtering
+            let currentStatusFilter = 'all'; // Current status filter
+
+            // Auth
+            const authModal = document.getElementById('authModal');
+            if (!authModal) {
+                console.error('Auth modal not found! DOM may not be ready.');
+                return;
+            }
+
+            console.log('App initialized. Token present:', !!token);
+            if (token) {
+                console.log('Checking auth with token...');
+                checkAuth();
+            } else {
+                console.log('No token found, showing auth modal...');
+                showAuth();
+            }
+
+            function showAuth() {
+                console.log('Showing auth modal');
+                authModal.classList.add('active');
+            }
+            function hideAuth() {
+                console.log('Hiding auth modal');
+                authModal.classList.remove('active');
+            }
         
         async function checkAuth() {
+            console.log('checkAuth called');
             try {
-                const res = await fetch('/api/auth/me', { headers: { 'Authorization': 'Bearer ' + token } });
-                if (res.ok) { user = await res.json(); updateUserUI(); hideAuth(); loadSearchOptions(); loadJobs(); }
-                else { localStorage.removeItem('token'); token = null; showAuth(); }
-            } catch (e) { showAuth(); }
+                // Add timeout to prevent hanging
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
+                console.log('Fetching /api/auth/me...');
+                const res = await fetch('/api/auth/me', {
+                    headers: { 'Authorization': 'Bearer ' + token },
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+
+                console.log('Auth response status:', res.status);
+                if (res.ok) {
+                    user = await res.json();
+                    console.log('Auth successful, user:', user.email);
+                    updateUserUI();
+                    hideAuth();
+                    loadSearchOptions();
+                    loadJobs();
+                } else {
+                    // Token invalid or expired
+                    console.log('Auth failed, token invalid');
+                    localStorage.removeItem('token');
+                    token = null;
+                    showAuth();
+                }
+            } catch (e) {
+                // Network error or timeout
+                console.error('Auth check failed:', e);
+                localStorage.removeItem('token');
+                token = null;
+                showAuth();
+            }
         }
         
         function updateUserUI() {
@@ -838,11 +945,36 @@ https://linkedin.com/in/janesmith</pre>
         document.getElementById('loginForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             const email = document.getElementById('email').value, password = document.getElementById('password').value;
+
+            // Clear previous error
+            const loginError = document.getElementById('loginError');
+            if (loginError) loginError.style.display = 'none';
+
             try {
-                const res = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
-                if (res.ok) { const data = await res.json(); token = data.token; localStorage.setItem('token', token); user = { email: data.email }; updateUserUI(); hideAuth(); loadSearchOptions(); loadJobs(); }
-                else alert('Invalid credentials');
-            } catch (e) { alert('Connection error'); }
+                const res = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, password })
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    token = data.token;
+                    localStorage.setItem('token', token);
+                    user = { email: data.email, user_id: data.user_id, is_admin: data.is_admin };
+                    updateUserUI();
+                    hideAuth();
+                    loadSearchOptions();
+                    loadJobs();
+                } else {
+                    // Show specific error message
+                    const errorData = await res.json().catch(() => ({ detail: 'Invalid credentials' }));
+                    const errorMsg = errorData.detail || 'Invalid credentials';
+                    alert('Login failed: ' + errorMsg);
+                }
+            } catch (e) {
+                alert('Connection error: ' + e.message);
+            }
         });
         
         document.getElementById('logoutBtn').addEventListener('click', () => { localStorage.removeItem('token'); token = null; user = null; showAuth(); });
@@ -1652,6 +1784,99 @@ https://linkedin.com/in/janesmith</pre>
                 payload.zips = valid;
             }
 
+            // Check cache first before starting new job
+            const cacheFound = await checkScraperCache(payload);
+            if (cacheFound) return; // User will decide via modal
+
+            // No cache found, proceed with job creation
+            await startScraperJobInternal(payload);
+        });
+
+        // Check cache before submitting job
+        async function checkScraperCache(payload) {
+            try {
+                const res = await fetch('/api/scraper/cache/check', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.cached) {
+                        showCacheModal(data);
+                        return true; // Cache found
+                    }
+                }
+            } catch (e) {
+                console.error('Cache check failed:', e);
+            }
+            return false; // No cache
+        }
+
+        function showCacheModal(data) {
+            document.getElementById('cacheResultCount').textContent = data.total_results.toLocaleString();
+            document.getElementById('cacheDate').textContent = new Date(data.created_at).toLocaleDateString();
+            document.getElementById('cacheDaysOld').textContent = data.days_old;
+
+            if (data.is_partial) {
+                document.getElementById('cachePartialWarning').style.display = 'block';
+                document.getElementById('cachePercentage').textContent = data.percentage_complete.toFixed(1);
+            } else {
+                document.getElementById('cachePartialWarning').style.display = 'none';
+            }
+
+            // Store cache_id for download
+            document.getElementById('useCachedBtn').dataset.cacheId = data.cache_id;
+
+            document.getElementById('cacheModal').style.display = 'flex';
+        }
+
+        // Use cached results
+        document.getElementById('useCachedBtn').addEventListener('click', async function() {
+            const cacheId = this.dataset.cacheId;
+            window.location.href = `/api/scraper/cache/download/${cacheId}?token=${token}`;
+        });
+
+        // Scrape fresh
+        document.getElementById('scrapeFreshBtn').addEventListener('click', async function() {
+            document.getElementById('cacheModal').style.display = 'none';
+            // Get current form data and proceed
+            const query = document.getElementById('scraperQuery').value.trim();
+            const mode = document.getElementById('scraperMode').value;
+            const country = document.getElementById('scraperCountry').value;
+            const payload = { query, mode, country };
+
+            if (mode === 'states') {
+                payload.states = Array.from(document.getElementById('scraperStates').selectedOptions).map(o => o.value);
+            } else if (mode === 'cities') {
+                const selectedCities = [];
+                const container = document.getElementById('scraperSelectedCities');
+                if (container) {
+                    container.querySelectorAll('span').forEach(span => {
+                        const cityName = span.getAttribute('data-city') || span.textContent.replace('×', '').trim();
+                        if (cityName && cityName.trim() !== '') {
+                            selectedCities.push(cityName);
+                        }
+                    });
+                }
+                payload.cities = selectedCities;
+            }
+            await startScraperJobInternal(payload);
+        });
+
+        // Close modal
+        document.getElementById('closeCacheModal').addEventListener('click', function() {
+            document.getElementById('cacheModal').style.display = 'none';
+        });
+
+        // Internal job start function (without cache check)
+        async function startScraperJobInternal(payload) {
+            const btn = document.getElementById('startScraperJob');
+            const originalText = btn.textContent;
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;display:inline-block;"></span> Starting...';
+
             try {
                 const res = await fetch('/api/scraper/jobs', {
                     method: 'POST',
@@ -1664,8 +1889,8 @@ https://linkedin.com/in/janesmith</pre>
                     currentScraperDisplayName = data.display_name || null;
                     // Track full regions for filename
                     currentJobRegions = {
-                        mode: mode,
-                        country: country,
+                        mode: payload.mode,
+                        country: payload.country,
                         states: payload.states || [],
                         cities: payload.cities || [],
                         zips: payload.zips || []
@@ -1673,12 +1898,18 @@ https://linkedin.com/in/janesmith</pre>
                     document.getElementById('scraperTotal').textContent = data.total_tasks || data.total || 0;
                     document.getElementById('scraperProgress').style.display = 'block';
                     startScraperProgressStream(currentJobId);
+                    // Auto-refresh jobs list to show new job
+                    loadScraperJobs();
                 } else {
                     const err = await res.json();
                     alert('Failed to start: ' + (err.detail || 'Unknown error'));
                 }
             } catch (e) { alert('Error: ' + e.message); }
-        });
+            finally {
+                btn.disabled = false;
+                btn.textContent = originalText;
+            }
+        }
 
         // Scraper progress streaming
         function startScraperProgressStream(jobId) {
@@ -2290,37 +2521,88 @@ https://linkedin.com/in/janesmith</pre>
             const jobsList = document.getElementById('scraperJobsList');
             try {
                 const res = await fetch('/api/scraper/jobs', { headers: { 'Authorization': 'Bearer ' + token } });
-                if (res.ok) { const data = await res.json(), jobs = data.jobs || [];
-                    if (jobs.length === 0) { jobsList.innerHTML = '<div class="empty-state">No scraper jobs yet</div>'; return; }
-                    jobsList.innerHTML = jobs.map(job => {
-                        // Status display with human-readable labels
-                        let statusLabel = job.status;
-                        let statusDisplay = statusLabel;
-                        if (job.status === 'abandoned') statusDisplay = 'Abandoned';
-                        if (job.status === 'cancelled') statusDisplay = 'Cancelled';
-                        if (job.status === 'partial') statusDisplay = 'Partial';
-                        if (job.status === 'failed') statusDisplay = 'Failed';
-
-                        let actions = '<span class="job-status status-' + job.status + '">' + statusDisplay + '</span>';
-                        if (job.status === 'done') {
-                            actions += ' <button class="btn btn-success btn-sm" id="dl-scraper-'+job.job_id+'" onclick="downloadScraperJob(\''+job.job_id+'\', this)">Download</button>';
-                            actions += ' <button class="btn btn-primary btn-sm" onclick="chainScraperToEnrichment(\''+job.job_id+'\')">Chain to Enrichment</button>';
-                        } else if (job.status === 'failed' || job.status === 'abandoned') {
-                            actions += ' <button class="btn btn-secondary btn-sm" onclick="retryScraperJob(\''+job.job_id+'\')">Retry</button>';
-                        } else if (job.status === 'running' || job.status === 'queued' || job.status === 'pending') {
-                            actions += ' <button class="btn btn-danger btn-sm" onclick="cancelScraperJob(\''+job.job_id+'\')">Cancel</button>';
-                        }
-                        // Show error message for failed/abandoned/cancelled jobs with hover tooltip
-                        let errorInfo = '';
-                        if (job.error && (job.status === 'failed' || job.status === 'abandoned' || job.status === 'cancelled')) {
-                            const fullError = job.error.replace(/'/g, "\\'").replace(/"/g, '\\"');
-                            const shortError = job.error.length > 60 ? job.error.substring(0, 60) + '...' : job.error;
-                            errorInfo = '<div class="job-error" style="font-size: 0.7rem; color: #dc2626; margin-top: 4px; cursor: help;" title="' + fullError + '">' + shortError + '</div>';
-                        }
-                        return '<div class="job-card"><div class="job-info"><h4>' + (job.display_name || job.query || 'Scraper Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.done_tasks||0) + '/' + (job.total_tasks||0) + ' | ' + (job.result_count||0) + ' results' + (job.regions ? ' | ' + getLocationDisplay(job.regions) : '') + '</div>' + errorInfo + '</div><div class="actions">' + actions + '</div></div>';
-                    }).join('');
+                if (res.ok) { const data = await res.json();
+                    allScraperJobs = data.jobs || []; // Store for filtering
+                    renderScraperJobs(); // Render with current filter
                 } else jobsList.innerHTML = '<div class="empty-state">Failed to load</div>';
             } catch (e) { console.error('Failed to load scraper jobs:', e); jobsList.innerHTML = '<div class="empty-state">Error</div>'; }
+        }
+
+        // Filter scraper jobs by status and search query
+        function filterScraperJobs(statusFilter) {
+            if (statusFilter) {
+                currentStatusFilter = statusFilter;
+                // Update active tab
+                document.querySelectorAll('.filter-tab').forEach(tab => {
+                    tab.classList.remove('active');
+                    if (tab.dataset.status === statusFilter) tab.classList.add('active');
+                });
+            }
+            renderScraperJobs();
+        }
+
+        // Render scraper jobs based on current filter and search
+        function renderScraperJobs() {
+            const jobsList = document.getElementById('scraperJobsList');
+            const searchQuery = document.getElementById('jobSearchInput')?.value?.toLowerCase() || '';
+
+            // Filter by status
+            let filteredJobs = allScraperJobs;
+            if (currentStatusFilter !== 'all') {
+                filteredJobs = filteredJobs.filter(job => job.status === currentStatusFilter);
+            }
+
+            // Filter by search query
+            if (searchQuery) {
+                filteredJobs = filteredJobs.filter(job => {
+                    const query = (job.query || '').toLowerCase();
+                    const displayName = (job.display_name || '').toLowerCase();
+                    const location = getLocationDisplay(job.regions).toLowerCase();
+                    return query.includes(searchQuery) || displayName.includes(searchQuery) || location.includes(searchQuery);
+                });
+            }
+
+            if (filteredJobs.length === 0) {
+                jobsList.innerHTML = '<div class="empty-state">No jobs found</div>';
+                return;
+            }
+
+            jobsList.innerHTML = filteredJobs.map(job => {
+                // Status display with human-readable labels
+                let statusLabel = job.status;
+                let statusDisplay = statusLabel;
+                if (job.status === 'abandoned') statusDisplay = 'Abandoned';
+                if (job.status === 'cancelled') statusDisplay = 'Cancelled';
+                if (job.status === 'partial') statusDisplay = 'Partial';
+                if (job.status === 'failed') statusDisplay = 'Failed';
+                if (job.status === 'stopped') statusDisplay = 'Stopped';
+
+                let actions = '<span class="job-status status-' + job.status + '">' + statusDisplay + '</span>';
+                if (job.status === 'done') {
+                    actions += ' <button class="btn btn-success btn-sm" id="dl-scraper-'+job.job_id+'" onclick="downloadScraperJob(\''+job.job_id+'\', this)">Download</button>';
+                    actions += ' <button class="btn btn-primary btn-sm" onclick="chainScraperToEnrichment(\''+job.job_id+'\')">Chain to Enrichment</button>';
+                } else if (job.status === 'failed' || job.status === 'abandoned' || job.status === 'cancelled' || job.status === 'stopped') {
+                    // Show resume button if job has checkpoints
+                    if (job.checkpoint_count > 0 && job.is_resumable === 1) {
+                        actions += ' <button class="btn btn-warning btn-sm" onclick="resumeScraperJob(\''+job.job_id+'\')">↻ Resume ('+job.checkpoint_count+' tasks)</button>';
+                    }
+                    actions += ' <button class="btn btn-secondary btn-sm" onclick="retryScraperJob(\''+job.job_id+'\')">Retry Fresh</button>';
+                    // Allow download of partial results if output file exists
+                    if (job.output_path) {
+                        actions += ' <button class="btn btn-success btn-sm" onclick="downloadScraperJob(\''+job.job_id+'\', this)">Download Partial</button>';
+                    }
+                } else if (job.status === 'running' || job.status === 'queued' || job.status === 'pending') {
+                    actions += ' <button class="btn btn-danger btn-sm" onclick="cancelScraperJob(\''+job.job_id+'\')">Cancel</button>';
+                }
+                // Show error message for failed/abandoned/cancelled jobs with hover tooltip
+                let errorInfo = '';
+                if (job.error && (job.status === 'failed' || job.status === 'abandoned' || job.status === 'cancelled')) {
+                    const fullError = job.error.replace(/'/g, "\\'").replace(/"/g, '\\"');
+                    const shortError = job.error.length > 60 ? job.error.substring(0, 60) + '...' : job.error;
+                    errorInfo = '<div class="job-error" style="font-size: 0.7rem; color: #dc2626; margin-top: 4px; cursor: help;" title="' + fullError + '">' + shortError + '</div>';
+                }
+                return '<div class="job-card"><div class="job-info"><h4>' + (job.display_name || job.query || 'Scraper Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.done_tasks||0) + '/' + (job.total_tasks||0) + ' | ' + (job.result_count||0) + ' results' + (job.regions ? ' | ' + getLocationDisplay(job.regions) : '') + '</div>' + errorInfo + '</div><div class="actions">' + actions + '</div></div>';
+            }).join('');
         }
 
         // Refresh button handler for enrichment jobs
@@ -2348,10 +2630,13 @@ https://linkedin.com/in/janesmith</pre>
                     const data = await jobRes.json();
                     const job = data.jobs?.find(j => j.job_id === jobId);
                     if (job) {
-                        // Build filename from query and location
+                        // Build filename from query, location, centers and results
                         const query = job.query ? job.query.replace(/[^a-z0-9]/gi, '_').substring(0, 30) : 'search';
                         const location = getLocationDisplay(job.regions).replace(/[^a-z0-9]/gi, '_').substring(0, 30);
-                        filename = query + '_' + location;
+                        const centers = job.total_tasks || 0;
+                        const results = job.result_count || 0;
+                        const status = job.status || 'done';
+                        filename = `${query}_${location}_${centers}_centers_${results}_results_${status}`;
                     }
                 }
                 const res = await fetch('/api/scraper/jobs/' + jobId + '/download', { headers: { 'Authorization': 'Bearer ' + token } });
@@ -2385,6 +2670,70 @@ https://linkedin.com/in/janesmith</pre>
                 }
             } catch (e) { alert('Error: ' + e.message); }
         }
+
+        // Resume scraper job from checkpoints
+        async function resumeScraperJob(jobId) {
+            try {
+                const res = await fetch('/api/scraper/jobs/' + jobId + '/resume-info', {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+
+                if (res.ok) {
+                    const info = await res.json();
+
+                    // Build resume info display
+                    const totalTasks = info.total_tasks || 0;
+                    const completedTasks = info.checkpoint_count || 0;
+                    const completionPct = totalTasks > 0 ? ((completedTasks / totalTasks) * 100).toFixed(1) : 0;
+                    const resultsCount = (info.result_count || 0).toLocaleString();
+
+                    document.getElementById('resumeInfo').innerHTML = `
+                        <p><strong>Query:</strong> ${info.original_query || 'N/A'}</p>
+                        <p><strong>Progress:</strong> ${completedTasks} / ${totalTasks} tasks (${completionPct}%)</p>
+                        <p><strong>Results so far:</strong> ${resultsCount}</p>
+                        <p style="font-size:0.85rem;color:#6b7280;margin-top:8px;">
+                            Job will resume from last completed checkpoint and skip already-processed tasks.
+                        </p>
+                    `;
+
+                    // Set up confirm button handler
+                    document.getElementById('confirmResume').onclick = async function() {
+                        const includePrev = document.getElementById('includePrevious').checked;
+
+                        try {
+                            const res = await fetch('/api/scraper/jobs/' + jobId + '/resume', {
+                                method: 'POST',
+                                headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ include_previous: includePrev })
+                            });
+
+                            if (res.ok) {
+                                const data = await res.json();
+                                document.getElementById('resumeModal').style.display = 'none';
+                                loadScraperJobs();
+                                alert('Job resumed successfully! New job ID: ' + data.job_id.substring(0, 8) + '\nPending tasks: ' + data.pending_tasks + '\nSkipped tasks: ' + data.skipped_tasks);
+                            } else {
+                                const err = await res.json();
+                                alert('Resume failed: ' + (err.detail || 'Unknown error'));
+                            }
+                        } catch (e) {
+                            alert('Error: ' + e.message);
+                        }
+                    };
+
+                    document.getElementById('resumeModal').style.display = 'flex';
+                } else {
+                    alert('Could not get resume info: ' + (await res.json()).detail);
+                }
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
+        }
+
+        // Close resume modal
+        document.getElementById('closeResumeModal').addEventListener('click', function() {
+            document.getElementById('resumeModal').style.display = 'none';
+        });
 
         // Chain scraper job to enrichment (from history table)
         let pendingChainJobId = null;
@@ -2462,6 +2811,22 @@ https://linkedin.com/in/janesmith</pre>
                 }
             } catch (e) { alert('Error: ' + e.message); }
         }
+
+        // Expose functions to global scope for onclick handlers
+        window.filterScraperJobs = filterScraperJobs;
+        window.loadScraperJobs = loadScraperJobs;
+        window.downloadScraperJob = downloadScraperJob;
+        window.chainScraperToEnrichment = chainScraperToEnrichment;
+        window.resumeScraperJob = resumeScraperJob;
+        window.copyApiKeyByValue = copyApiKeyByValue;
+        window.deleteApiKey = deleteApiKey;
+        window.copyApiKey = copyApiKey;
+        window.dismissNewApiKey = dismissNewApiKey;
+        window.downloadFile = downloadFile;
+        window.retryEnrichmentJob = retryEnrichmentJob;
+        window.cancelEnrichmentJob = cancelEnrichmentJob;
+        console.log('Functions exposed to global scope');
+        }); // End DOMContentLoaded
     </script>
 </body>
 </html>

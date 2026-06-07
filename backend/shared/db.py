@@ -22,6 +22,11 @@ DATA_DIR = Path(__file__).parent.parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
 DB_PATH = DATA_DIR / "jobs.db"
 
+# Cache configuration
+CACHE_DIR = Path("/mnt/disk/lead-generation-platform/cache")
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+CACHE_EXPIRY_DAYS = 90  # 90-day cache freshness as requested
+
 _local = threading.local()
 
 # Daily API request limit for non-admin users

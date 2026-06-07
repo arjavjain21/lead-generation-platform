@@ -45,7 +45,7 @@ OUTPUT_COLS = [
     "latitude", "longitude", "distance_km", "rating", "review_count",
     "website", "phone", "types", "price_level", "timezone", "working_hours",
     "is_claimed", "verified", "is_permanently_closed", "is_temporarily_closed",
-    "place_link", "photo_count", "first_photo_url", "inserted_at",
+    "place_link", "photo_count", "first_photo_url", "inserted_at", "center_id",
 ]
 
 
@@ -179,6 +179,7 @@ def flatten_item(
         "photo_count": len(photos),
         "first_photo_url": first_photo,
         "inserted_at": datetime.now(timezone.utc).isoformat(),
+        "center_id": f"{center['name']}_{center['state']}_{zoom}".replace(' ', '_').lower(),
     }
 
 

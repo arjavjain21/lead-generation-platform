@@ -144,8 +144,8 @@ async def login(req: LoginRequest):
 
 
 @shared_router.get("/auth/me")
-async def me(current_user: dict = Depends(auth.get_current_user)):
-    """Return the currently authenticated user's profile."""
+async def me(current_user: dict = Depends(auth.get_current_user_with_api_key)):
+    """Return the currently authenticated user's profile. Supports both JWT and API key authentication."""
     return {
         "user_id": current_user["user_id"],
         "email": current_user["email"],

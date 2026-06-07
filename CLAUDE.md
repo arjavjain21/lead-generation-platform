@@ -302,3 +302,100 @@ European countries use a simplified approach:
 - Each city = 1 center, 3 zoom levels (10, 11, 12)
 - Good B2B coverage since most businesses are in major cities
 - Faster to implement and maintain
+
+---
+
+## Caching System (Implemented 2026-06-07)
+
+### Overview
+A comprehensive caching system prevents re-scraping identical queries, saving API costs and time.
+
+### Cache Storage
+- **Location:** `/mnt/disk/lead-generation-platform/cache/`
+- **Expiry:** 90 days
+- **Available Space:** 86GB
+
+### Cache Tables
+- `scraped_cache` - Main cache with metadata, checksums, expiry
+- `task_checkpoints` - Resume capability (per-task progress)
+- `cache_center_counts` - Geographic subset filtering
+- `cache_stats` - Hit/miss tracking
+
+### Cache Endpoints
+- `POST /api/scraper/cache/check` - Check for cached results
+- `GET /api/scraper/cache/download/{cache_id}` - Download cached files
+- `POST /api/scraper/cache/subset-count` - Get subset counts
+- `GET /api/scraper/jobs/{id}/resume-info` - Resume eligibility
+- `POST /api/scraper/jobs/{id}/resume` - Resume from checkpoints
+
+### Cached Data (as of 2026-06-07)
+- dental clinic: 93,127 results
+- dentist: 127,012 results
+- elementary school: 50,867 results
+
+### Resume Capability
+Jobs can be resumed from last checkpoint:
+- Tracks completed (center, zoom) combinations
+- Skips already-processed tasks on resume
+- Requires new jobs to create checkpoints
+
+### Download Filename Format
+```
+{query}_{centers}_centers_{results}_results_{status}.csv
+```
+Example: `dental_clinic_2526_centers_46556_results_done.csv`
+
+### Cache Key Components
+- Query (normalized)
+- Region signature (hash of geographic config)
+- Zoom signature (hash of [10,11,12])
+- Expected types signature (hash of filters)
+
+---
+
+## Recent Updates (2026-06-07)
+
+### Authentication
+- `/api/auth/me` now accepts both JWT tokens AND API keys
+- Fixed frontend authentication race conditions
+- Added timeout protection (10s) to auth requests
+
+### UI Improvements
+- Filter tabs now functional (All, Done, Running, Failed, etc.)
+- Stopped jobs show download buttons
+- Added cache modal for reusing cached results
+- Added resume modal for stopped jobs
+
+### API Key Authentication
+Updated to support API keys on user-facing endpoints:
+- `/api/auth/me`
+- `/api/scraper/cache/*`
+- `/api/scraper/jobs/{id}/download`
+- `/api/scraper/jobs/{id}/resume-info`
+
+### Bug Fixes
+- Fixed JavaScript syntax error (line 1912)
+- Fixed DOM loading race condition
+- Fixed filter tabs not working
+- Fixed missing download buttons for stopped jobs
+
+---
+
+## Current Status (2026-06-07)
+
+### Production Status
+- ✅ Backend: Healthy and running on port 8765
+- ✅ Frontend: Loading correctly at listbuilding.eagleinfoservice.com
+- ✅ Caching: Operational with 3 cached entries
+- ✅ Authentication: Working with JWT and API keys
+- ✅ Downloads: Enhanced format with center counts
+
+### Known Limitations
+- Resume requires new jobs to build checkpoints
+- Cached downloads don't show exact center count
+- Subset queries pending full implementation
+
+### Performance
+- Cache lookup: < 50ms
+- API calls saved per cached query: ~88,620
+- Expected cache hit rate: 30-40% after 60 days

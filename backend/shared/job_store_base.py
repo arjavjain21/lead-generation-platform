@@ -393,3 +393,50 @@ class JobStoreBase:
         )
         self.conn.commit()
         return cursor.rowcount
+
+    def write_task_checkpoint(
+        self,
+        job_id: str,
+        center_name: str,
+        center_state: str,
+        zoom: int,
+        result_count: int = 0
+    ) -> None:
+        """Record a completed task checkpoint for scraper jobs."""
+        now = _now()
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO task_checkpoints
+            (job_id, center_name, center_state, zoom, completed_at, result_count)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (job_id, center_name, center_state, zoom, now, result_count)
+        )
+
+        # Update checkpoint_count on job
+        self.conn.execute(
+            "UPDATE jobs SET checkpoint_count = (SELECT COUNT(*) FROM task_checkpoints WHERE job_id = ?) WHERE job_id = ?",
+            (job_id, job_id)
+        )
+        self.conn.commit()
+
+    def get_task_checkpoints(self, job_id: str) -> list[dict[str, Any]]:
+        """Get all task checkpoints for a job."""
+        rows = self.conn.execute(
+            """
+            SELECT center_name, center_state, zoom, completed_at, result_count
+            FROM task_checkpoints
+            WHERE job_id = ?
+            ORDER BY completed_at
+            """,
+            (job_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def can_resume_job(self, job_id: str) -> bool:
+        """Check if a job has checkpoints and can be resumed."""
+        count = self.conn.execute(
+            "SELECT COUNT(*) as n FROM task_checkpoints WHERE job_id = ?",
+            (job_id,)
+        ).fetchone()
+        return count["n"] > 0 if count else False

@@ -17,7 +17,9 @@ import json
 import logging
 import os
 import re
+import shutil
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -59,6 +61,10 @@ class StartJobRequest(BaseModel):
     zips: list[str] = []       # US zip codes, UK postcodes, or Canada postal codes (for mode="zips")
     center_ids: list[str] = []  # For non-US: selected center names
     expected_types: list[str] = []
+
+
+class ResumeJobRequest(BaseModel):
+    include_previous: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -465,6 +471,160 @@ async def estimate_tasks(req: StartJobRequest, current_user: dict = Depends(auth
     }
 
 
+@router.post("/cache/check")
+async def check_scraper_cache(
+    req: StartJobRequest,
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """
+    Check if cached results exist for the given search parameters.
+    Returns cache metadata if available, null otherwise.
+    """
+    # Import cache module
+    from . import cache as cache_module
+
+    # Reconstruct regions dict for cache check
+    regions_payload = {
+        "mode": req.mode,
+        "country": req.country,
+        "states": req.states,
+        "cities": req.cities,
+        "zips": req.zips,
+        "center_ids": req.center_ids,
+    }
+
+    # Check cache (using default zooms)
+    cached = cache_module.check_cache(
+        query=req.query,
+        regions=regions_payload,
+        zooms=[10, 11, 12],  # Default zooms
+        expected_types=req.expected_types
+    )
+
+    if not cached:
+        return {"cached": False}
+
+    # Calculate days old and remaining
+    created = datetime.fromisoformat(cached["created_at"].replace('+00:00', '')).replace(tzinfo=timezone.utc)
+    expires = datetime.fromisoformat(cached["expires_at"].replace('+00:00', '')).replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+
+    days_old = (now - created).days
+    days_remaining = (expires - now).days
+
+    return {
+        "cached": True,
+        "cache_id": cached["cache_id"],
+        "query": cached["query"],
+        "total_results": cached["total_results"],
+        "is_partial": bool(cached["is_partial"]),
+        "percentage_complete": cached.get("percentage_complete", 100.0),
+        "created_at": cached["created_at"],
+        "days_old": days_old,
+        "days_remaining": days_remaining,
+        "expires_at": cached["expires_at"],
+        "access_count": cached.get("access_count", 1)
+    }
+
+
+@router.get("/cache/download/{cache_id}")
+async def download_cached_result(
+    cache_id: str,
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """Download a cached result file."""
+    from . import cache as cache_module
+
+    file_path = cache_module.get_cache_file_path(cache_id)
+    if not file_path or not file_path.exists():
+        raise HTTPException(status_code=404, detail="Cached file not found")
+
+    # Get cache metadata for filename
+    conn = db.get_db()
+    cache_entry = conn.execute("""
+        SELECT query, total_results, is_partial, percentage_complete
+        FROM scraped_cache WHERE cache_id = ?
+    """, (cache_id,)).fetchone()
+
+    if not cache_entry:
+        raise HTTPException(status_code=404, detail="Cache entry not found")
+
+    # Build filename with result count and cache status
+    query = cache_entry["query"][:30].replace(" ", "_").replace("/", "_")
+    count = cache_entry["total_results"]
+    status = "PARTIAL" if cache_entry["is_partial"] else "CACHED"
+
+    filename = f"{query}_cached_{count}_results_{status}.csv"
+
+    return FileResponse(path=str(file_path), media_type="text/csv", filename=filename)
+
+
+@router.post("/cache/subset-count")
+async def get_subset_count(
+    req: StartJobRequest,
+    current_user: dict = Depends(auth.get_current_user),
+):
+    """
+    Get count of cached results for a subset query.
+    Filters by geographic centers without downloading.
+    """
+    from . import cache as cache_module
+
+    # Check for exact cache match first
+    regions_payload = {
+        "mode": req.mode,
+        "country": req.country,
+        "states": req.states,
+        "cities": req.cities,
+        "zips": req.zips,
+        "center_ids": req.center_ids,
+    }
+
+    cached = cache_module.check_cache(req.query, regions_payload, [10, 11, 12], req.expected_types)
+
+    if not cached:
+        return {"cached": False, "count": 0}
+
+    # Get centers for the query
+    filtered_centers, _ = centers_module.get_centers_for_job(
+        mode=req.mode,
+        country=req.country,
+        states=req.states,
+        cities=req.cities,
+        zips=req.zips,
+        center_ids=req.center_ids,
+    )
+
+    # Build center_id set for filtering
+    center_ids = set()
+    for center in filtered_centers:
+        for zoom in [10, 11, 12]:
+            center_id = f"{center['name']}_{center['state']}_{zoom}".replace(' ', '_').lower()
+            center_ids.add(center_id)
+
+    # Query subset count
+    conn = db.get_db()
+    center_ids_list = list(center_ids)
+
+    if center_ids_list:
+        placeholders = ','.join(['?' for _ in center_ids_list])
+        subset_count = conn.execute(f"""
+            SELECT COALESCE(SUM(result_count), 0) as total
+            FROM cache_center_counts
+            WHERE cache_id = ? AND center_id IN ({placeholders})
+        """, [cached["cache_id"]] + center_ids_list).fetchone()
+    else:
+        subset_count = {"total": 0}
+
+    return {
+        "cached": True,
+        "cache_id": cached["cache_id"],
+        "total_results": cached["total_results"],
+        "subset_count": subset_count["total"],
+        "is_subset": subset_count["total"] < cached["total_results"]
+    }
+
+
 # ---------------------------------------------------------------------------
 # Job routes
 # ---------------------------------------------------------------------------
@@ -649,7 +809,7 @@ async def stream_scraper_job(
 
 
 @router.get("/jobs/{job_id}/download")
-async def download_scraper_result(job_id: str, current_user: dict = Depends(auth.get_current_user)):
+async def download_scraper_result(job_id: str, current_user: dict = Depends(auth.get_current_user_with_api_key)):
     """Download the full CSV output of a completed scraper job."""
     store = job_store.get_store()
     job_data = store.get_job(job_id)
@@ -659,40 +819,40 @@ async def download_scraper_result(job_id: str, current_user: dict = Depends(auth
         raise HTTPException(status_code=404, detail="Scraper job not found.")
     if not _owns_job(job_data, current_user):
         raise HTTPException(status_code=403, detail="Access denied.")
-    if job_data["status"] in ("queued", "running"):
+
+    # Allow download for done, failed, abandoned, cancelled, stopped statuses
+    downloadable_statuses = ("done", "failed", "abandoned", "cancelled", "stopped")
+    if job_data["status"] not in downloadable_statuses:
         raise HTTPException(status_code=202, detail="Job not finished yet.")
 
-    # Check if job failed but has partial output available
-    if job_data["status"] == "failed":
-        output_path = job_data.get("output_path")
-        error_msg = job_data.get("error", "")
+    # Check if job has output available
+    output_path = job_data.get("output_path")
+    error_msg = job_data.get("error", "")
 
-        # If output_path is not in database, try the standard location
-        if not output_path:
-            output_path = OUTPUT_DIR / f"{job_id}.csv"
+    # If output_path is not in database, try the standard location
+    if not output_path:
+        output_path = OUTPUT_DIR / f"{job_id}.csv"
 
-        # If failed but partial output exists and file is not empty
-        if Path(output_path).exists() and Path(output_path).stat().st_size > 0:
-            # Allow download with a warning
-            logger.info("Downloading partial results for failed scraper job %s: %s", job_id, error_msg)
-            # Continue to download below (don't raise exception)
-        else:
-            # No partial output available
-            raise HTTPException(status_code=500, detail=f"Job failed: {error_msg}")
-    else:
-        # For non-failed jobs, get output_path from database
-        output_path = job_data.get("output_path")
-        if not output_path or not Path(output_path).exists():
-            raise HTTPException(status_code=404, detail="Output file not found.")
+    # Check if file exists and has content
+    output_path = Path(output_path)
+    if not output_path.exists() or output_path.stat().st_size == 0:
+        raise HTTPException(status_code=404, detail="Output file not found or empty.")
 
-    query_slug = job_data.get("query", "results")[:30].replace(" ", "-").replace("/", "-")
-    filename = f"{query_slug}_{job_id[:8]}.csv"
+    # Build descriptive filename with centers, results, and status
+    query_slug = job_data.get("query", "results")[:30].replace(" ", "_").replace("/", "_")
 
-    return FileResponse(path=output_path, media_type="text/csv", filename=filename)
+    # Get metrics for filename
+    total_tasks = job_data.get("total_tasks", 0)  # Number of centers × zooms
+    result_count = job_data.get("result_count", 0)
+    status = job_data.get("status", "done")
+
+    filename = f"{query_slug}_{total_tasks}_centers_{result_count}_results_{status}.csv"
+
+    return FileResponse(path=str(output_path), media_type="text/csv", filename=filename)
 
 
 @router.get("/jobs/{job_id}/partial-download")
-async def partial_download_scraper(job_id: str, current_user: dict = Depends(auth.get_current_user)):
+async def partial_download_scraper(job_id: str, current_user: dict = Depends(auth.get_current_user_with_api_key)):
     """
     Download partial CSV results from a running scraper job.
     Returns whatever data has been written so far.
@@ -710,10 +870,13 @@ async def partial_download_scraper(job_id: str, current_user: dict = Depends(aut
     if not output_path.exists():
         raise HTTPException(status_code=404, detail="No data available yet.")
 
-    query_slug = job_data.get("query", "partial")[:30].replace(" ", "-").replace("/", "-")
-    filename = f"partial_{query_slug}_{job_id[:8]}.csv"
+    # Build descriptive filename with centers, results, and INCOMPLETE status
+    query_slug = job_data.get("query", "partial")[:30].replace(" ", "_").replace("/", "_")
+    total_tasks = job_data.get("total_tasks", 0)
+    result_count = job_data.get("result_count", 0)
+    filename = f"{query_slug}_{total_tasks}_centers_{result_count}_results_INCOMPLETE.csv"
 
-    return FileResponse(path=output_path, media_type="text/csv", filename=filename)
+    return FileResponse(path=str(output_path), media_type="text/csv", filename=filename)
 
 
 @router.post("/jobs/{job_id}/sync-to-contacts")
@@ -780,6 +943,144 @@ async def cancel_scraper_job(
 
     logger.info("Scraper job %s cancelled by user %s", job_id, current_user.get("user_id"))
     return {"ok": True, "message": "Job cancelled successfully"}
+
+
+@router.get("/jobs/{job_id}/resume-info")
+async def get_resume_info(
+    job_id: str,
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """Get resume eligibility and statistics for a job."""
+    store = job_store.get_store()
+    job = store.get_job(job_id)
+
+    if not job or job.get("job_type") != "scraper":
+        raise HTTPException(status_code=404, detail="Job not found")
+    if not _owns_job(job, current_user):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Get checkpoint statistics
+    checkpoints = store.get_task_checkpoints(job_id)
+    checkpoint_count = len(checkpoints)
+
+    # Calculate completion percentage
+    total_tasks = job.get("total_tasks", 0)
+    completion_pct = (checkpoint_count / total_tasks * 100) if total_tasks else 0
+
+    return {
+        "can_resume": checkpoint_count > 0,
+        "checkpoint_count": checkpoint_count,
+        "total_tasks": total_tasks,
+        "completion_pct": round(completion_pct, 1),
+        "result_count": job.get("result_count", 0),
+        "original_query": job.get("query"),
+        "original_regions": json.loads(job.get("regions", "{}")),
+        "is_resumable": job.get("is_resumable", 1) == 1
+    }
+
+
+class ResumeJobRequest(BaseModel):
+    include_previous: bool = True
+
+
+@router.post("/jobs/{job_id}/resume")
+async def resume_scraper_job(
+    job_id: str,
+    req: ResumeJobRequest,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """Resume a stopped job from its last checkpoint."""
+    store = job_store.get_store()
+    original_job = store.get_job(job_id)
+
+    if not original_job or original_job.get("job_type") != "scraper":
+        raise HTTPException(status_code=404, detail="Scraper job not found")
+    if not _owns_job(original_job, current_user):
+        raise HTTPException(status_code=403, detail="Access denied")
+    if original_job["status"] not in ("cancelled", "abandoned", "failed"):
+        raise HTTPException(status_code=400, detail="Only cancelled, abandoned, or failed jobs can be resumed")
+
+    if original_job.get("is_resumable", 1) != 1:
+        raise HTTPException(status_code=400, detail="Job is not marked as resumable")
+
+    # Get original regions
+    try:
+        original_regions = json.loads(original_job["regions"])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse regions: {str(e)}")
+
+    # Get filtered centers
+    filtered_centers, errors = centers_module.get_centers_for_job(**original_regions)
+
+    if errors and not filtered_centers:
+        raise HTTPException(status_code=400, detail="; ".join(errors))
+
+    # Create all tasks (center × zoom combinations)
+    all_tasks = [(center, zoom) for center in filtered_centers for zoom in [10, 11, 12]]
+
+    # Get completed tasks from checkpoints
+    checkpoints = store.get_task_checkpoints(job_id)
+    completed = {(cp["center_name"], cp["center_state"], cp["zoom"]) for cp in checkpoints}
+
+    # Filter to pending tasks only
+    pending_tasks = [(center, zoom) for center, zoom in all_tasks
+                    if (center["name"], center["state"], zoom) not in completed]
+
+    if not pending_tasks:
+        raise HTTPException(status_code=400, detail="All tasks already completed")
+
+    # Create new job for resume
+    new_job_id = str(uuid.uuid4())
+    output_path = OUTPUT_DIR / f"{new_job_id}.csv"
+
+    # Create job record
+    store.create_scraper_job(
+        job_id=new_job_id,
+        user_id=current_user["user_id"],
+        query=original_job["query"],
+        regions=original_regions,
+        total_tasks=len(pending_tasks),
+        parent_job_id=job_id
+    )
+
+    _job_signals[new_job_id] = asyncio.Event()
+    _active_jobs.add(new_job_id)
+
+    # Optionally copy original results
+    if req.include_previous and original_job.get("output_path"):
+        original_path = Path(original_job["output_path"])
+        if original_path.exists():
+            import shutil
+            shutil.copy(original_path, output_path)
+
+    # Get API key
+    api_key = os.getenv("SCRAPER_TECH_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="SCRAPER_TECH_KEY not configured")
+
+    # Start background job with pending tasks only
+    background_tasks.add_task(
+        _run_job_with_tasks,
+        job_id=new_job_id,
+        user_id=current_user["user_id"],
+        is_admin=current_user.get("is_admin", False),
+        query=original_job["query"],
+        tasks=pending_tasks,
+        api_key=api_key,
+        output_path=output_path,
+        expected_types=None,
+        cancelled_jobs=_cancelled_jobs
+    )
+
+    logger.info("Job %s resumed from %s, %d pending tasks", new_job_id[:8], job_id[:8], len(pending_tasks))
+
+    return {
+        "job_id": new_job_id,
+        "resumed_from": job_id,
+        "pending_tasks": len(pending_tasks),
+        "skipped_tasks": len(all_tasks) - len(pending_tasks)
+    }
 
 
 @router.post("/jobs/{job_id}/restart")
@@ -917,6 +1218,20 @@ async def _run_job(
         # This fixes the progress counter bug where background tasks couldn't commit
         progress_store = job_store.get_store()
         progress_store.append_event(job_id, seq[0], event)
+
+        # Write task checkpoint when task completes
+        if event.get("task_done"):
+            try:
+                progress_store.write_task_checkpoint(
+                    job_id=job_id,
+                    center_name=event.get("center_name"),
+                    center_state=event.get("center_state"),
+                    zoom=event.get("zoom"),
+                    result_count=event.get("new_results", 0)
+                )
+            except Exception as e:
+                logger.warning(f"Failed to write checkpoint for {job_id[:8]}: {e}")
+
         seq[0] += 1
         sig = _job_signals.get(job_id)
         if sig:
@@ -950,16 +1265,82 @@ async def _run_job(
         store.set_done(job_id, str(output_path))
         logger.info("Scraper job %s done — %d unique results, %d API requests", job_id[:8], result_count, requests_made[0])
 
+        # Store results in cache for future use
+        try:
+            from . import cache as cache_module
+            # Reconstruct regions dict for cache
+            regions_dict = {
+                "mode": "all",  # Will need to be passed in or stored in job
+                "country": "us",
+                "states": [],
+                "cities": [],
+                "zips": [],
+                "center_ids": [],
+            }
+
+            # For now, store with basic regions - will need enhancement
+            cache_module.store_cache(
+                job_id=job_id,
+                user_id=user_id,
+                query=query,
+                regions=regions_dict,
+                zooms=[10, 11, 12],
+                expected_types=expected_types,
+                result_file_path=output_path,
+                total_results=result_count,
+                is_partial=False
+            )
+            logger.info(f"Job {job_id[:8]} results cached ({result_count} results)")
+        except Exception as e:
+            logger.warning(f"Failed to cache job {job_id[:8]}: {e}")
+
     except RuntimeError as e:
         # Handle job cancellation
         if "was cancelled" in str(e):
             logger.info("Scraper job %s was cancelled by user", job_id[:8])
             # Job already marked as failed by cancel endpoint
-            # Just ensure cleanup happens in finally block
+            # Cache partial results if available
             if output_path.exists():
                 partial_size = output_path.stat().st_size
                 if partial_size > 0:
                     logger.info("Cancelled job %s has partial output available: %d bytes", job_id[:8], partial_size)
+                    try:
+                        from . import cache as cache_module
+                        from shared import job_store_base
+                        job_store = job_store.get_store()
+                        job = job_store.get_job(job_id)
+                        total_tasks = job.get("total_tasks", 0) if job else 0
+                        done_tasks = job.get("done_tasks", 0) if job else 0
+
+                        # Calculate percentage complete
+                        percentage = (done_tasks / total_tasks * 100) if total_tasks > 0 else 0
+
+                        # Reconstruct regions dict
+                        regions_dict = {
+                            "mode": "all",
+                            "country": "us",
+                            "states": [],
+                            "cities": [],
+                            "zips": [],
+                            "center_ids": [],
+                        }
+
+                        # Store partial results in cache
+                        cache_module.store_cache(
+                            job_id=job_id,
+                            user_id=user_id,
+                            query=query,
+                            regions=regions_dict,
+                            zooms=[10, 11, 12],
+                            expected_types=expected_types,
+                            result_file_path=output_path,
+                            total_results=result_count if result_count else 0,
+                            is_partial=True,
+                            percentage_complete=percentage
+                        )
+                        logger.info(f"Cancelled job {job_id[:8]} partial results cached ({percentage:.1f}% complete)")
+                    except Exception as cache_e:
+                        logger.warning(f"Failed to cache partial results for {job_id[:8]}: {cache_e}")
         else:
             # Other RuntimeErrors should be handled as normal failures
             logger.exception("Scraper job %s failed with RuntimeError: %s", job_id[:8], e)
@@ -978,6 +1359,95 @@ async def _run_job(
 async def _wait_event(event: asyncio.Event) -> None:
     await event.wait()
     event.clear()
+
+
+async def _run_job_with_tasks(
+    job_id: str,
+    user_id: str,
+    is_admin: bool,
+    query: str,
+    tasks: list,
+    api_key: str,
+    output_path: Path,
+    expected_types: list | None = None,
+    cancelled_jobs: set | None = None,
+) -> None:
+    """Run job with pre-filtered task list (for resume)."""
+    store = job_store.get_store()
+    store.set_running(job_id)
+    seq = [0]
+    requests_made = [0]
+
+    async def on_progress(event: dict) -> None:
+        progress_store = job_store.get_store()
+        progress_store.append_event(job_id, seq[0], event)
+
+        if event.get("task_done"):
+            center_name = event.get("center_name")
+            center_state = event.get("center_state")
+            zoom = event.get("zoom")
+            result_count = event.get("new_results", 0)
+
+            progress_store.write_task_checkpoint(
+                job_id, center_name, center_state, zoom, result_count
+            )
+
+        seq[0] += 1
+        sig = _job_signals.get(job_id)
+        if sig:
+            sig.set()
+            sig.clear()
+
+        # Track API requests
+        if event.get("task_done") and not is_admin:
+            requests_made[0] += 1
+            if requests_made[0] % 10 == 0:
+                db.record_api_requests(user_id, 10)
+
+    try:
+        # Process only pending tasks
+        result_count = 0
+        for i, (center, zoom) in enumerate(tasks):
+            if cancelled_jobs and job_id in cancelled_jobs:
+                raise RuntimeError(f"Job {job_id} was cancelled")
+
+            # Call crawler for this specific task
+            task_result = await crawler_module.run_crawl(
+                job_id=job_id,
+                query=query,
+                centers=[center],  # Single center for this task
+                api_key=api_key,
+                output_path=output_path,
+                on_progress=on_progress,
+                expected_types=expected_types,
+                cancelled_jobs=cancelled_jobs,
+                zooms=[zoom]  # Single zoom level for this task
+            )
+            result_count += task_result
+
+        # Record remaining requests
+        if not is_admin and requests_made[0] % 10 != 0:
+            db.record_api_requests(user_id, requests_made[0] % 10)
+
+        store.set_done(job_id, str(output_path))
+        logger.info("Resumed job %s done — %d results", job_id[:8], result_count)
+
+    except RuntimeError as e:
+        if "was cancelled" in str(e):
+            logger.info("Resumed job %s was cancelled", job_id[:8])
+        else:
+            logger.exception("Resumed job %s failed: %s", job_id[:8], e)
+            store.set_failed(job_id, f"Job failed: {str(e)}")
+
+    except Exception as e:
+        logger.exception("Resumed job %s failed: %s", job_id[:8], e)
+        store.set_failed(job_id, str(e))
+
+    finally:
+        _active_jobs.discard(job_id)
+        sig = _job_signals.pop(job_id, None)
+        if sig:
+            sig.set()
 
 
 def cleanup_stale_jobs() -> None:
