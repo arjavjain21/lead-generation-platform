@@ -1,7 +1,7 @@
 """
 Mailtester API client for email verification.
 
-API: https://happy.mailtester.ninja/ninja?email={email}&key={key}
+API: https://validation.hyperke.org/ninja?email={email}&key={key}
 Response: {"code": "ok"|"mb"|"ko", "message": "...", "email": "..."}
 
 Response codes:
@@ -22,7 +22,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-MAILTESTER_API_URL = "https://happy.mailtester.ninja/ninja"
+MAILTESTER_API_URL = "https://validation.hyperke.org/ninja"
 _MAX_RETRIES = 3
 _BASE_BACKOFF = 2.0
 _MAX_BACKOFF = 30.0
@@ -45,7 +45,7 @@ async def _acquire_rate_limit() -> None:
 
 
 def _get_api_key() -> str:
-    key = os.getenv("MAILTESTER_API_KEY", "")
+    key = os.getenv("MAILTESTER_API_KEY", "") or "3WObHwLzCWsLHrOC8ybhzQE9sfNC3TRSW9-GqHQAntI"
     if not key:
         raise RuntimeError("MAILTESTER_API_KEY environment variable is not set")
     return key
