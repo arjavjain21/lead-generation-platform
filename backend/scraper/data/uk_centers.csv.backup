@@ -1,0 +1,45 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+London,England,51.5074,-0.1278,metro,1,major_uk_cities,anchor_city,London,gb
+London - East,England,51.5074,0.1322,metro_offset,1,derived,offset_ring,London,gb
+London - North,England,51.6874,-0.1278,metro_offset,1,derived,offset_ring,London,gb
+London - Northeast,England,51.5974,0.0022,metro_offset,1,derived,offset_ring,London,gb
+London - Northwest,England,51.5974,-0.2578,metro_offset,1,derived,offset_ring,London,gb
+London - South,England,51.3274,-0.1278,metro_offset,1,derived,offset_ring,London,gb
+London - Southeast,England,51.4174,0.0022,metro_offset,1,derived,offset_ring,London,gb
+London - West,England,51.5074,-0.3878,metro_offset,1,derived,offset_ring,London,gb
+Manchester,England,53.4808,-2.2426,metro,2,major_uk_cities,anchor_city,Manchester,gb
+Manchester - East,England,53.4808,-1.9826,metro_offset,2,derived,offset_ring,Manchester,gb
+Manchester - North,England,53.6608,-2.2426,metro_offset,2,derived,offset_ring,Manchester,gb
+Manchester - South,England,53.3008,-2.2426,metro_offset,2,derived,offset_ring,Manchester,gb
+Manchester - West,England,53.4808,-2.5026,metro_offset,2,derived,offset_ring,Manchester,gb
+Birmingham,England,52.4862,-1.8904,metro,3,major_uk_cities,anchor_city,Birmingham,gb
+Birmingham - East,England,52.4862,-1.6304,metro_offset,3,derived,offset_ring,Birmingham,gb
+Birmingham - North,England,52.6662,-1.8904,metro_offset,3,derived,offset_ring,Birmingham,gb
+Birmingham - South,England,52.3062,-1.8904,metro_offset,3,derived,offset_ring,Birmingham,gb
+Birmingham - West,England,52.4862,-2.1504,metro_offset,3,derived,offset_ring,Birmingham,gb
+Leeds,England,53.8008,-1.5491,metro,4,major_uk_cities,anchor_city,Leeds,gb
+Liverpool,England,53.4084,-2.9916,metro,5,major_uk_cities,anchor_city,Liverpool,gb
+Sheffield,England,53.3811,-1.4701,metro,6,major_uk_cities,anchor_city,Sheffield,gb
+Bristol,England,51.4545,-2.5879,metro,7,major_uk_cities,anchor_city,Bristol,gb
+Newcastle,England,54.9783,-1.6178,metro,8,major_uk_cities,anchor_city,Newcastle upon Tyne,gb
+Nottingham,England,52.9548,-1.1581,metro,9,major_uk_cities,anchor_city,Nottingham,gb
+Southampton,England,50.9097,-1.4044,metro,10,major_uk_cities,anchor_city,Southampton,gb
+Glasgow,Scotland,55.8642,-4.2518,metro,11,major_uk_cities,anchor_city,Glasgow,gb
+Glasgow - East,Scotland,55.8642,-3.9918,metro_offset,11,derived,offset_ring,Glasgow,gb
+Glasgow - North,Scotland,56.0442,-4.2518,metro_offset,11,derived,offset_ring,Glasgow,gb
+Glasgow - South,Scotland,55.6842,-4.2518,metro_offset,11,derived,offset_ring,Glasgow,gb
+Glasgow - West,Scotland,55.8642,-4.5118,metro_offset,11,derived,offset_ring,Glasgow,gb
+Edinburgh,Scotland,55.9533,-3.1883,metro,12,major_uk_cities,anchor_city,Edinburgh,gb
+Cardiff,Wales,51.4816,-3.1791,metro,13,major_uk_cities,anchor_city,Cardiff,gb
+Belfast,Northern Ireland,54.5973,-5.9301,metro,14,major_uk_cities,anchor_city,Belfast,gb
+Leicester,England,52.6369,-1.1398,metro,15,major_uk_cities,anchor_city,Leicester,gb
+Portsmouth,England,50.8198,-1.0880,metro,16,major_uk_cities,anchor_city,Portsmouth,gb
+Bradford,England,53.7960,-1.7594,metro,17,major_uk_cities,anchor_city,Bradford,gb
+Reading,England,51.4543,-0.9781,metro,18,major_uk_cities,anchor_city,Reading,gb
+Plymouth,England,50.3755,-4.1427,metro,19,major_uk_cities,anchor_city,Plymouth,gb
+Aberdeen,Scotland,57.1497,-2.0943,metro,20,major_uk_cities,anchor_city,Aberdeen,gb
+Dundee,Scotland,56.4620,-2.9707,metro,21,major_uk_cities,anchor_city,Dundee,gb
+Swansea,Wales,51.6214,-3.9436,metro,22,major_uk_cities,anchor_city,Swansea,gb
+Derby,England,52.9225,-1.4746,metro,23,major_uk_cities,anchor_city,Derby,gb
+Southend,England,51.5459,0.7077,metro,24,major_uk_cities,anchor_city,Southend-on-Sea,gb
+Coventry,England,52.4068,-1.5197,metro,25,major_uk_cities,anchor_city,Coventry,gb

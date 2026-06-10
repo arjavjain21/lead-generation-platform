@@ -1,0 +1,45 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Sydney,New South Wales,-33.8688,151.2093,metro,1,major_au_cities,anchor_city,Sydney,au
+Sydney - East,New South Wales,-33.8688,151.4693,metro_offset,1,derived,offset_ring,Sydney,au
+Sydney - North,New South Wales,-33.6888,151.2093,metro_offset,1,derived,offset_ring,Sydney,au
+Sydney - South,New South Wales,-34.0488,151.2093,metro_offset,1,derived,offset_ring,Sydney,au
+Sydney - West,New South Wales,-33.8688,150.9493,metro_offset,1,derived,offset_ring,Sydney,au
+Melbourne,Victoria,-37.8136,144.9631,metro,2,major_au_cities,anchor_city,Melbourne,au
+Melbourne - East,Victoria,-37.8136,145.2231,metro_offset,2,derived,offset_ring,Melbourne,au
+Melbourne - North,Victoria,-37.6336,144.9631,metro_offset,2,derived,offset_ring,Melbourne,au
+Melbourne - South,Victoria,-37.9936,144.9631,metro_offset,2,derived,offset_ring,Melbourne,au
+Melbourne - West,Victoria,-37.8136,144.7031,metro_offset,2,derived,offset_ring,Melbourne,au
+Brisbane,Queensland,-27.4698,153.0251,metro,3,major_au_cities,anchor_city,Brisbane,au
+Brisbane - East,Queensland,-27.4698,153.2851,metro_offset,3,derived,offset_ring,Brisbane,au
+Brisbane - North,Queensland,-27.2898,153.0251,metro_offset,3,derived,offset_ring,Brisbane,au
+Brisbane - South,Queensland,-27.6498,153.0251,metro_offset,3,derived,offset_ring,Brisbane,au
+Brisbane - West,Queensland,-27.4698,152.7651,metro_offset,3,derived,offset_ring,Brisbane,au
+Perth,Western Australia,-31.9505,115.8605,metro,4,major_au_cities,anchor_city,Perth,au
+Perth - East,Western Australia,-31.9505,116.1205,metro_offset,4,derived,offset_ring,Perth,au
+Perth - North,Western Australia,-31.7705,115.8605,metro_offset,4,derived,offset_ring,Perth,au
+Perth - South,Western Australia,-32.1305,115.8605,metro_offset,4,derived,offset_ring,Perth,au
+Perth - West,Western Australia,-31.9505,115.6005,metro_offset,4,derived,offset_ring,Perth,au
+Adelaide,South Australia,-34.9285,138.6007,metro,5,major_au_cities,anchor_city,Adelaide,au
+Adelaide - East,South Australia,-34.9285,138.8607,metro_offset,5,derived,offset_ring,Adelaide,au
+Adelaide - North,South Australia,-34.7485,138.6007,metro_offset,5,derived,offset_ring,Adelaide,au
+Adelaide - South,South Australia,-35.1085,138.6007,metro_offset,5,derived,offset_ring,Adelaide,au
+Adelaide - West,South Australia,-34.9285,138.3407,metro_offset,5,derived,offset_ring,Adelaide,au
+Gold Coast,Queensland,-28.0167,153.4000,metro,6,major_au_cities,anchor_city,Gold Coast,au
+Canberra,Australian Capital Territory,-35.2809,149.1300,metro,7,major_au_cities,anchor_city,Canberra,au
+Newcastle,New South Wales,-32.9283,151.7817,metro,8,major_au_cities,anchor_city,Newcastle,au
+Wollongong,New South Wales,-34.4278,150.8931,metro,9,major_au_cities,anchor_city,Wollongong,au
+Hobart,Tasmania,-42.8821,147.3272,metro,10,major_au_cities,anchor_city,Hobart,au
+Geelong,Victoria,-38.1499,144.3617,metro,11,major_au_cities,anchor_city,Geelong,au
+Townsville,Queensland,-19.2590,146.8169,metro,12,major_au_cities,anchor_city,Townsville,au
+Cairns,Queensland,-16.9186,145.7781,metro,13,major_au_cities,anchor_city,Cairns,au
+Darwin,Northern Territory,-12.4634,130.8456,metro,14,major_au_cities,anchor_city,Darwin,au
+Toowoomba,Queensland,-27.5598,151.9507,metro,15,major_au_cities,anchor_city,Toowoomba,au
+Ballarat,Victoria,-37.5622,143.8503,metro,16,major_au_cities,anchor_city,Ballarat,au
+Bendigo,Victoria,-36.7570,144.2792,metro,17,major_au_cities,anchor_city,Bendigo,au
+Launceston,Tasmania,-41.4419,147.1450,metro,18,major_au_cities,anchor_city,Launceston,au
+Mackay,Queensland,-21.1551,149.1868,metro,19,major_au_cities,anchor_city,Mackay,au
+Rockhampton,Queensland,-23.3781,150.5136,metro,20,major_au_cities,anchor_city,Rockhampton,au
+Bunbury,Western Australia,-33.3271,115.6414,metro,21,major_au_cities,anchor_city,Bunbury,au
+Coffs Harbour,New South Wales,-30.2986,153.1094,metro,22,major_au_cities,anchor_city,Coffs Harbour,au
+Albury,New South Wales,-36.0748,146.9240,metro,23,major_au_cities,anchor_city,Albury,au
+Wagga Wagga,New South Wales,-35.1167,147.3667,metro,24,major_au_cities,anchor_city,Wagga Wagga,au
