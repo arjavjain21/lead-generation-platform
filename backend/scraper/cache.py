@@ -156,15 +156,15 @@ def store_cache(
             zoom_signature, expected_types_signature,
             total_results, result_file_path,
             created_at, updated_at, expires_at, last_accessed_at,
-            is_partial, percentage_complete, checksum, status,
+            access_count, is_partial, percentage_complete, checksum, status,
             job_id, user_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         cache_id, query, region_sig, json.dumps(regions),
         zoom_sig, types_sig,
         total_results, str(result_file_path),
         created_at, created_at, expires_at, created_at,
-        1 if is_partial else 0, percentage_complete, checksum, 'active',
+        1, 1 if is_partial else 0, percentage_complete, checksum, 'active',
         job_id, user_id
     ))
     conn.commit()

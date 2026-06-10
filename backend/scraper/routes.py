@@ -667,6 +667,9 @@ async def start_job(
         center_ids=req.center_ids,
     )
 
+    # DEBUG: Log center count and task calculation
+    logger.info("Job creation debug: mode=%s, country=%s, centers=%d", req.mode, req.country, len(filtered_centers))
+
     if errors and not filtered_centers:
         raise HTTPException(status_code=400, detail="; ".join(errors))
 
@@ -674,6 +677,7 @@ async def start_job(
         raise HTTPException(status_code=400, detail="No geographic centers found for the selected region.")
 
     total_tasks = centers_module.estimate_task_count(filtered_centers)
+    logger.info("Job creation debug: total_tasks=%d (expected 88638 for US comprehensive)", total_tasks)
 
     # Check daily API request limit for non-admin users
     is_admin = current_user.get("is_admin", False)
@@ -720,6 +724,7 @@ async def start_job(
         api_key=api_key,
         output_path=output_path,
         expected_types=req.expected_types or [],
+        cancelled_jobs=_cancelled_jobs,
     )
 
     return {
@@ -927,8 +932,8 @@ async def cancel_scraper_job(
     if job["status"] not in ("queued", "running"):
         raise HTTPException(status_code=400, detail="Only queued or running jobs can be cancelled.")
 
-    # Mark job as failed with cancellation message
-    store.set_failed(job_id, "Job cancelled by user")
+    # Mark job as cancelled (not failed) - this is critical for is_job_cancelled() check to work
+    store.set_cancelled(job_id)
 
     # Add to cancelled set so background task knows to stop
     _cancelled_jobs.add(job_id)
@@ -998,8 +1003,8 @@ async def resume_scraper_job(
         raise HTTPException(status_code=404, detail="Scraper job not found")
     if not _owns_job(original_job, current_user):
         raise HTTPException(status_code=403, detail="Access denied")
-    if original_job["status"] not in ("cancelled", "abandoned", "failed"):
-        raise HTTPException(status_code=400, detail="Only cancelled, abandoned, or failed jobs can be resumed")
+    if original_job["status"] not in ("cancelled", "abandoned", "failed", "stopped"):
+        raise HTTPException(status_code=400, detail="Only cancelled, abandoned, failed, or stopped jobs can be resumed")
 
     if original_job.get("is_resumable", 1) != 1:
         raise HTTPException(status_code=400, detail="Job is not marked as resumable")
@@ -1019,9 +1024,29 @@ async def resume_scraper_job(
     # Create all tasks (center × zoom combinations)
     all_tasks = [(center, zoom) for center in filtered_centers for zoom in [10, 11, 12]]
 
-    # Get completed tasks from checkpoints
-    checkpoints = store.get_task_checkpoints(job_id)
-    completed = {(cp["center_name"], cp["center_state"], cp["zoom"]) for cp in checkpoints}
+    # Get completed tasks from checkpoints - aggregate from entire job chain
+    # Walk up the parent chain to find the root job and get all checkpoints
+    all_checkpoints = []
+    current_job_id = job_id
+    visited_jobs = set()
+
+    while current_job_id:
+        if current_job_id in visited_jobs:
+            break  # Prevent infinite loops
+        visited_jobs.add(current_job_id)
+
+        # Get checkpoints from this job
+        job_checkpoints = store.get_task_checkpoints(current_job_id)
+        all_checkpoints.extend(job_checkpoints)
+
+        # Move to parent job
+        current_job_data = store.get_job(current_job_id)
+        if not current_job_data:
+            break
+        current_job_id = current_job_data.get("parent_job_id")
+
+    completed = {(cp["center_name"], cp["center_state"], cp["zoom"]) for cp in all_checkpoints}
+    logger.info("Resume: Found %d total checkpoints across job chain", len(completed))
 
     # Filter to pending tasks only
     pending_tasks = [(center, zoom) for center, zoom in all_tasks
@@ -1034,13 +1059,27 @@ async def resume_scraper_job(
     new_job_id = str(uuid.uuid4())
     output_path = OUTPUT_DIR / f"{new_job_id}.csv"
 
-    # Create job record
+    # Calculate correct total_tasks: should be original full count, not pending count
+    # Find root job to get original total_tasks
+    root_job_id = job_id
+    root_job = original_job
+    while root_job.get("parent_job_id"):
+        root_job_id = root_job.get("parent_job_id")
+        root_job = store.get_job(root_job_id)
+        if not root_job:
+            break
+    original_total_tasks = root_job.get("total_tasks", len(all_tasks))
+
+    logger.info("Resume: Original job had %d total tasks, %d checkpoints, %d pending",
+                original_total_tasks, len(completed), len(pending_tasks))
+
+    # Create job record with CORRECT total_tasks (original full count, not pending)
     store.create_scraper_job(
         job_id=new_job_id,
         user_id=current_user["user_id"],
         query=original_job["query"],
         regions=original_regions,
-        total_tasks=len(pending_tasks),
+        total_tasks=original_total_tasks,
         parent_job_id=job_id
     )
 
@@ -1048,11 +1087,64 @@ async def resume_scraper_job(
     _active_jobs.add(new_job_id)
 
     # Optionally copy original results
-    if req.include_previous and original_job.get("output_path"):
-        original_path = Path(original_job["output_path"])
-        if original_path.exists():
+    # Calculate original path dynamically if not in database
+    original_path = None
+    previous_result_count = 0
+    previous_done_tasks = 0
+    if req.include_previous:
+        stored_path = original_job.get("output_path")
+        if stored_path:
+            original_path = Path(stored_path)
+        else:
+            # Fallback: calculate from job_id
+            original_path = OUTPUT_DIR / f"{job_id}.csv"
+
+        if original_path and original_path.exists():
             import shutil
             shutil.copy(original_path, output_path)
+            file_size = original_path.stat().st_size
+            logger.info(f"Copied {file_size:,} bytes from {original_path} to {output_path}")
+
+            # Count rows in copied file to update result_count
+            import csv
+            try:
+                with open(original_path, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    previous_result_count = sum(1 for row in reader)
+                logger.info(f"Resume: Set initial result_count to {previous_result_count:,} from previous results")
+            except Exception as e:
+                logger.warning(f"Failed to count previous results: {e}")
+
+            # Get the original job's done_tasks count from the job chain
+            try:
+                # Walk up to the root job to get the original done_tasks
+                root_job = original_job
+                while root_job.get("parent_job_id"):
+                    parent = store.get_job(root_job.get("parent_job_id"))
+                    if not parent:
+                        break
+                    root_job = parent
+                previous_done_tasks = root_job.get("done_tasks", 0)
+                logger.info(f"Resume: Root job had {previous_done_tasks:,} done tasks")
+            except Exception as e:
+                logger.warning(f"Failed to get original done_tasks: {e}")
+
+            # Update the new job with cumulative counters (previous + new will be added)
+            # Set result_count to the previous count (new results will be added on top)
+            # Set done_tasks to the previous count (new done tasks will be added on top)
+            try:
+                store.conn.execute(
+                    "UPDATE jobs SET result_count = ?, done_tasks = ? WHERE job_id = ?",
+                    (previous_result_count, previous_done_tasks, new_job_id)
+                )
+                store.conn.commit()
+                logger.info(
+                    f"Resume: Set initial counters - done_tasks={previous_done_tasks:,}, result_count={previous_result_count:,}"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to update initial counters: {e}")
+        else:
+            logger.warning(f"Original results not found for resume: {original_path}")
 
     # Get API key
     api_key = os.getenv("SCRAPER_TECH_KEY")
@@ -1099,8 +1191,8 @@ async def restart_scraper_job(
         raise HTTPException(status_code=404, detail="Scraper job not found.")
     if not _owns_job(job, current_user):
         raise HTTPException(status_code=403, detail="Access denied.")
-    if job["status"] != "failed":
-        raise HTTPException(status_code=400, detail="Only failed jobs can be restarted.")
+    if job["status"] not in ("failed", "abandoned", "cancelled", "stopped"):
+        raise HTTPException(status_code=400, detail="Only failed, abandoned, cancelled, or stopped jobs can be restarted.")
 
     # Get the original job configuration
     query = job.get("query")
@@ -1247,6 +1339,10 @@ async def _run_job(
                 db.record_api_requests(user_id, 10)
 
     try:
+        # Create database-based cancellation checker for cross-worker compatibility
+        def check_cancelled_db(jid: str) -> bool:
+            return store.is_job_cancelled(jid)
+
         result_count = await crawler_module.run_crawl(
             job_id=job_id,
             query=query,
@@ -1255,7 +1351,8 @@ async def _run_job(
             output_path=output_path,
             on_progress=on_progress,
             expected_types=expected_types or [],
-            cancelled_jobs=cancelled_jobs,  # Pass cancel tracking set
+            cancelled_jobs=cancelled_jobs,  # Pass for backward compatibility
+            check_cancelled=check_cancelled_db,  # Database check (cross-worker)
         )
 
         # Record any remaining requests (non-multiple of 10)
@@ -1268,9 +1365,17 @@ async def _run_job(
         # Store results in cache for future use
         try:
             from . import cache as cache_module
-            # Reconstruct regions dict for cache
-            regions_dict = {
-                "mode": "all",  # Will need to be passed in or stored in job
+            # Get actual regions from job for proper cache key
+            job_data = store.get_job(job_id)
+            regions_dict = job_data.get("regions", {
+                "mode": "all",
+                "country": "us",
+                "states": [],
+                "cities": [],
+                "zips": [],
+                "center_ids": [],
+            }) if job_data else {
+                "mode": "all",
                 "country": "us",
                 "states": [],
                 "cities": [],
@@ -1278,7 +1383,6 @@ async def _run_job(
                 "center_ids": [],
             }
 
-            # For now, store with basic regions - will need enhancement
             cache_module.store_cache(
                 job_id=job_id,
                 user_id=user_id,
@@ -1298,7 +1402,7 @@ async def _run_job(
         # Handle job cancellation
         if "was cancelled" in str(e):
             logger.info("Scraper job %s was cancelled by user", job_id[:8])
-            # Job already marked as failed by cancel endpoint
+            # Job already marked as 'cancelled' by cancel endpoint
             # Cache partial results if available
             if output_path.exists():
                 partial_size = output_path.stat().st_size
@@ -1307,16 +1411,23 @@ async def _run_job(
                     try:
                         from . import cache as cache_module
                         from shared import job_store_base
-                        job_store = job_store.get_store()
-                        job = job_store.get_job(job_id)
+                        cache_job_store = job_store.get_store()
+                        job = cache_job_store.get_job(job_id)
                         total_tasks = job.get("total_tasks", 0) if job else 0
                         done_tasks = job.get("done_tasks", 0) if job else 0
 
                         # Calculate percentage complete
                         percentage = (done_tasks / total_tasks * 100) if total_tasks > 0 else 0
 
-                        # Reconstruct regions dict
-                        regions_dict = {
+                        # Get actual regions from job for proper cache key
+                        regions_dict = job.get("regions", {
+                            "mode": "all",
+                            "country": "us",
+                            "states": [],
+                            "cities": [],
+                            "zips": [],
+                            "center_ids": [],
+                        }) if job else {
                             "mode": "all",
                             "country": "us",
                             "states": [],
@@ -1405,30 +1516,42 @@ async def _run_job_with_tasks(
                 db.record_api_requests(user_id, 10)
 
     try:
-        # Process only pending tasks
-        result_count = 0
-        for i, (center, zoom) in enumerate(tasks):
-            if cancelled_jobs and job_id in cancelled_jobs:
-                raise RuntimeError(f"Job {job_id} was cancelled")
+        # Initialize result_count from existing job data (for resume scenarios)
+        job_data = store.get_job(job_id)
+        result_count = job_data.get("result_count", 0) if job_data else 0
 
-            # Call crawler for this specific task
-            task_result = await crawler_module.run_crawl(
-                job_id=job_id,
-                query=query,
-                centers=[center],  # Single center for this task
-                api_key=api_key,
-                output_path=output_path,
-                on_progress=on_progress,
-                expected_types=expected_types,
-                cancelled_jobs=cancelled_jobs,
-                zooms=[zoom]  # Single zoom level for this task
-            )
-            result_count += task_result
+        # CRITICAL: Call run_crawl ONCE with all unique pending centers.
+        # The crawler handles parallel execution internally with proper concurrency.
+        # Calling run_crawl once per (center, zoom) pair would re-open the CSV,
+        # re-load all dedupe keys, and process a single task each time.
+        # Instead, dedupe centers here and let the crawler manage zooms.
+        unique_centers = []
+        seen_center_keys = set()
+        for center, _ in tasks:
+            key = (center.get("name", ""), center.get("state", ""))
+            if key not in seen_center_keys:
+                seen_center_keys.add(key)
+                unique_centers.append(center)
+
+        result_count = await crawler_module.run_crawl(
+            job_id=job_id,
+            query=query,
+            centers=unique_centers,
+            api_key=api_key,
+            output_path=output_path,
+            on_progress=on_progress,
+            expected_types=expected_types,
+            cancelled_jobs=cancelled_jobs,
+            zooms=[10, 11, 12],
+            check_cancelled=store.is_job_cancelled,
+        )
 
         # Record remaining requests
         if not is_admin and requests_made[0] % 10 != 0:
             db.record_api_requests(user_id, requests_made[0] % 10)
 
+        # Persist final result_count before marking done
+        store.update_result_count(job_id, result_count)
         store.set_done(job_id, str(output_path))
         logger.info("Resumed job %s done — %d results", job_id[:8], result_count)
 

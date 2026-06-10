@@ -70,3 +70,13 @@ frontend/assets/*.css
 
 # Archive (not tracked - contains old backups and dated files)
 archive/
+
+# Databases - don't commit these
+*.db
+*.db-shm
+*.db-wal
+
+# Cache and temporary files
+__pycache__/
+*.pyc
+.env

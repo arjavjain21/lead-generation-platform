@@ -111,6 +111,14 @@ class JobStoreBase:
         )
         self.conn.commit()
 
+    def update_result_count(self, job_id: str, count: int) -> None:
+        """Update result count for a job."""
+        self.conn.execute(
+            "UPDATE jobs SET result_count=?, updated_at=? WHERE job_id=?",
+            (count, _now(), job_id),
+        )
+        self.conn.commit()
+
     def set_failed(self, job_id: str, error: str) -> None:
         self.conn.execute(
             "UPDATE jobs SET status='failed', error=?, updated_at=? WHERE job_id=?",
@@ -203,8 +211,16 @@ class JobStoreBase:
         user_id: Optional[str] = None,
         job_type: Optional[str] = None,
         limit: int = 100,
+        include_hidden: bool = False,
     ) -> list[dict[str, Any]]:
-        """List jobs with optional filtering by user and job type."""
+        """List jobs with optional filtering by user and job type.
+
+        Args:
+            user_id: Filter by user ID
+            job_type: Filter by job type ('scraper' or 'enrichment')
+            limit: Maximum number of jobs to return
+            include_hidden: If False, excludes jobs marked with hidden_from_ui=1
+        """
         conditions = []
         params = []
 
@@ -215,6 +231,10 @@ class JobStoreBase:
         if job_type is not None:
             conditions.append("job_type = ?")
             params.append(job_type)
+
+        # Always exclude hidden jobs unless explicitly requested
+        if not include_hidden:
+            conditions.append("(hidden_from_ui IS NULL OR hidden_from_ui = 0)")
 
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         params.append(limit)
@@ -284,6 +304,15 @@ class JobStoreBase:
             (_now(), _now(), job_id),
         )
         self.conn.commit()
+
+    def is_job_cancelled(self, job_id: str) -> bool:
+        """Check if a job has been cancelled (database check for cross-worker compatibility)."""
+        row = self.conn.execute(
+            "SELECT status FROM jobs WHERE job_id=?", (job_id,)
+        ).fetchone()
+        if row:
+            return row["status"] == "cancelled"
+        return False
 
     def is_job_cancelled_or_abandoned(self, job_id: str) -> bool:
         """Check if a job has been cancelled or abandoned (for background task polling)."""

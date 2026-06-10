@@ -32,6 +32,8 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+logger = logging.getLogger(__name__)
+
 API_URL = "https://api.scraper.tech/searchmaps.php"
 DEFAULT_ZOOMS = [10, 11, 12]
 MAX_RETRIES = 3
@@ -207,6 +209,8 @@ async def _fetch_one(
     center: dict[str, Any],
     zoom: int,
     semaphore: asyncio.Semaphore,
+    cancelled_jobs: Optional[set[str]] = None,
+    job_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Call the API once with retry/backoff. Returns raw item list."""
     params = {
@@ -222,6 +226,11 @@ async def _fetch_one(
 
     last_error: Exception | None = None
     for attempt in range(MAX_RETRIES + 1):
+        # Check for cancellation before each retry
+        if cancelled_jobs and job_id and job_id in cancelled_jobs:
+            logger.info("[job %s] Job cancelled before HTTP request", job_id[:8])
+            raise RuntimeError(f"Job {job_id} was cancelled")
+
         try:
             async with semaphore:
                 resp = await client.get(API_URL, params=params, timeout=REQUEST_TIMEOUT)
@@ -295,11 +304,16 @@ async def run_crawl(
     zooms: list[int] | None = None,
     expected_types: list[str] | None = None,
     cancelled_jobs: Optional[set[str]] = None,
+    check_cancelled: Optional[callable] = None,
 ) -> int:
     """
     Run the full crawl for a job. Writes results to output_path (CSV).
     Calls on_progress for each completed task.
     Returns total unique results written.
+
+    Args:
+        check_cancelled: Optional async function that returns True if job is cancelled.
+                      This is preferred over cancelled_jobs for cross-worker compatibility.
     """
     if zooms is None:
         zooms = DEFAULT_ZOOMS
@@ -318,21 +332,85 @@ async def run_crawl(
 
     headers = {"Scraper-key": api_key}
 
+    # Define cancellation checker function
+    async def is_cancelled() -> bool:
+        """Check if job has been cancelled (supports both set and callback)."""
+        if check_cancelled:
+            # Use database callback (cross-worker compatible)
+            result = check_cancelled(job_id)
+            # If callback is async, await it
+            if asyncio.iscoroutine(result):
+                return await result
+            return result
+        elif cancelled_jobs:
+            return job_id in cancelled_jobs
+        return False
+
     async with httpx.AsyncClient(headers=headers) as client:
-        with open(output_path, "w", newline="", encoding="utf-8") as csv_file:
+        # Check if file already exists (for resume scenarios with include_previous=true)
+        file_exists = output_path.exists() and output_path.stat().st_size > 0
+
+        with open(output_path, "a" if file_exists else "w", newline="", encoding="utf-8") as csv_file:
             writer = csv.DictWriter(csv_file, fieldnames=OUTPUT_COLS, extrasaction="ignore")
-            writer.writeheader()
+
+            # Only write header if this is a new file
+            if not file_exists:
+                writer.writeheader()
+
             write_lock = asyncio.Lock()
+
+            # Load existing dedupe keys if appending to existing file
+            if file_exists:
+                try:
+                    with open(output_path, "r", newline="", encoding="utf-8") as existing_file:
+                        reader = csv.DictReader(existing_file)
+                        for row in reader:
+                            key = row.get("dedupe_key") or row.get("place_id") or ""
+                            if key:
+                                seen_keys[key] = True
+                    logger.info("[job %s] Loaded %d existing dedupe keys from resume file", job_id[:8], len(seen_keys))
+                except Exception as e:
+                    logger.warning("[job %s] Failed to load existing keys: %s", job_id[:8], e)
 
             async def process_task(center: dict[str, Any], zoom: int, task_seq: int) -> int:
                 # Check if job was cancelled
-                if cancelled_jobs and job_id in cancelled_jobs:
+                if await is_cancelled():
                     logger.info("[job %s] Job cancelled, stopping at task %d/%d", job_id[:8], task_seq + 1, len(tasks))
                     raise RuntimeError(f"Job {job_id} was cancelled")
 
                 new_results = 0
                 try:
-                    items = await _fetch_one(client, query, center, zoom, semaphore)
+                    items = await _fetch_one(client, query, center, zoom, semaphore, cancelled_jobs, job_id)
+
+                    # Check for cancellation after HTTP request
+                    if await is_cancelled():
+                        logger.info("[job %s] Job cancelled after HTTP request, processing partial results", job_id[:8])
+                        # Process what we got and then stop
+                        if items:
+                            rows_to_write: list[dict[str, Any]] = []
+                            for item in items:
+                                flat = flatten_item(item, center, zoom, query, radius_km)
+                                if flat is None:
+                                    continue
+                                if expected_types and not matches_expected_types(item, expected_types):
+                                    continue
+                                key = flat["dedupe_key"]
+                                if key not in seen_keys:
+                                    seen_keys[key] = True
+                                    rows_to_write.append(flat)
+
+                            if rows_to_write:
+                                async with write_lock:
+                                    writer.writerows(rows_to_write)
+                                    csv_file.flush()
+
+                            new_results = len(rows_to_write)
+                            logger.info(
+                                "[job %s] task %d/%d (CANCELLED): %s zoom=%d → %d results before cancellation",
+                                job_id[:8], task_seq + 1, len(tasks), center["name"], zoom, new_results,
+                            )
+                        raise RuntimeError(f"Job {job_id} was cancelled")
+
                     rows_to_write: list[dict[str, Any]] = []
 
                     for item in items:

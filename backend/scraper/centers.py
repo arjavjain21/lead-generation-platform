@@ -334,7 +334,9 @@ def get_centers_for_job(
             return centers, zip_errors
 
     if mode == "all":
-        return us_centers, []
+        # Use comprehensive centers from zip database for US "all" mode
+        # This gives 29,546 cities instead of just 842 anchor cities
+        return get_comprehensive_us_centers(), []
 
     if mode == "states":
         if not states:
@@ -1115,6 +1117,52 @@ def get_zips_for_cities(cities: list[str]) -> tuple[dict[str, list[str]], list[s
             errors.append(f"City '{city_input}' not found in database")
 
     return city_zips_map, errors
+
+
+def get_comprehensive_us_centers() -> list[dict[str, Any]]:
+    """
+    Get comprehensive US centers from the zip code database.
+
+    Returns:
+        List of center dicts (one per unique city) with all fields needed for scraping.
+        This provides ~29,540 city centers instead of just 842 anchor cities.
+    """
+    import csv
+
+    zip_file = DATA_DIR / "us_zips.csv"
+    centers_dict: dict[str, dict[str, Any]] = {}
+
+    with open(zip_file, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            city = row['city'].strip()
+            state = row['state'].strip()
+            city_key = f"{city}, {state}"
+
+            # Only add each city once (use first zip's coordinates)
+            if city_key not in centers_dict:
+                centers_dict[city_key] = {
+                    "name": city,
+                    "state": state,
+                    "lat": float(row['lat']),
+                    "lng": float(row['lng']),
+                    "country": "us",
+                    "tier": "regional",
+                    "rank": "0",
+                    "population_basis": "us_zips_2026",
+                    "center_type": "city_dynamic",
+                    "anchor_city": city,
+                    "zip_count": 0
+                }
+            centers_dict[city_key]["zip_count"] = centers_dict[city_key]["zip_count"] + 1
+
+    # Convert to list
+    centers_list = list(centers_dict.values())
+
+    # Sort by zip_count (most zips first = largest cities) then by name
+    centers_list.sort(key=lambda x: (-x["zip_count"], x["name"]))
+
+    return centers_list
 
 
 def get_all_us_cities() -> list[dict[str, Any]]:
