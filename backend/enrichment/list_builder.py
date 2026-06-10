@@ -24,6 +24,7 @@ import httpx
 from . import blitz_client
 from . import contacts_client
 from . import better_enrich_client
+from . import wizleads_client
 from . import providers
 from . import mailtester_client
 
@@ -54,7 +55,7 @@ def _detect_linkedin_url_type(url: str) -> str:
 
 
 # Valid provider values for force_provider parameter
-VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "better_enrich"})
+VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "wizleads", "better_enrich"})
 
 
 def _should_skip_provider(
@@ -128,6 +129,7 @@ SOURCE_CONTACTS_DB_DOMAIN = "contacts_db_domain"
 SOURCE_BLITZ_LINKEDIN = "blitz_linkedin"
 SOURCE_BLITZ_NAME = "blitz_name"
 SOURCE_BLITZ_DOMAIN = "blitz_domain"
+SOURCE_WIZLEADS = "wizleads_email"
 SOURCE_BETTER_ENRICH = "better_enrich"
 SOURCE_BLITZ_COMPANY = "blitz_company"
 SOURCE_NOT_FOUND = "not_found"
@@ -380,7 +382,21 @@ async def _resolve_person_email(
         except Exception as e:
             logger.debug("Blitz email lookup failed: %s", e)
 
-    # Strategy 5: Better Enrich by name + domain (TERTIARY - PAID)
+    # Strategy 5: WizLeads by name + domain (catchall verified, 10 RPS)
+    # Inserted between Blitz and BetterEnrich per user-confirmed cascade order.
+    if search_name and domain and not _should_skip_provider("wizleads", force_provider, selected_providers):
+        first_name = search_name.split(" ")[0] if search_name else ""
+        last_name = " ".join(search_name.split(" ")[1:]) if " " in search_name else ""
+        try:
+            result = await wizleads_client.find_email(blitz_http, first_name=first_name, last_name=last_name, website=domain)
+            if result and result.get("email"):
+                email = result["email"]
+                logger.debug("WizLeads found email for %s: %s (catchall: %s)", search_name, email, result.get("catchall"))
+                return email, "", SOURCE_WIZLEADS, "yes", "", ""
+        except Exception as e:
+            logger.debug("WizLeads lookup failed: %s", e)
+
+    # Strategy 6: Better Enrich by name + domain (TERTIARY - PAID)
     # Only try if name is available and Better Enrich is selected
     if search_name and domain and not _should_skip_provider("better_enrich", force_provider, selected_providers):
         try:

@@ -32,12 +32,13 @@ from . import better_enrich_client
 from . import prospeo_client
 from . import providers
 from . import mailtester_client
+from . import wizleads_client
 
 logger = logging.getLogger(__name__)
 
 
 # Valid provider values for force_provider parameter
-VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "better_enrich"})
+VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "wizleads", "better_enrich"})
 
 
 def _should_skip_provider(provider: str, force_provider: Optional[str]) -> bool:
@@ -84,6 +85,8 @@ def _normalize_source(source: str) -> str:
         return "blitz"
     elif source.startswith("better_enrich"):
         return "better_enrich"
+    elif source.startswith("wizleads"):
+        return "wizleads"
     elif source.startswith("prospeo"):
         return "prospeo"  # Historical: old rows may have prospeo as dm_email_source
     return source
@@ -122,6 +125,7 @@ SOURCE_BLITZ_CONTACTS = "blitz_contacts"                  # Decision makers from
 SOURCE_BLITZ_EMAIL = "blitz_email"                        # Email from Blitz
 SOURCE_BETTER_ENRICH_COMPANY = "better_enrich_company"    # Generic company email from BetterEnrich
 SOURCE_BETTER_ENRICH_PERSON = "better_enrich_person"      # Person email from BetterEnrich
+SOURCE_WIZLEADS = "wizleads_email"                        # Person email from WizLeads
 
 ENRICHED_COLUMNS = [
     "company_linkedin_url",
@@ -402,7 +406,28 @@ async def _resolve_email_for_person(
             except Exception as e:
                 logger.warning("Blitz email lookup failed for %s: %s", linkedin_url, e)
 
-        # Step 5: BetterEnrich person email (V3 with built-in verification)
+        # Step 5: WizLeads person email (catchall verified, 10 RPS)
+        # Inserted between Blitz and BetterEnrich per user-confirmed cascade order.
+        if full_name and domain and not _should_skip_provider("wizleads", force_provider):
+            first_name = person.get("first_name", "") or (full_name.split(" ")[0] if full_name else "")
+            last_name = person.get("last_name", "") or (" ".join(full_name.split(" ")[1:]) if " " in full_name else "")
+            try:
+                result = await wizleads_client.find_email(
+                    blitz_client_inst,
+                    first_name=first_name,
+                    last_name=last_name,
+                    website=domain,
+                )
+                if result and result.get("email"):
+                    email = result["email"]
+                    verification_info["dm_email_verified"] = "yes"  # catchall verified by WizLeads
+                    logger.info("WizLeads found email for %s: %s (catchall: %s)",
+                                full_name, email, result.get("catchall"))
+                    return email, SOURCE_WIZLEADS, verification_info
+            except Exception as e:
+                logger.warning("WizLeads lookup failed for %s / %s: %s", full_name, domain, e)
+
+        # Step 6: BetterEnrich person email (V3 with built-in verification)
         if full_name and domain and not _should_skip_provider("better_enrich", force_provider):
             try:
                 result = await better_enrich_client.find_work_email_v3(
@@ -421,7 +446,7 @@ async def _resolve_email_for_person(
             except Exception as e:
                 logger.warning("BetterEnrich V3 person lookup failed for %s / %s: %s", full_name, domain, e)
 
-        # Step 6: Contacts DB by input row name + domain (if different from person name)
+        # Step 7: Contacts DB by input row name + domain (if different from person name)
         # This handles edge cases where the input name differs from the person's current name
         if input_full_name and input_full_name != full_name and domain and not _should_skip_provider("contacts_db", force_provider):
             try:

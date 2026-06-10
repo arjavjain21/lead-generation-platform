@@ -1,0 +1,996 @@
+{
+  "openapi": "3.2.0",
+  "info": {
+    "title": "WizLeads API Reference",
+    "description": "# Introduction\n\n## Authentication\n\nUse `x-api-key` header to pass the API key.\n\nAPI key can be generated inside the [WizLeads Dashboard](https://app.wizleads.io/api).\n\n## Rate Limits\n\nRate limit for the API is 10 calls per second across all endpoints.\nAny calls above this limit will return a 429 error.\nExcessive calls may lead to a 1 hour ban on both the user and the IP.\n<br><br>\nIf using API inside Clay, set Request Limit to 10 and Duration (in ms) to 1000.\n\n## Credit Consumption\n\n- Task Management\n  - Profile/Company Search Result Scraping - 1 credit per result\n  - Account-Less Mode - 2 credits per result\n- Email Enrichment\n  - Find Email - 3 credits per email found\n  - Verify Email - 0.5 credits per email\n- Company Enrichment\n  - Get LinkedIn ID of Company - 2 credits per company\n",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "https://api.wizleads.io"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Task Management",
+      "description": "\nThis section provides endpoints to create, view, list and abort scraping tasks."
+    },
+    {
+      "name": "Email Enrichment",
+      "description": "\nThis section provides endpoints to find and verify email addresses."
+    },
+    {
+      "name": "Company Enrichment",
+      "description": "\nThis section provides endpoints to enrich company data from LinkedIn and other sources."
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "default": {
+        "type": "apiKey",
+        "name": "x-api-key",
+        "in": "header",
+        "description": "You can generate an API key from the dashboard."
+      }
+    },
+    "schemas": {
+      "Task": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Task ID.",
+            "example": "699de5816eb85b96d61fc44f"
+          },
+          "name": {
+            "type": "string",
+            "description": "Task name.",
+            "example": "UK Companies"
+          },
+          "creator": {
+            "type": "string",
+            "description": "Username (email) of task creator.",
+            "example": "pranav@wizleads.io"
+          },
+          "created": {
+            "type": "string",
+            "description": "Timestamp of task creation.",
+            "example": "2026-02-24 06:55:49.999889"
+          },
+          "type": {
+            "type": "string",
+            "description": "Type of scraping task.",
+            "enum": [
+              "salesnav-profile",
+              "salesnav-company",
+              "find-email",
+              "verify-email"
+            ],
+            "example": "salesnav-profile"
+          },
+          "inputs": {
+            "type": "object",
+            "description": "Input parameters for the task. All parameters are not given for all task types. Task List contains less information than Task Detail.",
+            "properties": {
+              "accounts": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                },
+                "description": "List of account IDs to use. Set to null for automatic selection. Only available when useAccountless is false.",
+                "example": null
+              },
+              "links": {
+                "type": "array",
+                "description": "List of Sales Navigator search URLs to scrape.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "integer",
+                      "description": "Numeric ID assigned to each link, unique to this task.",
+                      "example": 1
+                    },
+                    "link": {
+                      "type": "string",
+                      "description": "A Sales Navigator search URL.",
+                      "examples": [
+                        "https://www.linkedin.com/sales/search/people?query=...",
+                        "https://www.linkedin.com/sales/search/company?query=..."
+                      ]
+                    },
+                    "end_page": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "default": null
+                    },
+                    "count": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "description": "Number of results present on this link.",
+                      "example": 2960
+                    },
+                    "count_scrapeable": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "description": "Number of results that can be scraped.",
+                      "example": 2500
+                    },
+                    "split_complete": {
+                      "type": "boolean",
+                      "description": "Has splitting of link (if enabled) completed.",
+                      "example": true
+                    },
+                    "splits": {
+                      "type": "array",
+                      "description": "Invocation IDs given to all sub-links for this link. Progress is tracked by invocation ID. There is only one invocation per link if splitting is disabled or count is below threshold.",
+                      "items": {
+                        "type": "string",
+                        "example": "0-0-c4e51d0e-461e-4c1d-bb60-9e0c2459b2c6"
+                      }
+                    }
+                  }
+                }
+              },
+              "useAccountless": {
+                "type": "boolean",
+                "description": "Whether to use Account-Less scraping mode.",
+                "example": true
+              },
+              "enrichEmails": {
+                "type": "boolean",
+                "description": "Whether to enrich emails. Only available for task type \"salesnav-profile\".",
+                "example": true
+              },
+              "splitSearches": {
+                "type": "boolean",
+                "description": "Whether to split links larger than threshold into smaller sub-links.",
+                "example": false
+              },
+              "column_mapping": {
+                "type": "string",
+                "description": "JSON string for mapping required fields to your CSV column names.",
+                "examples": [
+                  "{\"email\":\"email_column\"}",
+                  "{\"firstName\":\"fullName_column\",\"company_website\":\"website_column\"}",
+                  "{\"firstName\":\"firstName_column\",\"lastName\":\"lastName_column\",\"company_website\":\"website_column\"}"
+                ]
+              }
+            }
+          },
+          "account": {
+            "type": "string",
+            "description": "Account type used for this task.",
+            "example": "salesnav"
+          },
+          "credit_base": {
+            "type": "number",
+            "description": "Credits charged per scraped result. Does not include credits charged for enrichment."
+          },
+          "errmsg": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              null,
+              "TIMED_OUT",
+              "NO_ACCOUNT",
+              "NO_CREDITS",
+              "SYSTEM_ERROR",
+              "MAX_RETRIES_EXCEEDED"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "description": "Current task status.",
+            "examples": [
+              "Queued",
+              "In Progress",
+              "Aborting",
+              "Aborted",
+              "Done",
+              "Failed"
+            ]
+          },
+          "link": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Download link for CSV results. Final results are available only when task is in a terminal state - Done, Aborted, or Failed.",
+            "example": "https://wizleads1.s3.us-east-2.amazonaws.com/final/6..."
+          },
+          "link_size": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Total number of unique results present in CSV.",
+            "example": 279
+          },
+          "dones": {
+            "type": "object",
+            "description": "Number of results already scraped for each invocation ID."
+          },
+          "ongoing": {
+            "type": "object",
+            "description": "Number of results being scraped for each invocation ID."
+          },
+          "totals": {
+            "type": "object",
+            "description": "Number of total results for each invocation ID."
+          },
+          "enrich_final": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Total number of enriched results present in CSV.",
+            "example": 279
+          },
+          "enrich_size": {
+            "type": "object",
+            "description": "Number of emails found for each invocation ID."
+          },
+          "enrich_msg": {
+            "type": "object",
+            "description": "Enrichment status for each invocation ID - STARTED, SUCCESS, RESTARTING, SYSTEM_ERROR, INSUFFICIENT_CREDITS, TASK_ABORTED."
+          },
+          "enriched": {
+            "type": "object",
+            "description": "Number of rows processed for each invocation ID."
+          }
+        }
+      }
+    }
+  },
+  "security": [
+    {
+      "default": []
+    }
+  ],
+  "paths": {
+    "/tasks/add": {
+      "post": {
+        "summary": "Create Task",
+        "description": "Create a new scraping task.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "Task added successfully."
+                    },
+                    "task_id": {
+                      "type": "string",
+                      "example": "699de5816eb85b96d61fc44f"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "detail": {
+                      "type": "string",
+                      "example": "Invalid task type."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Task Management"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "A name for the task.",
+                    "example": "test"
+                  },
+                  "type": {
+                    "type": "string",
+                    "description": "Type of scraping task.",
+                    "enum": [
+                      "salesnav-company",
+                      "salesnav-profile"
+                    ],
+                    "example": "salesnav-company"
+                  },
+                  "inputs": {
+                    "type": "object",
+                    "required": [
+                      "accounts",
+                      "links",
+                      "useAccountless",
+                      "enrichEmails"
+                    ],
+                    "description": "Input parameters for the task.",
+                    "properties": {
+                      "accounts": {
+                        "type": [
+                          "array",
+                          "null"
+                        ],
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "List of account IDs to use. Set to null for automatic selection. Only available when useAccountless is false.",
+                        "example": null
+                      },
+                      "links": {
+                        "type": "array",
+                        "description": "List of Sales Navigator search URLs to scrape.",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "link": {
+                              "type": "string",
+                              "description": "A Sales Navigator search URL.",
+                              "examples": [
+                                "https://www.linkedin.com/sales/search/people?query=...",
+                                "https://www.linkedin.com/sales/search/company?query=..."
+                              ]
+                            },
+                            "end_page": {
+                              "type": [
+                                "number",
+                                "null"
+                              ],
+                              "default": null
+                            }
+                          },
+                          "required": [
+                            "link"
+                          ]
+                        }
+                      },
+                      "useAccountless": {
+                        "type": "boolean",
+                        "description": "Whether to use Account-Less scraping mode.",
+                        "example": true
+                      },
+                      "enrichEmails": {
+                        "type": "boolean",
+                        "description": "Whether to enrich emails. Only available for task type \"salesnav-profile\".",
+                        "example": true
+                      }
+                    }
+                  },
+                  "account": {
+                    "type": "string",
+                    "description": "Account type to use for this task.",
+                    "enum": [
+                      "salesnav"
+                    ],
+                    "example": "salesnav"
+                  }
+                },
+                "required": [
+                  "name",
+                  "type",
+                  "inputs",
+                  "account"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tasks/abort": {
+      "post": {
+        "summary": "Abort Task",
+        "description": "Only tasks with status \"Queued\" or \"In Progress\" can be aborted. Status immediately changes to \"Aborting\" and then \"Aborted\" after few seconds. Results scraped till time of abort are available to download.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string",
+                      "example": "Task 699de5816eb85b96d61fc44f aborted successfully."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "detail": {
+                      "type": "string",
+                      "example": "Task ID is required."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "task_id": {
+                    "type": "string",
+                    "description": "Task ID to abort.",
+                    "example": "699de5816eb85b96d61fc44f"
+                  }
+                },
+                "required": [
+                  "task_id"
+                ]
+              }
+            }
+          }
+        },
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/list": {
+      "get": {
+        "summary": "Task List",
+        "description": "View all your tasks with status and live progress.",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "example": 1
+            },
+            "description": "Page number."
+          },
+          {
+            "name": "count",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "example": 25
+            },
+            "description": "Number of items per page. Maximum allowed value is 25."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tasks": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Task"
+                      }
+                    },
+                    "total": {
+                      "type": "integer",
+                      "description": "Total number of tasks.",
+                      "example": 410
+                    },
+                    "count": {
+                      "type": "integer",
+                      "description": "Returned number of tasks.",
+                      "example": 25
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/tasks/{task_id}": {
+      "get": {
+        "summary": "Task Detail",
+        "description": "Check status and live progress of a running task, and download the results in CSV format.",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "699de5816eb85b96d61fc44f"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "detail": {
+                      "type": "string",
+                      "example": "Task not found."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Task Management"
+        ]
+      }
+    },
+    "/email/find-email": {
+      "get": {
+        "summary": "Find Email",
+        "description": "Find a professional email address given a person's name and company website. All emails are valid and catch-all verified.",
+        "parameters": [
+          {
+            "name": "first_name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "examples": [
+                "John",
+                "John Doe"
+              ]
+            },
+            "description": "First name or full name."
+          },
+          {
+            "name": "last_name",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "example": "Doe"
+            },
+            "description": "Last name."
+          },
+          {
+            "name": "website",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "examples": [
+                "example.com",
+                "https://example.com/"
+              ]
+            },
+            "description": "Company website."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "normalized_fname": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "title": "Normalized First Name",
+                      "example": "John"
+                    },
+                    "normalized_lname": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "title": "Normalized Last Name",
+                      "example": "Doe"
+                    },
+                    "email": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "title": "Email",
+                      "example": "john@example.com"
+                    },
+                    "provider": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "title": "Provider",
+                      "examples": [
+                        "Google",
+                        "Microsoft",
+                        "SEG_Mimecast"
+                      ]
+                    },
+                    "catchall": {
+                      "type": "string",
+                      "title": "Catchall",
+                      "examples": [
+                        "YES",
+                        "NO",
+                        "UNKNOWN"
+                      ]
+                    },
+                    "error": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "title": "Error",
+                      "examples": [
+                        "Missing required parameters",
+                        "Invalid domain"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Insufficient Credits Error"
+          },
+          "422": {
+            "description": "Validation Error"
+          }
+        },
+        "tags": [
+          "Email Enrichment"
+        ]
+      }
+    },
+    "/email/verify-email": {
+      "get": {
+        "summary": "Verify Email",
+        "description": "Verify whether an email address is valid and deliverable. Also performs catch-all validation.",
+        "parameters": [
+          {
+            "name": "email",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "john@example.com"
+            },
+            "description": "Email address to verify."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "email": {
+                      "type": "string",
+                      "title": "Email",
+                      "example": "john@example.com"
+                    },
+                    "status": {
+                      "type": "string",
+                      "title": "Status",
+                      "examples": [
+                        "valid",
+                        "invalid",
+                        "unknown",
+                        "error"
+                      ]
+                    },
+                    "provider": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "title": "Provider",
+                      "examples": [
+                        "Google",
+                        "Microsoft",
+                        "SEG_Mimecast"
+                      ]
+                    },
+                    "catchall": {
+                      "type": "string",
+                      "title": "Catchall",
+                      "examples": [
+                        "YES",
+                        "NO",
+                        "UNKNOWN"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Insufficient Credits Error"
+          },
+          "422": {
+            "description": "Validation Error"
+          }
+        },
+        "tags": [
+          "Email Enrichment"
+        ]
+      }
+    },
+    "/email/find-email-batch": {
+      "post": {
+        "summary": "Find Email (Batch)",
+        "description": "Find professional emails in bulk by uploading a CSV file. All emails are valid and catch-all verified.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "task_name": {
+                    "type": "string",
+                    "description": "A name for the task.",
+                    "example": "Enrich Email Task"
+                  },
+                  "column_mapping": {
+                    "type": "string",
+                    "description": "JSON string for mapping required fields to your CSV column names. Required fields: `firstName` and `company_website`. Optional: `lastName`. If `lastName` is omitted, pass the full name in `firstName`.",
+                    "examples": [
+                      "{\"firstName\":\"fullName_column\",\"company_website\":\"website_column\"}",
+                      "{\"firstName\":\"firstName_column\",\"lastName\":\"lastName_column\",\"company_website\":\"website_column\"}"
+                    ]
+                  },
+                  "file": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "CSV file containing the leads to enrich."
+                  }
+                },
+                "required": [
+                  "task_name",
+                  "column_mapping",
+                  "file"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "task_id": {
+                      "type": "string",
+                      "example": "699de5816eb85b96d61fc44f"
+                    },
+                    "rows": {
+                      "type": "number",
+                      "example": 500
+                    },
+                    "credits_blocked": {
+                      "type": "number",
+                      "example": 1500
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Insufficient Credits Error"
+          }
+        },
+        "tags": [
+          "Email Enrichment"
+        ]
+      }
+    },
+    "/email/verify-email-batch": {
+      "post": {
+        "summary": "Verify Email (Batch)",
+        "description": "Verify email addresses in bulk by uploading a CSV file. Also performs catch-all validation.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "task_name": {
+                    "type": "string",
+                    "description": "A name for the task.",
+                    "example": "Verify Email Task"
+                  },
+                  "column_mapping": {
+                    "type": "string",
+                    "description": "JSON string for mapping the `email` field to your CSV column name.",
+                    "example": "{\"email\":\"email_column\"}"
+                  },
+                  "file": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "CSV file containing the emails to verify."
+                  }
+                },
+                "required": [
+                  "task_name",
+                  "column_mapping",
+                  "file"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "task_id": {
+                      "type": "string",
+                      "example": "699de5816eb85b96d61fc44f"
+                    },
+                    "rows": {
+                      "type": "number",
+                      "example": 500
+                    },
+                    "credits_blocked": {
+                      "type": "number",
+                      "example": 250
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Insufficient Credits Error"
+          }
+        },
+        "tags": [
+          "Email Enrichment"
+        ]
+      }
+    },
+    "/public/company-linkedin-id": {
+      "get": {
+        "summary": "Get LinkedIn ID of Company",
+        "description": "Convert the Linkedin page URL or username of a company to the corresponding company ID.",
+        "parameters": [
+          {
+            "name": "company",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "examples": [
+                "apple",
+                "https://www.linkedin.com/company/apple/"
+              ]
+            },
+            "description": "Company page URL or username on LinkedIn."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "title": "Company ID",
+                      "description": "Returns null if no ID could be found. No credits are charged.",
+                      "example": 162479
+                    },
+                    "company": {
+                      "type": "string",
+                      "title": "Company Username",
+                      "description": "Returns the updated username if company username has changed.",
+                      "example": "apple"
+                    },
+                    "company_type": {
+                      "type": "string",
+                      "title": "Company Type",
+                      "description": "Returns the type of organisation.",
+                      "examples": [
+                        "company",
+                        "school",
+                        "unknown"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Insufficient Credits Error"
+          },
+          "422": {
+            "description": "Validation Error"
+          }
+        },
+        "tags": [
+          "Company Enrichment"
+        ]
+      }
+    }
+  }
+}

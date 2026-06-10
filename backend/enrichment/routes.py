@@ -36,6 +36,7 @@ from . import job_store
 from . import pipeline
 from . import list_builder
 from . import better_enrich_client
+from . import wizleads_client
 from . import providers
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -100,7 +101,7 @@ def _titles_to_cascade(titles: str) -> list[dict]:
 
 
 # Valid provider values for force_provider parameter
-VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "better_enrich"})
+VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "wizleads", "better_enrich"})
 
 
 def _should_skip_provider(provider: str, force_provider: Optional[str]) -> bool:
@@ -878,6 +879,40 @@ async def unified_enrich(
                         logger.info("BetterEnrich V3 found email via LinkedIn: %s", be_result.get("email"))
                 except Exception as e:
                     logger.debug("BetterEnrich V3 LinkedIn lookup failed: %s", e)
+
+                # Try WizLeads as fallback after BetterEnrich
+                if full_name and domain and (not contacts or not any(c.get("email") for c in contacts)):
+                    try:
+                        result = await wizleads_client.find_email(
+                            blitz_http,
+                            first_name=full_name.split(" ")[0],
+                            last_name=" ".join(full_name.split(" ")[1:]) if " " in full_name else "",
+                            website=domain,
+                        )
+                        if result and result.get("email"):
+                            email = result["email"]
+                            if contacts:
+                                contacts[0]["email"] = email
+                                contacts[0]["email_source"] = "wizleads"
+                            else:
+                                contacts.append({
+                                    "full_name": full_name,
+                                    "first_name": "",
+                                    "last_name": "",
+                                    "title": "",
+                                    "email": email,
+                                    "linkedin_url": req.linkedin_url or "",
+                                    "headline": "",
+                                    "location_city": "",
+                                    "location_country": "",
+                                    "icp_tier": 1,
+                                    "email_source": "wizleads",
+                                })
+                            sources["contacts"] = "wizleads"
+                            sources["emails"] = "wizleads"
+                            logger.info("WizLeads found email via LinkedIn: %s", email)
+                    except Exception as e:
+                        logger.debug("WizLeads lookup failed: %s", e)
 
         elif mode == "domain_only":
             # Domain-only: Use existing pipeline (Contacts DB → Blitz)

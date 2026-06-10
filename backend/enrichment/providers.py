@@ -14,6 +14,7 @@ from typing import Final
 ENABLED_PROVIDERS: Final[dict[str, bool]] = {
     "contacts_db": True,
     "blitz": True,
+    "wizleads": True,
     "better_enrich": True,
     "prospeo": False,   # ← disable Prospeo (was paid, temporarily disabled)
 }

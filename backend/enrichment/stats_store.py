@@ -50,6 +50,8 @@ SOURCE_GROUPS: dict[str, str] = {
     "blitz_email": "blitz",
     "blitz_linkedin": "blitz",
     "blitz_contacts": "blitz",
+    # WizLeads sources
+    "wizleads_email": "wizleads",
     # BetterEnrich sources
     "better_enrich_company": "better_enrich",
     "better_enrich_person": "better_enrich",

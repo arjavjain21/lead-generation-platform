@@ -218,16 +218,17 @@
         <div class="page active" id="page-home">
             <div class="welcome-card">
                 <h2>Find Decision Makers with Verified Emails</h2>
-                <p>Build targeted lead lists by uploading domains, searching companies, or enriching LinkedIn profiles. Get emails using our 3-source cascade: Contacts DB, Blitz API, and BetterEnrich.</p>
+                <p>Build targeted lead lists by uploading domains, searching companies, or enriching LinkedIn profiles. Get emails using our 4-source cascade: Contacts DB, Blitz API, WizLeads, and BetterEnrich.</p>
             </div>
             
             <div class="info-grid">
                 <div class="info-card">
                     <h3>Data Sources</h3>
-                    <p>We use 3 data sources (in priority order):</p>
+                    <p>We use 4 data sources (in priority order):</p>
                     <ol>
                         <li><strong>Contacts DB</strong> - Free, cached data (75 RPS)</li>
                         <li><strong>Blitz API</strong> - LinkedIn-based enrichment (25 RPS)</li>
+                        <li><strong>WizLeads</strong> - Catchall email verification (10 RPS)</li>
                         <li><strong>BetterEnrich</strong> - Person/company email lookup (10 RPS)</li>
                     </ol>
                 </div>
@@ -298,9 +299,9 @@
                         <select id="scraperCountry">
                             <option value="us">United States</option>
                             <option value="ca">Canada</option>
-                            <option value="au">Australia</option>
+                            <option value="au">Australia (500 centers)</option>
                             <option disabled>──────────</option>
-                            <option value="gb">United Kingdom</option>
+                            <option value="gb">United Kingdom (550 centers)</option>
                             <option value="ie">Ireland</option>
                             <option value="de">Germany</option>
                             <option value="fr">France</option>
@@ -394,6 +395,11 @@
                             <input type="checkbox" id="chain_provider_blitz" checked style="width:18px;height:18px;">
                             <span style="font-weight:500;">Blitz API</span>
                             <span style="font-size:0.75rem;color:#64748b;margin-left:auto;">LinkedIn-based</span>
+                        </label>
+                        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+                            <input type="checkbox" id="chain_provider_wizleads" checked style="width:18px;height:18px;">
+                            <span style="font-weight:500;">WizLeads</span>
+                            <span style="font-size:0.75rem;color:#64748b;margin-left:auto;">Catchall verified</span>
                         </label>
                         <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
                             <input type="checkbox" id="chain_provider_better_enrich" checked style="width:18px;height:18px;">
@@ -521,9 +527,14 @@
                             <span style="font-size:0.75rem;color:#64748b;">Runs if Internal DB has no data</span>
                         </div>
                         <div style="display:flex;align-items:center;gap:8px;">
+                            <input type="checkbox" id="provider_wizleads" checked style="width:16px;height:16px;cursor:pointer;">
+                            <label style="font-weight:600;cursor:pointer;">WizLeads</label>
+                            <span style="font-size:0.75rem;color:#64748b;">Runs if Blitz has no data</span>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:8px;">
                             <input type="checkbox" id="provider_better_enrich" checked style="width:16px;height:16px;cursor:pointer;">
                             <label style="font-weight:600;cursor:pointer;">Better Enrich</label>
-                            <span style="font-size:0.75rem;color:#64748b;">Runs if Blitz has no data</span>
+                            <span style="font-size:0.75rem;color:#64748b;">Runs if WizLeads has no data</span>
                         </div>
                         <div style="display:flex;align-items:center;gap:8px;opacity:0.5;">
                             <input type="checkbox" id="provider_prospeo" disabled style="width:16px;height:16px;">
@@ -758,7 +769,7 @@
             
             <div class="help-section">
                 <h3>Data Sources</h3>
-                <p>We use 3 data sources in a cascade to maximize coverage while minimizing costs:</p>
+                <p>We use 4 data sources in a cascade to maximize coverage while minimizing costs:</p>
                 <div class="data-sources">
                     <h4>1. Contacts DB (Primary - Free)</h4>
                     <p style="font-size:0.85rem;color:var(--gray-600);">Cached database with millions of contacts. Always checked first (75 RPS).</p>
@@ -778,7 +789,14 @@
                     </div>
                 </div>
                 <div class="data-sources">
-                    <h4>3. BetterEnrich (Fallback - Paid)</h4>
+                    <h4>3. WizLeads (Fallback - Catchall Verified)</h4>
+                    <p style="font-size:0.85rem;color:var(--gray-600);">Catchall email verification (10 RPS).</p>
+                    <div style="margin-top:0.5rem;">
+                        <span class="source-tag">wizleads_email</span>
+                    </div>
+                </div>
+                <div class="data-sources">
+                    <h4>4. BetterEnrich (Fallback - Paid)</h4>
                     <p style="font-size:0.85rem;color:var(--gray-600);">Person email lookup and company catchall emails (10 RPS).</p>
                     <div style="margin-top:0.5rem;">
                         <span class="source-tag">better_enrich_person</span>
@@ -1274,6 +1292,7 @@ https://linkedin.com/in/janesmith</pre>
             // Collect selected providers (contacts_db is always sent but backend enforces it)
             const providers = [];
             if (document.getElementById('provider_blitz').checked) providers.push('blitz');
+            if (document.getElementById('provider_wizleads').checked) providers.push('wizleads');
             if (document.getElementById('provider_better_enrich').checked) providers.push('better_enrich');
             if (document.getElementById('provider_prospeo').checked) providers.push('prospeo');
 
@@ -1743,7 +1762,9 @@ https://linkedin.com/in/janesmith</pre>
         };
 
         // Start scraper job
+        let isSubmitting = false; // Prevent duplicate submissions
         document.getElementById('startScraperJob').addEventListener('click', async () => {
+            if (isSubmitting) { return; } // Prevent double-click
             const query = document.getElementById('scraperQuery').value.trim();
             if (!query) { alert('Please enter a search query'); return; }
 
@@ -1751,9 +1772,16 @@ https://linkedin.com/in/janesmith</pre>
             const country = document.getElementById('scraperCountry').value;
             const payload = { query: query, mode: mode, country: country };
 
+            // Validation helpers with proper flag reset
+            const failValidation = (msg) => {
+                alert(msg);
+                isSubmitting = false;
+                return false;
+            };
+
             if (mode === 'states') {
                 const selected = Array.from(document.getElementById('scraperStates').selectedOptions).map(o => o.value);
-                if (selected.length === 0) { alert('Please select at least one state'); return; }
+                if (selected.length === 0) { return failValidation('Please select at least one state'); }
                 payload.states = selected;
             } else if (mode === 'cities') {
                 const selectedCities = [];
@@ -1768,25 +1796,29 @@ https://linkedin.com/in/janesmith</pre>
                         }
                     });
                 }
-                if (selectedCities.length === 0) { alert('Please select at least one city'); return; }
+                if (selectedCities.length === 0) { return failValidation('Please select at least one city'); }
                 payload.cities = selectedCities;
             } else if (mode === 'zips') {
                 const zipInput = document.getElementById('scraperZipsInput').value;
                 const { valid, invalid, validCount } = validateZipCodes(zipInput);
                 if (validCount === 0) {
-                    alert('Please enter at least one valid 5-digit US zip code');
-                    return;
+                    return failValidation('Please enter at least one valid 5-digit US zip code');
                 }
                 if (invalid.length > 0) {
-                    alert('Invalid zip codes: ' + invalid.slice(0, 3).join(', ') + (invalid.length > 3 ? '...' : '') + '. Please enter only 5-digit US zip codes.');
-                    return;
+                    return failValidation('Invalid zip codes: ' + invalid.slice(0, 3).join(', ') + (invalid.length > 3 ? '...' : '') + '. Please enter only 5-digit US zip codes.');
                 }
                 payload.zips = valid;
             }
 
+            // All validation passed, set submitting flag
+            isSubmitting = true;
+
             // Check cache first before starting new job
             const cacheFound = await checkScraperCache(payload);
-            if (cacheFound) return; // User will decide via modal
+            if (cacheFound) {
+                isSubmitting = false; // Reset flag for cache found
+                return; // User will decide via modal
+            }
 
             // No cache found, proceed with job creation
             await startScraperJobInternal(payload);
@@ -1832,14 +1864,94 @@ https://linkedin.com/in/janesmith</pre>
             document.getElementById('cacheModal').style.display = 'flex';
         }
 
-        // Use cached results
+        // Use cached results - proper authenticated download with progress feedback
         document.getElementById('useCachedBtn').addEventListener('click', async function() {
+            if (this.disabled) return;
             const cacheId = this.dataset.cacheId;
-            window.location.href = `/api/scraper/cache/download/${cacheId}?token=${token}`;
+            const originalText = this.textContent;
+            this.disabled = true;
+            this.textContent = 'Loading...';
+
+            try {
+                // Get cache info first for filename
+                const infoRes = await fetch('/api/scraper/cache/check', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        query: document.getElementById('scraperQuery').value.trim(),
+                        mode: document.getElementById('scraperMode').value,
+                        country: document.getElementById('scraperCountry').value,
+                        states: [],
+                        cities: [],
+                        zips: [],
+                        center_ids: []
+                    })
+                });
+
+                if (infoRes.ok) {
+                    const info = await infoRes.json();
+                    const query = (info.query || 'search').replace(/[^a-z0-9]/gi, '_').substring(0, 30);
+                    const filename = `${query}_cached_${(info.total_results || 0).toLocaleString()}_results.${info.file_format || 'csv'}`;
+
+                    // Show download starting
+                    this.textContent = 'Preparing download...';
+
+                    // Download with proper authentication
+                    const res = await fetch(`/api/scraper/cache/download/${cacheId}`, {
+                        headers: { 'Authorization': 'Bearer ' + token }
+                    });
+
+                    if (!res.ok) {
+                        const err = await res.json();
+                        alert('Download failed: ' + (err.detail || 'Unknown error'));
+                        this.disabled = false;
+                        this.textContent = originalText;
+                        return;
+                    }
+
+                    // Show blob creation progress
+                    this.textContent = 'Creating file...';
+
+                    // Create blob and download
+                    const blob = await res.blob();
+                    const sizeInMB = (blob.size / (1024 * 1024)).toFixed(2);
+                    console.log(`Download size: ${sizeInMB} MB`);
+
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+
+                    // Show success briefly
+                    this.textContent = '✓ Downloaded';
+                    window.URL.revokeObjectURL(url);
+                    a.remove();
+
+                    // Reset button after success indication
+                    setTimeout(() => {
+                        this.disabled = false;
+                        this.textContent = originalText;
+                    }, 2000);
+                } else {
+                    const err = await res.json();
+                    alert('Failed to get cache info: ' + (err.detail || 'Unknown error'));
+                    this.disabled = false;
+                    this.textContent = originalText;
+                }
+            } catch (e) {
+                console.error('Download error:', e);
+                alert('Download error: ' + e.message);
+                this.disabled = false;
+                this.textContent = originalText;
+            }
         });
 
         // Scrape fresh
         document.getElementById('scrapeFreshBtn').addEventListener('click', async function() {
+            if (isSubmitting) { return; } // Prevent double-click on cache modal button
+            isSubmitting = true; // Set flag immediately after check
             document.getElementById('cacheModal').style.display = 'none';
             // Get current form data and proceed
             const query = document.getElementById('scraperQuery').value.trim();
@@ -1908,6 +2020,7 @@ https://linkedin.com/in/janesmith</pre>
             finally {
                 btn.disabled = false;
                 btn.textContent = originalText;
+                isSubmitting = false; // Reset submitting flag
             }
         }
 
@@ -1990,6 +2103,7 @@ https://linkedin.com/in/janesmith</pre>
             // Collect selected providers (contacts_db is always enabled on backend)
             const providers = [];
             if (document.getElementById('chain_provider_blitz').checked) providers.push('blitz');
+            if (document.getElementById('chain_provider_wizleads').checked) providers.push('wizleads');
             if (document.getElementById('chain_provider_better_enrich').checked) providers.push('better_enrich');
 
             try {
@@ -2406,6 +2520,7 @@ https://linkedin.com/in/janesmith</pre>
                                 if (Array.isArray(providers) && providers.length > 0) {
                                     const providerLabels = providers.map(p => {
                                         if (p === 'blitz') return 'Blitz';
+                                        if (p === 'wizleads') return 'WizLeads';
                                         if (p === 'better_enrich') return 'Better Enrich';
                                         if (p === 'prospeo') return 'Prospeo';
                                         return p;
@@ -2422,8 +2537,10 @@ https://linkedin.com/in/janesmith</pre>
                             const blitzEmails = job.emails_blitz || 0;
                             const betterEmails = job.emails_better_enrich || 0;
                             const prospeoEmails = job.emails_prospeo || 0;
+                            const wizleadsEmails = job.emails_wizleads || 0;
 
                             if (blitzEmails > 0) usedExternalProviders.push('Blitz');
+                            if (wizleadsEmails > 0) usedExternalProviders.push('WizLeads');
                             if (betterEmails > 0) usedExternalProviders.push('Better Enrich');
                             if (prospeoEmails > 0) usedExternalProviders.push('Prospeo');
 
@@ -2592,7 +2709,7 @@ https://linkedin.com/in/janesmith</pre>
                         actions += ' <button class="btn btn-success btn-sm" onclick="downloadScraperJob(\''+job.job_id+'\', this)">Download Partial</button>';
                     }
                 } else if (job.status === 'running' || job.status === 'queued' || job.status === 'pending') {
-                    actions += ' <button class="btn btn-danger btn-sm" onclick="cancelScraperJob(\''+job.job_id+'\')">Cancel</button>';
+                    actions += ' <button class="btn btn-danger btn-sm" onclick="cancelScraperJob(\''+job.job_id+'\')">Stop</button>';
                 }
                 // Show error message for failed/abandoned/cancelled jobs with hover tooltip
                 let errorInfo = '';
@@ -2604,17 +2721,6 @@ https://linkedin.com/in/janesmith</pre>
                 return '<div class="job-card"><div class="job-info"><h4>' + (job.display_name || job.query || 'Scraper Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.done_tasks||0) + '/' + (job.total_tasks||0) + ' | ' + (job.result_count||0) + ' results' + (job.regions ? ' | ' + getLocationDisplay(job.regions) : '') + '</div>' + errorInfo + '</div><div class="actions">' + actions + '</div></div>';
             }).join('');
         }
-
-        // Refresh button handler for enrichment jobs
-        document.getElementById('refreshJobs').addEventListener('click', function() {
-            const btn = this;
-            btn.textContent = 'Refreshing...';
-            btn.disabled = true;
-            loadJobs().finally(() => {
-                btn.textContent = 'Refresh';
-                btn.disabled = false;
-            });
-        });
 
         // Download scraper job - use query + location as filename
         async function downloadScraperJob(jobId, btn) {
@@ -2652,27 +2758,110 @@ https://linkedin.com/in/janesmith</pre>
             if (btn) { btn.disabled = false; btn.innerHTML = 'Download'; }
         }
 
-        // Retry scraper job
+        // Retry scraper job - now uses resume modal
         async function retryScraperJob(jobId) {
-            if (!confirm('Restart this scraper job?')) return;
+            // Disable button to prevent duplicate clicks
+            const buttons = document.querySelectorAll('button[onclick*="' + jobId + '"]');
+            buttons.forEach(btn => {
+                if (btn.textContent.includes('Retry') || btn.textContent.includes('Resume')) {
+                    btn.disabled = true;
+                    btn.dataset.originalText = btn.textContent;
+                    btn.textContent = 'Starting...';
+                }
+            });
+
             try {
-                const res = await fetch('/api/scraper/jobs/' + jobId + '/restart', {
-                    method: 'POST',
+                // Get resume info first to show modal
+                const res = await fetch('/api/scraper/jobs/' + jobId + '/resume-info', {
                     headers: { 'Authorization': 'Bearer ' + token }
                 });
+
                 if (res.ok) {
-                    const data = await res.json();
-                    alert('Job restarted! New job ID: ' + data.job_id);
-                    loadScraperJobs();
+                    const info = await res.json();
+
+                    // Build resume info display
+                    const totalTasks = info.total_tasks || 0;
+                    const completedTasks = info.checkpoint_count || 0;
+                    const completionPct = totalTasks > 0 ? ((completedTasks / totalTasks) * 100).toFixed(1) : 0;
+                    const resultsCount = (info.result_count || 0).toLocaleString();
+
+                    document.getElementById('resumeInfo').innerHTML = `
+                        <p><strong>Query:</strong> ${info.original_query || 'N/A'}</p>
+                        <p><strong>Progress:</strong> ${completedTasks.toLocaleString()} / ${totalTasks.toLocaleString()} tasks (${completionPct}% complete)</p>
+                        <p><strong>Results so far:</strong> ${resultsCount}</p>
+                        <p style="font-size:0.85rem;color:#6b7280;margin-top:8px;">
+                            ✅ Previous results will be included<br>
+                            ✅ Already-processed tasks will be skipped
+                        </p>
+                    `;
+
+                    // Show modal and set up confirm button
+                    document.getElementById('resumeModal').style.display = 'flex';
+
+                    // Set up confirm button handler
+                    document.getElementById('confirmResume').onclick = async function() {
+                        const includePrev = document.getElementById('includePrevious').checked;
+                        try {
+                            const res = await fetch('/api/scraper/jobs/' + jobId + '/resume?include_previous=' + includePrev, {
+                                method: 'POST',
+                                headers: { 'Authorization': 'Bearer ' + token }
+                            });
+                            if (res.ok) {
+                                const data = await res.json();
+                                // Hide modal and show success
+                                document.getElementById('resumeModal').style.display = 'none';
+                                alert('Job resumed! New job ID: ' + data.job_id + '\n\nPending tasks: ' + data.pending_tasks.toLocaleString() + '\nSkipped tasks: ' + data.skipped_tasks.toLocaleString());
+                                loadScraperJobs();
+                            } else {
+                                const err = await res.json();
+                                alert('Error: ' + (err.detail || 'Failed to resume job'));
+                                // Re-enable buttons on error
+                                enableRetryButtons(jobId);
+                            }
+                        } catch (e) {
+                            alert('Error: ' + e.message);
+                            enableRetryButtons(jobId);
+                        }
+                    };
+
+                    // Set up cancel button handler
+                    document.getElementById('closeResumeModal').onclick = function() {
+                        document.getElementById('resumeModal').style.display = 'none';
+                        enableRetryButtons(jobId);
+                    };
                 } else {
                     const err = await res.json();
-                    alert('Error: ' + (err.detail || 'Failed to restart job'));
+                    alert('Error: ' + (err.detail || 'Failed to get resume info'));
+                    enableRetryButtons(jobId);
                 }
-            } catch (e) { alert('Error: ' + e.message); }
+            } catch (e) {
+                alert('Error: ' + e.message);
+                enableRetryButtons(jobId);
+            }
+        }
+
+        function enableRetryButtons(jobId) {
+            const buttons = document.querySelectorAll('button[onclick*="' + jobId + '"]');
+            buttons.forEach(btn => {
+                if (btn.dataset.originalText) {
+                    btn.disabled = false;
+                    btn.textContent = btn.dataset.originalText;
+                }
+            });
         }
 
         // Resume scraper job from checkpoints
         async function resumeScraperJob(jobId) {
+            // Disable button to prevent duplicate clicks
+            const buttons = document.querySelectorAll('button[onclick*="' + jobId + '"]');
+            buttons.forEach(btn => {
+                if (btn.textContent.includes('Resume')) {
+                    btn.disabled = true;
+                    btn.dataset.originalText = btn.textContent;
+                    btn.textContent = 'Loading...';
+                }
+            });
+
             try {
                 const res = await fetch('/api/scraper/jobs/' + jobId + '/resume-info', {
                     headers: { 'Authorization': 'Bearer ' + token }
@@ -2696,8 +2885,13 @@ https://linkedin.com/in/janesmith</pre>
                         </p>
                     `;
 
-                    // Set up confirm button handler
-                    document.getElementById('confirmResume').onclick = async function() {
+                    // Set up confirm button handler with click prevention
+                    const confirmBtn = document.getElementById('confirmResume');
+                    confirmBtn.onclick = async function() {
+                        if (this.disabled) return;
+                        this.disabled = true;
+                        this.textContent = 'Starting...';
+
                         const includePrev = document.getElementById('includePrevious').checked;
 
                         try {
@@ -2715,18 +2909,37 @@ https://linkedin.com/in/janesmith</pre>
                             } else {
                                 const err = await res.json();
                                 alert('Resume failed: ' + (err.detail || 'Unknown error'));
+                                this.disabled = false;
+                                this.textContent = 'Start Resume';
                             }
                         } catch (e) {
                             alert('Error: ' + e.message);
+                            this.disabled = false;
+                            this.textContent = 'Start Resume';
                         }
                     };
 
                     document.getElementById('resumeModal').style.display = 'flex';
                 } else {
-                    alert('Could not get resume info: ' + (await res.json()).detail);
+                    const err = await res.json();
+                    alert('Could not get resume info: ' + (err.detail || 'Unknown error'));
+                    // Re-enable buttons on error
+                    buttons.forEach(btn => {
+                        if (btn.dataset.originalText) {
+                            btn.disabled = false;
+                            btn.textContent = btn.dataset.originalText;
+                        }
+                    });
                 }
             } catch (e) {
                 alert('Error: ' + e.message);
+                // Re-enable buttons on error
+                buttons.forEach(btn => {
+                    if (btn.dataset.originalText) {
+                        btn.disabled = false;
+                        btn.textContent = btn.dataset.originalText;
+                    }
+                });
             }
         }
 
@@ -2749,6 +2962,7 @@ https://linkedin.com/in/janesmith</pre>
                 // Collect selected providers (contacts_db is always enabled on backend)
                 const providers = [];
                 if (document.getElementById('chain_provider_blitz').checked) providers.push('blitz');
+                if (document.getElementById('chain_provider_wizleads').checked) providers.push('wizleads');
                 if (document.getElementById('chain_provider_better_enrich').checked) providers.push('better_enrich');
 
                 const res = await fetch('/api/jobs/' + jobId + '/chain', {
@@ -2778,20 +2992,51 @@ https://linkedin.com/in/janesmith</pre>
 
         // Cancel scraper job
         async function cancelScraperJob(jobId) {
-            if (!confirm('Cancel this running job? This will stop further processing.')) return;
+            if (!confirm('Stop this running job? This will stop further processing.')) return;
+
+            // Show immediate feedback - disable button and show loading state
+            const buttons = document.querySelectorAll('button[onclick*="' + jobId + '"]');
+            const stopBtn = buttons[0]; // The stop button itself
+
+            if (stopBtn) {
+                stopBtn.disabled = true;
+                stopBtn.dataset.originalText = stopBtn.textContent;
+                stopBtn.innerHTML = '<span class="spinner" style="width:12px;height:12px;display:inline-block;"></span> Stopping...';
+            }
+
             try {
                 const res = await fetch('/api/scraper/jobs/' + jobId + '/cancel', {
                     method: 'POST',
                     headers: { 'Authorization': 'Bearer ' + token }
                 });
+
                 if (res.ok) {
-                    alert('Job cancelled');
-                    loadScraperJobs();
+                    // Success: refresh job list to show updated status
+                    await loadScraperJobs();
+                    // Show success feedback
+                    if (stopBtn) {
+                        stopBtn.innerHTML = '✓ Stopped';
+                        setTimeout(() => {
+                            // Button will be removed/updated when list refreshes
+                        }, 1000);
+                    }
                 } else {
                     const err = await res.json();
-                    alert('Error: ' + (err.detail || 'Failed to cancel job'));
+                    alert('Error: ' + (err.detail || 'Failed to stop job'));
+                    // Re-enable button on error
+                    if (stopBtn) {
+                        stopBtn.disabled = false;
+                        stopBtn.innerHTML = stopBtn.dataset.originalText || 'Stop';
+                    }
                 }
-            } catch (e) { alert('Error: ' + e.message); }
+            } catch (e) {
+                alert('Error: ' + e.message);
+                // Re-enable button on error
+                if (stopBtn) {
+                    stopBtn.disabled = false;
+                    stopBtn.innerHTML = stopBtn.dataset.originalText || 'Stop';
+                }
+            }
         }
 
         // Retry enrichment job
