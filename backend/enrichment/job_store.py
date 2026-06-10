@@ -43,6 +43,8 @@ class EnrichmentJobStore(JobStoreBase):
         """Create a new enrichment job."""
         # Convert list to JSON string for storage
         providers_json = json.dumps(selected_providers) if selected_providers else ""
+        # Initialize with contacts_db since internal DB is always queried first
+        used_providers_json = json.dumps(["contacts_db"])
         self.create_job(
             job_id=job_id,
             user_id=user_id,
@@ -58,6 +60,7 @@ class EnrichmentJobStore(JobStoreBase):
             cascade_config=cascade_config,
             max_results=max_results,
             selected_providers=providers_json,
+            used_providers=used_providers_json,
         )
 
     def list_enrichment_jobs(

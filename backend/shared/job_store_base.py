@@ -74,7 +74,7 @@ class JobStoreBase:
         elif job_type == "enrichment":
             columns.extend(["total", "processed", "emails_found", "filename", "domain_col", "original_filename",
                            "name_col", "first_name_col", "last_name_col", "cascade_config", "max_results",
-                           "selected_providers"])
+                           "selected_providers", "used_providers"])
             values.extend([
                 kwargs.get("total", 0),
                 0,
@@ -88,6 +88,7 @@ class JobStoreBase:
                 kwargs.get("cascade_config", ""),
                 kwargs.get("max_results", 5),
                 kwargs.get("selected_providers", ""),
+                kwargs.get("used_providers", ""),
             ])
 
         placeholders = ",".join(["?" for _ in columns])
@@ -118,6 +119,40 @@ class JobStoreBase:
             (count, _now(), job_id),
         )
         self.conn.commit()
+
+    def update_used_providers(self, job_id: str, provider: str) -> None:
+        """
+        Append a provider to the used_providers list for a job.
+
+        This is additive - subsequent calls accumulate providers in the order they were called.
+        The contacts_db provider is added automatically on job creation.
+
+        Args:
+            job_id: The job to update
+            provider: Provider name (e.g., 'blitz', 'wizleads', 'better_enrich')
+        """
+        existing = self.conn.execute(
+            "SELECT used_providers FROM jobs WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+
+        if not existing:
+            logger.warning(f"Job {job_id} not found when updating used_providers")
+            return
+
+        providers_str = existing["used_providers"] or ""
+        try:
+            providers = json.loads(providers_str) if providers_str else []
+        except (json.JSONDecodeError, TypeError):
+            providers = []
+
+        if provider not in providers:
+            providers.append(provider)
+            self.conn.execute(
+                "UPDATE jobs SET used_providers=?, updated_at=? WHERE job_id=?",
+                (json.dumps(providers), _now(), job_id),
+            )
+            self.conn.commit()
 
     def set_failed(self, job_id: str, error: str) -> None:
         self.conn.execute(

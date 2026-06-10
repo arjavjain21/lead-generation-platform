@@ -228,6 +228,7 @@ async def _resolve_person_email(
     force_provider: Optional[str] = None,
     selected_providers: Optional[list[str]] = None,
     validate_email: bool = True,  # NEW PARAMETER
+    record_provider_use: Optional[callable] = None,  # NEW: callback to record provider usage
 ) -> tuple[str, str, str, str, str, str]:
     """
     Resolve email for a person using Contacts DB first, then Blitz fallback.
@@ -238,6 +239,7 @@ async def _resolve_person_email(
         force_provider: If set, only use that specific provider.
         selected_providers: List of user-selected providers to use (or None for all enabled).
         validate_email: If True, verify Contacts DB emails with mailtester.
+        record_provider_use: Optional callback called with provider name when that provider is actually queried.
     """
     linkedin_url = person_data.get("linkedin_url", "")
     full_name = person_data.get("full_name", "")
@@ -256,6 +258,8 @@ async def _resolve_person_email(
     # When both name and LinkedIn URL are available, prefer name+domain to avoid
     # returning stale emails from previous employers via person_by_linkedin
     if search_name and domain and not _should_skip_provider("contacts_db", force_provider, selected_providers):
+        if record_provider_use:
+            record_provider_use("contacts_db")
         try:
             contacts_data = await contacts_client.person_by_name_and_domain(
                 contacts_http, search_name, domain
@@ -300,6 +304,8 @@ async def _resolve_person_email(
     # Strategy 2: Contacts DB by LinkedIn URL (SECONDARY - FREE)
     # Fall back to LinkedIn if name+domain didn't find email, or if name not available
     if linkedin_url and not _should_skip_provider("contacts_db", force_provider, selected_providers):
+        if record_provider_use:
+            record_provider_use("contacts_db")
         try:
             contacts_data = await contacts_client.person_by_linkedin(
                 contacts_http, linkedin_url
@@ -343,6 +349,8 @@ async def _resolve_person_email(
     # Strategy 3: Blitz person enrich by name + domain (PRIMARY - PAID)
     # Prioritize name+domain for the same reason as Contacts DB
     if search_name and domain and not _should_skip_provider("blitz", force_provider, selected_providers):
+        if record_provider_use:
+            record_provider_use("blitz")
         try:
             result = await blitz_client.person_enrich(
                 blitz_http,
@@ -372,6 +380,8 @@ async def _resolve_person_email(
     # Strategy 4: Blitz API by LinkedIn URL (SECONDARY - PAID)
     # Fall back to LinkedIn if name+domain didn't find email, or if name not available
     if linkedin_url and not _should_skip_provider("blitz", force_provider, selected_providers):
+        if record_provider_use:
+            record_provider_use("blitz")
         try:
             result = await blitz_client.find_work_email(blitz_http, linkedin_url)
             if result.get("found") and result.get("email"):
@@ -385,6 +395,8 @@ async def _resolve_person_email(
     # Strategy 5: WizLeads by name + domain (catchall verified, 10 RPS)
     # Inserted between Blitz and BetterEnrich per user-confirmed cascade order.
     if search_name and domain and not _should_skip_provider("wizleads", force_provider, selected_providers):
+        if record_provider_use:
+            record_provider_use("wizleads")
         first_name = search_name.split(" ")[0] if search_name else ""
         last_name = " ".join(search_name.split(" ")[1:]) if " " in search_name else ""
         try:
@@ -399,6 +411,8 @@ async def _resolve_person_email(
     # Strategy 6: Better Enrich by name + domain (TERTIARY - PAID)
     # Only try if name is available and Better Enrich is selected
     if search_name and domain and not _should_skip_provider("better_enrich", force_provider, selected_providers):
+        if record_provider_use:
+            record_provider_use("better_enrich")
         try:
             result = await better_enrich_client.find_work_email_v3(contacts_http, search_name, domain, linkedin_url)
             if result and result.get("email"):
@@ -429,6 +443,7 @@ async def _enrich_single_domain(
     force_provider: Optional[str] = None,
     selected_providers: Optional[list[str]] = None,
     validate_email: bool = True,  # NEW PARAMETER
+    record_provider_use: Optional[callable] = None,  # NEW: callback to record provider usage
 ) -> list[OutputRow]:
     """
     Enrich a single domain: get company info, generic emails, and decision makers.
@@ -438,6 +453,7 @@ async def _enrich_single_domain(
     Args:
         force_provider: If set, only use that specific provider.
         selected_providers: List of user-selected providers to use (or None for all enabled).
+        record_provider_use: Optional callback to record which providers were actually queried.
     """
     if not domain_semaphore:
         domain_semaphore = asyncio.Semaphore(DOMAIN_CONCURRENCY)
@@ -576,6 +592,7 @@ async def _enrich_single_domain(
                 force_provider=force_provider,
                 selected_providers=selected_providers,
                 validate_email=validate_email,
+                record_provider_use=record_provider_use,
             )
         )
 
@@ -629,6 +646,7 @@ async def run_domain_enrichment(
     check_cancelled: Optional[Callable[[str], bool]] = None,
     job_id: Optional[str] = None,
     validate_email: bool = True,  # NEW PARAMETER
+    record_provider_use: Optional[Callable[[str], None]] = None,  # NEW: callback to record provider usage
 ) -> list[OutputRow]:
     """
     Main entry point for Flow 1: Domain → Generic Emails + Decision Makers
@@ -647,6 +665,7 @@ async def run_domain_enrichment(
         cancelled_jobs: Set of cancelled job IDs (checked in-memory)
         check_cancelled: Function to check if job is cancelled (DB check)
         job_id: Job ID for cancellation tracking
+        record_provider_use: Optional callback called with provider name when that provider is queried.
 
     Returns:
         List of enriched output rows
@@ -682,6 +701,7 @@ async def run_domain_enrichment(
                 force_provider=force_provider,
                 selected_providers=selected_providers,
                 validate_email=validate_email,
+                record_provider_use=record_provider_use,
             )
 
         # Call progress callback with exception handling
@@ -882,6 +902,7 @@ async def enrich_companies_from_search(
             domain_semaphore,
             force_provider=force_provider,
             validate_email=validate_email,
+            record_provider_use=record_provider_use,
         )
 
         if on_progress:

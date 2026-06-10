@@ -2508,45 +2508,56 @@ https://linkedin.com/in/janesmith</pre>
                         if (job.status === 'partial') statusDisplay = 'Partial';
                         if (job.status === 'failed') statusDisplay = 'Failed';
 
-                        // Format providers display
-                        // First try selected_providers field (new jobs), then infer from email counts (old jobs)
-                        let providersDisplay = 'Internal Contacts DB';
-                        let usedExternalProviders = [];
+                        // Format providers display - show BOTH selected and used side by side
+                        // 1. selectedDisplay: what the user selected (from selected_providers)
+                        // 2. usedDisplay: what actually executed (from used_providers, or inferred from email counts for old jobs)
+                        const labelFor = (p) => {
+                            if (p === 'contacts_db') return 'Internal Contacts DB';
+                            if (p === 'blitz') return 'Blitz';
+                            if (p === 'wizleads') return 'WizLeads';
+                            if (p === 'better_enrich') return 'Better Enrich';
+                            if (p === 'prospeo') return 'Prospeo';
+                            return p;
+                        };
 
-                        // Check selected_providers field first (new jobs after fix)
-                        if (job.selected_providers && job.selected_providers !== '' && job.selected_providers !== 'null') {
+                        // Parse a providers JSON field safely
+                        const parseProvidersField = (val) => {
+                            if (!val || val === '' || val === 'null') return null;
                             try {
-                                const providers = typeof job.selected_providers === 'string' ? JSON.parse(job.selected_providers) : job.selected_providers;
-                                if (Array.isArray(providers) && providers.length > 0) {
-                                    const providerLabels = providers.map(p => {
-                                        if (p === 'blitz') return 'Blitz';
-                                        if (p === 'wizleads') return 'WizLeads';
-                                        if (p === 'better_enrich') return 'Better Enrich';
-                                        if (p === 'prospeo') return 'Prospeo';
-                                        return p;
-                                    });
-                                    providersDisplay = 'Internal Contacts DB + ' + providerLabels.join(' + ');
-                                }
-                            } catch (e) {
-                                // If parsing fails, infer from email counts
-                            }
+                                const parsed = typeof val === 'string' ? JSON.parse(val) : val;
+                                return Array.isArray(parsed) ? parsed : null;
+                            } catch (e) { return null; }
+                        };
+
+                        // 1. SELECTED: from job.selected_providers (always show what user chose)
+                        let selectedDisplay = '';
+                        const selectedParsed = parseProvidersField(job.selected_providers);
+                        if (selectedParsed && selectedParsed.length > 0) {
+                            // User explicitly selected providers
+                            selectedDisplay = selectedParsed.map(labelFor).join(' + ');
+                        } else {
+                            // Old job without selection field - assume defaults (all enabled)
+                            selectedDisplay = 'Internal Contacts DB + Blitz + WizLeads + Better Enrich';
                         }
 
-                        // If selected_providers wasn't set or parsed, infer from email counts (old jobs)
-                        if (providersDisplay === 'Internal Contacts DB') {
+                        // 2. USED: from job.used_providers (new), or infer from email counts (old)
+                        let usedDisplay = '';
+                        const usedParsed = parseProvidersField(job.used_providers);
+                        if (usedParsed && usedParsed.length > 0) {
+                            // New job - we tracked actual usage
+                            usedDisplay = usedParsed.map(labelFor).join(' + ');
+                        } else {
+                            // Old job - infer from email counts
+                            const usedList = ['contacts_db'];  // Internal DB is always queried first
                             const blitzEmails = job.emails_blitz || 0;
                             const betterEmails = job.emails_better_enrich || 0;
                             const prospeoEmails = job.emails_prospeo || 0;
                             const wizleadsEmails = job.emails_wizleads || 0;
-
-                            if (blitzEmails > 0) usedExternalProviders.push('Blitz');
-                            if (wizleadsEmails > 0) usedExternalProviders.push('WizLeads');
-                            if (betterEmails > 0) usedExternalProviders.push('Better Enrich');
-                            if (prospeoEmails > 0) usedExternalProviders.push('Prospeo');
-
-                            if (usedExternalProviders.length > 0) {
-                                providersDisplay = 'Internal Contacts DB + ' + usedExternalProviders.join(' + ');
-                            }
+                            if (blitzEmails > 0) usedList.push('blitz');
+                            if (wizleadsEmails > 0) usedList.push('wizleads');
+                            if (betterEmails > 0) usedList.push('better_enrich');
+                            if (prospeoEmails > 0) usedList.push('prospeo');
+                            usedDisplay = usedList.map(labelFor).join(' + ');
                         }
 
                         let actions = '<span class="job-status status-' + job.status + '">' + statusDisplay + '</span>';
@@ -2572,7 +2583,7 @@ https://linkedin.com/in/janesmith</pre>
                             const shortError = job.error.length > 60 ? job.error.substring(0, 60) + '...' : job.error;
                             errorInfo = '<div class="job-error" style="font-size: 0.7rem; color: #dc2626; margin-top: 4px; cursor: help;" title="' + fullError + '">' + shortError + '</div>';
                         }
-                        return '<div class="job-card"><div class="job-info"><h4>' + (job.display_filename || job.filename || 'Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.processed||0) + '/' + (job.total||0) + ' | ' + (job.emails_found||0) + ' emails</div><div class="job-providers" style="font-size: 0.75rem; color: #6b7280; margin-top: 4px;">' + providersDisplay + '</div>' + errorInfo + '</div><div class="actions">' + actions + '</div></div>';
+                        return '<div class="job-card"><div class="job-info"><h4>' + (job.display_filename || job.filename || 'Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.processed||0) + '/' + (job.total||0) + ' | ' + (job.emails_found||0) + ' emails</div><div class="job-providers" style="font-size: 0.75rem; margin-top: 4px;"><div style="color: #1e40af;"><strong>Selected:</strong> ' + selectedDisplay + '</div><div style="color: #059669;"><strong>Used:</strong> ' + usedDisplay + '</div></div>' + errorInfo + '</div><div class="actions">' + actions + '</div></div>';
                     }).join('');
                 } else jobsList.innerHTML = '<div class="empty-state">Failed to load</div>';
             } catch (e) { jobsList.innerHTML = '<div class="empty-state">Error</div>'; }
