@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import pandas as pd
+import sqlite3
 from dotenv import load_dotenv
 from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -51,6 +52,31 @@ ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 
 # Create FastAPI app
 app = FastAPI(title="Lead Generation Platform")
+
+
+@app.exception_handler(sqlite3.OperationalError)
+async def sqlite_locked_handler(_request: Request, exc: sqlite3.OperationalError):
+    """Return a clean 503 (with Retry-After) when the SQLite database is locked.
+
+    The download UI surfaces this as a recoverable, retryable error rather
+    than the cryptic 500 the user was previously seeing.
+    """
+    msg = str(exc).lower()
+    if "locked" in msg or "busy" in msg:
+        logger.warning("SQLite lock contention, returning 503: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "The platform database is briefly busy. Please retry in a few seconds.",
+                "retry_after": 3,
+            },
+            headers={"Retry-After": "3"},
+        )
+    logger.exception("SQLite OperationalError: %s", exc)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc) or "Internal server error"},
+    )
 
 
 @app.exception_handler(Exception)

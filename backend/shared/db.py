@@ -36,10 +36,14 @@ NON_ADMIN_DAILY_REQUEST_LIMIT = 50000
 def get_db() -> sqlite3.Connection:
     """Return a per-thread SQLite connection with row factory enabled."""
     if not hasattr(_local, "conn") or _local.conn is None:
-        conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+        conn = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=30.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA journal_size_limit=200000000")
+        conn.execute("PRAGMA wal_autocheckpoint=400")
+        conn.execute("PRAGMA synchronous=NORMAL")
         _local.conn = conn
     return _local.conn
 
@@ -75,6 +79,8 @@ def init_db() -> None:
             filename      TEXT,
             domain_col    TEXT,
             original_filename TEXT,     -- Original uploaded filename (for display)
+            selected_providers TEXT,   -- JSON array of providers user selected (e.g., ["contacts_db","blitz","wizleads","better_enrich"])
+            used_providers TEXT,       -- JSON array of providers that actually executed (e.g., ["contacts_db","blitz"])
 
             -- Phone Enrichment-specific fields (NULL for scraper/enrichment jobs)
             linkedin_col  TEXT,         -- Column name containing LinkedIn URLs
@@ -151,6 +157,14 @@ def init_db() -> None:
             ON phone_enrichments (linkedin_url);
         """
     )
+
+    # Safe migrations: add columns to existing jobs table (idempotent)
+    existing_columns = {row[1] for row in c.execute("PRAGMA table_info(jobs)").fetchall()}
+    if "used_providers" not in existing_columns:
+        c.execute("ALTER TABLE jobs ADD COLUMN used_providers TEXT DEFAULT ''")
+    if "selected_providers" not in existing_columns:
+        c.execute("ALTER TABLE jobs ADD COLUMN selected_providers TEXT DEFAULT ''")
+
     c.commit()
 
 

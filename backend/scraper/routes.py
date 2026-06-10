@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -816,8 +817,17 @@ async def stream_scraper_job(
 @router.get("/jobs/{job_id}/download")
 async def download_scraper_result(job_id: str, current_user: dict = Depends(auth.get_current_user_with_api_key)):
     """Download the full CSV output of a completed scraper job."""
-    store = job_store.get_store()
-    job_data = store.get_job(job_id)
+    try:
+        store = job_store.get_store()
+        job_data = store.get_job(job_id)
+    except sqlite3.OperationalError as e:
+        # Transient lock contention — return a clean 503 the UI can retry.
+        logger.warning("scraper download: db lock for job %s: %s", job_id, e)
+        raise HTTPException(
+            status_code=503,
+            detail="The platform database is briefly busy. Please retry in a few seconds.",
+            headers={"Retry-After": "3"},
+        )
     if not job_data:
         raise HTTPException(status_code=404, detail="Job not found.")
     if job_data.get("job_type") != "scraper":

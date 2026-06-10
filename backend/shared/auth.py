@@ -46,10 +46,14 @@ JWT_EXPIRY_DAYS = 7
 
 def _conn() -> sqlite3.Connection:
     if not hasattr(_local, "conn") or _local.conn is None:
-        conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+        conn = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=30.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA journal_size_limit=200000000")
+        conn.execute("PRAGMA wal_autocheckpoint=400")
+        conn.execute("PRAGMA synchronous=NORMAL")
         _local.conn = conn
     return _local.conn
 

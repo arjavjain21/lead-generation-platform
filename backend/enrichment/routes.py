@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import tempfile
 import uuid
 from pathlib import Path
@@ -382,6 +383,33 @@ def cleanup_old_files() -> dict[str, int]:
     return removed
 
 
+# Helper functions for response formatting
+def _friendly_source(source: str) -> str:
+    """Map technical source values to user-friendly names."""
+    source_map = {
+        "blitz_email": "blitz",
+        "blitz_linkedin": "blitz",
+        "blitz_contacts": "blitz",
+        "contacts_db_linkedin": "contacts_db",
+        "contacts_db_name": "contacts_db",
+        "contacts_db_email": "contacts_db",
+        "better_enrich_company": "better_enrich",
+        "better_enrich_person": "better_enrich",
+        "wizleads_email": "wizleads",
+    }
+    return source_map.get(source, source or "unknown")
+
+
+def _map_validation_status(code: str) -> str:
+    """Map mailtester codes to validation status."""
+    code_map = {
+        "ok": "valid_ok",
+        "mb": "valid_mb",
+        "ko": "invalid",
+    }
+    return code_map.get(code, "unknown")
+
+
 def enforce_job_limit(user_id: str) -> None:
     """Delete oldest jobs if user has more than MAX_JOBS_PER_USER."""
     store = job_store.get_store()
@@ -530,13 +558,12 @@ async def enrich_single_domain(
 
     for row in output_rows:
         if row.get("row_status") in (pipeline.STATUS_ENRICHED, pipeline.STATUS_NO_CONTACTS):
-            # Track email source
+            # Track email source with user-friendly names
             email_source = row.get("dm_email_source", "")
             if email_source:
-                if "contacts_db" in email_source:
-                    sources["emails"] = "contacts_db"
-                elif "blitz" in email_source:
-                    sources["emails"] = "blitz"
+                friendly = _friendly_source(email_source)
+                if friendly != "unknown":
+                    sources["emails"] = friendly
 
             # Track contacts source - check if this row has data from Contacts DB or Blitz
             # We infer from the data presence
@@ -565,7 +592,10 @@ async def enrich_single_domain(
                 "location_city": row.get("dm_location_city", ""),
                 "location_country": row.get("dm_location_country", ""),
                 "icp_tier": row.get("dm_icp_tier", 0),
-                "email_source": row.get("dm_email_source", ""),
+                "email_source": _friendly_source(row.get("dm_email_source", "")),
+                "validation_status": _map_validation_status(row.get("mailtester_code", "")),
+                "email_verified": row.get("dm_email_verified", "unknown"),
+                "verification_message": row.get("mailtester_message", ""),
             })
 
     # If we found contacts from Blitz (no email_source indicates Blitz source for contacts)
@@ -960,7 +990,10 @@ async def unified_enrich(
                         "location_city": row.get("dm_location_city", ""),
                         "location_country": row.get("dm_location_country", ""),
                         "icp_tier": row.get("dm_icp_tier", 0),
-                        "email_source": row.get("dm_email_source", ""),
+                        "email_source": _friendly_source(row.get("dm_email_source", "")),
+                        "validation_status": _map_validation_status(row.get("mailtester_code", "")),
+                        "email_verified": row.get("dm_email_verified", "unknown"),
+                        "verification_message": row.get("mailtester_message", ""),
                     })
 
                     # Track sources
@@ -968,7 +1001,7 @@ async def unified_enrich(
                         sources["company_linkedin"] = "contacts_db"
                     if row.get("dm_email"):
                         sources["contacts"] = contacts_source
-                        sources["emails"] = row.get("dm_email_source", "").replace("_email", "") if row.get("dm_email_source") else "blitz"
+                        sources["emails"] = _friendly_source(row.get("dm_email_source", "")) if row.get("dm_email_source") else "blitz"
 
             company_linkedin_url = output_rows[0].get("company_linkedin_url", "") if output_rows else ""
 
@@ -995,8 +1028,8 @@ async def unified_enrich(
                             "icp_tier": 0,
                             "email_source": "better_enrich_company",
                         })
-                        sources["contacts"] = "better_enrich_company"
-                        sources["emails"] = "better_enrich_company"
+                        sources["contacts"] = "better_enrich"
+                        sources["emails"] = "better_enrich"
                         logger.info("BetterEnrich company email found for %s: %s", domain, be_result.get("email"))
                 except Exception as e:
                     logger.debug("BetterEnrich company email lookup failed for %s: %s", domain, e)
@@ -2256,8 +2289,16 @@ async def download_enrichment_result(
     current_user: dict = Depends(auth.get_current_user),
 ):
     """Download the full CSV output of a completed enrichment job."""
-    store = job_store.get_store()
-    job_data = store.get_job(job_id)
+    try:
+        store = job_store.get_store()
+        job_data = store.get_job(job_id)
+    except sqlite3.OperationalError as e:
+        logger.warning("enrichment download: db lock for job %s: %s", job_id, e)
+        raise HTTPException(
+            status_code=503,
+            detail="The platform database is briefly busy. Please retry in a few seconds.",
+            headers={"Retry-After": "3"},
+        )
     if not job_data:
         raise HTTPException(status_code=404, detail="Job not found.")
     if job_data.get("job_type") != "enrichment":
@@ -2689,6 +2730,8 @@ async def restart_enrichment_job(
         cascade = blitz_client.DEFAULT_CASCADE
 
     # Parse selected_providers from original job (for restart with provider selection)
+    # For old jobs without selected_providers, fall back to all enabled providers
+    # so retry preserves the user's expected cascade (or at least defaults to all)
     selected_providers = None
     providers_json = original_job.get('selected_providers', '')
     if providers_json:
@@ -2696,6 +2739,15 @@ async def restart_enrichment_job(
             selected_providers = json.loads(providers_json)
         except Exception as e:
             logger.warning("Failed to parse selected_providers for job %s: %s", job_id, e)
+
+    if not selected_providers:
+        # Old job or unparseable - default to all currently enabled providers
+        from . import providers as _providers
+        selected_providers = [
+            name for name, enabled in _providers.ENABLED_PROVIDERS.items() if enabled
+        ]
+        logger.info("Job %s has no selected_providers, defaulting to enabled providers: %s",
+                    job_id, selected_providers)
 
     # Update restart count
     store = job_store.get_store()
@@ -2728,33 +2780,18 @@ async def restart_enrichment_job(
     _job_signals[new_job_id] = asyncio.Event()
     _active_jobs.add(new_job_id)
 
-    # Use _run_domain_enrich_job if selected_providers is set (new provider selection feature)
-    # Otherwise, use _run_job (old pipeline-based enrichment)
-    if selected_providers is not None:
-        background_tasks.add_task(
-            _run_domain_enrich_job,
-            job_id=new_job_id,
-            rows=rows,
-            domain_col=original_job['domain_col'],
-            name_col=original_job.get('name_col'),
-            first_name_col=original_job.get('first_name_col'),
-            last_name_col=original_job.get('last_name_col'),
-            max_results=original_job.get('max_results', 5),
-            selected_providers=selected_providers,
-        )
-    else:
-        background_tasks.add_task(
-            _run_job,
-            job_id=new_job_id,
-            rows=rows,
-            domain_col=original_job['domain_col'],
-            name_col=original_job.get('name_col'),
-            first_name_col=original_job.get('first_name_col'),
-            last_name_col=original_job.get('last_name_col'),
-            cascade=cascade,
-            max_results=original_job.get('max_results', 5),
-            write_incremental=True,
-        )
+    # Always use _run_domain_enrich_job for restarts (it now has provider selection support)
+    background_tasks.add_task(
+        _run_domain_enrich_job,
+        job_id=new_job_id,
+        rows=rows,
+        domain_col=original_job['domain_col'],
+        name_col=original_job.get('name_col'),
+        first_name_col=original_job.get('first_name_col'),
+        last_name_col=original_job.get('last_name_col'),
+        max_results=original_job.get('max_results', 5),
+        selected_providers=selected_providers,
+    )
 
     logger.info("Restarted enrichment job %s as new job %s with providers %s", job_id, new_job_id, selected_providers)
 
@@ -3094,11 +3131,22 @@ async def _run_domain_enrich_job(
         except Exception as prog_err:
             logger.error("Progress callback failed for job %s: %s", job_id, prog_err)
 
+    # Shared progress store for record_provider_use closure below
+    progress_store = job_store.get_store()
+
     try:
         # Check job cancellation
         def check_job_cancelled(jid: str) -> bool:
             check_store = job_store.get_store()
             return check_store.is_job_cancelled_or_abandoned(jid)
+
+        # Track which providers are actually used
+        used_providers_set: set[str] = set()
+        def record_provider_use(provider: str) -> None:
+            if provider not in used_providers_set:
+                used_providers_set.add(provider)
+                # Also persist to DB periodically
+                progress_store.update_used_providers(job_id, provider)
 
         output_rows = await list_builder.run_domain_enrichment(
             rows=rows,
@@ -3113,6 +3161,7 @@ async def _run_domain_enrich_job(
             cancelled_jobs=_cancelled_jobs,
             check_cancelled=check_job_cancelled,
             job_id=job_id,
+            record_provider_use=record_provider_use,
         )
 
         # Write output
