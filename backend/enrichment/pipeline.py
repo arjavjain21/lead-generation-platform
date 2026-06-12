@@ -33,6 +33,7 @@ from . import prospeo_client
 from . import providers
 from . import mailtester_client
 from . import wizleads_client
+from . import identifier_utils
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,37 @@ SOURCE_BETTER_ENRICH_COMPANY = "better_enrich_company"    # Generic company emai
 SOURCE_BETTER_ENRICH_PERSON = "better_enrich_person"      # Person email from BetterEnrich
 SOURCE_WIZLEADS = "wizleads_email"                        # Person email from WizLeads
 
+# Routing reasons (no_email_reason values)
+NO_EMAIL_REASON_LINKEDIN_PARSE_FAILED = "linkedin_parse_failed"
+NO_EMAIL_REASON_PHONE_REVERSE_UNAVAILABLE = "phone_reverse_unavailable"
+NO_EMAIL_REASON_FORCED_PROVIDER_CANNOT_USE_INPUT = "forced_provider_cannot_use_input"
+NO_EMAIL_REASON_NO_IDENTIFIERS = "no_identifiers"
+NO_EMAIL_REASON_DOMAIN_ONLY_NO_CONTACTS = "domain_only_no_contacts"
+
+# Route-identifier values used to describe how the strongest identifier was reached.
+# These are appended to source_path in order.
+ROUTE_IDENTIFIER_LINKEDIN = "linkedin"
+ROUTE_IDENTIFIER_PHONE = "phone"
+ROUTE_IDENTIFIER_PHONE_REVERSE = "phone_reverse"
+ROUTE_IDENTIFIER_NAME_DOMAIN = "name_domain"
+ROUTE_IDENTIFIER_DOMAIN = "domain"
+
+# Provider tokens used in source_path (must match how a provider "found" email).
+ROUTE_PROVIDER_CONTACTS_DB = "contacts_db"
+ROUTE_PROVIDER_BLITZ = "blitz"
+ROUTE_PROVIDER_WIZLEADS = "wizleads"
+ROUTE_PROVIDER_BETTER_ENRICH = "better_enrich"
+
+# Provider methods used in source_path.
+ROUTE_METHOD_PERSON_BY_LINKEDIN = "person_by_linkedin"
+ROUTE_METHOD_PERSON_ENRICH_BY_LINKEDIN = "person_enrich_by_linkedin"
+ROUTE_METHOD_FIND_WORK_EMAIL = "find_work_email"
+ROUTE_METHOD_PERSON_BY_NAME_DOMAIN = "person_by_name_and_domain"
+ROUTE_METHOD_PERSON_ENRICH = "person_enrich"
+ROUTE_METHOD_FIND_EMAIL = "find_email"
+ROUTE_METHOD_FIND_WORK_EMAIL_V3 = "find_work_email_v3"
+ROUTE_METHOD_PHONE_REVERSE_LOOKUP = "phone_reverse_lookup"
+
 ENRICHED_COLUMNS = [
     "company_linkedin_url",
     "dm_first_name",
@@ -144,7 +176,592 @@ ENRICHED_COLUMNS = [
     "dm_location_country",
     "dm_icp_tier",
     "row_status",
+    # Input identifiers for visibility and debugging
+    "input_domain",
+    "input_full_name",
+    "input_linkedin_url",
+    "input_phone",
+    "input_company_name",
+    "input_existing_email",
+    "normalized_linkedin_url",
+    "linkedin_username",
+    "input_fields_used",
+    # Routing diagnostics
+    "source_path",
+    "provider_attempts",
+    "no_email_reason",
 ]
+
+
+def _provider_label(method: str) -> str:
+    """Map a route method to its provider group (used in source_path)."""
+    if method in (
+        ROUTE_METHOD_PERSON_BY_LINKEDIN,
+        ROUTE_METHOD_PERSON_BY_NAME_DOMAIN,
+    ):
+        return ROUTE_PROVIDER_CONTACTS_DB
+    if method in (
+        ROUTE_METHOD_PERSON_ENRICH_BY_LINKEDIN,
+        ROUTE_METHOD_FIND_WORK_EMAIL,
+        ROUTE_METHOD_PERSON_ENRICH,
+    ):
+        return ROUTE_PROVIDER_BLITZ
+    if method == ROUTE_METHOD_FIND_EMAIL:
+        return ROUTE_PROVIDER_WIZLEADS
+    if method == ROUTE_METHOD_FIND_WORK_EMAIL_V3:
+        return ROUTE_PROVIDER_BETTER_ENRICH
+    if method == ROUTE_METHOD_PHONE_REVERSE_LOOKUP:
+        return ROUTE_PROVIDER_BLITZ  # phone reverse is a Blitz concept
+    return method
+
+
+def _can_provider_use_method(method: str, inputs: dict[str, str]) -> bool:
+    """Capability gate: does the given inputs dict satisfy the method's required fields?
+
+    Args:
+        method: a ROUTE_METHOD_* value
+        inputs: dict with at least `linkedin_url`, `phone`, `full_name`, `domain`,
+                `first_name`, `last_name`.
+    """
+    li = inputs.get("linkedin_url", "")
+    phone = inputs.get("phone", "")
+    fn = inputs.get("full_name", "")
+    dom = inputs.get("domain", "")
+    first = inputs.get("first_name", "")
+    last = inputs.get("last_name", "")
+
+    if method == ROUTE_METHOD_PERSON_BY_LINKEDIN:
+        return bool(li)
+    if method == ROUTE_METHOD_PERSON_ENRICH_BY_LINKEDIN:
+        return bool(li)
+    if method == ROUTE_METHOD_FIND_WORK_EMAIL:
+        return bool(li)
+    if method == ROUTE_METHOD_PERSON_BY_NAME_DOMAIN:
+        return bool(fn) and bool(dom)
+    if method == ROUTE_METHOD_PERSON_ENRICH:
+        return bool(fn) and bool(dom)
+    if method == ROUTE_METHOD_FIND_EMAIL:
+        return bool(first) and bool(last) and bool(dom)
+    if method == ROUTE_METHOD_FIND_WORK_EMAIL_V3:
+        return bool(fn) and bool(dom)
+    if method == ROUTE_METHOD_PHONE_REVERSE_LOOKUP:
+        return bool(phone)
+    return False
+
+
+def _method_is_paid(method: str) -> bool:
+    """Return True if the method calls a paid provider family."""
+    return _provider_label(method) in (ROUTE_PROVIDER_BLITZ, ROUTE_PROVIDER_BETTER_ENRICH, ROUTE_PROVIDER_WIZLEADS)
+
+
+def _method_is_free(method: str) -> bool:
+    return _provider_label(method) == ROUTE_PROVIDER_CONTACTS_DB
+
+
+def route_enrichment(
+    *,
+    linkedin_url: str = "",
+    phone: str = "",
+    full_name: str = "",
+    first_name: str = "",
+    last_name: str = "",
+    domain: str = "",
+    company_name: str = "",
+    force_provider: Optional[str] = None,
+) -> dict[str, Any]:
+    """Decide provider order based on available identifiers.
+
+    Pure routing function. No I/O. Returns:
+
+        {
+            "mode": "linkedin_only" | "phone_then_linkedin"
+                   | "name_domain" | "domain_only" | "invalid",
+            "steps": [
+                {"identifier": "linkedin" | "phone" | "name_domain" | "domain",
+                 "method": "<ROUTE_METHOD_*>",
+                 "provider": "<ROUTE_PROVIDER_*>"},
+                ...
+            ],
+            "no_email_reason": "" | "linkedin_parse_failed" | ...,
+        }
+
+    Routing rules (in priority order):
+      1. If linkedin_url is set and not a parseable LinkedIn URL, return
+         `mode="invalid"`, `no_email_reason="linkedin_parse_failed"`.
+      2. If linkedin_url is set: produce a LinkedIn-first cascade
+         (contacts_db -> blitz -> better_enrich). Domain-only fallbacks
+         may run after if name+domain are also present.
+      3. Else if phone is set: produce a phone -> linkedin cascade.
+      4. Else if full_name and domain: produce a name+domain cascade
+         (contacts_db -> blitz -> wizleads -> better_enrich).
+      5. Else if domain: produce a domain-only cascade.
+      6. Else: return `mode="invalid"`, `no_email_reason="no_identifiers"`.
+
+    force_provider semantics:
+      * None: emit all steps that are not blocked by the capability gate.
+      * "blitz": keep only blitz steps; if no blitz step can run (e.g. only
+        linkedin_url provided but blitz is in the cascade), keep the steps
+        that are still valid AND drop free steps. If no blitz step can run
+        on the input, return no_email_reason="forced_provider_cannot_use_input".
+      * "contacts_db": keep only contacts_db steps; if none can run, return
+        no_email_reason="forced_provider_cannot_use_input".
+      * "wizleads": keep only wizleads steps.
+      * "better_enrich": keep only better_enrich steps.
+    """
+    inputs = {
+        "linkedin_url": linkedin_url or "",
+        "phone": phone or "",
+        "full_name": full_name or "",
+        "first_name": first_name or "",
+        "last_name": last_name or "",
+        "domain": domain or "",
+        "company_name": company_name or "",
+    }
+
+    has_li = bool(inputs["linkedin_url"])
+    has_phone = bool(inputs["phone"])
+    has_name_domain = bool(inputs["full_name"]) and bool(inputs["domain"])
+    has_domain = bool(inputs["domain"])
+
+    # Malformed-LinkedIn gate. We accept the value iff identifier_utils sees
+    # a valid linkedin.com host in it. We use the parser directly so this
+    # function remains pure (no I/O, no DB).
+    if has_li:
+        from . import identifier_utils as _iu
+        normalized_li = _iu.normalize_linkedin_url(inputs["linkedin_url"])
+        if not normalized_li:
+            return {
+                "mode": "invalid",
+                "steps": [],
+                "no_email_reason": NO_EMAIL_REASON_LINKEDIN_PARSE_FAILED,
+            }
+        # Use the normalized form for downstream calls.
+        inputs["linkedin_url"] = normalized_li
+
+    raw_steps: list[dict[str, str]] = []
+
+    if has_li:
+        # LinkedIn-first cascade. Domain fallbacks only run if name+domain present.
+        raw_steps.extend([
+            {
+                "identifier": ROUTE_IDENTIFIER_LINKEDIN,
+                "method": ROUTE_METHOD_PERSON_BY_LINKEDIN,
+                "provider": ROUTE_PROVIDER_CONTACTS_DB,
+            },
+            {
+                "identifier": ROUTE_IDENTIFIER_LINKEDIN,
+                "method": ROUTE_METHOD_PERSON_ENRICH_BY_LINKEDIN,
+                "provider": ROUTE_PROVIDER_BLITZ,
+            },
+            {
+                "identifier": ROUTE_IDENTIFIER_LINKEDIN,
+                "method": ROUTE_METHOD_FIND_WORK_EMAIL,
+                "provider": ROUTE_PROVIDER_BLITZ,
+            },
+        ])
+        if has_name_domain:
+            raw_steps.extend([
+                {
+                    "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
+                    "method": ROUTE_METHOD_PERSON_BY_NAME_DOMAIN,
+                    "provider": ROUTE_PROVIDER_CONTACTS_DB,
+                },
+                {
+                    "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
+                    "method": ROUTE_METHOD_PERSON_ENRICH,
+                    "provider": ROUTE_PROVIDER_BLITZ,
+                },
+            ])
+        if has_name_domain:
+            raw_steps.append({
+                "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
+                "method": ROUTE_METHOD_FIND_WORK_EMAIL_V3,
+                "provider": ROUTE_PROVIDER_BETTER_ENRICH,
+            })
+        mode = "linkedin_only" if not has_domain else "linkedin_first"
+    elif has_phone:
+        # Phone -> LinkedIn cascade. The phone reverse step is a stub for now
+        # (no provider has a phone reverse endpoint), so the routing function
+        # itself returns a clear no_email_reason. Downstream callers can swap
+        # in a real reverse lookup without changing the route shape.
+        raw_steps.append({
+            "identifier": ROUTE_IDENTIFIER_PHONE,
+            "method": ROUTE_METHOD_PHONE_REVERSE_LOOKUP,
+            "provider": ROUTE_PROVIDER_BLITZ,
+        })
+        mode = "phone_then_linkedin"
+    elif has_name_domain:
+        # Name+domain cascade.
+        raw_steps.extend([
+            {
+                "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
+                "method": ROUTE_METHOD_PERSON_BY_NAME_DOMAIN,
+                "provider": ROUTE_PROVIDER_CONTACTS_DB,
+            },
+            {
+                "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
+                "method": ROUTE_METHOD_PERSON_ENRICH,
+                "provider": ROUTE_PROVIDER_BLITZ,
+            },
+        ])
+        if first_name and last_name:
+            raw_steps.append({
+                "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
+                "method": ROUTE_METHOD_FIND_EMAIL,
+                "provider": ROUTE_PROVIDER_WIZLEADS,
+            })
+        raw_steps.append({
+            "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
+            "method": ROUTE_METHOD_FIND_WORK_EMAIL_V3,
+            "provider": ROUTE_PROVIDER_BETTER_ENRICH,
+        })
+        mode = "name_domain"
+    elif has_domain:
+        # Domain-only cascade. The decision-maker cascade is handled
+        # separately by `_enrich_domain` (it needs company_linkedin_url),
+        # so the route here just notes the mode.
+        mode = "domain_only"
+        raw_steps = []
+    else:
+        return {
+            "mode": "invalid",
+            "steps": [],
+            "no_email_reason": NO_EMAIL_REASON_NO_IDENTIFIERS,
+        }
+
+    # Apply force_provider.
+    if force_provider:
+        family_map = {
+            "contacts_db": ROUTE_PROVIDER_CONTACTS_DB,
+            "blitz": ROUTE_PROVIDER_BLITZ,
+            "wizleads": ROUTE_PROVIDER_WIZLEADS,
+            "better_enrich": ROUTE_PROVIDER_BETTER_ENRICH,
+        }
+        forced = family_map.get(force_provider)
+        if not forced:
+            return {
+                "mode": mode,
+                "steps": [],
+                "no_email_reason": NO_EMAIL_REASON_FORCED_PROVIDER_CANNOT_USE_INPUT,
+            }
+        filtered = [s for s in raw_steps if s["provider"] == forced]
+        if not filtered:
+            return {
+                "mode": mode,
+                "steps": [],
+                "no_email_reason": NO_EMAIL_REASON_FORCED_PROVIDER_CANNOT_USE_INPUT,
+            }
+        raw_steps = filtered
+
+    # Capability gate: drop any step whose method the inputs do not satisfy.
+    filtered_steps: list[dict[str, str]] = []
+    for s in raw_steps:
+        if _can_provider_use_method(s["method"], inputs):
+            filtered_steps.append(s)
+
+    # If force_provider was set and capability-gating removed everything, surface that.
+    if force_provider and not filtered_steps:
+        return {
+            "mode": mode,
+            "steps": [],
+            "no_email_reason": NO_EMAIL_REASON_FORCED_PROVIDER_CANNOT_USE_INPUT,
+        }
+
+    return {
+        "mode": mode,
+        "steps": filtered_steps,
+        "no_email_reason": "",
+        "inputs": inputs,  # for downstream executor
+    }
+
+
+def _build_source_path(steps_taken: list[dict[str, str]], final_method: str) -> str:
+    """Build a `source_path` string from the steps actually executed.
+
+    Format: "<identifier> -> <provider>_<method> -> ... -> <provider>_<final_method>".
+    The first step is the identifier (e.g. "linkedin"), each subsequent step
+    is "<provider>_<method>". The final step is the one that returned the
+    email; earlier steps ran without finding one.
+    """
+    parts: list[str] = []
+    for s in steps_taken:
+        ident = s.get("identifier", "")
+        method = s.get("method", "")
+        provider = _provider_label(method)
+        if not parts:
+            parts.append(ident)
+        else:
+            parts.append(f"{provider}_{method}")
+    # Final hop: include the provider for the final method too.
+    final_provider = _provider_label(final_method)
+    if final_method in ("not_found", "phone_reverse_unavailable"):
+        parts.append(final_method)
+    else:
+        parts.append(f"{final_provider}_{final_method}")
+    return " -> ".join(parts)
+
+
+async def _run_route_step(
+    method: str,
+    inputs: dict[str, str],
+    blitz_http: httpx.AsyncClient,
+    contacts_http: httpx.AsyncClient,
+    email_semaphore: asyncio.Semaphore,
+    validate_email: bool = True,
+) -> dict[str, Any]:
+    """Execute a single routed step. Returns one of:
+
+        {"email": "x@y.com", "source": "<SOURCE_*>", "verification": {...}}
+        {"phone_reverse": "https://linkedin.com/in/..."}  # phone hop
+        {"email": "", "source": SOURCE_NOT_FOUND}
+    """
+    from . import mailtester_client as _mt
+    from . import contacts_client as _cc
+    from . import blitz_client as _bc
+    from . import wizleads_client as _wl
+    from . import better_enrich_client as _be
+
+    verification: dict[str, Any] = {
+        "dm_email_verified": "unknown",
+        "mailtester_code": "",
+        "mailtester_message": "",
+    }
+
+    async with email_semaphore:
+        if method == ROUTE_METHOD_PERSON_BY_LINKEDIN:
+            try:
+                data = await _cc.person_by_linkedin(
+                    contacts_http, inputs["linkedin_url"]
+                )
+            except Exception as e:
+                logger.warning("Contacts DB LinkedIn lookup failed: %s", e)
+                return {"email": "", "source": SOURCE_NOT_FOUND}
+            email = _cc.extract_email_from_contacts_response(data)
+            if not email:
+                return {"email": "", "source": SOURCE_NOT_FOUND}
+            if validate_email:
+                try:
+                    result = await _mt.verify_email(blitz_http, email)
+                    verification["dm_email_verified"] = "yes" if result["valid"] else "no"
+                    verification["mailtester_code"] = result["code"]
+                    verification["mailtester_message"] = result["message"]
+                    if not result["valid"]:
+                        try:
+                            await _cc.mark_email_invalid(contacts_http, email=email)
+                        except Exception:
+                            pass
+                        return {"email": "", "source": SOURCE_NOT_FOUND}
+                except RuntimeError:
+                    verification["mailtester_code"] = "unavailable"
+            return {"email": email, "source": SOURCE_CONTACTS_DB_EMAIL, "verification": verification}
+
+        if method == ROUTE_METHOD_PERSON_ENRICH_BY_LINKEDIN:
+            try:
+                result = await _bc.person_enrich_by_linkedin(
+                    blitz_http, inputs["linkedin_url"]
+                )
+            except Exception as e:
+                logger.warning("Blitz person_enrich_by_linkedin failed: %s", e)
+                return {"email": "", "source": SOURCE_NOT_FOUND}
+            if result.get("found") and result.get("email"):
+                verification["dm_email_verified"] = "yes"
+                return {"email": result["email"], "source": SOURCE_BLITZ_EMAIL, "verification": verification}
+            return {"email": "", "source": SOURCE_NOT_FOUND}
+
+        if method == ROUTE_METHOD_FIND_WORK_EMAIL:
+            try:
+                result = await _bc.find_work_email(blitz_http, inputs["linkedin_url"])
+            except Exception as e:
+                logger.warning("Blitz find_work_email failed: %s", e)
+                return {"email": "", "source": SOURCE_NOT_FOUND}
+            if result.get("found") and result.get("email"):
+                verification["dm_email_verified"] = "yes"
+                return {"email": result["email"], "source": SOURCE_BLITZ_EMAIL, "verification": verification}
+            return {"email": "", "source": SOURCE_NOT_FOUND}
+
+        if method == ROUTE_METHOD_PERSON_BY_NAME_DOMAIN:
+            try:
+                data = await _cc.person_by_name_and_domain(
+                    contacts_http, inputs["full_name"], inputs["domain"]
+                )
+            except Exception as e:
+                logger.warning("Contacts DB name+domain lookup failed: %s", e)
+                return {"email": "", "source": SOURCE_NOT_FOUND}
+            email = _cc.extract_email_from_contacts_response(data)
+            if not email:
+                return {"email": "", "source": SOURCE_NOT_FOUND}
+            if validate_email:
+                try:
+                    result = await _mt.verify_email(blitz_http, email)
+                    verification["dm_email_verified"] = "yes" if result["valid"] else "no"
+                    verification["mailtester_code"] = result["code"]
+                    verification["mailtester_message"] = result["message"]
+                    if not result["valid"]:
+                        try:
+                            await _cc.mark_email_invalid(contacts_http, email=email, domain=inputs["domain"])
+                        except Exception:
+                            pass
+                        return {"email": "", "source": SOURCE_NOT_FOUND}
+                except RuntimeError:
+                    verification["mailtester_code"] = "unavailable"
+            return {"email": email, "source": SOURCE_CONTACTS_DB_EMAIL, "verification": verification}
+
+        if method == ROUTE_METHOD_PERSON_ENRICH:
+            try:
+                result = await _bc.person_enrich(
+                    blitz_http,
+                    full_name=inputs["full_name"],
+                    domain=inputs["domain"],
+                    include_phone=False,
+                )
+            except Exception as e:
+                logger.warning("Blitz person_enrich failed: %s", e)
+                return {"email": "", "source": SOURCE_NOT_FOUND}
+            if result.get("found") and result.get("person"):
+                person_data = result.get("person", {})
+                verified = person_data.get("verified_email", "")
+                if verified:
+                    verification["dm_email_verified"] = "yes"
+                    return {"email": verified, "source": SOURCE_BLITZ_EMAIL, "verification": verification}
+                emails = person_data.get("emails") or []
+                if emails:
+                    verification["dm_email_verified"] = "no"
+                    return {"email": emails[0].get("email", ""), "source": SOURCE_BLITZ_EMAIL, "verification": verification}
+            return {"email": "", "source": SOURCE_NOT_FOUND}
+
+        if method == ROUTE_METHOD_FIND_EMAIL:
+            try:
+                result = await _wl.find_email(
+                    blitz_http,
+                    first_name=inputs["first_name"],
+                    last_name=inputs["last_name"],
+                    website=inputs["domain"],
+                )
+            except Exception as e:
+                logger.warning("WizLeads find_email failed: %s", e)
+                return {"email": "", "source": SOURCE_NOT_FOUND}
+            if result and result.get("email"):
+                verification["dm_email_verified"] = "yes"
+                return {"email": result["email"], "source": SOURCE_WIZLEADS, "verification": verification}
+            return {"email": "", "source": SOURCE_NOT_FOUND}
+
+        if method == ROUTE_METHOD_FIND_WORK_EMAIL_V3:
+            try:
+                result = await _be.find_work_email_v3(
+                    blitz_http,
+                    full_name=inputs["full_name"],
+                    company_domain=inputs["domain"],
+                    linkedin_url=inputs.get("linkedin_url") or None,
+                )
+            except Exception as e:
+                logger.warning("BetterEnrich V3 failed: %s", e)
+                return {"email": "", "source": SOURCE_NOT_FOUND}
+            if result and result.get("email"):
+                email_status = result.get("email_status", "verified")
+                verification["dm_email_verified"] = "yes" if email_status in ("verified", "valid") else "unknown"
+                return {"email": result["email"], "source": SOURCE_BETTER_ENRICH_PERSON, "verification": verification}
+            return {"email": "", "source": SOURCE_NOT_FOUND}
+
+        if method == ROUTE_METHOD_PHONE_REVERSE_LOOKUP:
+            # No provider in this codebase has a phone->LinkedIn reverse
+            # endpoint. The router emits this step so callers know the
+            # phone->LinkedIn hop was attempted; the executor returns
+            # `phone_reverse` so the caller can continue with name/domain
+            # or stop with a clear no_email_reason.
+            return {"phone_reverse": "", "no_email_reason": NO_EMAIL_REASON_PHONE_REVERSE_UNAVAILABLE}
+
+        return {"email": "", "source": SOURCE_NOT_FOUND}
+
+
+async def run_enrichment_route(
+    route: dict[str, Any],
+    blitz_http: httpx.AsyncClient,
+    contacts_http: httpx.AsyncClient,
+    email_semaphore: asyncio.Semaphore,
+    validate_email: bool = True,
+) -> dict[str, Any]:
+    """Execute a route produced by `route_enrichment`.
+
+    Returns a result dict:
+        {
+            "email": str,
+            "source": str,                  # one of SOURCE_*
+            "verification": dict,
+            "source_path": str,             # "linkedin -> contacts_db" etc.
+            "provider_attempts": [str, ...],
+            "no_email_reason": str,
+        }
+    """
+    steps = route.get("steps", []) or []
+    no_email_reason = route.get("no_email_reason", "") or ""
+    if no_email_reason:
+        return {
+            "email": "",
+            "source": SOURCE_NOT_FOUND,
+            "verification": {
+                "dm_email_verified": "unknown",
+                "mailtester_code": "",
+                "mailtester_message": "",
+            },
+            "source_path": "",
+            "provider_attempts": [],
+            "no_email_reason": no_email_reason,
+        }
+
+    inputs = route.get("inputs", {}) or {}
+    attempts: list[str] = []
+    steps_taken: list[dict[str, str]] = []
+    for step in steps:
+        attempts.append(f"{step['method']}@{step['identifier']}")
+        result = await _run_route_step(
+            step["method"],
+            inputs,
+            blitz_http,
+            contacts_http,
+            email_semaphore,
+            validate_email=validate_email,
+        )
+        steps_taken.append(step)
+        if result.get("phone_reverse") is not None:
+            # Phone reverse hop — append a marker to source_path and stop.
+            return {
+                "email": "",
+                "source": SOURCE_NOT_FOUND,
+                "verification": {
+                    "dm_email_verified": "unknown",
+                    "mailtester_code": "",
+                    "mailtester_message": "",
+                },
+                "source_path": _build_source_path(steps_taken, "phone_reverse_unavailable"),
+                "provider_attempts": attempts,
+                "no_email_reason": result.get("no_email_reason") or NO_EMAIL_REASON_PHONE_REVERSE_UNAVAILABLE,
+            }
+        if result.get("email"):
+            return {
+                "email": result["email"],
+                "source": result.get("source", SOURCE_NOT_FOUND),
+                "verification": result.get("verification") or {
+                    "dm_email_verified": "unknown",
+                    "mailtester_code": "",
+                    "mailtester_message": "",
+                },
+                "source_path": _build_source_path(steps_taken, step["method"]),
+                "provider_attempts": attempts,
+                "no_email_reason": "",
+            }
+
+    return {
+        "email": "",
+        "source": SOURCE_NOT_FOUND,
+        "verification": {
+            "dm_email_verified": "unknown",
+            "mailtester_code": "",
+            "mailtester_message": "",
+        },
+        "source_path": _build_source_path(steps_taken, "not_found") if steps_taken else "",
+        "provider_attempts": attempts,
+        "no_email_reason": "",
+    }
 
 
 def _empty_enriched() -> dict[str, Any]:
@@ -528,15 +1145,16 @@ async def _enrich_domain(
     use_custom_cascade = skip_contacts_db or cascade != blitz_client.DEFAULT_CASCADE
 
     async with domain_semaphore:
-        # Step 1: domain → company LinkedIn URL (Contacts DB FIRST)
-        try:
-            contacts_company = await contacts_client.company_by_domain(contacts_http, domain)
-            if contacts_company and contacts_company.get("linkedin_url"):
-                company_linkedin_url = contacts_company.get("linkedin_url", "")
-                linkedin_source = SOURCE_CONTACTS_DB_LINKEDIN
-                logger.debug("Found company LinkedIn via Contacts DB for %s: %s", domain, company_linkedin_url)
-        except Exception as e:
-            logger.warning("Contacts DB company lookup failed for %s: %s", domain, e)
+        # Step 1: domain → company LinkedIn URL (Contacts DB FIRST unless force_provider=blitz)
+        if not _should_skip_provider("contacts_db", force_provider):
+            try:
+                contacts_company = await contacts_client.company_by_domain(contacts_http, domain)
+                if contacts_company and contacts_company.get("linkedin_url"):
+                    company_linkedin_url = contacts_company.get("linkedin_url", "")
+                    linkedin_source = SOURCE_CONTACTS_DB_LINKEDIN
+                    logger.debug("Found company LinkedIn via Contacts DB for %s: %s", domain, company_linkedin_url)
+            except Exception as e:
+                logger.warning("Contacts DB company lookup failed for %s: %s", domain, e)
 
         # Fallback: Blitz API if Contacts DB didn't find it
         if not company_linkedin_url:
@@ -704,6 +1322,11 @@ async def run_pipeline(
     job_id: Optional[str] = None,
     check_cancelled: Optional[Callable[[str], bool]] = None,
     validate_email: bool = True,  # NEW PARAMETER
+    linkedin_url_col: Optional[str] = None,
+    phone_col: Optional[str] = None,
+    company_name_col: Optional[str] = None,
+    existing_email_col: Optional[str] = None,
+    force_provider: Optional[str] = None,
 ) -> list[OutputRow]:
     """
     Runs the full pipeline over all rows.
@@ -801,10 +1424,75 @@ async def run_pipeline(
         else:
             full_name = ""
 
-        if not domain:
+        # Build per-row identifier payload (used downstream for visibility/debug)
+        input_payload = identifier_utils.build_row_identifier_payload(
+            row,
+            domain_col=domain_col,
+            name_col=name_col,
+            first_name_col=first_name_col,
+            last_name_col=last_name_col,
+            linkedin_url_col=linkedin_url_col,
+            phone_col=phone_col,
+            company_name_col=company_name_col,
+            existing_email_col=existing_email_col,
+        )
+        # Prefer normalized full_name we already computed (avoids whitespace-only issue)
+        input_payload["full_name"] = full_name or input_payload["full_name"]
+
+        # Use the routing function to decide the enrichment path.
+        route = route_enrichment(
+            linkedin_url=input_payload.get("normalized_linkedin_url") or "",
+            phone=input_payload.get("phone") or "",
+            full_name=input_payload.get("full_name") or "",
+            first_name=input_payload.get("first_name") or "",
+            last_name=input_payload.get("last_name") or "",
+            domain=domain,
+            company_name=input_payload.get("company_name") or "",
+            force_provider=force_provider,
+        )
+
+        # If we have a strong identifier (linkedin, phone, or name+domain), route to the single-person path
+        # instead of the large decision-maker cascade.
+        use_routing = route.get("mode") not in ("invalid", "domain_only", "")
+        no_email_reason = route.get("no_email_reason", "")
+
+        if not domain and not use_routing:
             result_rows = [_error_row(row)]
             result_rows[0]["row_status"] = "skipped_no_domain"
+        elif use_routing and not no_email_reason:
+            # Run the routed step.
+            route_result = await run_enrichment_route(
+                route,
+                blitz_http,
+                contacts_http,
+                email_semaphore,
+                validate_email=validate_email,
+            )
+            # Build a person row from the route result.
+            row_status = STATUS_ENRICHED if route_result.get("email") else STATUS_NO_CONTACTS
+            result_rows = [_empty_enriched()]
+            result_rows[0]["input_domain"] = domain
+            result_rows[0]["input_full_name"] = input_payload.get("full_name", "")
+            result_rows[0]["input_linkedin_url"] = input_payload.get("input_linkedin_url", "")
+            result_rows[0]["input_phone"] = input_payload.get("input_phone", "")
+            result_rows[0]["input_company_name"] = input_payload.get("input_company_name", "")
+            result_rows[0]["input_existing_email"] = input_payload.get("input_existing_email", "")
+            result_rows[0]["normalized_linkedin_url"] = input_payload.get("normalized_linkedin_url", "")
+            result_rows[0]["linkedin_username"] = input_payload.get("linkedin_username", "")
+            result_rows[0]["input_fields_used"] = input_payload.get("input_fields_used", "")
+            # Copy routing diagnostics.
+            result_rows[0]["dm_email"] = route_result.get("email", "")
+            result_rows[0]["dm_email_source"] = route_result.get("source", "")
+            result_rows[0]["source_path"] = route_result.get("source_path", "")
+            result_rows[0]["provider_attempts"] = ",".join(route_result.get("provider_attempts", []))
+            result_rows[0]["no_email_reason"] = route_result.get("no_email_reason", "")
+            result_rows[0]["row_status"] = row_status
+            verif = route_result.get("verification") or {}
+            result_rows[0]["dm_email_verified"] = verif.get("dm_email_verified", "unknown")
+            result_rows[0]["mailtester_code"] = verif.get("mailtester_code", "")
+            result_rows[0]["mailtester_message"] = verif.get("mailtester_message", "")
         else:
+            # Legacy domain-only cascade.
             result_rows = await _enrich_domain(
                 blitz_http,
                 contacts_http,
@@ -816,7 +1504,17 @@ async def run_pipeline(
                 domain_semaphore,
                 email_semaphore,
                 validate_email=validate_email,
+                force_provider=force_provider,
             )
+
+        # Attach input_* columns to every result row for visibility.
+        for r in result_rows:
+            identifier_utils.attach_input_columns(r, input_payload)
+            # Ensure routing diagnostics are on the result (they were added in the routed case).
+            if use_routing and not no_email_reason:
+                # If we used routing, we already set these. but in domain-only case,
+                # we still need to attach the no_email_reason from routing.
+                r["no_email_reason"] = r.get("no_email_reason") or no_email_reason
 
         # Collect source counts from this row's results
         source_counts: dict[str, int] = {}

@@ -39,6 +39,7 @@ from . import list_builder
 from . import better_enrich_client
 from . import wizleads_client
 from . import providers
+from . import identifier_utils
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import sync_contacts
@@ -447,6 +448,12 @@ class StartJobRequest(BaseModel):
     # If True, Contacts DB emails are verified before being returned
     # Invalid emails are marked in Contacts DB and cascade continues to Blitz
     validate_email: bool = True
+    # Optional column mappings for high-value identifiers. All optional and
+    # backward-compatible: when omitted, the request behaves as before.
+    linkedin_url_col: Optional[str] = None
+    phone_col: Optional[str] = None
+    company_name_col: Optional[str] = None
+    existing_email_col: Optional[str] = None
 
 
 class ChainJobRequest(BaseModel):
@@ -696,6 +703,9 @@ class UnifiedEnrichRequest(BaseModel):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     linkedin_url: Optional[str] = None
+    phone: Optional[str] = None
+    company_name: Optional[str] = None
+    existing_email: Optional[str] = None
     max_results: int = 5
     # Custom cascade: list of title filters (each item is a dict with include_title, exclude_title, etc.)
     cascade: Optional[list[dict]] = None
@@ -1412,98 +1422,133 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict):
     email_semaphore = asyncio.Semaphore(pipeline.EMAIL_CONCURRENCY)
 
     try:
-        if mode == "linkedin_only":
-            # LinkedIn-only: Look up by LinkedIn URL (no domain)
-            contacts = []
+        if mode in ("linkedin_only", "enhanced"):
+            # Single routing function decides provider order. The legacy
+            # linkedin_only/enhanced branches in this function used to copy-paste
+            # their own contacts_db -> blitz -> better_enrich cascades; both are
+            # now driven by pipeline.route_enrichment / run_enrichment_route.
+            contacts: list[dict[str, Any]] = []
             sources = {"company_linkedin": "not_found", "contacts": "not_found", "emails": "not_found"}
             company_linkedin_url = ""
 
-            # Extract username for contacts API, keep original URL for Blitz
-            linkedin_username = _extract_linkedin_username(req.linkedin_url or "")
-            # Use full URL for Blitz API, username for contacts DB
-            linkedin_for_blitz = req.linkedin_url or ""
-
-            # Step 1: Try Contacts DB by LinkedIn
-            if req.linkedin_url and not _should_skip_provider("contacts_db", req.force_provider):
+            # Enhanced mode used to fetch company LinkedIn via Contacts DB
+            # before running the person cascade. Preserve that side effect so
+            # downstream consumers still see company_linkedin_url in the
+            # response, but only when force_provider doesn't forbid contacts_db.
+            if mode == "enhanced" and domain and not _should_skip_provider("contacts_db", req.force_provider):
                 try:
-                    person = await contacts_client.person_by_linkedin(contacts_http, linkedin_username)
+                    company = await contacts_client.company_by_domain(contacts_http, domain)
+                    if company and company.get("linkedin_url"):
+                        company_linkedin_url = company.get("linkedin_url", "")
+                        sources["company_linkedin"] = "contacts_db"
+                except Exception as e:
+                    logger.debug("Contacts DB company lookup failed: %s", e)
+
+            # Best-effort name enrichment from Contacts DB so the response
+            # contact dict is populated even when no email is found. This
+            # mirrors the legacy behaviour of populating name fields before
+            # the email cascade. Skipped when force_provider forbids it.
+            if not _should_skip_provider("contacts_db", req.force_provider):
+                try:
+                    person = await contacts_client.person_by_linkedin(
+                        contacts_http, req.linkedin_url or ""
+                    )
                     if person:
                         contacts.append({
-                            "full_name": person.get("full_name", ""),
+                            "full_name": person.get("full_name", "") or full_name,
                             "first_name": person.get("first_name", ""),
                             "last_name": person.get("last_name", ""),
                             "title": person.get("title", ""),
-                            "email": person.get("email", ""),
-                            "linkedin_url": req.linkedin_url,
+                            "email": person.get("email", "") or "",
+                            "linkedin_url": req.linkedin_url or "",
                             "headline": person.get("headline", ""),
                             "location_city": person.get("location_city", ""),
                             "location_country": person.get("location_country", ""),
                             "icp_tier": 1,
                             "email_source": "contacts_db_email" if person.get("email") else "not_found",
                         })
-                        sources = {"company_linkedin": "not_found", "contacts": "contacts_db", "emails": "contacts_db_email" if person.get("email") else "not_found"}
+                        if person.get("email"):
+                            sources["contacts"] = "contacts_db"
+                            sources["emails"] = "contacts_db_email"
                 except Exception as e:
-                    logger.warning("Contacts DB lookup failed: %s", e)
+                    logger.debug("Contacts DB person lookup failed: %s", e)
 
-            # Step 2: Try Blitz API
-            if not contacts or not contacts[0].get("email"):
-                if not _should_skip_provider("blitz", req.force_provider):
-                    try:
-                        blitz_result = await blitz_client.person_enrich_by_linkedin(blitz_http, linkedin_for_blitz)
-                        if blitz_result and blitz_result.get("email"):
-                            # Add or update contact with Blitz data
-                            if not contacts:
-                                contacts.append({
-                                    "full_name": "",
-                                    "first_name": "",
-                                    "last_name": "",
-                                    "title": "",
-                                    "email": "",
-                                    "linkedin_url": req.linkedin_url,
-                                    "headline": "",
-                                    "location_city": "",
-                                    "location_country": "",
-                                    "icp_tier": 1,
-                                })
-                            contacts[0]["email"] = blitz_result.get("email", "")
-                            contacts[0]["email_source"] = "blitz_email"
-                            sources["contacts"] = "blitz"
-                            sources["emails"] = "blitz_email"
-                    except Exception as e:
-                        logger.warning("Blitz lookup failed: %s", e)
+            # Single routing decision for the email cascade.
+            route = pipeline.route_enrichment(
+                linkedin_url=req.linkedin_url or "",
+                phone=req.phone or "",
+                full_name=full_name,
+                first_name=req.first_name or "",
+                last_name=req.last_name or "",
+                domain=domain,
+                company_name=req.company_name or "",
+                force_provider=req.force_provider,
+            )
+            route_result = await pipeline.run_enrichment_route(
+                route,
+                blitz_http,
+                contacts_http,
+                email_semaphore,
+                validate_email=True,
+            )
 
-            # Step 3: Try BetterEnrich V3 as fallback (only if no email found)
-            if not contacts or not contacts[0].get("email"):
-                if full_name and not _should_skip_provider("better_enrich", req.force_provider):
-                    try:
-                        be_result = await better_enrich_client.find_work_email_v3(
-                            contacts_http, full_name, domain, req.linkedin_url
-                        )
-                        if be_result and be_result.get("email"):
-                            if not contacts:
-                                contacts.append({
-                                    "full_name": full_name,
-                                    "first_name": req.first_name or "",
-                                    "last_name": req.last_name or "",
-                                    "title": "",
-                                    "email": "",
-                                    "linkedin_url": req.linkedin_url,
-                                    "headline": "",
-                                    "location_city": "",
-                                    "location_country": "",
-                                    "icp_tier": 1,
-                                })
-                            contacts[0]["email"] = be_result.get("email", "")
-                            contacts[0]["email_source"] = "better_enrich"
-                            sources["contacts"] = "better_enrich"
-                            sources["emails"] = "better_enrich"
-                    except Exception as e:
-                        logger.warning("BetterEnrich V3 lookup failed: %s", e)
+            # Update the (possibly empty) contact dict with the routing result.
+            if route_result.get("email"):
+                if not contacts:
+                    contacts.append({
+                        "full_name": full_name,
+                        "first_name": req.first_name or "",
+                        "last_name": req.last_name or "",
+                        "title": "",
+                        "email": "",
+                        "linkedin_url": req.linkedin_url or "",
+                        "headline": "",
+                        "location_city": "",
+                        "location_country": "",
+                        "icp_tier": 1,
+                    })
+                contacts[0]["email"] = route_result["email"]
+                contacts[0]["email_source"] = route_result.get("source", "not_found")
+                sources["emails"] = route_result.get("source", "not_found")
+                if sources.get("contacts") in (None, "", "not_found"):
+                    sources["contacts"] = route_result.get("source", "not_found")
 
-            # Sync contacts to DB
-            sync_result = {"synced": 0, "skipped": 0, "failed": 0}
+            # Sync to Contacts DB (enhanced mode only, mirroring legacy behaviour).
+            sync_result: dict[str, Any] = {"synced": 0, "skipped": 0, "failed": 0}
             sync_status = "no_contacts_to_sync"
-            if contacts:
+            if mode == "enhanced" and contacts:
+                try:
+                    with tempfile.NamedTemporaryFile(
+                        mode="w", suffix=".csv", delete=False, newline=""
+                    ) as tmp:
+                        fieldnames = [
+                            "domain", "dm_email", "dm_full_name", "dm_first_name",
+                            "dm_last_name", "dm_linkedin_url", "dm_title",
+                        ]
+                        writer = csv.DictWriter(tmp, fieldnames=fieldnames)
+                        writer.writeheader()
+                        for c in contacts:
+                            writer.writerow({
+                                "domain": domain,
+                                "dm_email": c.get("email", ""),
+                                "dm_full_name": c.get("full_name", ""),
+                                "dm_first_name": c.get("first_name", ""),
+                                "dm_last_name": c.get("last_name", ""),
+                                "dm_linkedin_url": c.get("linkedin_url", ""),
+                                "dm_title": c.get("title", ""),
+                            })
+                        tmp_path = Path(tmp.name)
+                    sync_result = sync_contacts.sync_enrichment_to_contacts(tmp_path)
+                    sync_status = "success"
+                    logger.info("Enhanced mode sync result for %s: %s", domain, sync_result)
+                except Exception as sync_err:
+                    logger.warning("Enhanced mode sync failed for %s: %s", domain, sync_err)
+                    sync_status = "failed"
+                    sync_result = {"synced": 0, "skipped": 0, "failed": 1, "error": str(sync_err)}
+                finally:
+                    if "tmp_path" in dir() and tmp_path.exists():
+                        tmp_path.unlink(missing_ok=True)
+            elif mode == "linkedin_only" and contacts:
                 sync_status = "success"
                 sync_result = {"synced": len(contacts), "skipped": 0, "failed": 0}
 
@@ -1517,6 +1562,12 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict):
                 "contacts": contacts,
                 "contact_count": len(contacts),
                 "data_sources": sources,
+                "routing": {
+                    "mode": route.get("mode", ""),
+                    "source_path": route_result.get("source_path", ""),
+                    "provider_attempts": route_result.get("provider_attempts", []),
+                    "no_email_reason": route_result.get("no_email_reason", ""),
+                },
                 "sync_to_contacts_db": {
                     "status": sync_status,
                     "records_synced": sync_result.get("synced", 0),
@@ -1525,210 +1576,6 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict):
                 },
             }
 
-        elif mode == "enhanced":
-            # Enhanced mode: Try Contacts DB, Blitz, then BetterEnrich as fallback
-            # DO NOT fall through to domain cascade - return not found if person not found
-            contacts = []
-            sources = {"company_linkedin": "not_found", "contacts": "not_found", "emails": "not_found"}
-            company_linkedin_url = ""
-
-            # Step 1: Try Contacts DB (person lookup by LinkedIn OR by name+domain)
-            if (full_name or req.linkedin_url) and not _should_skip_provider("contacts_db", req.force_provider):
-                try:
-                    # Priority 1: LinkedIn URL + domain (if provided)
-                    if req.linkedin_url:
-                        person = await contacts_client.person_by_linkedin(contacts_http, req.linkedin_url)
-                        if person and person.get("email"):
-                            contacts.append({
-                                "full_name": person.get("full_name", full_name or ""),
-                                "first_name": person.get("first_name", ""),
-                                "last_name": person.get("last_name", ""),
-                                "title": person.get("title", ""),
-                                "email": person.get("email", ""),
-                                "linkedin_url": req.linkedin_url,
-                                "headline": person.get("headline", ""),
-                                "location_city": person.get("location_city", ""),
-                                "location_country": person.get("location_country", ""),
-                                "icp_tier": 1,
-                                "email_source": "contacts_db_email",
-                            })
-                            sources["contacts"] = "contacts_db"
-                            sources["emails"] = "contacts_db"
-
-                    # Priority 2: Full name + domain (if provided and no contacts found yet)
-                    if not contacts and full_name and domain:
-                        person = await contacts_client.person_by_name_and_domain(contacts_http, full_name, domain)
-                        if person and person.get("email"):
-                            contacts.append({
-                                "full_name": person.get("full_name", full_name or ""),
-                                "first_name": person.get("first_name", ""),
-                                "last_name": person.get("last_name", ""),
-                                "title": person.get("title", ""),
-                                "email": person.get("email", ""),
-                                "linkedin_url": person.get("linkedin_url", req.linkedin_url or ""),
-                                "headline": person.get("headline", ""),
-                                "location_city": person.get("location_city", ""),
-                                "location_country": person.get("location_country", ""),
-                                "icp_tier": 1,
-                                "email_source": "contacts_db_email",
-                            })
-                            sources["contacts"] = "contacts_db"
-                            sources["emails"] = "contacts_db"
-                except Exception as e:
-                    logger.debug("Contacts DB person lookup failed: %s", e)
-
-            # Step 2: If no contacts from Contacts DB, try Blitz (person-specific lookup)
-            if not contacts and not _should_skip_provider("blitz", req.force_provider):
-                try:
-                    # Try to get company first
-                    company = await contacts_client.company_by_domain(contacts_http, domain)
-                    if company and company.get("linkedin_url"):
-                        company_linkedin_url = company["linkedin_url"]
-                        sources["company_linkedin"] = "contacts_db"
-
-                    # Use Blitz person-specific enrichment (not domain cascade)
-                    # Priority: linkedin_url > full_name+domain
-                    blitz_result = None
-                    blitz_mode = None
-
-                    if req.linkedin_url:
-                        blitz_result = await blitz_client.person_enrich_by_linkedin(blitz_http, linkedin_url=req.linkedin_url)
-                        blitz_mode = "linkedin"
-                    elif full_name and domain:
-                        try:
-                            blitz_result = await blitz_client.person_enrich(blitz_http, full_name=full_name, domain=domain)
-                            blitz_mode = "person"
-                        except Exception as e:
-                            logger.debug("Blitz person enrich failed: %s", e)
-                            blitz_result = None
-
-                    # Process Blitz result
-                    if blitz_result and blitz_result.get("found"):
-                        email = None
-                        if blitz_mode == "linkedin":
-                            email = blitz_result.get("email") or (blitz_result.get("all_emails") or [None])[0]
-                            if email:
-                                contacts.append({
-                                    "full_name": full_name or "",
-                                    "first_name": req.first_name or "",
-                                    "last_name": req.last_name or "",
-                                    "title": "",
-                                    "email": email,
-                                    "linkedin_url": req.linkedin_url or "",
-                                    "headline": "",
-                                    "location_city": "",
-                                    "location_country": "",
-                                    "icp_tier": 1,
-                                    "email_source": "blitz",
-                                })
-                        elif blitz_mode == "person":
-                            person = blitz_result.get("person", {})
-                            emails = person.get("emails", [])
-                            verified_email = person.get("verified_email", "")
-                            if verified_email or emails:
-                                email = verified_email or emails[0]
-                                contacts.append({
-                                    "full_name": person.get("full_name", full_name or ""),
-                                    "first_name": person.get("first_name", ""),
-                                    "last_name": person.get("last_name", ""),
-                                    "title": person.get("headline", ""),
-                                    "email": email,
-                                    "linkedin_url": person.get("linkedin_url", req.linkedin_url or ""),
-                                    "headline": person.get("headline", ""),
-                                    "location_city": "",
-                                    "location_country": "",
-                                    "icp_tier": 1,
-                                    "email_source": "blitz",
-                                })
-
-                        if contacts:
-                            sources["contacts"] = "blitz"
-                            sources["emails"] = "blitz"
-
-                except Exception as e:
-                    logger.debug("Blitz person enrichment failed: %s", e)
-
-            # Step 3: If still no email, try BetterEnrich V3 as final fallback
-            if full_name and domain and not contacts and not _should_skip_provider("better_enrich", req.force_provider):
-                try:
-                    be_result = await better_enrich_client.find_work_email_v3(blitz_http, full_name=full_name, company_domain=domain, linkedin_url=req.linkedin_url)
-                    if be_result and be_result.get("email"):
-                        contacts.append({
-                            "full_name": full_name,
-                            "first_name": req.first_name or "",
-                            "last_name": req.last_name or "",
-                            "title": "",
-                            "email": be_result.get("email"),
-                            "linkedin_url": req.linkedin_url or "",
-                            "headline": "",
-                            "location_city": "",
-                            "location_country": "",
-                            "icp_tier": 1,
-                            "email_source": "better_enrich",
-                        })
-                        sources["contacts"] = "better_enrich"
-                        sources["emails"] = "better_enrich"
-                        logger.info("BetterEnrich V3 found email for %s: %s", full_name, be_result.get("email"))
-                except Exception as e:
-                    logger.debug("BetterEnrich V3 lookup failed: %s", e)
-
-            # Sync contacts to DB (ACTUAL sync - this was a BUG before!)
-            sync_result = {"synced": 0, "skipped": 0, "failed": 0}
-            sync_status = "no_contacts_to_sync"
-            if contacts:
-                try:
-                    # Create temp CSV file with contacts for sync
-                    with tempfile.NamedTemporaryFile(
-                        mode='w', suffix='.csv', delete=False, newline=''
-                    ) as tmp:
-                        fieldnames = [
-                            'domain', 'dm_email', 'dm_full_name', 'dm_first_name',
-                            'dm_last_name', 'dm_linkedin_url', 'dm_title'
-                        ]
-                        writer = csv.DictWriter(tmp, fieldnames=fieldnames)
-                        writer.writeheader()
-                        for c in contacts:
-                            writer.writerow({
-                                'domain': domain,
-                                'dm_email': c.get('email', ''),
-                                'dm_full_name': c.get('full_name', ''),
-                                'dm_first_name': c.get('first_name', ''),
-                                'dm_last_name': c.get('last_name', ''),
-                                'dm_linkedin_url': c.get('linkedin_url', ''),
-                                'dm_title': c.get('title', ''),
-                            })
-                        tmp_path = Path(tmp.name)
-
-                    # Actually sync to Contacts DB
-                    sync_result = sync_contacts.sync_enrichment_to_contacts(tmp_path)
-                    sync_status = "success"
-                    logger.info("Enhanced mode sync result for %s: %s", domain, sync_result)
-                except Exception as sync_err:
-                    logger.warning("Enhanced mode sync failed for %s: %s", domain, sync_err)
-                    sync_status = "failed"
-                    sync_result = {"synced": 0, "skipped": 0, "failed": 1, "error": str(sync_err)}
-                finally:
-                    # Clean up temp file
-                    if 'tmp_path' in dir() and tmp_path.exists():
-                        tmp_path.unlink(missing_ok=True)
-
-            # Record source stats for API-only call
-            _record_unified_enrich_stats(contacts, domain, current_user)
-
-            return {
-                "domain": domain,
-                "mode": mode,
-                "company_linkedin_url": company_linkedin_url,
-                "contacts": contacts,
-                "contact_count": len(contacts),
-                "data_sources": sources,
-                "sync_to_contacts_db": {
-                    "status": sync_status,
-                    "records_synced": sync_result.get("synced", 0),
-                    "records_skipped": sync_result.get("skipped", 0),
-                    "records_failed": sync_result.get("failed", 0),
-                },
-            }
 
         # For domain_only mode only, call the pipeline
         # Build contact params
@@ -2187,8 +2034,12 @@ async def start_enrichment_job(
         last_name_col=req.last_name_col,
         cascade=cascade,
         max_results=req.max_results,
-        write_incremental=True,  # Enable incremental writes for partial downloads
-        validate_email=req.validate_email,  # NEW PARAMETER
+        write_incremental=True,
+        validate_email=req.validate_email,
+        linkedin_url_col=req.linkedin_url_col,
+        phone_col=req.phone_col,
+        company_name_col=req.company_name_col,
+        existing_email_col=req.existing_email_col,
     )
 
     return {"job_id": job_id, "total": len(rows)}
@@ -2411,6 +2262,10 @@ async def _run_job(
     max_results: int,
     write_incremental: bool = False,
     validate_email: bool = True,  # NEW PARAMETER
+    linkedin_url_col: Optional[str] = None,
+    phone_col: Optional[str] = None,
+    company_name_col: Optional[str] = None,
+    existing_email_col: Optional[str] = None,
 ):
     store = job_store.get_store()
     store.set_running(job_id)
@@ -2457,6 +2312,10 @@ async def _run_job(
             job_id=job_id,
             check_cancelled=check_job_cancelled,
             validate_email=validate_email,
+            linkedin_url_col=linkedin_url_col,
+            phone_col=phone_col,
+            company_name_col=company_name_col,
+            existing_email_col=existing_email_col,
         )
 
         # If not writing incrementally, write final output
@@ -2769,6 +2628,10 @@ async def restart_enrichment_job(
         cascade_config=cascade_json,
         max_results=original_job.get('max_results', 5),
         selected_providers=selected_providers,
+        linkedin_url_col=original_job.get('linkedin_url_col'),
+        phone_col=original_job.get('phone_col'),
+        company_name_col=original_job.get('company_name_col'),
+        existing_email_col=original_job.get('existing_email_col'),
     )
 
     # If we have unprocessed indices, write checkpoints for them so new job can track progress
@@ -2789,6 +2652,10 @@ async def restart_enrichment_job(
         name_col=original_job.get('name_col'),
         first_name_col=original_job.get('first_name_col'),
         last_name_col=original_job.get('last_name_col'),
+        linkedin_url_col=original_job.get('linkedin_url_col'),
+        phone_col=original_job.get('phone_col'),
+        company_name_col=original_job.get('company_name_col'),
+        existing_email_col=original_job.get('existing_email_col'),
         max_results=original_job.get('max_results', 5),
         selected_providers=selected_providers,
     )
@@ -2831,12 +2698,15 @@ async def cancel_enrichment_job(
     # Add to in-memory cancelled set for fast checking by background task
     _cancelled_jobs.add(job_id)
 
-    # Also update database for persistence - survives worker restarts
-    # This is the key fix: if workers restart, they'll see the cancelled status
+    # Persist to database (survives worker restarts)
+    store.save_job_state(job_id, "cancelled")
+
+    # Also update database for persistent cancellation
     store.set_cancelled(job_id)
 
-    # Remove from active jobs set
+    # Remove from active jobs set and remove from persistence
     _active_jobs.discard(job_id)
+    store.remove_job_state(job_id)
 
     # Wake up any SSE listeners
     sig = _job_signals.pop(job_id, None)
@@ -2855,10 +2725,12 @@ async def cancel_enrichment_job(
 def cleanup_stale_jobs() -> None:
     """Mark jobs as abandoned if they were running when server restarted.
 
-    This status distinguishes from jobs that failed due to errors (user can retry).
+    Uses heartbeat-based detection: a job is stale only if it has not received
+    a heartbeat in the last 2 minutes. This prevents false positives when the
+    server is restarted but the underlying job is still healthy.
     """
     store = job_store.get_store()
-    stale = store.get_stale_running_jobs()
+    stale = store.get_stale_running_jobs_by_heartbeat()
     for job_id in stale:
         store.set_abandoned(
             job_id,
@@ -2982,6 +2854,10 @@ async def enrich_by_domains(
         last_name_col=req.last_name_col,
         cascade_config=cascade_json,
         max_results=req.max_results,
+        linkedin_url_col=req.linkedin_url_col,
+        phone_col=req.phone_col,
+        company_name_col=req.company_name_col,
+        existing_email_col=req.existing_email_col,
     )
 
     _job_signals[job_id] = asyncio.Event()
@@ -2998,6 +2874,10 @@ async def enrich_by_domains(
         cascade=cascade,
         max_results=req.max_results,
         write_incremental=True,
+        linkedin_url_col=req.linkedin_url_col,
+        phone_col=req.phone_col,
+        company_name_col=req.company_name_col,
+        existing_email_col=req.existing_email_col,
     )
 
     return {"job_id": job_id, "total": len(rows), "flow": "domain_enrichment"}
@@ -3015,6 +2895,12 @@ class ProviderToggleRequest(BaseModel):
     # contacts_db is always used first and cannot be disabled
     # If None, all enabled providers are used
     providers: Optional[list[str]] = None
+    # Optional column mappings for high-value identifiers. All optional and
+    # backward-compatible: when omitted, the request behaves as before.
+    linkedin_url_col: Optional[str] = None
+    phone_col: Optional[str] = None
+    company_name_col: Optional[str] = None
+    existing_email_col: Optional[str] = None
 
 
 @router.post("/flows/domain-enrich")
@@ -3079,6 +2965,10 @@ async def domain_enrich_with_providers(
         cascade_config=None,
         max_results=req.max_results,
         selected_providers=req.providers,
+        linkedin_url_col=req.linkedin_url_col,
+        phone_col=req.phone_col,
+        company_name_col=req.company_name_col,
+        existing_email_col=req.existing_email_col,
     )
 
     _job_signals[job_id] = asyncio.Event()
@@ -3092,6 +2982,10 @@ async def domain_enrich_with_providers(
         name_col=req.name_col,
         first_name_col=req.first_name_col,
         last_name_col=req.last_name_col,
+        linkedin_url_col=req.linkedin_url_col,
+        phone_col=req.phone_col,
+        company_name_col=req.company_name_col,
+        existing_email_col=req.existing_email_col,
         max_results=req.max_results,
         selected_providers=req.providers,
     )
@@ -3106,15 +3000,36 @@ async def _run_domain_enrich_job(
     name_col: Optional[str],
     first_name_col: Optional[str],
     last_name_col: Optional[str],
-    max_results: int,
+    linkedin_url_col: Optional[str] = None,
+    phone_col: Optional[str] = None,
+    company_name_col: Optional[str] = None,
+    existing_email_col: Optional[str] = None,
+    max_results: int = 5,
     selected_providers: Optional[list[str]] = None,
 ):
     """Background task to run domain enrichment using list_builder."""
     store = job_store.get_store()
     store.set_running(job_id)
+    # Set initial heartbeat so cleanup_stale_jobs doesn't mark us as abandoned too soon
+    store.heartbeat(job_id)
     seq = [0]
 
     output_path = OUTPUT_DIR / f"{job_id}.csv"
+
+    # Start heartbeat task (updates last_heartbeat every 30s)
+    async def heartbeat_loop():
+        try:
+            while True:
+                await asyncio.sleep(30)
+                try:
+                    heartbeat_store = job_store.get_store()
+                    heartbeat_store.heartbeat(job_id)
+                except Exception as hb_err:
+                    logger.warning("Heartbeat failed for %s: %s", job_id, hb_err)
+        except asyncio.CancelledError:
+            pass
+
+    heartbeat_task = asyncio.create_task(heartbeat_loop())
 
     async def on_progress(e: dict[str, Any]):
         try:
@@ -3163,6 +3078,39 @@ async def _run_domain_enrich_job(
             job_id=job_id,
             record_provider_use=record_provider_use,
         )
+
+        # Attach input_* columns for visibility/debug.
+        if output_rows:
+            row_payloads = [
+                identifier_utils.build_row_identifier_payload(
+                    r,
+                    domain_col=domain_col,
+                    name_col=name_col,
+                    first_name_col=first_name_col,
+                    last_name_col=last_name_col,
+                    linkedin_url_col=linkedin_url_col,
+                    phone_col=phone_col,
+                    company_name_col=company_name_col,
+                    existing_email_col=existing_email_col,
+                )
+                for r in rows
+            ]
+            # Group output rows by source row index is non-trivial; instead,
+            # attach payload based on the original row's input columns which
+            # are already preserved in the output row.
+            for out_row in output_rows:
+                payload = identifier_utils.build_row_identifier_payload(
+                    out_row,
+                    domain_col=domain_col,
+                    name_col=name_col,
+                    first_name_col=first_name_col,
+                    last_name_col=last_name_col,
+                    linkedin_url_col=linkedin_url_col,
+                    phone_col=phone_col,
+                    company_name_col=company_name_col,
+                    existing_email_col=existing_email_col,
+                )
+                identifier_utils.attach_input_columns(out_row, payload)
 
         # Write output
         if output_rows:
@@ -3222,6 +3170,17 @@ async def _run_domain_enrich_job(
     except Exception as e:
         logger.exception("Domain enrich job %s crashed: %s", job_id, e)
         store.set_failed(job_id, f"Job crashed: {str(e)}")
+
+    finally:
+        # Cancel heartbeat task
+        if 'heartbeat_task' in locals():
+            heartbeat_task.cancel()
+        # Clean up state persistence
+        try:
+            cleanup_store = job_store.get_store()
+            cleanup_store.remove_job_state(job_id)
+        except Exception as cleanup_err:
+            logger.warning("Failed to clean job state for %s: %s", job_id, cleanup_err)
 
 
 # --- Flow 2: Company Search & Enrich ---
