@@ -133,6 +133,45 @@ def _should_skip_provider(provider: str, force_provider: Optional[str]) -> bool:
     return False
 
 
+def _build_routing_response(
+    route: dict[str, Any],
+    route_result: dict[str, Any],
+    *,
+    debug: bool = False,
+) -> dict[str, Any]:
+    """Build the `routing` block of the unified enrich response.
+
+    When `debug=False` (the default), the response is compact: only the
+    source_path, no_email_reason, and the legacy provider_attempts list
+    (human-readable strings) are returned. This keeps the default response
+    size small for production traffic.
+
+    When `debug=True`, the response includes the full structured
+    `provider_attempts_json`, `providers_called`, `providers_skipped`,
+    `final_email_status`, and `final_email_verification_source` fields
+    so callers can inspect every provider call in detail.
+    """
+    base = {
+        "mode": route.get("mode", ""),
+        "source_path": route_result.get("source_path", ""),
+        "provider_attempts": route_result.get("provider_attempts", []),
+        "no_email_reason": route_result.get("no_email_reason", ""),
+    }
+    if not debug:
+        return base
+
+    return {
+        **base,
+        "provider_attempts_json": route_result.get("provider_attempts_json", []),
+        "providers_called": route_result.get("providers_called", []),
+        "providers_skipped": route_result.get("providers_skipped", []),
+        "final_email_status": route_result.get("final_email_status", ""),
+        "final_email_verification_source": route_result.get(
+            "final_email_verification_source", ""
+        ),
+    }
+
+
 DATA_DIR = Path(__file__).parent.parent / "data"
 UPLOAD_DIR = DATA_DIR / "uploads"
 OUTPUT_DIR = DATA_DIR / "outputs"
@@ -758,6 +797,16 @@ Returns enriched data with source tracking and sync status.
 )
 async def unified_enrich(
     req: UnifiedEnrichRequest,
+    debug: bool = Query(
+        False,
+        description=(
+            "When true, the response includes the full provider_attempts_json "
+            "array (one structured record per provider call) plus latency_ms, "
+            "called/skipped flags, and input_type_used. When false, only "
+            "source_path and no_email_reason are returned in `routing` to "
+            "keep responses compact."
+        ),
+    ),
     current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """
@@ -1331,6 +1380,14 @@ async def unified_enrich_get(
     cascade_json: str = Query(None, description="Custom cascade as JSON string"),
     titles: str = Query(None, description="Simple titles filter (comma-separated, e.g., 'CEO,CTO,HR')"),
     force_provider: str = Query(None, description="Force specific provider: contacts_db, blitz, better_enrich"),
+    debug: bool = Query(
+        False,
+        description=(
+            "When true, the response `routing` block includes the full "
+            "provider_attempts_json, providers_called, providers_skipped, "
+            "final_email_status, and final_email_verification_source."
+        ),
+    ),
     current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """
@@ -1369,16 +1426,21 @@ async def unified_enrich_get(
 
     # Call the POST handler logic (reuse by calling unified_enrich internally)
     # We'll manually invoke the same logic flow here to avoid duplication
-    return await _unified_enrich_logic(req, current_user)
+    return await _unified_enrich_logic(req, current_user, debug=debug)
 
 
-async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict):
+async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *, debug: bool = False):
     """
     Shared logic for both POST and GET endpoints.
 
     Args:
         req: UnifiedEnrichRequest with optional force_provider parameter
         current_user: Current authenticated user
+        debug: When true, the response `routing` block includes the full
+            provider_attempts_json (structured records) and audit fields.
+            When false (default), the routing block is compact: only
+            source_path, no_email_reason, and the legacy provider_attempts
+            string list.
 
     force_provider: If set, only use that specific provider ("contacts_db", "blitz", "better_enrich")
     """
@@ -1490,6 +1552,9 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict):
                 contacts_http,
                 email_semaphore,
                 validate_email=True,
+                job_id=f"api_{current_user.get('id', 'anon')}_{uuid.uuid4().hex[:8]}",
+                row_index=0,
+                emit_logs=True,
             )
 
             # Update the (possibly empty) contact dict with the routing result.
@@ -1562,12 +1627,9 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict):
                 "contacts": contacts,
                 "contact_count": len(contacts),
                 "data_sources": sources,
-                "routing": {
-                    "mode": route.get("mode", ""),
-                    "source_path": route_result.get("source_path", ""),
-                    "provider_attempts": route_result.get("provider_attempts", []),
-                    "no_email_reason": route_result.get("no_email_reason", ""),
-                },
+                "routing": _build_routing_response(
+                    route, route_result, debug=debug
+                ),
                 "sync_to_contacts_db": {
                     "status": sync_status,
                     "records_synced": sync_result.get("synced", 0),

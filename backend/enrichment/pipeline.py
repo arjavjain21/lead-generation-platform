@@ -20,7 +20,10 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import json
 import logging
+import os
+import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -36,6 +39,113 @@ from . import wizleads_client
 from . import identifier_utils
 
 logger = logging.getLogger(__name__)
+
+# Directory for per-job JSONL audit sidecars
+AUDIT_SIDECAR_DIR = Path(os.environ.get(
+    "ENRICHMENT_AUDIT_DIR",
+    "/mnt/disk/lead-generation-platform/jobs/audit",
+))
+
+# Maximum size of provider_attempts_json in a CSV row before spilling to sidecar.
+# Roughly ~80 attempts of ~30 chars each is ~2.4KB; we use 1KB as the threshold
+# to keep CSV rows readable.
+AUDIT_JSONL_COMPACT_THRESHOLD_BYTES = 1024
+
+
+def _build_provider_attempt(
+    *,
+    job_id: str,
+    row_index: int,
+    domain: str,
+    normalized_linkedin_url: str,
+    provider: str,
+    method: str,
+    input_type_used: str,
+    called: bool,
+    skipped_reason: str = "",
+    status: str = "",
+    email_found: bool = False,
+    error_type: str = "",
+    latency_ms: int = 0,
+) -> dict[str, Any]:
+    """Build a structured provider_attempt record.
+
+    Each record is a dict with stable keys so callers can JSON-serialize it
+    and downstream consumers (CSV columns, JSONL sidecars, API responses) can
+    rely on a uniform shape.
+    """
+    return {
+        "job_id": job_id or "",
+        "row_index": int(row_index) if row_index is not None else -1,
+        "domain": domain or "",
+        "normalized_linkedin_url": normalized_linkedin_url or "",
+        "provider": provider or "",
+        "method": method or "",
+        "input_type_used": input_type_used or "",
+        "called": bool(called),
+        "skipped_reason": skipped_reason or "",
+        "status": status or "",
+        "email_found": bool(email_found),
+        "error_type": error_type or "",
+        "latency_ms": int(latency_ms) if latency_ms else 0,
+    }
+
+
+def _log_provider_attempt(attempt: dict[str, Any]) -> None:
+    """Emit a structured INFO log for a single provider attempt.
+
+    Uses `extra=` so each key becomes its own log field for downstream log
+    aggregators (Loki, ELK, etc.). No secrets, emails, or raw LinkedIn URLs
+    beyond the already-normalized form are included.
+    """
+    if not attempt:
+        return
+    # Project to a flat dict for the log record. Keep keys short for grep-ability.
+    payload = {
+        "evt": "provider_attempt",
+        "job_id": attempt.get("job_id", ""),
+        "row_index": attempt.get("row_index", -1),
+        "domain": attempt.get("domain", ""),
+        "normalized_linkedin_url": attempt.get("normalized_linkedin_url", ""),
+        "provider": attempt.get("provider", ""),
+        "method": attempt.get("method", ""),
+        "input_type_used": attempt.get("input_type_used", ""),
+        "called": attempt.get("called", False),
+        "skipped_reason": attempt.get("skipped_reason", "") or None,
+        "status": attempt.get("status", "") or None,
+        "email_found": attempt.get("email_found", False),
+        "error_type": attempt.get("error_type", "") or None,
+        "latency_ms": attempt.get("latency_ms", 0),
+    }
+    # Drop None values so the log line is compact.
+    payload = {k: v for k, v in payload.items() if v is not None}
+    logger.info("provider_attempt %s", json.dumps(payload, sort_keys=True))
+
+
+def _compact_attempts_summary(attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build a compact summary of attempts for CSV embedding.
+
+    The summary is small (~200 bytes max) so it fits in a CSV cell even when
+    many providers were tried. Full per-attempt detail is written to the
+    JSONL sidecar.
+    """
+    providers_called: list[str] = []
+    providers_skipped: list[dict[str, str]] = []
+    for a in attempts or []:
+        provider = a.get("provider", "")
+        method = a.get("method", "")
+        if a.get("called"):
+            providers_called.append(provider)
+        else:
+            providers_skipped.append({
+                "provider": provider,
+                "method": method,
+                "skipped_reason": a.get("skipped_reason", ""),
+            })
+    return {
+        "providers_called": providers_called,
+        "providers_skipped": providers_skipped,
+    }
 
 
 # Valid provider values for force_provider parameter
@@ -129,7 +239,30 @@ SOURCE_BETTER_ENRICH_PERSON = "better_enrich_person"      # Person email from Be
 SOURCE_WIZLEADS = "wizleads_email"                        # Person email from WizLeads
 
 # Routing reasons (no_email_reason values)
+# The full standard enum (per LOOP.md acceptance test 2/8):
+#   missing_required_input, linkedin_url_not_passed_to_pipeline,
+#   linkedin_parse_failed, provider_disabled, force_provider_blocked_provider,
+#   provider_rate_limited, provider_circuit_open, provider_auth_failed,
+#   provider_timeout, provider_5xx, provider_schema_parse_failed,
+#   provider_called_no_match, email_found_but_invalid, verification_unavailable,
+#   all_providers_called_no_email
+NO_EMAIL_REASON_MISSING_REQUIRED_INPUT = "missing_required_input"
+NO_EMAIL_REASON_LINKEDIN_URL_NOT_PASSED = "linkedin_url_not_passed_to_pipeline"
 NO_EMAIL_REASON_LINKEDIN_PARSE_FAILED = "linkedin_parse_failed"
+NO_EMAIL_REASON_PROVIDER_DISABLED = "provider_disabled"
+NO_EMAIL_REASON_FORCE_PROVIDER_BLOCKED = "force_provider_blocked_provider"
+NO_EMAIL_REASON_PROVIDER_RATE_LIMITED = "provider_rate_limited"
+NO_EMAIL_REASON_PROVIDER_CIRCUIT_OPEN = "provider_circuit_open"
+NO_EMAIL_REASON_PROVIDER_AUTH_FAILED = "provider_auth_failed"
+NO_EMAIL_REASON_PROVIDER_TIMEOUT = "provider_timeout"
+NO_EMAIL_REASON_PROVIDER_5XX = "provider_5xx"
+NO_EMAIL_REASON_PROVIDER_SCHEMA_PARSE_FAILED = "provider_schema_parse_failed"
+NO_EMAIL_REASON_PROVIDER_CALLED_NO_MATCH = "provider_called_no_match"
+NO_EMAIL_REASON_EMAIL_FOUND_BUT_INVALID = "email_found_but_invalid"
+NO_EMAIL_REASON_VERIFICATION_UNAVAILABLE = "verification_unavailable"
+NO_EMAIL_REASON_ALL_PROVIDERS_CALLED_NO_EMAIL = "all_providers_called_no_email"
+
+# Historical aliases (kept for back-compat with prior tests)
 NO_EMAIL_REASON_PHONE_REVERSE_UNAVAILABLE = "phone_reverse_unavailable"
 NO_EMAIL_REASON_FORCED_PROVIDER_CANNOT_USE_INPUT = "forced_provider_cannot_use_input"
 NO_EMAIL_REASON_NO_IDENTIFIERS = "no_identifiers"
@@ -189,7 +322,12 @@ ENRICHED_COLUMNS = [
     # Routing diagnostics
     "source_path",
     "provider_attempts",
+    "provider_attempts_json",
+    "providers_called",
+    "providers_skipped",
     "no_email_reason",
+    "final_email_status",
+    "final_email_verification_source",
 ]
 
 
@@ -679,6 +817,10 @@ async def run_enrichment_route(
     contacts_http: httpx.AsyncClient,
     email_semaphore: asyncio.Semaphore,
     validate_email: bool = True,
+    *,
+    job_id: str = "",
+    row_index: int = -1,
+    emit_logs: bool = True,
 ) -> dict[str, Any]:
     """Execute a route produced by `route_enrichment`.
 
@@ -688,13 +830,40 @@ async def run_enrichment_route(
             "source": str,                  # one of SOURCE_*
             "verification": dict,
             "source_path": str,             # "linkedin -> contacts_db" etc.
-            "provider_attempts": [str, ...],
+            "provider_attempts": [str, ...],  # compact string list (back-compat)
+            "provider_attempts_json": [dict, ...],  # structured records
+            "providers_called": [str, ...],
+            "providers_skipped": [{"provider", "method", "skipped_reason"}, ...],
             "no_email_reason": str,
+            "final_email_status": str,
+            "final_email_verification_source": str,
         }
     """
     steps = route.get("steps", []) or []
     no_email_reason = route.get("no_email_reason", "") or ""
+    inputs = route.get("inputs", {}) or {}
+    domain = inputs.get("domain", "")
+    normalized_li = inputs.get("linkedin_url", "")
+
     if no_email_reason:
+        # No steps to run; record a single attempt for visibility.
+        attempted = _build_provider_attempt(
+            job_id=job_id,
+            row_index=row_index,
+            domain=domain,
+            normalized_linkedin_url=normalized_li,
+            provider="",
+            method="",
+            input_type_used="",
+            called=False,
+            skipped_reason=no_email_reason,
+            status="not_run",
+            email_found=False,
+            error_type="",
+            latency_ms=0,
+        )
+        if emit_logs:
+            _log_provider_attempt(attempted)
         return {
             "email": "",
             "source": SOURCE_NOT_FOUND,
@@ -705,25 +874,68 @@ async def run_enrichment_route(
             },
             "source_path": "",
             "provider_attempts": [],
+            "provider_attempts_json": [attempted],
+            "providers_called": [],
+            "providers_skipped": [],
             "no_email_reason": no_email_reason,
+            "final_email_status": "not_run",
+            "final_email_verification_source": "",
         }
 
-    inputs = route.get("inputs", {}) or {}
     attempts: list[str] = []
+    attempts_json: list[dict[str, Any]] = []
     steps_taken: list[dict[str, str]] = []
+    final_email_status = ""
+    final_email_verification_source = ""
+
     for step in steps:
-        attempts.append(f"{step['method']}@{step['identifier']}")
+        method = step["method"]
+        identifier = step["identifier"]
+        provider = _provider_label(method)
+        attempts.append(f"{method}@{identifier}")
+        t0 = time.monotonic()
         result = await _run_route_step(
-            step["method"],
+            method,
             inputs,
             blitz_http,
             contacts_http,
             email_semaphore,
             validate_email=validate_email,
         )
+        latency_ms = int((time.monotonic() - t0) * 1000)
         steps_taken.append(step)
+
+        # Build the structured attempt record for this call.
+        email_found = bool(result.get("email"))
+        error_type = ""
+        status = "no_match"
+        if result.get("phone_reverse") is not None:
+            status = "phone_reverse_unavailable"
+            error_type = "phone_reverse_unavailable"
+        elif email_found:
+            status = "email_found"
+        attempt = _build_provider_attempt(
+            job_id=job_id,
+            row_index=row_index,
+            domain=domain,
+            normalized_linkedin_url=normalized_li,
+            provider=provider,
+            method=method,
+            input_type_used=identifier,
+            called=True,
+            skipped_reason="",
+            status=status,
+            email_found=email_found,
+            error_type=error_type,
+            latency_ms=latency_ms,
+        )
+        attempts_json.append(attempt)
+        if emit_logs:
+            _log_provider_attempt(attempt)
+
         if result.get("phone_reverse") is not None:
             # Phone reverse hop — append a marker to source_path and stop.
+            summary = _compact_attempts_summary(attempts_json)
             return {
                 "email": "",
                 "source": SOURCE_NOT_FOUND,
@@ -734,22 +946,34 @@ async def run_enrichment_route(
                 },
                 "source_path": _build_source_path(steps_taken, "phone_reverse_unavailable"),
                 "provider_attempts": attempts,
+                "provider_attempts_json": attempts_json,
+                "providers_called": summary["providers_called"],
+                "providers_skipped": summary["providers_skipped"],
                 "no_email_reason": result.get("no_email_reason") or NO_EMAIL_REASON_PHONE_REVERSE_UNAVAILABLE,
+                "final_email_status": "phone_reverse_unavailable",
+                "final_email_verification_source": "",
             }
-        if result.get("email"):
+
+        if email_found:
+            verif = result.get("verification") or {}
+            final_email_status = "enriched"
+            final_email_verification_source = "mailtester" if validate_email and verif.get("dm_email_verified") in ("yes", "no") else "provider_self"
+            summary = _compact_attempts_summary(attempts_json)
             return {
                 "email": result["email"],
                 "source": result.get("source", SOURCE_NOT_FOUND),
-                "verification": result.get("verification") or {
-                    "dm_email_verified": "unknown",
-                    "mailtester_code": "",
-                    "mailtester_message": "",
-                },
-                "source_path": _build_source_path(steps_taken, step["method"]),
+                "verification": verif,
+                "source_path": _build_source_path(steps_taken, method),
                 "provider_attempts": attempts,
+                "provider_attempts_json": attempts_json,
+                "providers_called": summary["providers_called"],
+                "providers_skipped": summary["providers_skipped"],
                 "no_email_reason": "",
+                "final_email_status": final_email_status,
+                "final_email_verification_source": final_email_verification_source,
             }
 
+    summary = _compact_attempts_summary(attempts_json)
     return {
         "email": "",
         "source": SOURCE_NOT_FOUND,
@@ -760,12 +984,107 @@ async def run_enrichment_route(
         },
         "source_path": _build_source_path(steps_taken, "not_found") if steps_taken else "",
         "provider_attempts": attempts,
-        "no_email_reason": "",
+        "provider_attempts_json": attempts_json,
+        "providers_called": summary["providers_called"],
+        "providers_skipped": summary["providers_skipped"],
+        "no_email_reason": "all_providers_called_no_email" if attempts_json else "no_providers_attempted",
+        "final_email_status": "not_found" if attempts_json else "not_run",
+        "final_email_verification_source": "",
     }
 
 
 def _empty_enriched() -> dict[str, Any]:
     return {col: "" for col in ENRICHED_COLUMNS}
+
+
+def _row_audit_record(
+    *,
+    job_id: str,
+    row_index: int,
+    domain: str,
+    input_fields_used: str,
+    input_payload: dict[str, Any],
+    source_path: str,
+    no_email_reason: str,
+    final_email_status: str,
+    final_email_verification_source: str,
+    attempts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build the full audit record for one CSV row.
+
+    Returned dict is the JSONL sidecar payload. It mirrors the columns
+    embedded in the CSV plus the structured attempts list.
+    """
+    return {
+        "job_id": job_id or "",
+        "row_index": int(row_index) if row_index is not None else -1,
+        "domain": domain or "",
+        "input_fields_used": input_fields_used or "",
+        "input_payload": {k: v for k, v in (input_payload or {}).items() if k.startswith("input_") or k in {"normalized_linkedin_url", "linkedin_username"}},
+        "source_path": source_path or "",
+        "no_email_reason": no_email_reason or "",
+        "final_email_status": final_email_status or "",
+        "final_email_verification_source": final_email_verification_source or "",
+        "provider_attempts": attempts or [],
+    }
+
+
+def write_audit_sidecar(
+    job_id: str,
+    records: list[dict[str, Any]],
+    *,
+    base_dir: Optional[Path] = None,
+) -> Optional[Path]:
+    """Write a per-job JSONL audit sidecar.
+
+    Each record is one input row. Returns the path written, or None on
+    failure (the caller's CSV write is the source of truth; the sidecar is
+    an additive observability tool).
+    """
+    if not job_id or not records:
+        return None
+    base = Path(base_dir) if base_dir else AUDIT_SIDECAR_DIR
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        path = base / f"{job_id}_audit.jsonl"
+        with path.open("w", encoding="utf-8") as fh:
+            for rec in records:
+                fh.write(json.dumps(rec, ensure_ascii=False, sort_keys=True))
+                fh.write("\n")
+        return path
+    except Exception as e:  # never let the sidecar break the job
+        logger.warning("Failed to write audit sidecar for job %s: %s", job_id, e)
+        return None
+
+
+def _attempts_json_size(attempts: list[dict[str, Any]]) -> int:
+    """Return the byte-size of attempts when JSON-serialized (compact form)."""
+    try:
+        return len(json.dumps(attempts, ensure_ascii=False, separators=(",", ":")))
+    except Exception:
+        return 0
+
+
+def _attempts_json_compact(attempts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return a compact copy of attempts for CSV embedding.
+
+    Drops heavy fields (job_id, row_index, normalized_linkedin_url repeats)
+    and keeps the unique per-attempt detail.
+    """
+    compact: list[dict[str, Any]] = []
+    for a in attempts or []:
+        compact.append({
+            "provider": a.get("provider", ""),
+            "method": a.get("method", ""),
+            "input_type_used": a.get("input_type_used", ""),
+            "called": a.get("called", False),
+            "skipped_reason": a.get("skipped_reason", ""),
+            "status": a.get("status", ""),
+            "email_found": a.get("email_found", False),
+            "error_type": a.get("error_type", ""),
+            "latency_ms": a.get("latency_ms", 0),
+        })
+    return compact
 
 
 def _current_title(experiences: list[dict]) -> str:
@@ -1363,6 +1682,11 @@ async def run_pipeline(
     all_output: list[OutputRow] = []
     total = len(rows)
 
+    # Per-job audit collection. Each input row gets one record; written to
+    # a JSONL sidecar at the end of the run.
+    audit_records: list[dict[str, Any]] = []
+    audit_lock = asyncio.Lock()
+
     # Set up incremental CSV writing if enabled
     write_lock = asyncio.Lock()
     csv_file = None
@@ -1459,6 +1783,35 @@ async def run_pipeline(
         if not domain and not use_routing:
             result_rows = [_error_row(row)]
             result_rows[0]["row_status"] = "skipped_no_domain"
+            result_rows[0]["no_email_reason"] = (
+                route.get("no_email_reason") or NO_EMAIL_REASON_MISSING_REQUIRED_INPUT
+            )
+            # No providers were attempted at all.
+            result_rows[0]["final_email_status"] = "not_run"
+            result_rows[0]["final_email_verification_source"] = ""
+            result_rows[0]["input_fields_used"] = input_payload.get("input_fields_used", "")
+            # Add a synthetic skipped attempt so the row has audit data.
+            synth_attempt = _build_provider_attempt(
+                job_id=job_id,
+                row_index=idx,
+                domain=domain,
+                normalized_linkedin_url=input_payload.get("normalized_linkedin_url", ""),
+                provider="",
+                method="",
+                input_type_used="",
+                called=False,
+                skipped_reason=result_rows[0]["no_email_reason"],
+                status="not_run",
+                email_found=False,
+                error_type="",
+                latency_ms=0,
+            )
+            result_rows[0]["provider_attempts"] = ""
+            result_rows[0]["provider_attempts_json"] = json.dumps([synth_attempt], ensure_ascii=False)
+            result_rows[0]["providers_called"] = ""
+            result_rows[0]["providers_skipped"] = json.dumps([{
+                "provider": "", "method": "", "skipped_reason": result_rows[0]["no_email_reason"],
+            }], ensure_ascii=False)
         elif use_routing and not no_email_reason:
             # Run the routed step.
             route_result = await run_enrichment_route(
@@ -1467,6 +1820,9 @@ async def run_pipeline(
                 contacts_http,
                 email_semaphore,
                 validate_email=validate_email,
+                job_id=job_id or "",
+                row_index=idx,
+                emit_logs=True,
             )
             # Build a person row from the route result.
             row_status = STATUS_ENRICHED if route_result.get("email") else STATUS_NO_CONTACTS
@@ -1485,7 +1841,28 @@ async def run_pipeline(
             result_rows[0]["dm_email_source"] = route_result.get("source", "")
             result_rows[0]["source_path"] = route_result.get("source_path", "")
             result_rows[0]["provider_attempts"] = ",".join(route_result.get("provider_attempts", []))
+            attempts_json = route_result.get("provider_attempts_json") or []
+            # If the attempts JSON is too large, embed a compact version and let
+            # the JSONL sidecar carry the full record.
+            if _attempts_json_size(attempts_json) > AUDIT_JSONL_COMPACT_THRESHOLD_BYTES:
+                result_rows[0]["provider_attempts_json"] = json.dumps(
+                    _attempts_json_compact(attempts_json), ensure_ascii=False
+                )
+            else:
+                result_rows[0]["provider_attempts_json"] = json.dumps(
+                    attempts_json, ensure_ascii=False
+                )
+            result_rows[0]["providers_called"] = json.dumps(
+                route_result.get("providers_called", []), ensure_ascii=False
+            )
+            result_rows[0]["providers_skipped"] = json.dumps(
+                route_result.get("providers_skipped", []), ensure_ascii=False
+            )
             result_rows[0]["no_email_reason"] = route_result.get("no_email_reason", "")
+            result_rows[0]["final_email_status"] = route_result.get("final_email_status", "")
+            result_rows[0]["final_email_verification_source"] = route_result.get(
+                "final_email_verification_source", ""
+            )
             result_rows[0]["row_status"] = row_status
             verif = route_result.get("verification") or {}
             result_rows[0]["dm_email_verified"] = verif.get("dm_email_verified", "unknown")
@@ -1506,6 +1883,26 @@ async def run_pipeline(
                 validate_email=validate_email,
                 force_provider=force_provider,
             )
+            # Add a row-level audit stub for the legacy cascade. Per-DM attempts
+            # aren't individually tracked here; we report the row's outcome.
+            for r in result_rows:
+                if not r.get("source_path"):
+                    r["source_path"] = "domain -> decision_maker_cascade"
+                if not r.get("provider_attempts_json"):
+                    r["provider_attempts_json"] = "[]"
+                if not r.get("providers_called"):
+                    r["providers_called"] = "[]"
+                if not r.get("providers_skipped"):
+                    r["providers_skipped"] = "[]"
+                if not r.get("final_email_status"):
+                    r["final_email_status"] = (
+                        "enriched" if r.get("dm_email") else "not_found"
+                    )
+                if not r.get("final_email_verification_source") and r.get("dm_email"):
+                    r["final_email_verification_source"] = (
+                        "mailtester" if r.get("dm_email_verified") in ("yes", "no")
+                        else "provider_self"
+                    )
 
         # Attach input_* columns to every result row for visibility.
         for r in result_rows:
@@ -1536,6 +1933,29 @@ async def run_pipeline(
                 "source_counts": source_counts,
             }
         )
+
+        # Build and collect the audit record for this input row.
+        # Use the first result row's diagnostic fields; if multi-row (legacy
+        # cascade), the sidecar contains one audit per input row.
+        primary = result_rows[0] if result_rows else {}
+        try:
+            attempts_list = json.loads(primary.get("provider_attempts_json", "") or "[]")
+        except Exception:
+            attempts_list = []
+        audit = _row_audit_record(
+            job_id=job_id or "",
+            row_index=idx,
+            domain=domain,
+            input_fields_used=input_payload.get("input_fields_used", ""),
+            input_payload=input_payload,
+            source_path=primary.get("source_path", ""),
+            no_email_reason=primary.get("no_email_reason", ""),
+            final_email_status=primary.get("final_email_status", ""),
+            final_email_verification_source=primary.get("final_email_verification_source", ""),
+            attempts=attempts_list,
+        )
+        async with audit_lock:
+            audit_records.append(audit)
 
         # Write to CSV incrementally if enabled
         if write_incremental and csv_writer:
@@ -1568,10 +1988,22 @@ async def run_pipeline(
             # Create an error row with the original input data
             error_row = {**rows[i], **_empty_enriched()}
             error_row["row_status"] = STATUS_ERROR
+            error_row["no_email_reason"] = "exception"
+            error_row["final_email_status"] = "error"
+            error_row["provider_attempts_json"] = "[]"
+            error_row["providers_called"] = "[]"
+            error_row["providers_skipped"] = "[]"
             all_output.append(error_row)
         else:
             # Normal case: result is a list of OutputRow objects
             all_output.extend(result)
+
+    # Write the per-job JSONL audit sidecar (one record per input row).
+    if audit_records:
+        try:
+            write_audit_sidecar(job_id or "", audit_records)
+        except Exception as e:
+            logger.warning("Failed to write audit sidecar for job %s: %s", job_id, e)
 
     if exception_count > 0:
         logger.warning(

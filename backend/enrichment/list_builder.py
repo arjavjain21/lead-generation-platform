@@ -27,6 +27,7 @@ from . import better_enrich_client
 from . import wizleads_client
 from . import providers
 from . import mailtester_client
+from . import job_store
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +164,25 @@ ENRICHED_COLUMNS = [
     "dm_location_country",
     "dm_icp_tier",
     "row_status",
+    # Input identifiers for visibility and debugging
+    "input_domain",
+    "input_full_name",
+    "input_linkedin_url",
+    "input_phone",
+    "input_company_name",
+    "input_existing_email",
+    "normalized_linkedin_url",
+    "linkedin_username",
+    "input_fields_used",
+    # Routing diagnostics (audit trail)
+    "source_path",
+    "provider_attempts",
+    "provider_attempts_json",
+    "providers_called",
+    "providers_skipped",
+    "no_email_reason",
+    "final_email_status",
+    "final_email_verification_source",
 ]
 
 
@@ -189,6 +209,15 @@ def _empty_enriched() -> dict[str, Any]:
         "dm_location_country": "",
         "dm_icp_tier": "",
         "row_status": "",
+        "input_domain": "",
+        "input_full_name": "",
+        "input_linkedin_url": "",
+        "input_phone": "",
+        "input_company_name": "",
+        "input_existing_email": "",
+        "normalized_linkedin_url": "",
+        "linkedin_username": "",
+        "input_fields_used": "",
     }
 
 
@@ -647,6 +676,7 @@ async def run_domain_enrichment(
     job_id: Optional[str] = None,
     validate_email: bool = True,  # NEW PARAMETER
     record_provider_use: Optional[Callable[[str], None]] = None,  # NEW: callback to record provider usage
+    get_store_fn: Optional[Callable[[], Any]] = None,  # Injected to avoid module-level ref
 ) -> list[OutputRow]:
     """
     Main entry point for Flow 1: Domain → Generic Emails + Decision Makers
@@ -743,7 +773,8 @@ async def run_domain_enrichment(
                 raise RuntimeError(f"Job {job_id} was cancelled by user")
             if check_cancelled and check_cancelled(job_id):
                 # Check why it was cancelled
-                check_store = job_store.get_store()
+                _get_store = get_store_fn or job_store.get_store
+                check_store = _get_store()
                 job = check_store.get_job(job_id)
                 if job:
                     status = job.get("status", "unknown")

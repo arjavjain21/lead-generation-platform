@@ -1,96 +1,99 @@
-# Loop: Strongest-identifier-first enrichment routing
+# Loop: Enrichment Provider Audit Trail
 
 Status: done
 
 ## Goal contract
 
-OUTCOME: Both the direct enrichment API (`/api/enrichment/enrich`) and the CSV-driven job pipeline (`run_pipeline` → `_enrich_domain`) use one routing function that picks providers by strongest available identifier. When `linkedin_url` is present, LinkedIn-based providers are tried before name/domain providers. When only `phone` is present, the configured phone reverse lookup runs and any returned LinkedIn immediately cascades into LinkedIn-first email enrichment. `force_provider` strictly constrains which provider family is allowed and returns a clear `no_email_reason` when its inputs are insufficient.
+**OUTCOME:** Every enrichment response explains exactly what the system tried: input fields used, provider attempts with status/error, why each was skipped or failed, why no email was found, and source path when successful.
 
-SUCCESS CRITERIA (binary, in priority order):
+**SUCCESS CRITERIA (binary, in priority order):**
 
-1. **A single routing function `route_enrichment(...)` exists in `pipeline.py`** and is the only function that decides provider order for both `_unified_enrich_logic` and `run_pipeline.process_row`. (No copy-pasted cascade logic.)
-2. **LinkedIn-first cascade** — given any input with a valid `linkedin_url`, the routing function calls (in order) Contacts DB by LinkedIn, Blitz `person_enrich_by_linkedin`, Blitz `find_work_email` from LinkedIn, then name/domain fallbacks. The first email it returns MUST come from a LinkedIn-based provider call; provider attempts are recorded in `provider_attempts`.
-3. **LinkedIn-only input works** — `linkedin_url` alone (no domain, no name) MUST return a valid enrichment attempt path. No provider is called with insufficient input.
-4. **Phone → LinkedIn → email cascade** — given a row with `phone` but no `linkedin_url` and no email, the routing function runs the configured phone reverse lookup; if it returns a LinkedIn URL, the LinkedIn-first cascade runs immediately after.
-5. **CSV row path uses the same router** — a CSV row with `linkedin_url` reaches `route_enrichment` and triggers LinkedIn-first attempts. A test feeds a fake row and asserts the order of provider calls.
-6. **force_provider=blitz calls only Blitz paths** — given a row with linkedin_url and force_provider=blitz, the routing function calls `blitz.person_enrich_by_linkedin` and `blitz.find_work_email` (and a name/domain blitz call only if name+domain present); Contacts DB and BetterEnrich and WizLeads are NOT called. Returns `no_email_reason` if Blitz cannot use the input.
-7. **force_provider=contacts_db skips paid providers** — Contacts DB is called; no Blitz/BetterEnrich/WizLeads call happens. Returns `no_email_reason` if Contacts DB cannot use the input.
-8. **Malformed LinkedIn returns `no_email_reason=linkedin_parse_failed`** — given a string that is not a LinkedIn URL, the routing function returns a result with `no_email_reason="linkedin_parse_failed"` and does not call any provider.
-9. **Provider capability gates** — providers are never called with insufficient input. e.g. WizLeads requires first_name + last_name + domain; BetterEnrich `find_work_email_v3` requires full_name + domain; Blitz `person_enrich_by_linkedin` requires a valid LinkedIn URL.
-10. **Source-path tracking** — every successful email is tagged with a `source_path` string that records the identifier→provider chain (e.g. `"linkedin -> contacts_db"`, `"phone -> blitz_reverse -> linkedin -> blitz_email"`, `"name_domain -> wizleads"`).
+1. **CSV row-level audit data** — Every output CSV row includes `input_fields_used`, `provider_attempts_json`, `providers_called`, `providers_skipped`, `source_path`, `no_email_reason`, `final_email_status`, `final_email_verification_source`.
 
-VERIFICATION:
+2. **Direct API response audit** — Every response includes `provider_attempts_json` with structured attempts and at minimum `source_path`, `no_email_reason`.
 
-- `cd /var/www/lead-generation-platform/backend && pytest enrichment/tests/test_routing.py -v` — a new pytest file with at least 8 tests that mock all four provider clients and assert (a) provider-call order for linkedin/url, (b) linkedin-only path, (c) csv-row path, (d) phone→linkedin→email path, (e) force_provider=blitz restricts to blitz, (f) force_provider=contacts_db skips paid, (g) malformed linkedin returns `no_email_reason="linkedin_parse_failed"`, (h) source_path on success.
-- `cd /var/www/lead-generation-platform/backend && pytest enrichment/tests -v` — full enrichment test suite must remain green (no regressions in `test_identifier_propagation.py`, `test_source_tracking_integration.py`, `test_stats_store.py`).
-- A mechanical check script `backend/scripts/check_routing.py` that prints the provider call order for 5 representative input shapes (linkedin+name+domain, linkedin-only, phone-only, name+domain, domain-only) and exits 0 when each input shape produces the documented order.
+3. **JSONL sidecar for large attempts** — When `provider_attempts_json` > 1KB, CSV stores compact version and full details go to `{job_id}_audit.jsonl` sidecar (one record per row).
 
-REFERENCE MATERIALS:
+4. **Debug flag in direct API** — `GET|POST /api/enrichment/enrich?debug=true` returns full provider attempts; `debug=false` returns compact but still includes `source_path` and `no_email_reason`.
 
-- `backend/enrichment/pipeline.py` (current `_resolve_email_for_person`, `_enrich_domain`, `run_pipeline`).
-- `backend/enrichment/routes.py` (`_unified_enrich_logic`, `UnifiedEnrichRequest`, `_should_skip_provider`).
-- `backend/enrichment/identifier_utils.py` (already provides `normalize_linkedin_url`, `linkedin_username_from_url`, `build_row_identifier_payload`).
-- `backend/enrichment/blitz_client.py` (existing methods: `person_enrich_by_linkedin`, `find_work_email`, `person_enrich`, `domain_to_linkedin`).
-- `backend/enrichment/contacts_client.py` (existing methods: `person_by_linkedin`, `person_by_name_and_domain`, `company_by_domain`, `company_contacts_enriched`).
-- `backend/enrichment/wizleads_client.py` (`find_email` requires first/last/website).
-- `backend/enrichment/better_enrich_client.py` (`find_work_email_v3` requires full_name + company_domain + linkedin_url; `find_company_email` requires website).
-- `backend/enrichment/providers.py` (`is_provider_enabled`).
-- `backend/enrichment/tests/test_source_tracking_integration.py` (assertion patterns for source tracking).
-- `backend/enrichment/tests/test_identifier_propagation.py` (column-mapping helpers).
+5. **Structured provider_attempt logs** — System emits one log record per provider attempt with: `job_id`, `row_index`, `domain`, `normalized_linkedin_url`, `provider`, `method`, `input_type_used`, `called`, `skipped_reason`, `status`, `email_found`, `error_type`, `latency_ms`.
 
-CONSTRAINTS:
+6. **Acceptance tests pass (7/7)** — Mock-driven tests verify all criteria including malformed LinkedIn, disabled providers, force_provider blocking, phone parse failure, CSV row coverage, etc.
 
-- No external API calls. All tests mock provider clients.
-- No new required fields on existing request schemas; the new fields stay optional.
-- Existing domain-only and domain+name jobs must still complete.
-- `force_provider` semantics: when set, the routing function must never call a provider family outside the forced one. When the forced provider cannot use the input, return `no_email_reason` instead of falling through.
-- The phone→LinkedIn step is allowed to be a no-op stub if no configured reverse-lookup client exists, as long as the routing function calls it (or returns a clear `no_email_reason=phone_reverse_unavailable`) and that path is testable.
-- Identifier propagation utilities from the previous loop (`identifier_utils.py`) must be reused — do not duplicate normalization logic.
+7. **No regressions** — All existing enrichment tests continue to pass.
 
-ITERATION BUDGET: 8
+**VERIFICATION:**
+- `cd /var/www/lead-generation-platform/backend && pytest enrichment/tests/test_provider_audit.py -v` (7 acceptance tests with JSON parsing and asserts for all criteria)
+- `cd /var/www/lead-generation-platform/backend && pytest enrichment/tests -v` (full enrichment test suite, must pass)
+- `curl -s http://localhost:8765/api/enrichment/enrich?domain=test.com\&debug=true | jq .routing | grep provider_attempts_json` (verify debug endpoint)
+- `cat /mnt/disk/lead-generation-platform/jobs/{job_id}_audit.jsonl | jq . | wc -l` (verify sidecar has expected records)
 
-AUTHORIZED ACTIONS:
+**REFERENCE MATERIALS:**
+- `backend/enrichment/pipeline.py` (current provider_attempts as string lists, source_path generation)
+- `backend/enrichment/routes.py` (unified enrich endpoint, _unified_enrich_logic)
+- `backend/enrichment/identifier_utils.py` (normalize_linkedin_url, build_row_identifier_payload)
+- `backend/enrichment/providers.py` (is_provider_enabled, get_enabled_providers)
+- `backend/enrichment/tests/test_routing.py` (mock patterns for providers)
+- 7 acceptance test patterns defined in the task description
 
-- Edit `backend/enrichment/pipeline.py`, `backend/enrichment/routes.py`, `backend/enrichment/identifier_utils.py`.
-- Create `backend/enrichment/tests/test_routing.py`.
-- Create `backend/scripts/check_routing.py`.
-- Run `pytest` against the enrichment test suite.
-- Mock provider clients in tests (no live API calls).
+**CONSTRAINTS:**
+- No regressions in existing functionality
+- No API key or secret logging in structured logs
+- CSV outputs must remain compatible (new fields appended, not breaking schema)
+- Phone reverse lookup remains a stub (no real provider)
+- Phone cascade stops with clear no_email_reason=phone_reverse_unavailable
+- Same provider_attempts format in both direct API and CSV jobs
+- No external API calls in tests (mocks only)
 
-OUT OF SCOPE:
+**ITERATION BUDGET:** 5
 
-- Adding new provider integrations.
-- UI changes.
-- Database schema changes.
-- Blitz endpoint behavior changes beyond using the new routing function.
-- Phone reverse-lookup client implementation (route stub is acceptable).
+**AUTHORIZED ACTIONS:**
+- Edit `backend/enrichment/pipeline.py`, `backend/enrichment/routes.py`, `backend/enrichment/list_builder.py`
+- Update `ENRICHED_COLUMNS` in all 3 modules
+- Add new columns to CSV outputs
+- Add debug query param to enrich endpoint
+- Add JSONL sidecar writing per job
+- Create `backend/enrichment/tests/test_provider_audit.py`
+- Update existing route tests if needed
+
+**OUT OF SCOPE:**
+- UI changes
+- New provider integrations
+- Phone reverse lookup implementation (still stub)
+- Database schema changes
+- Authentication changes
 
 ## Best version
-backend/enrichment/pipeline.py (route_enrichment, run_enrichment_route, _build_source_path) + run_pipeline wiring + routes.py _unified_enrich_logic wiring + test_routing.py (25 tests) + check_routing.py | iteration 2 | criteria passing: 10/10
+All 7 acceptance tests pass + 0 regressions | iteration 4 | criteria passing: 7/7
 
 ## Iterations
 | # | change attempted | verification result | decision |
 |---|------------------|---------------------|----------|
-| 1 | Added `route_enrichment` (pure router), `run_enrichment_route` (executor), `_build_source_path` (path string builder), `_provider_label`, `_can_provider_use_method`, `_method_is_paid`/`_method_is_free`. Added `source_path`, `provider_attempts`, `no_email_reason` to ENRICHED_COLUMNS. Wired `process_row` in `run_pipeline` to call route_enrichment for any row with linkedin_url/phone/name+domain. Fixed Contacts DB company lookup in `_enrich_domain` to respect `force_provider`. Added `force_provider` parameter to `run_pipeline`. Wrote `test_routing.py` with 21 tests covering criteria 1-10. Wrote `check_routing.py` script. | All 21 new tests pass; 65/65 enrichment tests pass (44 existing + 21 new). Mechanical check script confirms 5 input shapes route correctly and force_provider restricts provider families. | PARTIAL — criterion 1 not yet met (routes.py not wired) |
-| 2 | Refactored `_unified_enrich_logic` in routes.py: replaced the copy-pasted `linkedin_only` (lines 1425-1536) and `enhanced` (lines 1538-1741) cascade bodies with calls to `pipeline.route_enrichment()` and `pipeline.run_enrichment_route()`. The `domain_only` mode is unchanged (it uses the decision-maker waterfall, a fundamentally different code path). The response now includes a `routing` block with `mode`, `source_path`, `provider_attempts`, and `no_email_reason` for downstream visibility. The legacy behaviour of looking up company LinkedIn via Contacts DB in enhanced mode and best-effort name population from Contacts DB is preserved. Added 4 wiring tests in `TestUnifiedEnrichUsesRouter` (sync `fake_route_enrichment` because routes.py calls it without await, async `fake_run_enrichment_route`) asserting (a) router is called for linkedin_only, (b) router is called for enhanced, (c) force_provider is passed through, (d) response includes routing diagnostics and email_source is mapped from router result. | All 25 routing tests pass; 69/69 enrichment tests pass. Mechanical check script still passes. Direct API now uses the same router as the CSV pipeline. | DONE — all 10 success criteria met |
+| 1 | Extended `run_enrichment_route` to emit structured per-attempt dicts (job_id, row_index, domain, normalized_linkedin_url, provider, method, input_type_used, called, skipped_reason, status, email_found, error_type, latency_ms) and added 15 standard `NO_EMAIL_REASON_*` constants | test_routing + new tests still need sidecar/columns; partial pass | keep |
+| 2 | Added `input_fields_used`, `provider_attempts_json`, `providers_called`, `providers_skipped`, `source_path`, `no_email_reason`, `final_email_status`, `final_email_verification_source` to `ENRICHED_COLUMNS` (pipeline + list_builder) and `write_audit_sidecar()` to emit `{job_id}_audit.jsonl` with one record per row | 19/22 audit tests pass; routing test expects new standard reason | keep |
+| 3 | Added `debug: bool` Query param to `unified_enrich` POST + GET handlers, propagated to `_unified_enrich_logic` and `_build_routing_response` to gate structured `provider_attempts_json` on debug=true | 20/22 audit tests pass; 2 new failures | keep |
+| 4 | Fixed 2 test bugs: (a) `CapturingHandler` now subclasses `logging.Handler` with a `level` attribute; (b) acceptance test 1 expects 2 attempts (Blitz short-circuits on success) not 3 | 22/22 audit tests pass, 91/91 enrichment tests pass (no regressions) | keep — goal met |
 
 ## Blockers
 None.
 
-## Investigation findings
+## Done report
 
-- `pipeline._enrich_domain` is the per-domain entry. It currently takes only `domain` and `full_name` and never reads `linkedin_url`/`phone`/`company_name` from the input row, even though `identifier_utils.build_row_identifier_payload` extracts them.
-- `pipeline._resolve_email_for_person` is called per decision maker. Its cascade order is: Contacts DB name+domain → Contacts DB LinkedIn → Blitz name+domain → Blitz LinkedIn → WizLeads → BetterEnrich → Contacts DB input name. There is no `phone` parameter.
-- `routes._unified_enrich_logic` has its own duplicate routing block for the linkedin+name+domain case. The "primary path" branch (line 1437+) handles `linkedin_url` directly with a contacts_db → blitz cascade. But the CSV path (`run_pipeline`) does NOT go through `_unified_enrich_logic` — it goes through `_enrich_domain` which ignores the input linkedin_url.
-- `force_provider` semantics are inconsistent: `_enrich_domain`'s Contacts DB company lookup at line 544 and decision-maker lookup at line 603 do not check `_should_skip_provider`. So `force_provider=blitz` still hits Contacts DB before Blitz, returning stale emails and marking them invalid (this is the actual reported failure mode).
-- `blitz_client` has the right methods already: `person_enrich_by_linkedin(client, linkedin_url)` (line 499), `find_work_email(client, linkedin_url)` (line 200), `person_enrich(client, full_name, domain, include_phone)` (line 419), `domain_to_linkedin(client, domain)` (line 141), `waterfall_icp_search(client, company_linkedin_url, cascade, max_results)` (line 175).
-- `contacts_client` has: `person_by_linkedin(client, linkedin_url)` (line 237), `person_by_name_and_domain(client, full_name, domain)` (line 253), `company_by_domain(client, domain)` (line 269), `company_contacts_enriched(client, domain, limit)` (line 296).
-- `wizleads_client.find_email` (line 116) requires `first_name` + `last_name` + `website`.
-- `better_enrich_client.find_work_email_v3` (line 271) requires `full_name` + `company_domain` + optional `linkedin_url`.
-- `providers.is_provider_enabled(name)` is the global on/off gate.
-- `routes._should_skip_provider` (line 109) already implements: skip if globally disabled OR force_provider set and provider doesn't match.
-- `pipeline._should_skip_provider` (line 45) is a duplicate of the routes one. The pipeline one is used internally; the routes one is used in unified_enrich.
-- `identifier_utils.normalize_linkedin_url` returns "" for non-LinkedIn input; the new router can rely on that to detect malformed input.
+All 7 success criteria from the goal contract are met:
 
-## Next action
-Begin iteration 1: build `route_enrichment(...)` in `pipeline.py` plus a thin `enrich_row(...)` orchestrator that picks the cascade based on input identifiers. Wire it into `run_pipeline.process_row`. Use only mocks for verification.
+1. **CSV row-level audit data** — `ENRICHED_COLUMNS` in `pipeline.py` and `list_builder.py` include the 8 required fields. Verified by `TestEnrichedColumnsContainAuditFields` (2 tests) and the end-to-end 10-row CSV test (`TestAcceptance6CSVAudit`).
+2. **Direct API response audit** — `run_enrichment_route` returns `provider_attempts_json` (list of structured dicts), `source_path`, `no_email_reason`, plus compact fields. Verified by `TestAcceptance1SuccessfulLinkedIn`.
+3. **JSONL sidecar for large attempts** — `write_audit_sidecar()` writes `{job_id}_audit.jsonl` with one record per input row. `AUDIT_JSONL_COMPACT_THRESHOLD_BYTES = 1024` triggers compact form in CSV. Verified by `TestWriteAuditSidecar` (2 tests) and `TestAcceptance7JSONLSidecar`.
+4. **Debug flag in direct API** — `debug: bool = Query(False, ...)` on POST and GET handlers of `/api/enrichment/enrich`; `_build_routing_response` returns compact (no debug) or full (with debug) routing block. Verified by `TestDebugFlagOnDirectAPI` (2 tests).
+5. **Structured provider_attempt logs** — `_log_provider_attempt()` emits one `logger.info("provider_attempt ...", json.dumps(payload))` per attempt with all 13 required fields. No API keys, secrets, or raw credentials logged (verified by `TestProviderAttemptStructuredLogs::test_no_secrets_in_structured_logs`).
+6. **Acceptance tests pass (7/7)** — `TestAcceptance1..7` cover: success path, malformed LinkedIn, disabled Blitz, force_provider blocking, schema parse failure, 10-row CSV coverage, JSONL sidecar.
+7. **No regressions** — 91/91 enrichment tests pass; `scripts/check_routing.py` exits OK; previously-failing `test_linkedin_only_input_produces_route` now expects the new standard `NO_EMAIL_REASON_ALL_PROVIDERS_CALLED_NO_EMAIL` reason.
+
+**Files changed:**
+- `backend/enrichment/pipeline.py` — structured `provider_attempts`, 15 standard `NO_EMAIL_REASON_*` constants, audit sidecar writer, compact form, `input_fields_used` and other new columns.
+- `backend/enrichment/routes.py` — `debug` Query param on POST + GET handlers, `_build_routing_response` helper, debug propagation through `_unified_enrich_logic`.
+- `backend/enrichment/list_builder.py` — 8 new audit columns added to `ENRICHED_COLUMNS`.
+- `backend/enrichment/tests/test_provider_audit.py` — new file, 13 test classes, 22 tests, 7 acceptance tests.
+- `backend/enrichment/tests/test_routing.py` — updated one assertion to match new standard reason.
+
+**Final test count:** 91 passed, 0 failed (22 new audit tests + 69 pre-existing enrichment tests).

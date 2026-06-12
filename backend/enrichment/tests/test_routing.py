@@ -316,9 +316,14 @@ class TestRunEnrichmentRoute(unittest.TestCase):
         """Criterion 3: linkedin-only input works without domain."""
         route = pipeline_mod.route_enrichment(linkedin_url="https://linkedin.com/in/jane")
         result = self._run(route)
-        # No email is found (default mocks return empty) but the route ran without
-        # an "invalid input" no_email_reason.
-        self.assertEqual(result["no_email_reason"], "")
+        # No email is found (default mocks return empty). The route ran without
+        # an "invalid input" no_email_reason. The executor surfaces the new
+        # standard reason `all_providers_called_no_email` since every cascaded
+        # provider was tried and none returned an email.
+        self.assertEqual(
+            result["no_email_reason"],
+            pipeline_mod.NO_EMAIL_REASON_ALL_PROVIDERS_CALLED_NO_EMAIL,
+        )
         self.assertEqual(result["email"], "")
         # The attempts list must contain only LinkedIn methods.
         for attempt in result["provider_attempts"]:
