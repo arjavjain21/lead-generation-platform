@@ -74,7 +74,8 @@ class JobStoreBase:
         elif job_type == "enrichment":
             columns.extend(["total", "processed", "emails_found", "filename", "domain_col", "original_filename",
                            "name_col", "first_name_col", "last_name_col", "cascade_config", "max_results",
-                           "selected_providers", "used_providers"])
+                           "selected_providers", "used_providers",
+                           "linkedin_url_col", "phone_col", "company_name_col", "existing_email_col"])
             values.extend([
                 kwargs.get("total", 0),
                 0,
@@ -89,6 +90,10 @@ class JobStoreBase:
                 kwargs.get("max_results", 5),
                 kwargs.get("selected_providers", ""),
                 kwargs.get("used_providers", ""),
+                kwargs.get("linkedin_url_col", ""),
+                kwargs.get("phone_col", ""),
+                kwargs.get("company_name_col", ""),
+                kwargs.get("existing_email_col", ""),
             ])
 
         placeholders = ",".join(["?" for _ in columns])
@@ -207,6 +212,7 @@ class JobStoreBase:
                     "blitz": "emails_blitz",
                     "better_enrich": "emails_better_enrich",
                     "prospeo": "emails_prospeo",
+                    "wizleads": "emails_wizleads",
                 }
                 for source, count in source_counts.items():
                     col = col_map.get(source)
@@ -331,6 +337,57 @@ class JobStoreBase:
             (error, _now(), job_id),
         )
         self.conn.commit()
+
+    def heartbeat(self, job_id: str) -> None:
+        """Update heartbeat for running job. Used by background task every 30s."""
+        self.conn.execute(
+            "UPDATE jobs SET last_heartbeat=? WHERE job_id=?",
+            (_now(), job_id),
+        )
+        self.conn.commit()
+
+    def get_stale_running_jobs_by_heartbeat(self) -> list[str]:
+        """
+        Get running jobs whose heartbeat is older than 2 minutes.
+        Only considers jobs that have been running for more than 2 minutes to avoid
+        marking new jobs as stale when heartbeat isn't yet established.
+        """
+        rows = self.conn.execute(
+            """SELECT job_id FROM jobs
+               WHERE status IN ('running', 'queued')
+               AND (datetime(last_heartbeat) IS NULL OR datetime(last_heartbeat) < datetime('now', '-2 minutes'))
+               AND datetime(created_at) < datetime('now', '-3 minutes')"""
+        ).fetchall()
+        return [r["job_id"] for r in rows]
+
+    def save_job_state(self, job_id: str, state_type: str) -> None:
+        """Save job state (cancelled/active) to database for persistence across restarts."""
+        self.conn.execute(
+            "INSERT OR REPLACE INTO job_state (job_id, state, set_at) VALUES (?, ?, ?)",
+            (job_id, state_type, _now()),
+        )
+        self.conn.commit()
+
+    def remove_job_state(self, job_id: str) -> None:
+        """Remove job state from persistence."""
+        self.conn.execute("DELETE FROM job_state WHERE job_id=?", (job_id,))
+        self.conn.commit()
+
+    def restore_job_state(self) -> dict[str, set[str]]:
+        """Restore all cancelled and active jobs from database."""
+        result = {
+            "cancelled": set(),
+            "active": set()
+        }
+
+        for state_type in ("cancelled", "active"):
+            rows = self.conn.execute(
+                "SELECT job_id FROM job_state WHERE state=?",
+                (state_type,)
+            ).fetchall()
+            result[state_type] = {r["job_id"] for r in rows}
+
+        return result
 
     def set_cancelled(self, job_id: str) -> None:
         """Mark a job as cancelled by user. Stores cancellation time for tracking."""

@@ -56,6 +56,13 @@ def init_db() -> None:
     Also creates the shared job_events table and indexes.
     """
     c = get_db()
+
+    # Migration: Add last_heartbeat column if not exists
+    try:
+        c.execute("SELECT last_heartbeat FROM jobs LIMIT 1")
+    except sqlite3.OperationalError:
+        c.execute("ALTER TABLE jobs ADD COLUMN last_heartbeat TEXT")
+
     c.executescript(
         """
         CREATE TABLE IF NOT EXISTS jobs (
@@ -91,6 +98,7 @@ def init_db() -> None:
             output_path   TEXT,
             created_at    TEXT NOT NULL,
             updated_at    TEXT NOT NULL,
+            last_heartbeat TEXT,        -- Set by background heartbeat task every 30s; used for stale detection
 
             FOREIGN KEY (user_id) REFERENCES users(user_id),
             FOREIGN KEY (parent_job_id) REFERENCES jobs(job_id)
@@ -153,6 +161,18 @@ def init_db() -> None:
             enriched_at TEXT NOT NULL
         );
 
+        -- Persistent job state (survives worker restarts)
+        -- Stores _cancelled_jobs and _active_jobs sets so worker recycling doesn't lose them
+        CREATE TABLE IF NOT EXISTS job_state (
+            job_id    TEXT PRIMARY KEY,
+            state     TEXT NOT NULL,  -- 'cancelled' | 'active'
+            set_at    TEXT NOT NULL,
+            FOREIGN KEY (job_id) REFERENCES jobs(job_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_job_state_type
+            ON job_state (state);
+
         CREATE INDEX IF NOT EXISTS idx_phone_enrichments_url
             ON phone_enrichments (linkedin_url);
         """
@@ -164,6 +184,27 @@ def init_db() -> None:
         c.execute("ALTER TABLE jobs ADD COLUMN used_providers TEXT DEFAULT ''")
     if "selected_providers" not in existing_columns:
         c.execute("ALTER TABLE jobs ADD COLUMN selected_providers TEXT DEFAULT ''")
+    # Per-provider email counters (2026-06-12) — surface in frontend job
+    # stats. Frontend line ~2633 in frontend/index.html reads
+    # job.emails_wizleads; without this column the value is undefined.
+    for col in (
+        "emails_contacts_db",
+        "emails_blitz",
+        "emails_better_enrich",
+        "emails_wizleads",
+        "emails_prospeo",
+    ):
+        if col not in existing_columns:
+            c.execute(f"ALTER TABLE jobs ADD COLUMN {col} INTEGER DEFAULT 0")
+    # Identifier column mappings (2026-06-12) — survive restarts and resume.
+    for col in (
+        "linkedin_url_col",
+        "phone_col",
+        "company_name_col",
+        "existing_email_col",
+    ):
+        if col not in existing_columns:
+            c.execute(f"ALTER TABLE jobs ADD COLUMN {col} TEXT DEFAULT ''")
 
     c.commit()
 

@@ -11,7 +11,17 @@ from typing import Any, Optional
 
 import httpx
 
+from shared.circuit_breaker import get_circuit_breaker, CircuitBreakerError
+
 logger = logging.getLogger(__name__)
+
+# Circuit breaker: open after 5 consecutive 500s, recover after 60s
+_contacts_db_breaker = get_circuit_breaker(
+    name="contacts_db",
+    failure_threshold=5,
+    recovery_timeout=60.0,
+    half_open_max_calls=3,
+)
 
 # Retry config: up to 3 retries (4 attempts total), exponential backoff with jitter.
 _MAX_RETRIES = 3
@@ -133,6 +143,11 @@ async def _get_with_retry(
     last_exc: Optional[Exception] = None
 
     for attempt in range(_MAX_RETRIES + 1):
+        # Circuit breaker: fail fast if Contacts DB is unhealthy
+        if not await _contacts_db_breaker.can_proceed():
+            logger.warning("Contacts DB circuit breaker OPEN, skipping request: %s", url)
+            return None
+
         # Acquire rate limit before each attempt
         await _acquire_contacts_db_rate_limit()
 
@@ -150,6 +165,9 @@ async def _get_with_retry(
 
             # Check if we should retry this error
             if _should_retry(resp.status_code):
+                # Record circuit breaker failure
+                await _contacts_db_breaker.record_failure()
+
                 retry_after_raw = resp.headers.get("Retry-After")
                 retry_after = float(retry_after_raw) if retry_after_raw else None
                 delay = _backoff_delay(attempt, retry_after)
@@ -169,6 +187,8 @@ async def _get_with_retry(
             # Success
             resp.raise_for_status()
             data = resp.json()
+            # Record circuit breaker success
+            await _contacts_db_breaker.record_success()
             return data if data else None
 
         except httpx.HTTPStatusError as e:
@@ -179,6 +199,9 @@ async def _get_with_retry(
             if e.response.status_code == 422:
                 logger.debug("Contacts DB validation error (422) - skipping: %s", e.request.url)
                 return None
+            # Record circuit breaker failure
+            await _contacts_db_breaker.record_failure()
+
             # For other errors, retry if appropriate
             last_exc = e
             if attempt < _MAX_RETRIES and _should_retry(e.response.status_code):
@@ -193,6 +216,9 @@ async def _get_with_retry(
                 return None
 
         except Exception as exc:
+            # Record circuit breaker failure
+            await _contacts_db_breaker.record_failure()
+
             last_exc = exc
             if attempt < _MAX_RETRIES:
                 delay = _backoff_delay(attempt)

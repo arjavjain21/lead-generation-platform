@@ -50,7 +50,10 @@ SOURCE_GROUPS: dict[str, str] = {
     "blitz_email": "blitz",
     "blitz_linkedin": "blitz",
     "blitz_contacts": "blitz",
-    # WizLeads sources
+    # WizLeads sources — both `wizleads` and the legacy `wizleads_email`
+    # label map to the canonical `wizleads` provider group so historical
+    # rows aggregate correctly.
+    "wizleads": "wizleads",
     "wizleads_email": "wizleads",
     # BetterEnrich sources
     "better_enrich_company": "better_enrich",
@@ -180,11 +183,13 @@ class EnrichmentStatsStore:
             end_date: Filter by created_at <= this date (ISO format, optional)
 
         Returns:
-            Dict mapping source to total email count
+            Dict mapping source to total email count.
+            `wizleads` and `wizleads_email` are aggregated into the
+            canonical `wizleads` key so callers see one number.
 
         Example:
             >>> get_total_stats(user_id="user_abc", start_date="2026-04-01")
-            {"contacts_db": 150, "blitz": 45, "better_enrich": 12}
+            {"contacts_db": 150, "blitz": 45, "better_enrich": 12, "wizleads": 8}
         """
         conn = cls._get_connection()
         conditions = []
@@ -205,7 +210,12 @@ class EnrichmentStatsStore:
             f"SELECT source, SUM(emails_count) as total_emails FROM enrichment_stats {where} GROUP BY source",
             params,
         ).fetchall()
-        return {r["source"]: r["total_emails"] for r in rows}
+        # Aggregate wizleads + wizleads_email into canonical wizleads.
+        result: dict[str, int] = {}
+        for r in rows:
+            provider = normalize_source(r["source"])
+            result[provider] = result.get(provider, 0) + r["total_emails"]
+        return result
 
 
 def init_table() -> None:

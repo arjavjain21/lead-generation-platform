@@ -39,6 +39,10 @@ class EnrichmentJobStore(JobStoreBase):
         cascade_config: Optional[str] = None,
         max_results: Optional[int] = None,
         selected_providers: Optional[list[str]] = None,
+        linkedin_url_col: Optional[str] = None,
+        phone_col: Optional[str] = None,
+        company_name_col: Optional[str] = None,
+        existing_email_col: Optional[str] = None,
     ) -> None:
         """Create a new enrichment job."""
         # Convert list to JSON string for storage
@@ -61,6 +65,10 @@ class EnrichmentJobStore(JobStoreBase):
             max_results=max_results,
             selected_providers=providers_json,
             used_providers=used_providers_json,
+            linkedin_url_col=linkedin_url_col or "",
+            phone_col=phone_col or "",
+            company_name_col=company_name_col or "",
+            existing_email_col=existing_email_col or "",
         )
 
     def list_enrichment_jobs(

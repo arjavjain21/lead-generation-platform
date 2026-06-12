@@ -136,6 +136,16 @@ async def startup():
     auth.init_auth_db()
     db.init_db()
 
+    # Restore in-memory job state from database (survives worker restarts)
+    try:
+        state = enrichment_routes.job_store.get_store().restore_job_state()
+        enrichment_routes._cancelled_jobs.update(state.get("cancelled", set()))
+        enrichment_routes._active_jobs.update(state.get("active", set()))
+        logger.info("Restored job state: %d cancelled, %d active",
+                    len(state.get("cancelled", set())), len(state.get("active", set())))
+    except Exception as e:
+        logger.warning("Failed to restore job state: %s", e)
+
     # Clean up stale scraper jobs
     scraper_routes.cleanup_stale_jobs()
     # Clean up stale enrichment jobs

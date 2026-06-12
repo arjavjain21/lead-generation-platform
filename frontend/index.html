@@ -502,6 +502,34 @@
                         <select id="domainCol"></select>
                     </div>
                     <div class="filter-group">
+                        <label>Full Name Column</label>
+                        <select id="nameCol"><option value="">— None —</option></select>
+                    </div>
+                    <div class="filter-group">
+                        <label>First Name Column</label>
+                        <select id="firstNameCol"><option value="">— None —</option></select>
+                    </div>
+                    <div class="filter-group">
+                        <label>Last Name Column</label>
+                        <select id="lastNameCol"><option value="">— None —</option></select>
+                    </div>
+                    <div class="filter-group">
+                        <label>LinkedIn URL Column</label>
+                        <select id="linkedinUrlCol"><option value="">— None —</option></select>
+                    </div>
+                    <div class="filter-group">
+                        <label>Phone Column</label>
+                        <select id="phoneCol"><option value="">— None —</option></select>
+                    </div>
+                    <div class="filter-group">
+                        <label>Company Name Column</label>
+                        <select id="companyNameCol"><option value="">— None —</option></select>
+                    </div>
+                    <div class="filter-group">
+                        <label>Existing Email Column</label>
+                        <select id="existingEmailCol"><option value="">— None —</option></select>
+                    </div>
+                    <div class="filter-group">
                         <label>Max Decision Makers</label>
                         <select id="maxResults">
                             <option value="3">3 per company</option>
@@ -510,6 +538,9 @@
                         </select>
                     </div>
                 </div>
+                <p style="margin:8px 0 0 0;font-size:0.75rem;color:#64748b;">
+                    LinkedIn, phone, company, and existing-email columns are auto-detected from common header names (e.g. <em>LinkedIn Profile</em>, <em>Mobile Phone</em>, <em>Work Email</em>). Select <em>— None —</em> to ignore a column.
+                </p>
 
                 <!-- Provider Selection -->
                 <div style="margin-top:1rem;padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;">
@@ -1265,9 +1296,49 @@ https://linkedin.com/in/janesmith</pre>
                     document.getElementById('domainFileName').textContent = data.filename;
                     document.getElementById('domainFileSize').textContent = data.row_count + ' rows';
                     document.getElementById('domainFileInfo').style.display = 'flex';
-                    const colSelect = document.getElementById('domainCol');
-                    colSelect.innerHTML = '';
-                    data.columns.forEach(c => { const opt = document.createElement('option'); opt.value = c; opt.textContent = c; if (c.toLowerCase().includes('domain')) opt.selected = true; colSelect.appendChild(opt); });
+
+                    // Populate all column dropdowns from CSV header. For each,
+                    // pre-select an auto-detected match (or fall back to default).
+                    const cols = data.columns || [];
+                    const norm = (s) => String(s || '').toLowerCase().replace(/[\s_\-]+/g, ' ').trim();
+                    const findFirst = (kws) => {
+                        for (const kw of kws) {
+                            const hit = cols.find(c => norm(c) === kw);
+                            if (hit) return hit;
+                        }
+                        for (const kw of kws) {
+                            const hit = cols.find(c => norm(c).includes(kw));
+                            if (hit) return hit;
+                        }
+                        return '';
+                    };
+                    const auto = {
+                        domainCol: ['domain', 'website', 'url'],
+                        nameCol: ['name', 'full name'],
+                        firstNameCol: ['first name', 'firstname'],
+                        lastNameCol: ['last name', 'lastname'],
+                        linkedinUrlCol: ['linkedin', 'linkedin url', 'linkedin profile', 'profile url'],
+                        phoneCol: ['phone', 'mobile', 'cell'],
+                        companyNameCol: ['company', 'company name', 'business'],
+                        existingEmailCol: ['email', 'work email', 'existing email', 'email address'],
+                    };
+                    for (const [id, kws] of Object.entries(auto)) {
+                        const sel = document.getElementById(id);
+                        sel.innerHTML = '';
+                        const noneOpt = document.createElement('option');
+                        noneOpt.value = '';
+                        noneOpt.textContent = '— None —';
+                        sel.appendChild(noneOpt);
+                        const detected = findFirst(kws);
+                        cols.forEach(c => {
+                            const opt = document.createElement('option');
+                            opt.value = c;
+                            opt.textContent = c;
+                            if (c === detected) opt.selected = true;
+                            sel.appendChild(opt);
+                        });
+                    }
+
                     document.getElementById('domainOptions').style.display = 'block';
                 } else {
                     alert('Upload failed: ' + res.statusText);
@@ -1303,6 +1374,13 @@ https://linkedin.com/in/janesmith</pre>
                     body: JSON.stringify({
                         upload_id: domainUploadId,
                         domain_col: domainCol,
+                        name_col: document.getElementById('nameCol').value || null,
+                        first_name_col: document.getElementById('firstNameCol').value || null,
+                        last_name_col: document.getElementById('lastNameCol').value || null,
+                        linkedin_url_col: document.getElementById('linkedinUrlCol').value || null,
+                        phone_col: document.getElementById('phoneCol').value || null,
+                        company_name_col: document.getElementById('companyNameCol').value || null,
+                        existing_email_col: document.getElementById('existingEmailCol').value || null,
                         max_results: maxResults,
                         providers: providers.length > 0 ? providers : null
                     })

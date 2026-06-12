@@ -646,6 +646,7 @@ async def _run_route_step(
     contacts_http: httpx.AsyncClient,
     email_semaphore: asyncio.Semaphore,
     validate_email: bool = True,
+    record_provider_use: Optional[Callable[[str], None]] = None,
 ) -> dict[str, Any]:
     """Execute a single routed step. Returns one of:
 
@@ -665,8 +666,16 @@ async def _run_route_step(
         "mailtester_message": "",
     }
 
+    def _record(provider: str) -> None:
+        if record_provider_use is not None:
+            try:
+                record_provider_use(provider)
+            except Exception as e:
+                logger.warning("record_provider_use(%s) failed: %s", provider, e)
+
     async with email_semaphore:
         if method == ROUTE_METHOD_PERSON_BY_LINKEDIN:
+            _record("contacts_db")
             try:
                 data = await _cc.person_by_linkedin(
                     contacts_http, inputs["linkedin_url"]
@@ -694,6 +703,7 @@ async def _run_route_step(
             return {"email": email, "source": SOURCE_CONTACTS_DB_EMAIL, "verification": verification}
 
         if method == ROUTE_METHOD_PERSON_ENRICH_BY_LINKEDIN:
+            _record("blitz")
             try:
                 result = await _bc.person_enrich_by_linkedin(
                     blitz_http, inputs["linkedin_url"]
@@ -707,6 +717,7 @@ async def _run_route_step(
             return {"email": "", "source": SOURCE_NOT_FOUND}
 
         if method == ROUTE_METHOD_FIND_WORK_EMAIL:
+            _record("blitz")
             try:
                 result = await _bc.find_work_email(blitz_http, inputs["linkedin_url"])
             except Exception as e:
@@ -718,6 +729,7 @@ async def _run_route_step(
             return {"email": "", "source": SOURCE_NOT_FOUND}
 
         if method == ROUTE_METHOD_PERSON_BY_NAME_DOMAIN:
+            _record("contacts_db")
             try:
                 data = await _cc.person_by_name_and_domain(
                     contacts_http, inputs["full_name"], inputs["domain"]
@@ -745,6 +757,7 @@ async def _run_route_step(
             return {"email": email, "source": SOURCE_CONTACTS_DB_EMAIL, "verification": verification}
 
         if method == ROUTE_METHOD_PERSON_ENRICH:
+            _record("blitz")
             try:
                 result = await _bc.person_enrich(
                     blitz_http,
@@ -763,11 +776,35 @@ async def _run_route_step(
                     return {"email": verified, "source": SOURCE_BLITZ_EMAIL, "verification": verification}
                 emails = person_data.get("emails") or []
                 if emails:
-                    verification["dm_email_verified"] = "no"
-                    return {"email": emails[0].get("email", ""), "source": SOURCE_BLITZ_EMAIL, "verification": verification}
+                    candidate = emails[0].get("email", "")
+                    if not candidate:
+                        return {"email": "", "source": SOURCE_NOT_FOUND}
+                    # Unverified Blitz email is NOT acceptable as final unless
+                    # Mailtester confirms it (or fails-open). Otherwise fall
+                    # through to WizLeads/BetterEnrich.
+                    if validate_email:
+                        try:
+                            mt_result = await _mt.verify_email(blitz_http, candidate)
+                            verification["dm_email_verified"] = "yes" if mt_result["valid"] else "no"
+                            verification["mailtester_code"] = mt_result["code"]
+                            verification["mailtester_message"] = mt_result["message"]
+                            if mt_result["valid"]:
+                                return {"email": candidate, "source": SOURCE_BLITZ_EMAIL, "verification": verification}
+                            logger.info("Blitz unverified email rejected by Mailtester: %s - falling through", candidate)
+                            return {"email": "", "source": SOURCE_NOT_FOUND}
+                        except RuntimeError:
+                            # Mailtester unavailable — fail-open per cascade policy.
+                            logger.warning("Mailtester unavailable for Blitz unverified %s - accepting without verification", candidate)
+                            verification["mailtester_code"] = "unavailable"
+                            verification["dm_email_verified"] = "unknown"
+                            return {"email": candidate, "source": SOURCE_BLITZ_EMAIL, "verification": verification}
+                    # validate_email is False — fall through to next provider.
+                    logger.info("Blitz returned unverified email %s but cascade continues (validation disabled)", candidate)
+                    return {"email": "", "source": SOURCE_NOT_FOUND}
             return {"email": "", "source": SOURCE_NOT_FOUND}
 
         if method == ROUTE_METHOD_FIND_EMAIL:
+            _record("wizleads")
             try:
                 result = await _wl.find_email(
                     blitz_http,
@@ -784,6 +821,7 @@ async def _run_route_step(
             return {"email": "", "source": SOURCE_NOT_FOUND}
 
         if method == ROUTE_METHOD_FIND_WORK_EMAIL_V3:
+            _record("better_enrich")
             try:
                 result = await _be.find_work_email_v3(
                     blitz_http,
@@ -821,6 +859,7 @@ async def run_enrichment_route(
     job_id: str = "",
     row_index: int = -1,
     emit_logs: bool = True,
+    record_provider_use: Optional[Callable[[str], None]] = None,
 ) -> dict[str, Any]:
     """Execute a route produced by `route_enrichment`.
 
@@ -901,6 +940,7 @@ async def run_enrichment_route(
             contacts_http,
             email_semaphore,
             validate_email=validate_email,
+            record_provider_use=record_provider_use,
         )
         latency_ms = int((time.monotonic() - t0) * 1000)
         steps_taken.append(step)
@@ -1185,6 +1225,7 @@ async def _resolve_email_for_person(
     email_semaphore: asyncio.Semaphore,
     force_provider: Optional[str] = None,
     validate_email: bool = True,
+    record_provider_use: Optional[Callable[[str], None]] = None,
 ) -> tuple[str, str, dict[str, Any]]:
     """
     Returns (email, source, verification_info).
@@ -1193,12 +1234,17 @@ async def _resolve_email_for_person(
       2. Contacts DB by LinkedIn URL (SECONDARY)
       3. Blitz person enrich by name + domain (PRIMARY PAID)
       4. Blitz email from LinkedIn URL (SECONDARY PAID)
-      5. BetterEnrich work email (person lookup)
-      6. Contacts DB by name + domain (name from input row, if different)
+      5. WizLeads person email (CATCHALL VERIFIED, 10 RPS)
+      6. BetterEnrich work email (person lookup)
+      7. Contacts DB by name + domain (name from input row, if different)
 
     Args:
         force_provider: If set, only use that specific provider.
         validate_email: If True, verify Contacts DB emails with mailtester.
+        record_provider_use: Optional callback invoked with provider name
+            ("contacts_db" | "blitz" | "wizleads" | "better_enrich") at the
+            moment each provider is *attempted* (not gated on success). This
+            is what populates `used_providers` on the job.
 
     verification_info dict contains:
         - dm_email_verified: "yes", "no", "unknown"
@@ -1217,11 +1263,19 @@ async def _resolve_email_for_person(
         "mailtester_message": "",
     }
 
+    def _record(provider: str) -> None:
+        if record_provider_use is not None:
+            try:
+                record_provider_use(provider)
+            except Exception as e:  # never let accounting break the cascade
+                logger.warning("record_provider_use(%s) failed: %s", provider, e)
+
     async with email_semaphore:
         # Step 1: Contacts DB by person's name + domain (PRIMARY - FREE)
         # When both name and LinkedIn URL are available, prefer name+domain to avoid
         # returning stale emails from previous employers via person_by_linkedin
         if full_name and domain and not _should_skip_provider("contacts_db", force_provider):
+            _record("contacts_db")
             try:
                 contacts_data = await contacts_client.person_by_name_and_domain(
                     contacts_client_inst, full_name, domain
@@ -1266,6 +1320,7 @@ async def _resolve_email_for_person(
         # Step 2: Contacts DB by LinkedIn URL (SECONDARY - FREE)
         # Fall back to LinkedIn if name+domain didn't find email, or if name not available
         if linkedin_url and not _should_skip_provider("contacts_db", force_provider):
+            _record("contacts_db")
             try:
                 contacts_data = await contacts_client.person_by_linkedin(
                     contacts_client_inst, linkedin_url
@@ -1309,6 +1364,7 @@ async def _resolve_email_for_person(
         # Step 3: Blitz person enrich by name + domain (PRIMARY PAID)
         # Prioritize name+domain for the same reason as Contacts DB
         if full_name and domain and not _should_skip_provider("blitz", force_provider):
+            _record("blitz")
             try:
                 result = await blitz_client.person_enrich(
                     blitz_client_inst,
@@ -1318,33 +1374,86 @@ async def _resolve_email_for_person(
                 )
                 if result.get("found") and result.get("person"):
                     person_data = result.get("person", {})
-                    # Check for verified_email field first
+                    # Check for verified_email field first — provider-acceptable
                     verified_email = person_data.get("verified_email", "")
                     if verified_email:
                         verification_info["dm_email_verified"] = "yes"
                         return verified_email, SOURCE_BLITZ_EMAIL, verification_info
-                    # Fall back to unverified emails list
+                    # Fall back to unverified emails list. Per the cascade
+                    # contract, an unverified Blitz email is NOT acceptable as
+                    # the final answer unless Mailtester confirms it (or
+                    # Mailtester is unavailable under a fail-open policy).
+                    # Otherwise we fall through to WizLeads and BetterEnrich.
                     emails_list = person_data.get("emails", [])
                     if emails_list:
-                        verification_info["dm_email_verified"] = "no"
-                        return emails_list[0].get("email", ""), SOURCE_BLITZ_EMAIL, verification_info
+                        candidate = emails_list[0].get("email", "")
+                        if candidate and validate_email:
+                            try:
+                                result_mt = await mailtester_client.verify_email(
+                                    blitz_client_inst, candidate
+                                )
+                                verification_info["dm_email_verified"] = "yes" if result_mt["valid"] else "no"
+                                verification_info["mailtester_code"] = result_mt["code"]
+                                verification_info["mailtester_message"] = result_mt["message"]
+                                if result_mt["valid"]:
+                                    logger.debug("Blitz unverified email confirmed by Mailtester: %s", candidate)
+                                    return candidate, SOURCE_BLITZ_EMAIL, verification_info
+                                # Mailtester rejected it — continue cascade.
+                                logger.info("Blitz unverified email rejected by Mailtester: %s (code: %s) - falling through",
+                                            candidate, result_mt["code"])
+                            except RuntimeError:
+                                # Mailtester unavailable — FAIL OPEN at the
+                                # candidate level (consistent with Contacts DB
+                                # policy above) and accept as final.
+                                logger.warning("Mailtester unavailable for Blitz unverified %s - accepting without verification", candidate)
+                                verification_info["mailtester_code"] = "unavailable"
+                                verification_info["dm_email_verified"] = "unknown"
+                                return candidate, SOURCE_BLITZ_EMAIL, verification_info
+                        # Either no candidate, validation disabled, or
+                        # Mailtester rejected — log and fall through to
+                        # WizLeads/BetterEnrich.
+                        if candidate:
+                            logger.info("Blitz returned unverified email %s but cascade continues to WizLeads/BetterEnrich", candidate)
+                            verification_info["dm_email_verified"] = "no"
+                        # Fall through to WizLeads step below.
             except Exception as e:
                 logger.warning("Blitz person enrich failed for %s / %s: %s", full_name, domain, e)
 
         # Step 4: Blitz email from LinkedIn URL (SECONDARY PAID)
         # Fall back to LinkedIn if name+domain didn't find email, or if name not available
         if linkedin_url and not _should_skip_provider("blitz", force_provider):
+            _record("blitz")
             try:
                 result = await blitz_client.find_work_email(blitz_client_inst, linkedin_url)
                 if result.get("found") and result.get("email"):
-                    verification_info["dm_email_verified"] = "yes"  # Blitz emails are verified
-                    return result["email"], SOURCE_BLITZ_EMAIL, verification_info
+                    candidate = result["email"]
+                    # Verify with Mailtester; only treat as final if confirmed
+                    # or if Mailtester is unavailable. Otherwise fall through.
+                    if validate_email:
+                        try:
+                            result_mt = await mailtester_client.verify_email(
+                                blitz_client_inst, candidate
+                            )
+                            verification_info["dm_email_verified"] = "yes" if result_mt["valid"] else "no"
+                            verification_info["mailtester_code"] = result_mt["code"]
+                            verification_info["mailtester_message"] = result_mt["message"]
+                            if result_mt["valid"]:
+                                return candidate, SOURCE_BLITZ_EMAIL, verification_info
+                            logger.info("Blitz find_work_email rejected by Mailtester: %s - falling through", candidate)
+                        except RuntimeError:
+                            verification_info["mailtester_code"] = "unavailable"
+                            verification_info["dm_email_verified"] = "unknown"
+                            return candidate, SOURCE_BLITZ_EMAIL, verification_info
+                    else:
+                        verification_info["dm_email_verified"] = "yes"
+                        return candidate, SOURCE_BLITZ_EMAIL, verification_info
             except Exception as e:
                 logger.warning("Blitz email lookup failed for %s: %s", linkedin_url, e)
 
         # Step 5: WizLeads person email (catchall verified, 10 RPS)
         # Inserted between Blitz and BetterEnrich per user-confirmed cascade order.
         if full_name and domain and not _should_skip_provider("wizleads", force_provider):
+            _record("wizleads")
             first_name = person.get("first_name", "") or (full_name.split(" ")[0] if full_name else "")
             last_name = person.get("last_name", "") or (" ".join(full_name.split(" ")[1:]) if " " in full_name else "")
             try:
@@ -1365,6 +1474,7 @@ async def _resolve_email_for_person(
 
         # Step 6: BetterEnrich person email (V3 with built-in verification)
         if full_name and domain and not _should_skip_provider("better_enrich", force_provider):
+            _record("better_enrich")
             try:
                 result = await better_enrich_client.find_work_email_v3(
                     blitz_client_inst, full_name, domain, linkedin_url
@@ -1385,6 +1495,7 @@ async def _resolve_email_for_person(
         # Step 7: Contacts DB by input row name + domain (if different from person name)
         # This handles edge cases where the input name differs from the person's current name
         if input_full_name and input_full_name != full_name and domain and not _should_skip_provider("contacts_db", force_provider):
+            _record("contacts_db")
             try:
                 contacts_data = await contacts_client.person_by_name_and_domain(
                     contacts_client_inst, input_full_name, domain
@@ -1446,6 +1557,7 @@ async def _enrich_domain(
     skip_contacts_db: bool = False,
     force_provider: Optional[str] = None,  # "contacts_db", "blitz", "better_enrich"
     validate_email: bool = True,  # NEW PARAMETER
+    record_provider_use: Optional[Callable[[str], None]] = None,
 ) -> list[OutputRow]:
     """
     Enrich a domain with decision-maker contacts.
@@ -1453,10 +1565,21 @@ async def _enrich_domain(
     Args:
         force_provider: If set, only use that specific provider.
         validate_email: If True, verify Contacts DB emails with mailtester.
+        record_provider_use: Optional callback invoked when a provider is
+            *attempted* (regardless of success). Used to populate
+            `jobs.used_providers` so the job summary shows which providers
+            were tried.
     """
     logger.info("_enrich_domain called with force_provider=%s for domain=%s", force_provider, domain)
     company_linkedin_url = ""
     linkedin_source = ""
+
+    def _record(provider: str) -> None:
+        if record_provider_use is not None:
+            try:
+                record_provider_use(provider)
+            except Exception as e:
+                logger.warning("record_provider_use(%s) failed: %s", provider, e)
 
     # Determine if we should skip Contacts DB for contacts (not for company lookup)
     # Skip Contacts DB if custom cascade is provided (indicated by skip_contacts_db=True)
@@ -1466,6 +1589,7 @@ async def _enrich_domain(
     async with domain_semaphore:
         # Step 1: domain → company LinkedIn URL (Contacts DB FIRST unless force_provider=blitz)
         if not _should_skip_provider("contacts_db", force_provider):
+            _record("contacts_db")
             try:
                 contacts_company = await contacts_client.company_by_domain(contacts_http, domain)
                 if contacts_company and contacts_company.get("linkedin_url"):
@@ -1477,6 +1601,7 @@ async def _enrich_domain(
 
         # Fallback: Blitz API if Contacts DB didn't find it
         if not company_linkedin_url:
+            _record("blitz")
             try:
                 d2l = await blitz_client.domain_to_linkedin(blitz_http, domain)
                 if d2l.get("found"):
@@ -1489,6 +1614,7 @@ async def _enrich_domain(
     if not company_linkedin_url:
         # No company LinkedIn found — try fallback if we have a name
         if full_name and not _should_skip_provider("contacts_db", force_provider):
+            _record("contacts_db")
             try:
                 contacts_data = await contacts_client.person_by_name_and_domain(
                     contacts_http, full_name, domain
@@ -1529,6 +1655,7 @@ async def _enrich_domain(
         if not use_custom_cascade and not skip_contacts:
             logger.info("Using Contacts DB for decision makers")
             # Try Contacts DB first
+            _record("contacts_db")
             try:
                 contacts_contacts = await contacts_client.company_contacts_enriched(
                     contacts_http, domain, limit=max_results
@@ -1564,6 +1691,7 @@ async def _enrich_domain(
 
         # Fallback: Blitz API if Contacts DB didn't meet quality threshold
         if not contacts_db_quality_met and not _should_skip_provider("blitz", force_provider):
+            _record("blitz")
             try:
                 icp_result = await blitz_client.waterfall_icp_search(
                     blitz_http, company_linkedin_url, cascade, max_results
@@ -1577,6 +1705,7 @@ async def _enrich_domain(
     if not persons:
         # No decision makers found — try BetterEnrich for generic company email
         if not _should_skip_provider("better_enrich", force_provider):
+            _record("better_enrich")
             try:
                 be_result = await better_enrich_client.find_company_email(
                     blitz_http,
@@ -1606,6 +1735,7 @@ async def _enrich_domain(
             email_semaphore,
             force_provider=force_provider,
             validate_email=validate_email,
+            record_provider_use=record_provider_use,
         )
         for item in persons
     ]
@@ -1646,6 +1776,7 @@ async def run_pipeline(
     company_name_col: Optional[str] = None,
     existing_email_col: Optional[str] = None,
     force_provider: Optional[str] = None,
+    record_provider_use: Optional[Callable[[str], None]] = None,
 ) -> list[OutputRow]:
     """
     Runs the full pipeline over all rows.
@@ -1823,6 +1954,7 @@ async def run_pipeline(
                 job_id=job_id or "",
                 row_index=idx,
                 emit_logs=True,
+                record_provider_use=record_provider_use,
             )
             # Build a person row from the route result.
             row_status = STATUS_ENRICHED if route_result.get("email") else STATUS_NO_CONTACTS
@@ -1882,6 +2014,7 @@ async def run_pipeline(
                 email_semaphore,
                 validate_email=validate_email,
                 force_provider=force_provider,
+                record_provider_use=record_provider_use,
             )
             # Add a row-level audit stub for the legacy cascade. Per-DM attempts
             # aren't individually tracked here; we report the row's outcome.
