@@ -438,6 +438,7 @@ class TestAcceptance6UsedProvidersInRunPipeline(unittest.IsolatedAsyncioTestCase
                 on_progress=on_progress,
                 job_id="test_acceptance6",
                 record_provider_use=lambda p: recorded.append(p),
+                use_email_cache=False,
             )
 
         # contacts_db, blitz, wizleads were all attempted.

@@ -1816,41 +1816,59 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
 
             return [], "not_found"
 
-        async def find_email_for_person(person_linkedin: str, person_name: str):
-            """Find email for a person."""
-            # Extract username for contacts API, keep original URL for Blitz
-            linkedin_username = _extract_linkedin_username(person_linkedin)
-            linkedin_for_blitz = person_linkedin  # Use original for Blitz
+        async def find_email_for_person(
+            person_linkedin: str,
+            person_name: str,
+            person_first_name: str = "",
+            person_last_name: str = "",
+        ):
+            """Find email for a person using the unified routing layer.
 
-            # Try Contacts DB by LinkedIn first (skip if force_provider is set and it's not "contacts_db")
-            if not _should_skip_provider("contacts_db", req.force_provider):
-                try:
-                    person = await contacts_client.person_by_linkedin(contacts_http, linkedin_username)
-                    if person and person.get("email"):
-                        return person.get("email"), "contacts_db_email"
-                except Exception as e:
-                    logger.warning("Contacts DB person lookup failed: %s", e)
+            Delegates to `pipeline.route_enrichment` /
+            `pipeline.run_enrichment_route` so the per-person cascade is
+            Contacts DB -> Blitz -> WizLeads -> BetterEnrich, with the
+            same eligibility rules and `force_provider` semantics as the
+            `linkedin_only` and `enhanced` modes in this function.
 
-            # Try Blitz API (skip if force_provider is set and it's not "blitz")
-            if not _should_skip_provider("blitz", req.force_provider):
-                try:
-                    if linkedin_for_blitz:
-                        result = await blitz_client.person_enrich_by_linkedin(blitz_http, linkedin_for_blitz)
-                        if result and result.get("email"):
-                            return result.get("email"), "blitz_email"
-                except Exception as e:
-                    logger.warning("Blitz email lookup failed: %s", e)
+            When the contact has both name splits and a domain (the
+            normal case for a decision maker returned by
+            `company_contacts_enriched` or the Blitz waterfall), the
+            route is built from name+domain so the full 4-provider
+            cascade is reachable. When the contact only has a
+            LinkedIn URL, the LinkedIn-first cascade is used.
 
-            # Try by name + domain (skip if force_provider is set and it's not "contacts_db")
-            if person_name and domain and not _should_skip_provider("contacts_db", req.force_provider):
-                try:
-                    person = await contacts_client.person_by_name_and_domain(contacts_http, person_name, domain)
-                    if person and person.get("email"):
-                        return person.get("email"), "contacts_db_email"
-                except Exception as e:
-                    logger.warning("Contacts DB name lookup failed: %s", e)
-
-            return "", "not_found"
+            Returns (email, source, route_result) so the caller can also
+            surface the routing block in the response.
+            """
+            # Prefer the name+domain cascade when we have name splits,
+            # because `route_enrichment` only includes the WizLeads and
+            # BetterEnrich person-email steps in that mode. The
+            # LinkedIn-first cascade (used when only linkedin_url is
+            # available) stops at BetterEnrich via `find_work_email_v3`
+            # and is the right fallback for contacts that have no name.
+            has_name_domain = bool(person_first_name and person_last_name and domain)
+            route_linkedin = person_linkedin if not has_name_domain else ""
+            route = pipeline.route_enrichment(
+                linkedin_url=route_linkedin or "",
+                full_name=person_name or "",
+                first_name=person_first_name or "",
+                last_name=person_last_name or "",
+                domain=domain or "",
+                force_provider=req.force_provider,
+            )
+            route_result = await pipeline.run_enrichment_route(
+                route,
+                blitz_http,
+                contacts_http,
+                email_semaphore,
+                validate_email=True,
+                job_id=f"api_{current_user.get('id', 'anon')}_{uuid.uuid4().hex[:8]}",
+                row_index=0,
+                emit_logs=True,
+            )
+            email = route_result.get("email", "") or ""
+            source = route_result.get("source", "not_found") or "not_found"
+            return email, source, route_result
 
         # Execute the workflow
         company_linkedin_url, company_source = await get_company_linkedin()
@@ -1862,13 +1880,33 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
         # Initialize sources dict - will be updated by BetterEnrich if used
         sources = {"company_linkedin": "not_found", "contacts": "not_found", "emails": "not_found"}
 
+        # Track the per-person routing blocks so the final response can
+        # surface a representative `routing` block (matching the format
+        # the linkedin_only/enhanced branch already returns).
+        last_route: dict[str, Any] = {}
+        last_route_result: dict[str, Any] = {}
+
         # For each contact, try to find email
         enriched_contacts = []
         for contact in contacts_list[:req.max_results]:
             person_name = contact.get("full_name", "")
             person_linkedin = contact.get("linkedin_url", "")
+            person_first_name = contact.get("first_name", "")
+            person_last_name = contact.get("last_name", "")
 
-            email, email_src = await find_email_for_person(person_linkedin, person_name)
+            email, email_src, route_result = await find_email_for_person(
+                person_linkedin,
+                person_name,
+                person_first_name=person_first_name,
+                person_last_name=person_last_name,
+            )
+            last_route_result = route_result
+            if email:
+                last_route = {
+                    "mode": route_result.get("mode", ""),
+                    "source_path": route_result.get("source_path", ""),
+                    "no_email_reason": route_result.get("no_email_reason", ""),
+                }
 
             enriched_contacts.append({
                 "full_name": contact.get("full_name", ""),
@@ -1917,7 +1955,12 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
             # Try to find specific person
             person_linkedin = req.linkedin_url
             if person_linkedin:
-                email, email_src = await find_email_for_person(person_linkedin, full_name)
+                email, email_src, route_result = await find_email_for_person(
+                    person_linkedin,
+                    full_name,
+                    person_first_name=req.first_name or "",
+                    person_last_name=req.last_name or "",
+                )
                 if email:
                     enriched_contacts.append({
                         "full_name": full_name,
@@ -2026,6 +2069,11 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
             "contacts": enriched_contacts,
             "contact_count": len(enriched_contacts),
             "data_sources": sources,
+            "routing": _build_routing_response(
+                last_route if last_route else {"mode": "", "steps": []},
+                last_route_result if last_route_result else {},
+                debug=debug,
+            ),
             "sync_to_contacts_db": {
                 "status": sync_status,
                 "records_synced": sync_result.get("synced", 0),
