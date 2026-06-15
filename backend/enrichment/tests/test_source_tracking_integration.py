@@ -248,46 +248,62 @@ class TestSourceTrackingIntegration:
         job_store = JobStoreBase()
         job_id = f"job_store_test_{int(time.time() * 1000)}"
 
-        job_store.create_job(
-            job_id=job_id,
-            user_id=test_user_id,
-            job_type="enrichment",
-            total=10,
-            filename="test.csv",
-            domain_col="website",
-        )
+        try:
+            job_store.create_job(
+                job_id=job_id,
+                user_id=test_user_id,
+                job_type="enrichment",
+                total=10,
+                filename="test.csv",
+                domain_col="website",
+            )
 
-        # Simulate progress events with source_counts
-        job_store.append_event(job_id, 1, {
-            "index": 0,
-            "total": 10,
-            "domain": "example.com",
-            "status": "success",
-            "contacts_found": 2,
-            "emails_found": 1,
-            "source_counts": {"contacts_db": 1},
-        })
+            # Simulate progress events with source_counts
+            job_store.append_event(job_id, 1, {
+                "index": 0,
+                "total": 10,
+                "domain": "example.com",
+                "status": "success",
+                "contacts_found": 2,
+                "emails_found": 1,
+                "source_counts": {"contacts_db": 1},
+            })
 
-        job_store.append_event(job_id, 2, {
-            "index": 1,
-            "total": 10,
-            "domain": "test.com",
-            "status": "success",
-            "contacts_found": 3,
-            "emails_found": 2,
-            "source_counts": {"blitz": 1, "contacts_db": 1},
-        })
+            job_store.append_event(job_id, 2, {
+                "index": 1,
+                "total": 10,
+                "domain": "test.com",
+                "status": "success",
+                "contacts_found": 3,
+                "emails_found": 2,
+                "source_counts": {"blitz": 1, "contacts_db": 1},
+            })
 
-        # Verify stats were recorded to enrichment_stats
-        stats = EnrichmentStatsStore.get_job_stats(job_id)
-        assert stats.get("contacts_db", {}).get("emails", 0) == 2  # 1 + 1
-        assert stats.get("blitz", {}).get("emails", 0) == 1
+            # Verify stats were recorded to enrichment_stats
+            stats = EnrichmentStatsStore.get_job_stats(job_id)
+            assert stats.get("contacts_db", {}).get("emails", 0) == 2  # 1 + 1
+            assert stats.get("blitz", {}).get("emails", 0) == 1
 
-        # Verify jobs table has source columns updated
-        job = job_store.get_job(job_id)
-        assert job is not None
-        assert job.get("emails_contacts_db", 0) == 2
-        assert job.get("emails_blitz", 0) == 1
+            # Verify jobs table has source columns updated
+            job = job_store.get_job(job_id)
+            assert job is not None
+            assert job.get("emails_contacts_db", 0) == 2
+            assert job.get("emails_blitz", 0) == 1
+        finally:
+            # Clean up the test rows so they don't accumulate as abandoned jobs
+            # on the next server restart (the abandoned-job sweeper flags any
+            # job left in 'running' state with a stale heartbeat).
+            try:
+                conn.execute("DELETE FROM job_events WHERE job_id = ?", (job_id,))
+                conn.execute("DELETE FROM enrichment_stats WHERE job_id = ?", (job_id,))
+                conn.execute("DELETE FROM job_checkpoints WHERE job_id = ?", (job_id,))
+                conn.execute("DELETE FROM job_state WHERE job_id = ?", (job_id,))
+                conn.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
+                conn.execute("DELETE FROM users WHERE user_id = ?", (test_user_id,))
+                conn.commit()
+            except Exception:
+                # Best-effort cleanup — don't mask the real assertion failures
+                conn.rollback()
 
     def test_multiple_sources_in_single_event(self):
         """Test that a single event with multiple sources records correctly."""

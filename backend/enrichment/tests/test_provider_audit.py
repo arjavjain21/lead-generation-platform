@@ -372,6 +372,7 @@ class TestAcceptance6CSVAudit(unittest.IsolatedAsyncioTestCase):
                     on_progress=on_progress,
                     job_id="audit_test_job",
                     linkedin_url_col="linkedin_url",
+                    use_email_cache=False,
                 )
 
         # 1. Verify all 10 rows have audit data.
@@ -470,6 +471,7 @@ class TestAcceptance7JSONLSidecar(unittest.IsolatedAsyncioTestCase):
                     on_progress=on_progress,
                     job_id="sidecar_test",
                     linkedin_url_col="linkedin_url",
+                    use_email_cache=False,
                 )
 
             # The sidecar file must exist.

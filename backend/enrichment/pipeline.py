@@ -37,6 +37,7 @@ from . import providers
 from . import mailtester_client
 from . import wizleads_client
 from . import identifier_utils
+from . import company_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -236,6 +237,8 @@ SOURCE_BLITZ_CONTACTS = "blitz_contacts"                  # Decision makers from
 SOURCE_BLITZ_EMAIL = "blitz_email"                        # Email from Blitz
 SOURCE_BETTER_ENRICH_COMPANY = "better_enrich_company"    # Generic company email from BetterEnrich
 SOURCE_BETTER_ENRICH_PERSON = "better_enrich_person"      # Person email from BetterEnrich
+SOURCE_BETTER_ENRICH_FACEBOOK = "better_enrich_facebook_email"  # Page email from BetterEnrich Facebook lookup
+SOURCE_BETTER_ENRICH_COMPANY_V2 = "better_enrich_company_email"  # Company email from BetterEnrich find-company-email (fallback tier)
 SOURCE_WIZLEADS = "wizleads_email"                        # Person email from WizLeads
 
 # Routing reasons (no_email_reason values)
@@ -261,6 +264,12 @@ NO_EMAIL_REASON_PROVIDER_CALLED_NO_MATCH = "provider_called_no_match"
 NO_EMAIL_REASON_EMAIL_FOUND_BUT_INVALID = "email_found_but_invalid"
 NO_EMAIL_REASON_VERIFICATION_UNAVAILABLE = "verification_unavailable"
 NO_EMAIL_REASON_ALL_PROVIDERS_CALLED_NO_EMAIL = "all_providers_called_no_email"
+
+# Company / page-level fallback tier (BetterEnrich).
+NO_EMAIL_REASON_COMPANY_EMAIL_FOUND_BUT_NOT_ALLOWED = "company_email_found_but_not_allowed"
+NO_EMAIL_REASON_GENERIC_COMPANY_EMAIL_REJECTED = "generic_company_email_rejected"
+NO_EMAIL_REASON_FACEBOOK_PAGE_MISSING = "facebook_page_missing"
+NO_EMAIL_REASON_COMPANY_EMAIL_FALLBACK_DISABLED = "company_email_fallback_disabled"
 
 # Historical aliases (kept for back-compat with prior tests)
 NO_EMAIL_REASON_PHONE_REVERSE_UNAVAILABLE = "phone_reverse_unavailable"
@@ -316,6 +325,7 @@ ENRICHED_COLUMNS = [
     "input_phone",
     "input_company_name",
     "input_existing_email",
+    "input_facebook_url",
     "normalized_linkedin_url",
     "linkedin_username",
     "input_fields_used",
@@ -328,6 +338,21 @@ ENRICHED_COLUMNS = [
     "no_email_reason",
     "final_email_status",
     "final_email_verification_source",
+    # Company / page-level fallback outputs (BetterEnrich).
+    # These are populated only when the person-level waterfall returns no
+    # decision-maker email. They MUST never be written into dm_email.
+    "company_email",
+    "company_email_source",
+    "company_email_verified",
+    "company_email_type",
+    "company_email_source_path",
+    # The "best" email for the row, subject to the final-email policy:
+    # person email first; only the company/page email if
+    # allow_company_email_as_final is set AND (non-generic OR
+    # allow_generic_company_email is set).
+    "final_email",
+    "final_email_level",
+    "final_email_source_path",
 ]
 
 
@@ -1035,6 +1060,93 @@ async def run_enrichment_route(
 
 def _empty_enriched() -> dict[str, Any]:
     return {col: "" for col in ENRICHED_COLUMNS}
+
+
+async def _maybe_apply_company_fallbacks(
+    blitz_http: httpx.AsyncClient,
+    result_rows: list[OutputRow],
+    *,
+    domain: str,
+    facebook_url: str,
+    source_path_prefix: str,
+    validate_email: bool,
+    dedupe: "company_fallback.CompanyFallbackDedupe",
+    record_provider_use: Optional[Callable[[str], None]] = None,
+) -> None:
+    """Run the company / page-level fallback tier for a result row and
+    mutate it in place.
+
+    If every result row has a decision-maker email, the fallback is
+    skipped (per the contract: these are AFTER the person waterfall).
+    If at least one row has no dm_email, the fallback runs once with
+    the row's domain + facebook_url and the result is applied to every
+    row that lacks a person email.
+
+    Mutates result_rows in place. No-ops when both fallback flags are
+    off AND no facebook URL is present on the row.
+    """
+    from . import fallback_config as fb_cfg
+    if not fb_cfg.ENABLE_COMPANY_EMAIL_FALLBACK and not fb_cfg.ENABLE_FACEBOOK_EMAIL_FALLBACK:
+        return
+
+    # Skip API spend if every row already has a person-level email.
+    any_missing = any(not r.get("dm_email", "") for r in result_rows)
+    if not any_missing:
+        # Just make sure final_email reflects the person email.
+        for row in result_rows:
+            person_email = row.get("dm_email", "")
+            if person_email:
+                row["final_email"] = person_email
+                row["final_email_level"] = "person"
+                if not row.get("final_email_source_path"):
+                    row["final_email_source_path"] = row.get("source_path", "")
+        return
+
+    fb_result = await company_fallback.run_company_fallbacks(
+        blitz_http,
+        domain=domain,
+        facebook_url=facebook_url,
+        source_path_prefix=source_path_prefix,
+        validate_email=validate_email,
+        dedupe=dedupe,
+        record_provider_use=record_provider_use,
+    )
+
+    for row in result_rows:
+        person_email = row.get("dm_email", "")
+        person_source_path = row.get("source_path", "")
+        # Only apply fallback to rows that lack a person email. If a
+        # person email was found, just set final_email to it.
+        if not person_email:
+            company_fallback.apply_company_fallbacks_to_row(
+                row,
+                fb_result,
+                person_email="",
+                person_source_path="",
+            )
+        else:
+            # Person email wins. Make sure final_email reflects it.
+            company_fallback.apply_company_fallbacks_to_row(
+                row,
+                fb_result,
+                person_email=person_email,
+                person_source_path=person_source_path,
+            )
+        # Append any company-fallback providers_called entries to the row's
+        # providers_called JSON. We only added new "better_enrich*" entries
+        # that the person cascade did not record, so this is additive.
+        fb_called = fb_result.get("providers_called", []) or []
+        if fb_called:
+            try:
+                existing = json.loads(row.get("providers_called", "") or "[]")
+            except Exception:
+                existing = []
+            if not isinstance(existing, list):
+                existing = []
+            for p in fb_called:
+                if p not in existing:
+                    existing.append(p)
+            row["providers_called"] = json.dumps(existing, ensure_ascii=False)
 
 
 def _row_audit_record(
@@ -1775,8 +1887,10 @@ async def run_pipeline(
     phone_col: Optional[str] = None,
     company_name_col: Optional[str] = None,
     existing_email_col: Optional[str] = None,
+    facebook_url_col: Optional[str] = None,
     force_provider: Optional[str] = None,
     record_provider_use: Optional[Callable[[str], None]] = None,
+    use_email_cache: bool = True,
 ) -> list[OutputRow]:
     """
     Runs the full pipeline over all rows.
@@ -1809,6 +1923,43 @@ async def run_pipeline(
         limits=http_limits,
         timeout=httpx.Timeout(30.0, connect=10.0),
     )
+
+    # Per-job dedupe for company / Facebook page fallbacks. The first row
+    # that needs the value per normalized_domain / normalized_facebook_url
+    # makes the API call; subsequent rows reuse the cached result.
+    company_fallback_dedupe = company_fallback.CompanyFallbackDedupe()
+
+    # Persistent email cache on /mnt/disk/ — survives DB wipes and lets a
+    # resume recover already-resolved rows even if checkpoints are gone.
+    # If we have a parent job_id, open that one instead of starting fresh,
+    # so the user benefits from emails found in any previous run.
+    # Tests can pass use_email_cache=False to opt out (otherwise the
+    # persistent cache will mask their work).
+    email_cache_conn = None
+    if job_id and use_email_cache:
+        try:
+            from . import email_cache
+            cache_job_id = job_id
+            # If this run is a child of a parent that already built up
+            # a cache, share the parent's cache.
+            try:
+                from shared import db as _db
+                parent_row = _db.get_db().execute(
+                    "SELECT parent_job_id FROM jobs WHERE job_id=?",
+                    (job_id,),
+                ).fetchone()
+                if parent_row and parent_row["parent_job_id"]:
+                    parent_cache_path = email_cache.get_cache_path(parent_row["parent_job_id"])
+                    if Path(parent_cache_path).exists():
+                        cache_job_id = parent_row["parent_job_id"]
+            except Exception as e:
+                logger.debug("Could not check parent cache: %s", e)
+            email_cache_conn = email_cache.open_cache(cache_job_id)
+            logger.info("Opened email cache at %s (job_id=%s)",
+                        email_cache.get_cache_path(cache_job_id), cache_job_id)
+        except Exception as e:
+            logger.warning("Could not open email cache: %s", e)
+            email_cache_conn = None
 
     all_output: list[OutputRow] = []
     total = len(rows)
@@ -1879,6 +2030,25 @@ async def run_pipeline(
         else:
             full_name = ""
 
+        # Persistent email cache on /mnt/disk/ — keyed by (domain, name).
+        # If a previous run already found an email for this pair, short-
+        # circuit the row and reuse the enriched payload. Survives DB wipes
+        # so a user can resume even if the jobs table is gone.
+        if email_cache_conn is not None and domain:
+            cached = email_cache.lookup(
+                email_cache_conn, domain, full_name
+            )
+            if cached is None and not full_name:
+                # Try domain-only for company-email fallback
+                cached = email_cache.lookup_domain_only(email_cache_conn, domain)
+            if cached is not None:
+                result_rows = [dict(cached["enriched_row"])]
+                # Update row_status to indicate cache hit so the UI can
+                # show the user how many rows were recovered.
+                result_rows[0]["row_status"] = "cache_hit"
+                result_rows[0]["no_email_reason"] = cached.get("no_email_reason", "cache_hit")
+                return result_rows
+
         # Build per-row identifier payload (used downstream for visibility/debug)
         input_payload = identifier_utils.build_row_identifier_payload(
             row,
@@ -1890,6 +2060,7 @@ async def run_pipeline(
             phone_col=phone_col,
             company_name_col=company_name_col,
             existing_email_col=existing_email_col,
+            facebook_url_col=facebook_url_col,
         )
         # Prefer normalized full_name we already computed (avoids whitespace-only issue)
         input_payload["full_name"] = full_name or input_payload["full_name"]
@@ -2046,6 +2217,21 @@ async def run_pipeline(
                 # we still need to attach the no_email_reason from routing.
                 r["no_email_reason"] = r.get("no_email_reason") or no_email_reason
 
+        # Company / page-level fallbacks (BetterEnrich Facebook + company
+        # email). Run only after the person-level cascade has had its turn.
+        # Mutates each result row in place to add company_email* / final_email*.
+        facebook_url = (input_payload.get("facebook_url") or "").strip()
+        await _maybe_apply_company_fallbacks(
+            blitz_http,
+            result_rows,
+            domain=domain,
+            facebook_url=facebook_url,
+            source_path_prefix=(result_rows[0].get("source_path", "") if result_rows else ""),
+            validate_email=validate_email,
+            dedupe=company_fallback_dedupe,
+            record_provider_use=record_provider_use,
+        )
+
         # Collect source counts from this row's results
         source_counts: dict[str, int] = {}
         for r in result_rows:
@@ -2090,6 +2276,21 @@ async def run_pipeline(
         async with audit_lock:
             audit_records.append(audit)
 
+        # Persist the successful row to the email cache so future runs can
+        # skip it. We do this *after* the audit so the audit log always
+        # reflects work that actually happened, never cache hits.
+        if email_cache_conn is not None and domain:
+            for r in result_rows:
+                try:
+                    email_cache.store(
+                        email_cache_conn,
+                        domain,
+                        r,
+                        full_name=r.get("input_full_name", "") or full_name,
+                    )
+                except Exception as e:
+                    logger.debug("Email cache write failed for %s: %s", domain, e)
+
         # Write to CSV incrementally if enabled
         if write_incremental and csv_writer:
             async with write_lock:
@@ -2106,6 +2307,14 @@ async def run_pipeline(
 
     await blitz_http.aclose()
     await contacts_http.aclose()
+
+    # Close email cache (flush + commit)
+    if email_cache_conn is not None:
+        try:
+            from . import email_cache as _email_cache
+            _email_cache.close_cache()
+        except Exception:
+            pass
 
     # Close CSV file if open
     if csv_file:

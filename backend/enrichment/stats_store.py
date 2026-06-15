@@ -58,6 +58,8 @@ SOURCE_GROUPS: dict[str, str] = {
     # BetterEnrich sources
     "better_enrich_company": "better_enrich",
     "better_enrich_person": "better_enrich",
+    "better_enrich_facebook_email": "better_enrich",
+    "better_enrich_company_email": "better_enrich",
     # Prospeo sources
     "prospeo": "prospeo",
     "prospeo_person": "prospeo",

@@ -175,6 +175,29 @@ def init_db() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_phone_enrichments_url
             ON phone_enrichments (linkedin_url);
+
+        -- Contacts DB write-back outbox (2026-06-14)
+        -- Durable retry queue for write_enrichment_result() calls that fail
+        -- with transient errors. Idempotent — the underlying upsert is keyed
+        -- by email, so re-sending a queued payload is safe.
+        CREATE TABLE IF NOT EXISTS contacts_write_outbox (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id          TEXT,
+            row_index       INTEGER,
+            payload_json    TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'pending',  -- pending|done|failed
+            attempt_count   INTEGER NOT NULL DEFAULT 0,
+            last_error      TEXT,
+            next_retry_at   INTEGER NOT NULL DEFAULT 0,
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_outbox_status
+            ON contacts_write_outbox (status, next_retry_at);
+
+        CREATE INDEX IF NOT EXISTS idx_outbox_job
+            ON contacts_write_outbox (job_id, row_index);
         """
     )
 
@@ -205,6 +228,13 @@ def init_db() -> None:
     ):
         if col not in existing_columns:
             c.execute(f"ALTER TABLE jobs ADD COLUMN {col} TEXT DEFAULT ''")
+    # Partial output path (2026-06-14) — tracks where the in-progress CSV
+    # was renamed to when a job was abandoned. Used by the resume flow to
+    # surface a "Download Partial" button and to merge into the restarted
+    # job's output. Without this column the user had no way to recover any
+    # rows that were completed before a server crash.
+    if "partial_output_path" not in existing_columns:
+        c.execute("ALTER TABLE jobs ADD COLUMN partial_output_path TEXT DEFAULT ''")
 
     c.commit()
 

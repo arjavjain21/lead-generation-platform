@@ -2,11 +2,17 @@
 BetterEnrich API client for email enrichment.
 
 BetterEnrich provides email enrichment services with:
+- V1: Async legacy endpoint (10 RPS)
 - V2: Synchronous low-cost endpoint (10 RPS)
 - V3: Async/polling with built-in verification and LinkedIn URL support (5 RPS)
-- Company email: Generic/catchall company email lookup
+- Company email: Generic/catchall company email lookup (5 RPS — shared limiter)
+- Facebook page email: Email from Facebook page URL (5 RPS — shared limiter)
 
-Usage (V3 - recommended):
+Per BetterEnrich docs, V3, company email, and facebook page endpoints each share
+a 5 RPS budget. We model this with a single shared 5 RPS limiter across all three
+to be conservative and prevent aggregate overshoot.
+
+Usage (V3 - recommended for person lookup):
     result = await better_enrich_client.find_work_email_v3(
         client,
         full_name="John Doe",
@@ -19,6 +25,14 @@ Usage (V2 - fallback):
         client,
         full_name="John Doe",
         company_domain="google.com"
+    )
+
+Usage (company fallback):
+    result = await better_enrich_client.find_company_email(client, website="google.com")
+
+Usage (Facebook page fallback):
+    result = await better_enrich_client.find_email_from_facebook_page(
+        client, page_url="https://facebook.com/somepage"
     )
 """
 
@@ -35,25 +49,34 @@ logger = logging.getLogger(__name__)
 # Configuration
 BASE_URL = os.getenv("BETTER_ENRICH_BASE_URL", "https://app.betterenrich.com")
 API_KEY = os.getenv("BETTER_ENRICH_API_KEY", "")
-RATE_LIMIT_RPS = 10
+RATE_LIMIT_RPS = 10  # Legacy V1/V2 endpoint budget
+RATE_LIMIT_RPS_V3 = 5  # V3 budget
+# V3, Company email, and Facebook page endpoints each documented at 5 RPS.
+# We use a single shared 5 RPS limiter across all three to keep total
+# BetterEnrich request rate at or below 5 RPS — see the contract in
+# LOOP_BETTERENRICH_FALLBACKS.md acceptance test 7.
+RATE_LIMIT_RPS_SHARED = 5
 
 # Polling configuration
 POLL_INTERVAL = 2.0  # seconds between polls
 MAX_POLL_ATTEMPTS = 15  # max 30 seconds wait
 REQUEST_TIMEOUT = 10.0  # timeout for each request
 
-# Rate limiting
+# Rate limiting — V1/V2 (10 RPS)
 _rate_limiter_lock = asyncio.Lock()
 _last_request_time = 0.0
 
-# V3 Rate limiting (5 RPS as per Better Enrich V3 API)
+# Rate limiting — V3 (5 RPS)
 _rate_limiter_lock_v3 = asyncio.Lock()
 _last_request_time_v3 = 0.0
-RATE_LIMIT_RPS_V3 = 5
+
+# Rate limiting — shared 5 RPS for V3 + Company + Facebook (see above).
+_rate_limiter_lock_shared = asyncio.Lock()
+_last_request_time_shared = 0.0
 
 
 async def _acquire_rate_limit():
-    """Acquire rate limit slot (10 RPS)."""
+    """Acquire rate limit slot (10 RPS) — V1/V2 endpoints."""
     global _last_request_time
     async with _rate_limiter_lock:
         now = time.monotonic()
@@ -64,14 +87,28 @@ async def _acquire_rate_limit():
 
 
 async def _acquire_rate_limit_v3():
-    """Acquire rate limit slot for V3 (5 RPS)."""
-    global _last_request_time_v3
-    async with _rate_limiter_lock_v3:
+    """Acquire rate limit slot for V3 (5 RPS) — DEPRECATED: use _acquire_shared_rate_limit.
+
+    Kept for back-compat; new code should call _acquire_shared_rate_limit so
+    the 5 RPS budget is shared with Company and Facebook endpoints.
+    """
+    return await _acquire_shared_rate_limit()
+
+
+async def _acquire_shared_rate_limit():
+    """Acquire the shared 5 RPS rate limit slot for V3 + Company + Facebook.
+
+    This is the single throttle that governs all three endpoints. Tests
+    that exercise these endpoints together must observe that the combined
+    request rate does not exceed 5 RPS.
+    """
+    global _last_request_time_shared
+    async with _rate_limiter_lock_shared:
         now = time.monotonic()
-        interval = 1.0 / RATE_LIMIT_RPS_V3
-        if now - _last_request_time_v3 < interval:
-            await asyncio.sleep(interval - (now - _last_request_time_v3))
-        _last_request_time_v3 = time.monotonic()
+        interval = 1.0 / RATE_LIMIT_RPS_SHARED
+        if now - _last_request_time_shared < interval:
+            await asyncio.sleep(interval - (now - _last_request_time_shared))
+        _last_request_time_shared = time.monotonic()
 
 
 def _headers() -> dict:
@@ -305,7 +342,7 @@ async def find_work_email_v3(
         logger.warning("BetterEnrich API key not configured, skipping")
         return None
 
-    await _acquire_rate_limit_v3()
+    await _acquire_shared_rate_limit()
 
     payload = {
         "full_name": full_name,
@@ -451,15 +488,19 @@ async def find_company_email(
     Returns:
         Dict with:
         {
-            "email": "contact@company.com"
+            "email": "contact@company.com",
+            "email_status": "verified" | "valid" | "unverified" | "unknown",
         }
         Or None if not found / failed / not configured.
+
+    Note: Shares the 5 RPS BetterEnrich shared limiter with V3 and Facebook
+    page endpoints. Caller should dedupe by normalized_domain.
     """
     if not API_KEY:
         logger.warning("BetterEnrich API key not configured, skipping company email lookup")
         return None
 
-    await _acquire_rate_limit()
+    await _acquire_shared_rate_limit()
 
     payload = {
         "website": website,
@@ -483,6 +524,7 @@ async def find_company_email(
                 logger.warning("BetterEnrich company email found: %s for %s", email, website)
                 return {
                     "email": email,
+                    "email_status": data.get("email_status") or data.get("status") or "unknown",
                 }
             logger.warning("BetterEnrich company email not found for: %s", website)
             return None
@@ -496,4 +538,81 @@ async def find_company_email(
         return None
     except Exception as e:
         logger.error("BetterEnrich company email request failed: %s for %s", e, website)
+        return None
+
+
+async def find_email_from_facebook_page(
+    client: httpx.AsyncClient,
+    page_url: str,
+) -> Optional[dict]:
+    """
+    Find email from a Facebook page using BetterEnrich.
+
+    This is a synchronous endpoint that returns immediately.
+    POST /api/v1/find-email-from-facebook-page
+    Body: { "pageURL": "<facebook_page_url>" }
+    Rate limit: 5 requests/second (shared with V3 and company email).
+
+    The returned email is a page-level / company-level email, not a
+    decision-maker email. Callers MUST route it to company_email, not dm_email.
+
+    Args:
+        client: httpx AsyncClient
+        page_url: A Facebook page URL (e.g. "https://facebook.com/somepage").
+            Non-Facebook URLs are rejected (returns None).
+
+    Returns:
+        Dict with:
+        {
+            "email": "page@company.com",
+            "email_status": "verified" | "valid" | "unverified" | "unknown",
+        }
+        Or None if not found / failed / not configured / invalid page URL.
+    """
+    if not API_KEY:
+        logger.warning("BetterEnrich API key not configured, skipping Facebook page email lookup")
+        return None
+
+    if not page_url or "facebook.com" not in page_url.lower():
+        logger.warning("BetterEnrich facebook: rejected non-Facebook page_url=%r", page_url)
+        return None
+
+    await _acquire_shared_rate_limit()
+
+    payload = {
+        "pageURL": page_url,
+    }
+
+    try:
+        resp = await client.post(
+            f"{BASE_URL}/api/v1/find-email-from-facebook-page",
+            headers=_headers(),
+            json=payload,
+            timeout=REQUEST_TIMEOUT,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+
+        # Check for success (mirrors find-company-email shape)
+        if result.get("message") == "success":
+            data = result.get("data", {})
+            email = data.get("email")
+            if email:
+                logger.warning("BetterEnrich facebook email found: %s for %s", email, page_url)
+                return {
+                    "email": email,
+                    "email_status": data.get("email_status") or data.get("status") or "unknown",
+                }
+            logger.warning("BetterEnrich facebook email not found for: %s", page_url)
+            return None
+
+        # not_found
+        logger.warning("BetterEnrich facebook lookup not found for: %s", page_url)
+        return None
+
+    except httpx.HTTPStatusError as e:
+        logger.warning("BetterEnrich facebook HTTP error: %s for %s", e.response.status_code, page_url)
+        return None
+    except Exception as e:
+        logger.error("BetterEnrich facebook request failed: %s for %s", e, page_url)
         return None

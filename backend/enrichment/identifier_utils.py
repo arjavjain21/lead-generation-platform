@@ -39,7 +39,87 @@ def normalize_value(value) -> str:
     return stripped
 
 
+def normalize_domain(value) -> str:
+    """Return a bare, lowercased domain, or '' if value is missing/empty/noise.
+
+    Strips:
+      * protocol prefix (http://, https://)
+      * leading "www." (and "ww1.", "ww2." etc. — any leading "w" repeated)
+      * path, query string, and fragment
+      * trailing slashes / whitespace
+      * surrounding whitespace
+
+    Returns a bare host form like 'mesterh-service.de'. Email-style
+    addresses (containing '@') and non-domain tokens return '' so we
+    don't accidentally pass user data to provider APIs.
+
+    Examples:
+      'https://Mesterh-Service.de/?utm_source=x'  -> 'mesterh-service.de'
+      'http://www.acme.com/path?q=1'              -> 'acme.com'
+      'acme.com/'                                 -> 'acme.com'
+      'Acme.com'                                  -> 'acme.com'
+      'mesterh-service.de'                        -> 'mesterh-service.de'
+      ''                                         -> ''
+      'not a domain'                              -> ''
+      'user@example.com'                          -> ''  (an email, not a domain)
+    """
+    raw = normalize_value(value)
+    if not raw:
+        return ""
+    # If the value is an email (contains '@'), reject.
+    if "@" in raw:
+        return ""
+    # Strip protocol.
+    raw = re.sub(r"^https?://", "", raw, flags=re.IGNORECASE)
+    # Now `raw` is the part after the protocol (or the original if none).
+    # Use urlparse to handle the rest robustly.
+    if "://" not in raw and "/" not in raw and "?" not in raw and "#" not in raw:
+        # Fast path: already a bare token, just lowercase and trim.
+        candidate = raw.strip().rstrip(".").lower()
+    else:
+        # Re-prepend https so urlparse behaves consistently.
+        parsed = urlparse("https://" + raw)
+        host = (parsed.netloc or "").strip().lower()
+        # Strip credentials if present (user:pass@host).
+        if "@" in host:
+            host = host.rsplit("@", 1)[-1]
+        candidate = host
+    if not candidate:
+        return ""
+    # Strip leading "www." and any "ww<n>." prefixes from the host.
+    # We loop to handle "ww1.", "ww2.", etc. — the first "w" group.
+    while True:
+        if candidate.startswith("www."):
+            candidate = candidate[4:]
+        else:
+            break
+    # Drop a trailing dot (FQDN notation).
+    candidate = candidate.rstrip(".")
+    # Must contain a dot — a single token like "localhost" is not a domain
+    # we want to send to providers, and bare words like "acme" are noise.
+    if "." not in candidate:
+        return ""
+    # Disallow obvious non-domain patterns.
+    if " " in candidate or "/" in candidate:
+        return ""
+    return candidate
+
+
 _LINKEDIN_HOST_RE = re.compile(r"^(?:https?://)?(?:www\.)?linkedin\.com/", re.IGNORECASE)
+
+# Accept facebook.com, fb.com, m.facebook.com, web.facebook.com,
+# www.facebook.com. The capture group is the page slug (everything
+# after the host and any optional /pg/, /pages/, /people/ prefix).
+_FACEBOOK_HOST_RE = re.compile(
+    r"^(?:https?://)?(?:www\.|m\.|web\.)?(?:facebook\.com|fb\.com)/",
+    re.IGNORECASE,
+)
+# Strip the leading /pg/, /pages/<slug>/, /people/<slug>/ prefix and
+# keep just the page slug.
+_FACEBOOK_SLUG_STRIP_RE = re.compile(
+    r"^/(?:pg/|pages/[^/]+/|people/[^/]+/|profile\.php\?id=)?",
+    re.IGNORECASE,
+)
 
 
 def normalize_linkedin_url(value) -> str:
@@ -82,6 +162,47 @@ def linkedin_username_from_url(value) -> str:
     if len(parts) >= 2 and parts[0].lower() == "in":
         return parts[1].lower()
     return ""
+
+
+def normalize_facebook_url(value) -> str:
+    """Return a canonical Facebook page URL ('' if value is not a Facebook URL).
+
+    Output uses https://facebook.com/<slug> with no trailing slash, no query,
+    no fragment. m.facebook.com and web.facebook.com are normalized to
+    facebook.com. Non-Facebook hosts return ''.
+
+    Examples:
+      'https://www.facebook.com/SomePage'   -> 'https://facebook.com/somepage'
+      'm.facebook.com/SomePage/'            -> 'https://facebook.com/somepage'
+      'fb.com/somepage'                     -> 'https://facebook.com/somepage'
+      'https://facebook.com/pages/X/Y'      -> 'https://facebook.com/y'
+      'https://example.com/SomePage'        -> ''
+    """
+    raw = normalize_value(value)
+    if not raw:
+        return ""
+    if not _FACEBOOK_HOST_RE.match(raw):
+        return ""
+    if "://" not in raw:
+        raw = "https://" + raw
+    parsed = urlparse(raw)
+    host = (parsed.netloc or "").lower()
+    # Strip www./m./web. prefix and fb.com alias.
+    for prefix in ("www.", "m.", "web."):
+        if host.startswith(prefix):
+            host = host[len(prefix):]
+    if host == "fb.com":
+        host = "facebook.com"
+    if host not in ("facebook.com",):
+        return ""
+    path = (parsed.path or "").rstrip("/")
+    # Strip the legacy /pg/, /pages/<slug>/, /people/<slug>/, /profile.php?id=
+    # prefix to keep just the page slug.
+    path = _FACEBOOK_SLUG_STRIP_RE.sub("/", path, count=1)
+    path = path.rstrip("/").lower()
+    if not path or path == "/":
+        return ""
+    return f"https://{host}{path}"
 
 
 _LINKEDIN_KEYS = {
@@ -143,6 +264,22 @@ _EMAIL_KEYS = {
     "person_email",
     "person email",
 }
+_FACEBOOK_KEYS = {
+    "facebook",
+    "facebook_url",
+    "facebook url",
+    "facebook_page",
+    "facebook page",
+    "facebook_page_url",
+    "facebook page url",
+    "page_url",
+    "page url",
+    "fb",
+    "fb_url",
+    "fb url",
+    "fb_page",
+    "fb page",
+}
 
 
 def _normalize_key(name: str) -> str:
@@ -195,6 +332,18 @@ def suggest_email_column(columns: list[str]) -> Optional[str]:
     return None
 
 
+def suggest_facebook_column(columns: list[str]) -> Optional[str]:
+    """Pick the first column from `columns` that looks like a Facebook URL column."""
+    norm_to_orig = {_normalize_key(c): c for c in columns}
+    for key in _FACEBOOK_KEYS:
+        if key in norm_to_orig:
+            return norm_to_orig[key]
+    for col in columns:
+        if "facebook" in _normalize_key(col) or " fb " in f" {_normalize_key(col)} ":
+            return col
+    return None
+
+
 def build_row_identifier_payload(
     row: dict,
     *,
@@ -206,14 +355,16 @@ def build_row_identifier_payload(
     phone_col: Optional[str] = None,
     company_name_col: Optional[str] = None,
     existing_email_col: Optional[str] = None,
+    facebook_url_col: Optional[str] = None,
 ) -> dict:
     """Extract and normalize every identifier column from a single CSV row.
 
     Returns a dict with keys: domain, full_name, first_name, last_name,
-    linkedin_url, phone, company_name, existing_email, normalized_linkedin_url,
-    linkedin_username, input_fields_used.
+    linkedin_url, phone, company_name, existing_email, facebook_url,
+    normalized_linkedin_url, normalized_facebook_url, linkedin_username,
+    input_fields_used.
     """
-    domain = normalize_value(row.get(domain_col)) if domain_col else ""
+    domain = normalize_domain(row.get(domain_col)) if domain_col else ""
     full_name = normalize_value(row.get(name_col)) if name_col else ""
     first_name = normalize_value(row.get(first_name_col)) if first_name_col else ""
     last_name = normalize_value(row.get(last_name_col)) if last_name_col else ""
@@ -225,6 +376,9 @@ def build_row_identifier_payload(
     linkedin_raw = normalize_value(row.get(linkedin_url_col)) if linkedin_url_col else ""
     normalized_li = normalize_linkedin_url(linkedin_raw) if linkedin_raw else ""
     li_username = linkedin_username_from_url(normalized_li) if normalized_li else ""
+
+    facebook_raw = normalize_value(row.get(facebook_url_col)) if facebook_url_col else ""
+    normalized_fb = normalize_facebook_url(facebook_raw) if facebook_raw else ""
 
     phone = normalize_value(row.get(phone_col)) if phone_col else ""
     company_name = normalize_value(row.get(company_name_col)) if company_name_col else ""
@@ -244,6 +398,8 @@ def build_row_identifier_payload(
         used.append("company_name")
     if existing_email:
         used.append("existing_email")
+    if facebook_raw:
+        used.append("facebook_url")
 
     return {
         "domain": domain,
@@ -254,7 +410,9 @@ def build_row_identifier_payload(
         "phone": phone,
         "company_name": company_name,
         "existing_email": existing_email,
+        "facebook_url": facebook_raw,
         "normalized_linkedin_url": normalized_li,
+        "normalized_facebook_url": normalized_fb,
         "linkedin_username": li_username,
         "input_fields_used": ",".join(used),
         # Output-CSV column names (so attach_input_columns can drop them in directly).
@@ -264,6 +422,7 @@ def build_row_identifier_payload(
         "input_phone": phone,
         "input_company_name": company_name,
         "input_existing_email": existing_email,
+        "input_facebook_url": facebook_raw,
     }
 
 
@@ -276,6 +435,7 @@ def input_payload_columns() -> list[str]:
         "input_phone",
         "input_company_name",
         "input_existing_email",
+        "input_facebook_url",
         "normalized_linkedin_url",
         "linkedin_username",
         "input_fields_used",
@@ -295,6 +455,7 @@ def attach_input_columns(output_row: dict, payload: dict) -> dict:
         "input_phone",
         "input_company_name",
         "input_existing_email",
+        "input_facebook_url",
         "normalized_linkedin_url",
         "linkedin_username",
         "input_fields_used",

@@ -153,6 +153,17 @@ async def startup():
     # Clean up old uploads (7 days) and outputs (30 days)
     enrichment_routes.cleanup_old_files()
 
+    # Start the Contacts DB outbox retry background task. Drains any
+    # contacts_write_outbox entries that hit transient failures (network,
+    # rate limits, 5xx) and re-attempts the upsert. Permanent errors
+    # (400, 404, 422) are marked failed and excluded from future retries.
+    try:
+        from enrichment.contacts_writer import retry_outbox_loop
+        asyncio.create_task(retry_outbox_loop(interval_seconds=60))
+        logger.info("Started contacts_write_outbox retry loop")
+    except Exception as e:
+        logger.warning("Failed to start outbox retry loop: %s", e)
+
 
 # ---------------------------------------------------------------------------
 # Shared Auth Routes

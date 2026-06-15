@@ -770,6 +770,16 @@
                     <h3 style="margin:0;">⚡ Enrichment Jobs</h3>
                     <button class="btn btn-secondary btn-sm" id="refreshJobs">Refresh</button>
                 </div>
+                <div id="enrichmentFilterTabs" style="display:flex;gap:0.5rem;margin-bottom:1rem;flex-wrap:wrap;">
+                    <button class="filter-tab active" data-status="all" onclick="filterEnrichmentJobs('all')">All</button>
+                    <button class="filter-tab" data-status="running" onclick="filterEnrichmentJobs('running')">Running</button>
+                    <button class="filter-tab" data-status="starting" onclick="filterEnrichmentJobs('starting')">Starting</button>
+                    <button class="filter-tab" data-status="done" onclick="filterEnrichmentJobs('done')">Done</button>
+                    <button class="filter-tab" data-status="partial" onclick="filterEnrichmentJobs('partial')">Partial</button>
+                    <button class="filter-tab" data-status="failed" onclick="filterEnrichmentJobs('failed')">Failed</button>
+                    <button class="filter-tab" data-status="abandoned" onclick="filterEnrichmentJobs('abandoned')">Abandoned</button>
+                    <button class="filter-tab" data-status="cancelled" onclick="filterEnrichmentJobs('cancelled')">Cancelled</button>
+                </div>
                 <div class="jobs-list" id="enrichmentJobsList">
                     <div class="loading"><div class="spinner"></div>Loading...</div>
                 </div>
@@ -921,6 +931,8 @@ https://linkedin.com/in/janesmith</pre>
             let domainUploadId = null, linkedinUploadId = null, currentJobId = null, eventSource = null, currentScraperDisplayName = null, currentJobRegions = null;
             let allScraperJobs = []; // Store all scraper jobs for filtering
             let currentStatusFilter = 'all'; // Current status filter
+            let allEnrichmentJobs = []; // Store all enrichment jobs for filtering
+            let currentEnrichmentStatusFilter = 'all'; // Current enrichment status filter
 
             // Auth
             const authModal = document.getElementById('authModal');
@@ -2197,7 +2209,7 @@ https://linkedin.com/in/janesmith</pre>
                 if (res.ok) {
                     const data = await res.json();
                     alert('Enrichment job started! Job ID: ' + data.job_id);
-                    navigateTo('jobs');
+                    navigateToPage('jobs');
                 } else {
                     const err = await res.json();
                     alert('Failed: ' + (err.detail || 'Unknown error'));
@@ -2570,17 +2582,161 @@ https://linkedin.com/in/janesmith</pre>
             }
         }
 
+        // Resume an abandoned / failed / partial enrichment job.
+        // Calls /resume-info first to get row counts + partial-CSV status,
+        // shows a confirmation modal with what the user is about to lose,
+        // then POSTs /restart which spins up a new job filtered to
+        // unprocessed rows.
+        async function resumeEnrichmentJob(jobId, btn) {
+            const originalLabel = btn ? btn.textContent : '↻ Resume';
+            if (!_actionStart(jobId, 'resume', btn, originalLabel)) return;
+            try {
+                const infoRes = await fetch('/api/enrichment/jobs/' + jobId + '/resume-info', {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (!infoRes.ok) {
+                    const err = await infoRes.json();
+                    alert('Could not get resume info: ' + (err.detail || 'Unknown error'));
+                    return;
+                }
+                const info = await infoRes.json();
+                // Build a confirmation message that's honest about the
+                // worst case: 0 checkpoints + 0 partial rows = full
+                // re-process. The user must explicitly opt in to
+                // burning the cost on a job where nothing can be
+                // recovered.
+                let msg = `Resume this enrichment job?\n\n`;
+                msg += `Original file: ${info.filename || 'unknown'}\n`;
+                msg += `Status: ${info.status}\n`;
+                msg += `Total rows: ${info.total}\n`;
+                msg += `Already processed (per checkpoint): ${info.checkpoint_count}\n`;
+                msg += `Rows in partial CSV: ${info.partial_csv_rows || 0}\n`;
+                msg += `Emails found so far: ${info.emails_found || 0}\n\n`;
+                if (info.checkpoint_count === 0 && (!info.partial_csv_exists || info.partial_csv_rows === 0)) {
+                    msg += `⚠️ Nothing can be recovered from the previous run.\n`;
+                    msg += `Resume will re-process all ${info.total} rows from scratch.\n\n`;
+                } else {
+                    msg += `Resume will skip ${info.checkpoint_count} rows that already completed\n`;
+                    msg += `and re-enrich the remaining ${info.unprocessed} rows.\n\n`;
+                }
+                // User cancelled the confirm() — release the in-flight
+                // lock immediately so they can try again.
+                if (!confirm(msg)) {
+                    _actionEnd(jobId);
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.textContent = btn.dataset.originalLabel || originalLabel;
+                        delete btn.dataset.originalLabel;
+                    }
+                    return;
+                }
+
+                const restartRes = await fetch('/api/enrichment/jobs/' + jobId + '/restart', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (restartRes.ok) {
+                    const data = await restartRes.json();
+                    alert('Job resumed! New job ID: ' + data.job_id);
+                    loadJobs();
+                } else {
+                    const err = await restartRes.json();
+                    alert('Failed to resume: ' + (err.detail || 'Unknown error'));
+                }
+            } catch (e) {
+                alert('Error: ' + e.message);
+            } finally {
+                _actionEnd(jobId);
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = btn.dataset.originalLabel || originalLabel;
+                    delete btn.dataset.originalLabel;
+                }
+            }
+        }
+
+        // Download the partial CSV that was saved when a job was
+        // abandoned or cancelled. The server picks a sensible filename
+        // (e.g. partial_<safe_name>_<jobid8>.csv) based on the original
+        // upload. This is the user's best shot at recovering rows that
+        // completed before the server died.
+        async function downloadEnrichmentPartial(jobId, btn) {
+            if (btn) { btn.disabled = true; btn.textContent = 'Downloading...'; }
+            try {
+                const res = await fetch('/api/enrichment/jobs/' + jobId + '/recover-partial', {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (!res.ok) {
+                    const err = await res.json();
+                    alert('Download failed: ' + (err.detail || 'No partial file'));
+                    if (btn) { btn.disabled = false; btn.textContent = 'Download Partial'; }
+                    return;
+                }
+                const blob = await res.blob();
+                const cd = res.headers.get('content-disposition') || '';
+                const match = cd.match(/filename="?([^"]+)"?/);
+                const filename = match ? match[1] : `partial_${jobId.substr(0, 8)}.csv`;
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = filename;
+                document.body.appendChild(a); a.click();
+                document.body.removeChild(a); URL.revokeObjectURL(url);
+            } catch (e) {
+                alert('Error: ' + e.message);
+                if (btn) { btn.disabled = false; btn.textContent = 'Download Partial'; }
+            }
+        }
+
         // Load enrichment jobs with improved status handling
         async function loadJobs() {
             const jobsList = document.getElementById('enrichmentJobsList');
             try {
                 const res = await fetch('/api/enrichment/jobs', { headers: { 'Authorization': 'Bearer ' + token } });
-                if (res.ok) { const data = await res.json(), jobs = data.jobs || [];
-                    if (jobs.length === 0) { jobsList.innerHTML = '<div class="empty-state">No enrichment jobs yet</div>'; return; }
-                    jobsList.innerHTML = jobs.map(job => {
+                if (res.ok) {
+                    const data = await res.json();
+                    allEnrichmentJobs = data.jobs || [];
+                    renderEnrichmentJobs();
+                } else {
+                    jobsList.innerHTML = '<div class="empty-state">Failed to load</div>';
+                }
+            } catch (e) { jobsList.innerHTML = '<div class="empty-state">Error</div>'; }
+        }
+
+        function filterEnrichmentJobs(statusFilter) {
+            if (statusFilter) {
+                currentEnrichmentStatusFilter = statusFilter;
+                // Update active tab — scope to enrichment tabs so we don't
+                // collide with the scraper filter tabs on the same page.
+                document.querySelectorAll('#enrichmentFilterTabs .filter-tab').forEach(tab => {
+                    tab.classList.remove('active');
+                    if (tab.dataset.status === statusFilter) tab.classList.add('active');
+                });
+            }
+            renderEnrichmentJobs();
+        }
+
+        function renderEnrichmentJobs() {
+            const jobsList = document.getElementById('enrichmentJobsList');
+            let jobs = allEnrichmentJobs;
+            if (!jobs || jobs.length === 0) {
+                jobsList.innerHTML = '<div class="empty-state">No enrichment jobs yet</div>';
+                return;
+            }
+            // Apply status filter
+            if (currentEnrichmentStatusFilter !== 'all') {
+                jobs = jobs.filter(job => job.status === currentEnrichmentStatusFilter);
+            }
+            if (jobs.length === 0) {
+                jobsList.innerHTML = '<div class="empty-state">No jobs match the current filter</div>';
+                return;
+            }
+            jobsList.innerHTML = jobs.map(job => {
                         // Status display with human-readable labels
                         let statusLabel = job.status;
                         let statusDisplay = statusLabel;
+                        if (job.status === 'running') statusDisplay = 'Running';
+                        if (job.status === 'starting') statusDisplay = 'Starting';
+                        if (job.status === 'done') statusDisplay = 'Done';
                         if (job.status === 'abandoned') statusDisplay = 'Abandoned';
                         if (job.status === 'cancelled') statusDisplay = 'Cancelled';
                         if (job.status === 'partial') statusDisplay = 'Partial';
@@ -2643,15 +2799,31 @@ https://linkedin.com/in/janesmith</pre>
                             const fname = job.display_filename || job.filename || 'enrichment_job';
                             const safeName = fname.replace(/[^a-z0-9]/gi, '_').substring(0, 30);
                             actions += ' <button class="btn btn-success btn-sm" id="dl-enrich-'+job.job_id+'" onclick="downloadFile(\''+job.job_id+'\',\''+safeName+'_enrichment_'+job.job_id.substr(0,8)+'.csv\', this)">Download</button>';
-                        } else if (job.status === 'failed' || job.status === 'abandoned') {
-                            actions += ' <button class="btn btn-secondary btn-sm" onclick="retryEnrichmentJob(\''+job.job_id+'\')">Retry</button>';
+                        } else if (job.status === 'failed' || job.status === 'abandoned' || job.status === 'cancelled') {
+                            // Resume (skip already-processed rows) — only when we
+                            // actually have something to resume from. Without
+                            // checkpoints AND without a partial CSV, there's
+                            // nothing to skip and "Resume" would just be a
+                            // confusing synonym for "Retry".
+                            const canResume = (job.checkpoint_count && job.checkpoint_count > 0) || job.partial_output_path;
+                            if (canResume) {
+                                actions += ' <button class="btn btn-warning btn-sm" data-action="resume" data-job-id="'+job.job_id+'" onclick="resumeEnrichmentJob(\''+job.job_id+'\', this)">↻ Resume</button>';
+                            }
+                            actions += ' <button class="btn btn-secondary btn-sm" data-action="retry" data-job-id="'+job.job_id+'" onclick="retryEnrichmentJob(\''+job.job_id+'\', this)">Retry</button>';
+                            if (job.partial_output_path) {
+                                actions += ' <button class="btn btn-success btn-sm" onclick="downloadEnrichmentPartial(\''+job.job_id+'\', this)">Download Partial</button>';
+                            }
                         } else if (job.status === 'partial') {
                             // Partial jobs have output available
                             const fname = job.display_filename || job.filename || 'enrichment_job';
                             const safeName = fname.replace(/[^a-z0-9]/gi, '_').substring(0, 30);
                             actions += ' <button class="btn btn-success btn-sm" onclick="downloadFile(\''+job.job_id+'\',\''+safeName+'_partial_'+job.job_id.substr(0,8)+'.csv\', this)">Download Partial</button>';
-                            actions += ' <button class="btn btn-secondary btn-sm" onclick="retryEnrichmentJob(\''+job.job_id+'\')">Retry Full</button>';
-                        } else if (job.status === 'running' || job.status === 'queued') {
+                            // Resume picks up from the partial's row count; for
+                            // pre-fix partials (no checkpoints) the resume-info
+                            // modal will warn the user.
+                            actions += ' <button class="btn btn-warning btn-sm" data-action="resume" data-job-id="'+job.job_id+'" onclick="resumeEnrichmentJob(\''+job.job_id+'\', this)">↻ Resume</button>';
+                            actions += ' <button class="btn btn-secondary btn-sm" data-action="retry" data-job-id="'+job.job_id+'" onclick="retryEnrichmentJob(\''+job.job_id+'\', this)">Retry Full</button>';
+                        } else if (job.status === 'running' || job.status === 'queued' || job.status === 'starting') {
                             actions += ' <button class="btn btn-danger btn-sm" onclick="cancelEnrichmentJob(\''+job.job_id+'\')">Cancel</button>';
                         }
                         // Show error message for failed/abandoned/cancelled jobs with hover tooltip
@@ -2663,8 +2835,6 @@ https://linkedin.com/in/janesmith</pre>
                         }
                         return '<div class="job-card"><div class="job-info"><h4>' + (job.display_filename || job.filename || 'Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.processed||0) + '/' + (job.total||0) + ' | ' + (job.emails_found||0) + ' emails</div><div class="job-providers" style="font-size: 0.75rem; margin-top: 4px;"><div style="color: #1e40af;"><strong>Selected:</strong> ' + selectedDisplay + '</div><div style="color: #059669;"><strong>Used:</strong> ' + usedDisplay + '</div></div>' + errorInfo + '</div><div class="actions">' + actions + '</div></div>';
                     }).join('');
-                } else jobsList.innerHTML = '<div class="empty-state">Failed to load</div>';
-            } catch (e) { jobsList.innerHTML = '<div class="empty-state">Error</div>'; }
         }
 
         // Cancel an enrichment job
@@ -3129,7 +3299,62 @@ https://linkedin.com/in/janesmith</pre>
         }
 
         // Retry enrichment job
-        async function retryEnrichmentJob(jobId) {
+        // In-flight set: maps job_id → Set of action keys ("retry"|"resume")
+        // that are pending. Acts as a second line of defense against
+        // double-clicks that happen before the per-button disable propagates,
+        // or against rapid clicks on different buttons for the same job.
+        const _inFlightActions = new Map();
+
+        function _actionStart(jobId, action, btn, originalLabel) {
+            // Idempotency guard: if a request for this job+action is
+            // already in flight, drop the new click.
+            let pending = _inFlightActions.get(jobId);
+            if (!pending) {
+                pending = new Set();
+                _inFlightActions.set(jobId, pending);
+            }
+            if (pending.has(action)) {
+                return false;
+            }
+            pending.add(action);
+            // Disable this button + all other action buttons for the
+            // same job. Disabled before the in-flight set so a fast
+            // double-click on the same button is rejected.
+            if (btn) {
+                btn.disabled = true;
+                btn.dataset.originalLabel = originalLabel;
+                btn.textContent = originalLabel.replace(/Retry|Resume/i, 'Starting…');
+            }
+            const siblings = document.querySelectorAll(
+                `[data-job-id="${jobId}"][data-action]`
+            );
+            siblings.forEach(s => {
+                if (s !== btn) s.disabled = true;
+            });
+            return true;
+        }
+
+        function _actionEnd(jobId) {
+            _inFlightActions.delete(jobId);
+            // Restore sibling buttons (but not the one whose alert()
+            // is about to fire — that's a different concern).
+            const siblings = document.querySelectorAll(
+                `[data-job-id="${jobId}"][data-action]`
+            );
+            siblings.forEach(s => {
+                if (!s.dataset.originalLabel) return;
+                // The trigger button gets re-enabled by the caller
+                // after the alert; siblings are always safe to restore.
+                if (s.disabled && !s.textContent.includes('Starting')) {
+                    s.disabled = false;
+                    delete s.dataset.originalLabel;
+                }
+            });
+        }
+
+        async function retryEnrichmentJob(jobId, btn) {
+            const originalLabel = btn ? btn.textContent : 'Retry';
+            if (!_actionStart(jobId, 'retry', btn, originalLabel)) return;
             try {
                 const res = await fetch('/api/enrichment/jobs/' + jobId + '/restart', {
                     method: 'POST',
@@ -3144,6 +3369,14 @@ https://linkedin.com/in/janesmith</pre>
                     alert('Error: ' + (err.detail || 'Failed to restart job'));
                 }
             } catch (e) { alert('Error: ' + e.message); }
+            finally {
+                _actionEnd(jobId);
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = btn.dataset.originalLabel || 'Retry';
+                    delete btn.dataset.originalLabel;
+                }
+            }
         }
 
         // Expose functions to global scope for onclick handlers
@@ -3159,6 +3392,8 @@ https://linkedin.com/in/janesmith</pre>
         window.downloadFile = downloadFile;
         window.retryEnrichmentJob = retryEnrichmentJob;
         window.cancelEnrichmentJob = cancelEnrichmentJob;
+        window.filterEnrichmentJobs = filterEnrichmentJobs;
+        window.loadJobs = loadJobs;
         console.log('Functions exposed to global scope');
         }); // End DOMContentLoaded
     </script>

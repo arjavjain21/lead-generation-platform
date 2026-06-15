@@ -28,6 +28,9 @@ from . import wizleads_client
 from . import providers
 from . import mailtester_client
 from . import job_store
+from . import identifier_utils
+from . import company_fallback
+from . import fallback_config as fb_cfg
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +174,7 @@ ENRICHED_COLUMNS = [
     "input_phone",
     "input_company_name",
     "input_existing_email",
+    "input_facebook_url",
     "normalized_linkedin_url",
     "linkedin_username",
     "input_fields_used",
@@ -183,6 +187,15 @@ ENRICHED_COLUMNS = [
     "no_email_reason",
     "final_email_status",
     "final_email_verification_source",
+    # Company / page-level fallback outputs (BetterEnrich).
+    "company_email",
+    "company_email_source",
+    "company_email_verified",
+    "company_email_type",
+    "company_email_source_path",
+    "final_email",
+    "final_email_level",
+    "final_email_source_path",
 ]
 
 
@@ -660,6 +673,55 @@ async def _enrich_single_domain(
     return output_rows
 
 
+async def _apply_company_fallback_to_output_rows(
+    blitz_http: httpx.AsyncClient,
+    output_rows: list[dict[str, Any]],
+    *,
+    domain: str,
+    facebook_url: str,
+    dedupe: company_fallback.CompanyFallbackDedupe,
+    record_provider_use: Optional[Callable[[str], None]] = None,
+    source_path_prefix: str = "",
+) -> None:
+    """Run the company/page-level fallback once per domain and apply
+    to all output rows that lack a person-level email.
+
+    Mirrors `_maybe_apply_company_fallbacks` in pipeline.py for the
+    list_builder flows (Flows 1, 3). No-op when both fallback flags
+    are off or every row already has dm_email.
+    """
+    if not fb_cfg.ENABLE_COMPANY_EMAIL_FALLBACK and not fb_cfg.ENABLE_FACEBOOK_EMAIL_FALLBACK:
+        return
+
+    any_missing = any(not r.get("dm_email", "") for r in output_rows)
+    if not any_missing:
+        for row in output_rows:
+            person_email = row.get("dm_email", "")
+            if person_email:
+                row["final_email"] = person_email
+                row["final_email_level"] = "person"
+                if not row.get("final_email_source_path"):
+                    row["final_email_source_path"] = row.get("source_path", "")
+        return
+
+    fb_result = await company_fallback.run_company_fallbacks(
+        blitz_http,
+        domain=domain,
+        facebook_url=facebook_url,
+        source_path_prefix=source_path_prefix,
+        validate_email=True,
+        dedupe=dedupe,
+        record_provider_use=record_provider_use,
+    )
+
+    for row in output_rows:
+        company_fallback.apply_company_fallbacks_to_row(
+            row, fb_result,
+            person_email=row.get("dm_email", ""),
+            person_source_path=row.get("source_path", ""),
+        )
+
+
 async def run_domain_enrichment(
     rows: list[dict[str, Any]],
     domain_col: str,
@@ -713,7 +775,10 @@ async def run_domain_enrichment(
         # Note: Cancellation is now checked at batch level, not per-row
         # This allows the batch to finish but stops subsequent batches
 
-        domain = str(row.get(domain_col, "")).strip()
+        # Normalize the raw CSV domain to bare-domain form so provider
+        # APIs don't 404 on full URLs like "https://acme.com/?utm_source=x"
+        raw_domain = str(row.get(domain_col, "") or "")
+        domain = identifier_utils.normalize_domain(raw_domain)
 
         if not domain:
             result = [{**row, **_empty_enriched(), "row_status": STATUS_SKIPPED}]
@@ -762,6 +827,21 @@ async def run_domain_enrichment(
                     on_progress(progress_event)
         except Exception as prog_err:
             logger.warning("Progress callback failed for domain %s: %s", domain, prog_err)
+
+        # Company/page-level fallback (BetterEnrich Facebook + company
+        # email). Runs once per domain; applied to all output rows
+        # that lack a person-level email. Mirrors run_pipeline wiring.
+        if domain:
+            row_facebook_url = str(row.get("facebook_url", "") or row.get("facebook", "") or "").strip()
+            domain_dedupe = company_fallback.CompanyFallbackDedupe()
+            await _apply_company_fallback_to_output_rows(
+                blitz_http,
+                result,
+                domain=domain,
+                facebook_url=row_facebook_url,
+                dedupe=domain_dedupe,
+                record_provider_use=record_provider_use,
+            )
 
         return result
 
@@ -1109,6 +1189,27 @@ async def run_linkedin_enrichment(
                 "email_found": bool(result.get("dm_email")),
                 "source_counts": source_counts,
             })
+
+        # Company/page-level fallback for LinkedIn-only flows. The
+        # person's domain is the input; if no person email was found
+        # and the row carries a facebook_url, attempt the page-level
+        # fallback.
+        row_facebook_url = str(row.get("facebook_url", "") or row.get("facebook", "") or "").strip()
+        if not result.get("dm_email"):
+            row_domain = identifier_utils.normalize_domain(
+                str(row.get("domain", "") or row.get("company_domain", "") or "")
+            )
+            if row_domain or row_facebook_url:
+                li_dedupe = company_fallback.CompanyFallbackDedupe()
+                await _apply_company_fallback_to_output_rows(
+                    blitz_http,
+                    [result],
+                    domain=row_domain,
+                    facebook_url=row_facebook_url,
+                    dedupe=li_dedupe,
+                    record_provider_use=record_provider_use,
+                    source_path_prefix=result.get("source_path", ""),
+                )
 
         return result
 

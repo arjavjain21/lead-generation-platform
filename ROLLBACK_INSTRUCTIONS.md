@@ -1,4 +1,28 @@
-ROLLBACK INSTRUCTIONS - ROUTING ITERATION 2 DEPLOYMENT
+ROLLBACK INSTRUCTIONS - ENRICHMENT AUDIT TRAIL DEPLOYMENT
+===========================================================
+
+Deployed: 2026-06-12 16:48 UTC
+Commit:    6f8f842 (feat: enrichment audit trail — per-row provider attempts and no-email reasons)
+Tag:       pre-audit-trail (commit 2c72434)
+
+IF THE DEPLOYMENT GOES HAYWIRE:
+
+### Immediate Rollback:
+git reset --hard pre-audit-trail
+sudo systemctl restart lead-generation-platform.service
+sudo systemctl status lead-generation-platform.service --no-pager
+
+### Or step back to the prior deploy (a08412a):
+git reset --hard a08412a
+sudo systemctl restart lead-generation-platform.service
+
+### Final Verify:
+curl -s http://localhost:8765/api/health
+sudo journalctl -u lead-generation-platform.service -n 50 --no-pager
+
+---
+
+PRIOR DEPLOYMENT: ROUTING ITERATION 2
 ======================================
 
 IF THE DEPLOYMENT GOES HAYWIRE:

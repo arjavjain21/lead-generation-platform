@@ -397,6 +397,44 @@ class JobStoreBase:
         )
         self.conn.commit()
 
+    def set_partial_output_path(self, job_id: str, path: str) -> None:
+        """Persist the path to the in-progress output that was renamed to
+        ``{job_id}_partial.csv`` when the job was abandoned or cancelled.
+        Subsequent resume / download calls use this to surface a
+        ``Download Partial`` button and to merge completed rows into a
+        restarted job's output.
+        """
+        self.conn.execute(
+            "UPDATE jobs SET partial_output_path=?, updated_at=? WHERE job_id=?",
+            (path, _now(), job_id),
+        )
+        self.conn.commit()
+
+    def get_partial_output_path(self, job_id: str) -> Optional[str]:
+        """Return the saved partial-output path for a job, or ``None``."""
+        row = self.conn.execute(
+            "SELECT partial_output_path FROM jobs WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+        if row and row["partial_output_path"]:
+            return row["partial_output_path"]
+        return None
+
+    def get_checkpoint_count(self, job_id: str) -> int:
+        """Count per-row checkpoints for an enrichment job.
+
+        Used by the resume-info endpoint to surface "you can resume from
+        row N" and by the UI to decide whether to render a Resume
+        button. The default 0 makes the function safe to call on jobs
+        that predate the per-row checkpoint feature — they'll be
+        reported as having no resumable progress.
+        """
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM job_checkpoints WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+        return row["n"] if row else 0
+
     def is_job_cancelled(self, job_id: str) -> bool:
         """Check if a job has been cancelled (database check for cross-worker compatibility)."""
         row = self.conn.execute(
