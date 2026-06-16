@@ -1,0 +1,892 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Toronto,Ontario,43.6532000,-79.3832000,metro,1,statscan_ca_2021_2794356,anchor_city,Toronto,ca
+Toronto - East,Ontario,43.6532000,-79.0932000,metro_offset,1,derived,offset_ring,Toronto,ca
+Toronto - North,Ontario,43.8332000,-79.3832000,metro_offset,1,derived,offset_ring,Toronto,ca
+Toronto - South,Ontario,43.4732000,-79.3832000,metro_offset,1,derived,offset_ring,Toronto,ca
+Toronto - West,Ontario,43.6532000,-79.6732000,metro_offset,1,derived,offset_ring,Toronto,ca
+Toronto - Northeast,Ontario,43.7832000,-79.1732000,metro_offset,1,derived,offset_ring,Toronto,ca
+Toronto - Northwest,Ontario,43.7832000,-79.5932000,metro_offset,1,derived,offset_ring,Toronto,ca
+Toronto - Southeast,Ontario,43.5232000,-79.1732000,metro_offset,1,derived,offset_ring,Toronto,ca
+Toronto - Southwest,Ontario,43.5232000,-79.5932000,metro_offset,1,derived,offset_ring,Toronto,ca
+Montreal,Quebec,45.5017000,-73.5673000,metro,2,statscan_ca_2021_1762949,anchor_city,Montreal,ca
+Montreal - East,Quebec,45.5017000,-73.2773000,metro_offset,2,derived,offset_ring,Montreal,ca
+Montreal - North,Quebec,45.6817000,-73.5673000,metro_offset,2,derived,offset_ring,Montreal,ca
+Montreal - South,Quebec,45.3217000,-73.5673000,metro_offset,2,derived,offset_ring,Montreal,ca
+Montreal - West,Quebec,45.5017000,-73.8573000,metro_offset,2,derived,offset_ring,Montreal,ca
+Montreal - Northeast,Quebec,45.6317000,-73.3573000,metro_offset,2,derived,offset_ring,Montreal,ca
+Montreal - Northwest,Quebec,45.6317000,-73.7773000,metro_offset,2,derived,offset_ring,Montreal,ca
+Montreal - Southeast,Quebec,45.3717000,-73.3573000,metro_offset,2,derived,offset_ring,Montreal,ca
+Montreal - Southwest,Quebec,45.3717000,-73.7773000,metro_offset,2,derived,offset_ring,Montreal,ca
+Calgary,Alberta,51.0447000,-114.0719000,metro,3,statscan_ca_2021_1306784,anchor_city,Calgary,ca
+Calgary - East,Alberta,51.0447000,-113.7819000,metro_offset,3,derived,offset_ring,Calgary,ca
+Calgary - North,Alberta,51.2247000,-114.0719000,metro_offset,3,derived,offset_ring,Calgary,ca
+Calgary - South,Alberta,50.8647000,-114.0719000,metro_offset,3,derived,offset_ring,Calgary,ca
+Calgary - West,Alberta,51.0447000,-114.3619000,metro_offset,3,derived,offset_ring,Calgary,ca
+Calgary - Northeast,Alberta,51.1747000,-113.8619000,metro_offset,3,derived,offset_ring,Calgary,ca
+Calgary - Northwest,Alberta,51.1747000,-114.2819000,metro_offset,3,derived,offset_ring,Calgary,ca
+Calgary - Southeast,Alberta,50.9147000,-113.8619000,metro_offset,3,derived,offset_ring,Calgary,ca
+Calgary - Southwest,Alberta,50.9147000,-114.2819000,metro_offset,3,derived,offset_ring,Calgary,ca
+Ottawa,Ontario,45.4215000,-75.6972000,metro,4,statscan_ca_2021_1017449,anchor_city,Ottawa,ca
+Ottawa - East,Ontario,45.4215000,-75.4072000,metro_offset,4,derived,offset_ring,Ottawa,ca
+Ottawa - North,Ontario,45.6015000,-75.6972000,metro_offset,4,derived,offset_ring,Ottawa,ca
+Ottawa - South,Ontario,45.2415000,-75.6972000,metro_offset,4,derived,offset_ring,Ottawa,ca
+Ottawa - West,Ontario,45.4215000,-75.9872000,metro_offset,4,derived,offset_ring,Ottawa,ca
+Ottawa - Northeast,Ontario,45.5515000,-75.4872000,metro_offset,4,derived,offset_ring,Ottawa,ca
+Ottawa - Northwest,Ontario,45.5515000,-75.9072000,metro_offset,4,derived,offset_ring,Ottawa,ca
+Ottawa - Southeast,Ontario,45.2915000,-75.4872000,metro_offset,4,derived,offset_ring,Ottawa,ca
+Ottawa - Southwest,Ontario,45.2915000,-75.9072000,metro_offset,4,derived,offset_ring,Ottawa,ca
+Edmonton,Alberta,53.5461000,-113.4938000,metro,5,statscan_ca_2021_1010899,anchor_city,Edmonton,ca
+Edmonton - East,Alberta,53.5461000,-113.2038000,metro_offset,5,derived,offset_ring,Edmonton,ca
+Edmonton - North,Alberta,53.7261000,-113.4938000,metro_offset,5,derived,offset_ring,Edmonton,ca
+Edmonton - South,Alberta,53.3661000,-113.4938000,metro_offset,5,derived,offset_ring,Edmonton,ca
+Edmonton - West,Alberta,53.5461000,-113.7838000,metro_offset,5,derived,offset_ring,Edmonton,ca
+Edmonton - Northeast,Alberta,53.6761000,-113.2838000,metro_offset,5,derived,offset_ring,Edmonton,ca
+Edmonton - Northwest,Alberta,53.6761000,-113.7038000,metro_offset,5,derived,offset_ring,Edmonton,ca
+Edmonton - Southeast,Alberta,53.4161000,-113.2838000,metro_offset,5,derived,offset_ring,Edmonton,ca
+Edmonton - Southwest,Alberta,53.4161000,-113.7038000,metro_offset,5,derived,offset_ring,Edmonton,ca
+Winnipeg,Manitoba,49.8954000,-97.1385000,metro,6,statscan_ca_2021_749607,anchor_city,Winnipeg,ca
+Winnipeg - East,Manitoba,49.8954000,-96.8485000,metro_offset,6,derived,offset_ring,Winnipeg,ca
+Winnipeg - North,Manitoba,50.0754000,-97.1385000,metro_offset,6,derived,offset_ring,Winnipeg,ca
+Winnipeg - South,Manitoba,49.7154000,-97.1385000,metro_offset,6,derived,offset_ring,Winnipeg,ca
+Winnipeg - West,Manitoba,49.8954000,-97.4285000,metro_offset,6,derived,offset_ring,Winnipeg,ca
+Winnipeg - Northeast,Manitoba,50.0254000,-96.9285000,metro_offset,6,derived,offset_ring,Winnipeg,ca
+Winnipeg - Northwest,Manitoba,50.0254000,-97.3485000,metro_offset,6,derived,offset_ring,Winnipeg,ca
+Winnipeg - Southeast,Manitoba,49.7654000,-96.9285000,metro_offset,6,derived,offset_ring,Winnipeg,ca
+Winnipeg - Southwest,Manitoba,49.7654000,-97.3485000,metro_offset,6,derived,offset_ring,Winnipeg,ca
+Mississauga,Ontario,43.5890000,-79.6441000,metro,7,statscan_ca_2021_717961,anchor_city,Mississauga,ca
+Mississauga - East,Ontario,43.5890000,-79.3541000,metro_offset,7,derived,offset_ring,Mississauga,ca
+Mississauga - North,Ontario,43.7690000,-79.6441000,metro_offset,7,derived,offset_ring,Mississauga,ca
+Mississauga - South,Ontario,43.4090000,-79.6441000,metro_offset,7,derived,offset_ring,Mississauga,ca
+Mississauga - West,Ontario,43.5890000,-79.9341000,metro_offset,7,derived,offset_ring,Mississauga,ca
+Mississauga - Northeast,Ontario,43.7190000,-79.4341000,metro_offset,7,derived,offset_ring,Mississauga,ca
+Mississauga - Northwest,Ontario,43.7190000,-79.8541000,metro_offset,7,derived,offset_ring,Mississauga,ca
+Mississauga - Southeast,Ontario,43.4590000,-79.4341000,metro_offset,7,derived,offset_ring,Mississauga,ca
+Mississauga - Southwest,Ontario,43.4590000,-79.8541000,metro_offset,7,derived,offset_ring,Mississauga,ca
+Vancouver,British Columbia,49.2827000,-123.1207000,metro,8,statscan_ca_2021_662248,anchor_city,Vancouver,ca
+Vancouver - East,British Columbia,49.2827000,-122.8307000,metro_offset,8,derived,offset_ring,Vancouver,ca
+Vancouver - North,British Columbia,49.4627000,-123.1207000,metro_offset,8,derived,offset_ring,Vancouver,ca
+Vancouver - South,British Columbia,49.1027000,-123.1207000,metro_offset,8,derived,offset_ring,Vancouver,ca
+Vancouver - West,British Columbia,49.2827000,-123.4107000,metro_offset,8,derived,offset_ring,Vancouver,ca
+Vancouver - Northeast,British Columbia,49.4127000,-122.9107000,metro_offset,8,derived,offset_ring,Vancouver,ca
+Vancouver - Northwest,British Columbia,49.4127000,-123.3307000,metro_offset,8,derived,offset_ring,Vancouver,ca
+Vancouver - Southeast,British Columbia,49.1527000,-122.9107000,metro_offset,8,derived,offset_ring,Vancouver,ca
+Vancouver - Southwest,British Columbia,49.1527000,-123.3307000,metro_offset,8,derived,offset_ring,Vancouver,ca
+Brampton,Ontario,43.7315000,-79.7624000,metro,9,statscan_ca_2021_656480,anchor_city,Brampton,ca
+Brampton - East,Ontario,43.7315000,-79.4724000,metro_offset,9,derived,offset_ring,Brampton,ca
+Brampton - North,Ontario,43.9115000,-79.7624000,metro_offset,9,derived,offset_ring,Brampton,ca
+Brampton - South,Ontario,43.5515000,-79.7624000,metro_offset,9,derived,offset_ring,Brampton,ca
+Brampton - West,Ontario,43.7315000,-80.0524000,metro_offset,9,derived,offset_ring,Brampton,ca
+Brampton - Northeast,Ontario,43.8615000,-79.5524000,metro_offset,9,derived,offset_ring,Brampton,ca
+Brampton - Northwest,Ontario,43.8615000,-79.9724000,metro_offset,9,derived,offset_ring,Brampton,ca
+Brampton - Southeast,Ontario,43.6015000,-79.5524000,metro_offset,9,derived,offset_ring,Brampton,ca
+Brampton - Southwest,Ontario,43.6015000,-79.9724000,metro_offset,9,derived,offset_ring,Brampton,ca
+Hamilton,Ontario,43.2557000,-79.8711000,metro,10,statscan_ca_2021_569353,anchor_city,Hamilton,ca
+Hamilton - East,Ontario,43.2557000,-79.5811000,metro_offset,10,derived,offset_ring,Hamilton,ca
+Hamilton - North,Ontario,43.4357000,-79.8711000,metro_offset,10,derived,offset_ring,Hamilton,ca
+Hamilton - South,Ontario,43.0757000,-79.8711000,metro_offset,10,derived,offset_ring,Hamilton,ca
+Hamilton - West,Ontario,43.2557000,-80.1611000,metro_offset,10,derived,offset_ring,Hamilton,ca
+Hamilton - Northeast,Ontario,43.3857000,-79.6611000,metro_offset,10,derived,offset_ring,Hamilton,ca
+Hamilton - Northwest,Ontario,43.3857000,-80.0811000,metro_offset,10,derived,offset_ring,Hamilton,ca
+Hamilton - Southeast,Ontario,43.1257000,-79.6611000,metro_offset,10,derived,offset_ring,Hamilton,ca
+Hamilton - Southwest,Ontario,43.1257000,-80.0811000,metro_offset,10,derived,offset_ring,Hamilton,ca
+Surrey,British Columbia,49.1913000,-122.8490000,metro,11,statscan_ca_2021_568322,anchor_city,Surrey,ca
+Surrey - East,British Columbia,49.1913000,-122.5590000,metro_offset,11,derived,offset_ring,Surrey,ca
+Surrey - North,British Columbia,49.3713000,-122.8490000,metro_offset,11,derived,offset_ring,Surrey,ca
+Surrey - South,British Columbia,49.0113000,-122.8490000,metro_offset,11,derived,offset_ring,Surrey,ca
+Surrey - West,British Columbia,49.1913000,-123.1390000,metro_offset,11,derived,offset_ring,Surrey,ca
+Surrey - Northeast,British Columbia,49.3213000,-122.6390000,metro_offset,11,derived,offset_ring,Surrey,ca
+Surrey - Northwest,British Columbia,49.3213000,-123.0590000,metro_offset,11,derived,offset_ring,Surrey,ca
+Surrey - Southeast,British Columbia,49.0613000,-122.6390000,metro_offset,11,derived,offset_ring,Surrey,ca
+Surrey - Southwest,British Columbia,49.0613000,-123.0590000,metro_offset,11,derived,offset_ring,Surrey,ca
+Quebec City,Quebec,46.8139000,-71.2082000,metro,12,statscan_ca_2021_549459,anchor_city,Quebec City,ca
+Quebec City - East,Quebec,46.8139000,-70.9182000,metro_offset,12,derived,offset_ring,Quebec City,ca
+Quebec City - North,Quebec,46.9939000,-71.2082000,metro_offset,12,derived,offset_ring,Quebec City,ca
+Quebec City - South,Quebec,46.6339000,-71.2082000,metro_offset,12,derived,offset_ring,Quebec City,ca
+Quebec City - West,Quebec,46.8139000,-71.4982000,metro_offset,12,derived,offset_ring,Quebec City,ca
+Quebec City - Northeast,Quebec,46.9439000,-70.9982000,metro_offset,12,derived,offset_ring,Quebec City,ca
+Quebec City - Northwest,Quebec,46.9439000,-71.4182000,metro_offset,12,derived,offset_ring,Quebec City,ca
+Quebec City - Southeast,Quebec,46.6839000,-70.9982000,metro_offset,12,derived,offset_ring,Quebec City,ca
+Quebec City - Southwest,Quebec,46.6839000,-71.4182000,metro_offset,12,derived,offset_ring,Quebec City,ca
+Halifax,Nova Scotia,44.6488000,-63.5752000,regional_large,13,statscan_ca_2021_439819,anchor_city,Halifax,ca
+Halifax - East,Nova Scotia,44.6488000,-63.2852000,regional_large_offset,13,derived,offset_ring,Halifax,ca
+Halifax - North,Nova Scotia,44.8288000,-63.5752000,regional_large_offset,13,derived,offset_ring,Halifax,ca
+Halifax - South,Nova Scotia,44.4688000,-63.5752000,regional_large_offset,13,derived,offset_ring,Halifax,ca
+Halifax - West,Nova Scotia,44.6488000,-63.8652000,regional_large_offset,13,derived,offset_ring,Halifax,ca
+Halifax - Northeast,Nova Scotia,44.7788000,-63.3652000,regional_large_offset,13,derived,offset_ring,Halifax,ca
+Halifax - Northwest,Nova Scotia,44.7788000,-63.7852000,regional_large_offset,13,derived,offset_ring,Halifax,ca
+Halifax - Southeast,Nova Scotia,44.5188000,-63.3652000,regional_large_offset,13,derived,offset_ring,Halifax,ca
+Halifax - Southwest,Nova Scotia,44.5188000,-63.7852000,regional_large_offset,13,derived,offset_ring,Halifax,ca
+Laval,Quebec,45.6066000,-73.7124000,regional_large,14,statscan_ca_2021_438366,anchor_city,Laval,ca
+Laval - East,Quebec,45.6066000,-73.4224000,regional_large_offset,14,derived,offset_ring,Laval,ca
+Laval - North,Quebec,45.7866000,-73.7124000,regional_large_offset,14,derived,offset_ring,Laval,ca
+Laval - South,Quebec,45.4266000,-73.7124000,regional_large_offset,14,derived,offset_ring,Laval,ca
+Laval - West,Quebec,45.6066000,-74.0024000,regional_large_offset,14,derived,offset_ring,Laval,ca
+Laval - Northeast,Quebec,45.7366000,-73.5024000,regional_large_offset,14,derived,offset_ring,Laval,ca
+Laval - Northwest,Quebec,45.7366000,-73.9224000,regional_large_offset,14,derived,offset_ring,Laval,ca
+Laval - Southeast,Quebec,45.4766000,-73.5024000,regional_large_offset,14,derived,offset_ring,Laval,ca
+Laval - Southwest,Quebec,45.4766000,-73.9224000,regional_large_offset,14,derived,offset_ring,Laval,ca
+London,Ontario,42.9849000,-81.2453000,regional_large,15,statscan_ca_2021_422324,anchor_city,London,ca
+London - East,Ontario,42.9849000,-80.9553000,regional_large_offset,15,derived,offset_ring,London,ca
+London - North,Ontario,43.1649000,-81.2453000,regional_large_offset,15,derived,offset_ring,London,ca
+London - South,Ontario,42.8049000,-81.2453000,regional_large_offset,15,derived,offset_ring,London,ca
+London - West,Ontario,42.9849000,-81.5353000,regional_large_offset,15,derived,offset_ring,London,ca
+London - Northeast,Ontario,43.1149000,-81.0353000,regional_large_offset,15,derived,offset_ring,London,ca
+London - Northwest,Ontario,43.1149000,-81.4553000,regional_large_offset,15,derived,offset_ring,London,ca
+London - Southeast,Ontario,42.8549000,-81.0353000,regional_large_offset,15,derived,offset_ring,London,ca
+London - Southwest,Ontario,42.8549000,-81.4553000,regional_large_offset,15,derived,offset_ring,London,ca
+Markham,Ontario,43.8864000,-79.2634000,regional_large,16,statscan_ca_2021_338503,anchor_city,Markham,ca
+Markham - East,Ontario,43.8864000,-78.9734000,regional_large_offset,16,derived,offset_ring,Markham,ca
+Markham - North,Ontario,44.0664000,-79.2634000,regional_large_offset,16,derived,offset_ring,Markham,ca
+Markham - South,Ontario,43.7064000,-79.2634000,regional_large_offset,16,derived,offset_ring,Markham,ca
+Markham - West,Ontario,43.8864000,-79.5534000,regional_large_offset,16,derived,offset_ring,Markham,ca
+Markham - Northeast,Ontario,44.0164000,-79.0534000,regional_large_offset,16,derived,offset_ring,Markham,ca
+Markham - Northwest,Ontario,44.0164000,-79.4734000,regional_large_offset,16,derived,offset_ring,Markham,ca
+Markham - Southeast,Ontario,43.7564000,-79.0534000,regional_large_offset,16,derived,offset_ring,Markham,ca
+Markham - Southwest,Ontario,43.7564000,-79.4734000,regional_large_offset,16,derived,offset_ring,Markham,ca
+Vaughan,Ontario,43.8563000,-79.5087000,regional_large,17,statscan_ca_2021_323103,anchor_city,Vaughan,ca
+Vaughan - East,Ontario,43.8563000,-79.2187000,regional_large_offset,17,derived,offset_ring,Vaughan,ca
+Vaughan - North,Ontario,44.0363000,-79.5087000,regional_large_offset,17,derived,offset_ring,Vaughan,ca
+Vaughan - South,Ontario,43.6763000,-79.5087000,regional_large_offset,17,derived,offset_ring,Vaughan,ca
+Vaughan - West,Ontario,43.8563000,-79.7987000,regional_large_offset,17,derived,offset_ring,Vaughan,ca
+Vaughan - Northeast,Ontario,43.9863000,-79.2987000,regional_large_offset,17,derived,offset_ring,Vaughan,ca
+Vaughan - Northwest,Ontario,43.9863000,-79.7187000,regional_large_offset,17,derived,offset_ring,Vaughan,ca
+Vaughan - Southeast,Ontario,43.7263000,-79.2987000,regional_large_offset,17,derived,offset_ring,Vaughan,ca
+Vaughan - Southwest,Ontario,43.7263000,-79.7187000,regional_large_offset,17,derived,offset_ring,Vaughan,ca
+Gatineau,Quebec,45.4765000,-75.7013000,regional_large,18,statscan_ca_2021_291041,anchor_city,Gatineau,ca
+Gatineau - East,Quebec,45.4765000,-75.4113000,regional_large_offset,18,derived,offset_ring,Gatineau,ca
+Gatineau - North,Quebec,45.6565000,-75.7013000,regional_large_offset,18,derived,offset_ring,Gatineau,ca
+Gatineau - South,Quebec,45.2965000,-75.7013000,regional_large_offset,18,derived,offset_ring,Gatineau,ca
+Gatineau - West,Quebec,45.4765000,-75.9913000,regional_large_offset,18,derived,offset_ring,Gatineau,ca
+Gatineau - Northeast,Quebec,45.6065000,-75.4913000,regional_large_offset,18,derived,offset_ring,Gatineau,ca
+Gatineau - Northwest,Quebec,45.6065000,-75.9113000,regional_large_offset,18,derived,offset_ring,Gatineau,ca
+Gatineau - Southeast,Quebec,45.3465000,-75.4913000,regional_large_offset,18,derived,offset_ring,Gatineau,ca
+Gatineau - Southwest,Quebec,45.3465000,-75.9113000,regional_large_offset,18,derived,offset_ring,Gatineau,ca
+Saskatoon,Saskatchewan,52.1579000,-106.6702000,regional_large,19,statscan_ca_2021_266141,anchor_city,Saskatoon,ca
+Saskatoon - East,Saskatchewan,52.1579000,-106.3802000,regional_large_offset,19,derived,offset_ring,Saskatoon,ca
+Saskatoon - North,Saskatchewan,52.3379000,-106.6702000,regional_large_offset,19,derived,offset_ring,Saskatoon,ca
+Saskatoon - South,Saskatchewan,51.9779000,-106.6702000,regional_large_offset,19,derived,offset_ring,Saskatoon,ca
+Saskatoon - West,Saskatchewan,52.1579000,-106.9602000,regional_large_offset,19,derived,offset_ring,Saskatoon,ca
+Saskatoon - Northeast,Saskatchewan,52.2879000,-106.4602000,regional_large_offset,19,derived,offset_ring,Saskatoon,ca
+Saskatoon - Northwest,Saskatchewan,52.2879000,-106.8802000,regional_large_offset,19,derived,offset_ring,Saskatoon,ca
+Saskatoon - Southeast,Saskatchewan,52.0279000,-106.4602000,regional_large_offset,19,derived,offset_ring,Saskatoon,ca
+Saskatoon - Southwest,Saskatchewan,52.0279000,-106.8802000,regional_large_offset,19,derived,offset_ring,Saskatoon,ca
+Kitchener,Ontario,43.4516000,-80.4925000,regional_large,20,statscan_ca_2021_256885,anchor_city,Kitchener,ca
+Kitchener - East,Ontario,43.4516000,-80.2025000,regional_large_offset,20,derived,offset_ring,Kitchener,ca
+Kitchener - North,Ontario,43.6316000,-80.4925000,regional_large_offset,20,derived,offset_ring,Kitchener,ca
+Kitchener - South,Ontario,43.2716000,-80.4925000,regional_large_offset,20,derived,offset_ring,Kitchener,ca
+Kitchener - West,Ontario,43.4516000,-80.7825000,regional_large_offset,20,derived,offset_ring,Kitchener,ca
+Kitchener - Northeast,Ontario,43.5816000,-80.2825000,regional_large_offset,20,derived,offset_ring,Kitchener,ca
+Kitchener - Northwest,Ontario,43.5816000,-80.7025000,regional_large_offset,20,derived,offset_ring,Kitchener,ca
+Kitchener - Southeast,Ontario,43.3216000,-80.2825000,regional_large_offset,20,derived,offset_ring,Kitchener,ca
+Kitchener - Southwest,Ontario,43.3216000,-80.7025000,regional_large_offset,20,derived,offset_ring,Kitchener,ca
+Longueuil,Quebec,45.5312000,-73.5183000,regional_large,21,statscan_ca_2021_254483,anchor_city,Longueuil,ca
+Longueuil - East,Quebec,45.5312000,-73.2283000,regional_large_offset,21,derived,offset_ring,Longueuil,ca
+Longueuil - North,Quebec,45.7112000,-73.5183000,regional_large_offset,21,derived,offset_ring,Longueuil,ca
+Longueuil - South,Quebec,45.3512000,-73.5183000,regional_large_offset,21,derived,offset_ring,Longueuil,ca
+Longueuil - West,Quebec,45.5312000,-73.8083000,regional_large_offset,21,derived,offset_ring,Longueuil,ca
+Longueuil - Northeast,Quebec,45.6612000,-73.3083000,regional_large_offset,21,derived,offset_ring,Longueuil,ca
+Longueuil - Northwest,Quebec,45.6612000,-73.7283000,regional_large_offset,21,derived,offset_ring,Longueuil,ca
+Longueuil - Southeast,Quebec,45.4012000,-73.3083000,regional_large_offset,21,derived,offset_ring,Longueuil,ca
+Longueuil - Southwest,Quebec,45.4012000,-73.7283000,regional_large_offset,21,derived,offset_ring,Longueuil,ca
+Burnaby,British Columbia,49.2488000,-122.9805000,regional_large,22,statscan_ca_2021_249125,anchor_city,Burnaby,ca
+Burnaby - East,British Columbia,49.2488000,-122.6905000,regional_large_offset,22,derived,offset_ring,Burnaby,ca
+Burnaby - North,British Columbia,49.4288000,-122.9805000,regional_large_offset,22,derived,offset_ring,Burnaby,ca
+Burnaby - South,British Columbia,49.0688000,-122.9805000,regional_large_offset,22,derived,offset_ring,Burnaby,ca
+Burnaby - West,British Columbia,49.2488000,-123.2705000,regional_large_offset,22,derived,offset_ring,Burnaby,ca
+Burnaby - Northeast,British Columbia,49.3788000,-122.7705000,regional_large_offset,22,derived,offset_ring,Burnaby,ca
+Burnaby - Northwest,British Columbia,49.3788000,-123.1905000,regional_large_offset,22,derived,offset_ring,Burnaby,ca
+Burnaby - Southeast,British Columbia,49.1188000,-122.7705000,regional_large_offset,22,derived,offset_ring,Burnaby,ca
+Burnaby - Southwest,British Columbia,49.1188000,-123.1905000,regional_large_offset,22,derived,offset_ring,Burnaby,ca
+Windsor,Ontario,42.3149000,-83.0364000,regional_large,23,statscan_ca_2021_229660,anchor_city,Windsor,ca
+Windsor - East,Ontario,42.3149000,-82.7464000,regional_large_offset,23,derived,offset_ring,Windsor,ca
+Windsor - North,Ontario,42.4949000,-83.0364000,regional_large_offset,23,derived,offset_ring,Windsor,ca
+Windsor - South,Ontario,42.1349000,-83.0364000,regional_large_offset,23,derived,offset_ring,Windsor,ca
+Windsor - West,Ontario,42.3149000,-83.3264000,regional_large_offset,23,derived,offset_ring,Windsor,ca
+Windsor - Northeast,Ontario,42.4449000,-82.8264000,regional_large_offset,23,derived,offset_ring,Windsor,ca
+Windsor - Northwest,Ontario,42.4449000,-83.2464000,regional_large_offset,23,derived,offset_ring,Windsor,ca
+Windsor - Southeast,Ontario,42.1849000,-82.8264000,regional_large_offset,23,derived,offset_ring,Windsor,ca
+Windsor - Southwest,Ontario,42.1849000,-83.2464000,regional_large_offset,23,derived,offset_ring,Windsor,ca
+Regina,Saskatchewan,50.4452000,-104.6189000,regional_large,24,statscan_ca_2021_226404,anchor_city,Regina,ca
+Regina - East,Saskatchewan,50.4452000,-104.3289000,regional_large_offset,24,derived,offset_ring,Regina,ca
+Regina - North,Saskatchewan,50.6252000,-104.6189000,regional_large_offset,24,derived,offset_ring,Regina,ca
+Regina - South,Saskatchewan,50.2652000,-104.6189000,regional_large_offset,24,derived,offset_ring,Regina,ca
+Regina - West,Saskatchewan,50.4452000,-104.9089000,regional_large_offset,24,derived,offset_ring,Regina,ca
+Regina - Northeast,Saskatchewan,50.5752000,-104.4089000,regional_large_offset,24,derived,offset_ring,Regina,ca
+Regina - Northwest,Saskatchewan,50.5752000,-104.8289000,regional_large_offset,24,derived,offset_ring,Regina,ca
+Regina - Southeast,Saskatchewan,50.3152000,-104.4089000,regional_large_offset,24,derived,offset_ring,Regina,ca
+Regina - Southwest,Saskatchewan,50.3152000,-104.8289000,regional_large_offset,24,derived,offset_ring,Regina,ca
+Oakville,Ontario,43.4675000,-79.6877000,regional_large,25,statscan_ca_2021_213759,anchor_city,Oakville,ca
+Oakville - East,Ontario,43.4675000,-79.3977000,regional_large_offset,25,derived,offset_ring,Oakville,ca
+Oakville - North,Ontario,43.6475000,-79.6877000,regional_large_offset,25,derived,offset_ring,Oakville,ca
+Oakville - South,Ontario,43.2875000,-79.6877000,regional_large_offset,25,derived,offset_ring,Oakville,ca
+Oakville - West,Ontario,43.4675000,-79.9777000,regional_large_offset,25,derived,offset_ring,Oakville,ca
+Oakville - Northeast,Ontario,43.5975000,-79.4777000,regional_large_offset,25,derived,offset_ring,Oakville,ca
+Oakville - Northwest,Ontario,43.5975000,-79.8977000,regional_large_offset,25,derived,offset_ring,Oakville,ca
+Oakville - Southeast,Ontario,43.3375000,-79.4777000,regional_large_offset,25,derived,offset_ring,Oakville,ca
+Oakville - Southwest,Ontario,43.3375000,-79.8977000,regional_large_offset,25,derived,offset_ring,Oakville,ca
+Richmond,British Columbia,49.1666000,-123.1336000,regional_large,26,statscan_ca_2021_209937,anchor_city,Richmond,ca
+Richmond - East,British Columbia,49.1666000,-122.8436000,regional_large_offset,26,derived,offset_ring,Richmond,ca
+Richmond - North,British Columbia,49.3466000,-123.1336000,regional_large_offset,26,derived,offset_ring,Richmond,ca
+Richmond - South,British Columbia,48.9866000,-123.1336000,regional_large_offset,26,derived,offset_ring,Richmond,ca
+Richmond - West,British Columbia,49.1666000,-123.4236000,regional_large_offset,26,derived,offset_ring,Richmond,ca
+Richmond - Northeast,British Columbia,49.2966000,-122.9236000,regional_large_offset,26,derived,offset_ring,Richmond,ca
+Richmond - Northwest,British Columbia,49.2966000,-123.3436000,regional_large_offset,26,derived,offset_ring,Richmond,ca
+Richmond - Southeast,British Columbia,49.0366000,-122.9236000,regional_large_offset,26,derived,offset_ring,Richmond,ca
+Richmond - Southwest,British Columbia,49.0366000,-123.3436000,regional_large_offset,26,derived,offset_ring,Richmond,ca
+Richmond Hill,Ontario,43.8828000,-79.4403000,regional_large,27,statscan_ca_2021_202022,anchor_city,Richmond Hill,ca
+Richmond Hill - East,Ontario,43.8828000,-79.1503000,regional_large_offset,27,derived,offset_ring,Richmond Hill,ca
+Richmond Hill - North,Ontario,44.0628000,-79.4403000,regional_large_offset,27,derived,offset_ring,Richmond Hill,ca
+Richmond Hill - South,Ontario,43.7028000,-79.4403000,regional_large_offset,27,derived,offset_ring,Richmond Hill,ca
+Richmond Hill - West,Ontario,43.8828000,-79.7303000,regional_large_offset,27,derived,offset_ring,Richmond Hill,ca
+Richmond Hill - Northeast,Ontario,44.0128000,-79.2303000,regional_large_offset,27,derived,offset_ring,Richmond Hill,ca
+Richmond Hill - Northwest,Ontario,44.0128000,-79.6503000,regional_large_offset,27,derived,offset_ring,Richmond Hill,ca
+Richmond Hill - Southeast,Ontario,43.7528000,-79.2303000,regional_large_offset,27,derived,offset_ring,Richmond Hill,ca
+Richmond Hill - Southwest,Ontario,43.7528000,-79.6503000,regional_large_offset,27,derived,offset_ring,Richmond Hill,ca
+Burlington,Ontario,43.3255000,-79.7990000,regional_large,28,statscan_ca_2021_186948,anchor_city,Burlington,ca
+Burlington - East,Ontario,43.3255000,-79.5090000,regional_large_offset,28,derived,offset_ring,Burlington,ca
+Burlington - North,Ontario,43.5055000,-79.7990000,regional_large_offset,28,derived,offset_ring,Burlington,ca
+Burlington - South,Ontario,43.1455000,-79.7990000,regional_large_offset,28,derived,offset_ring,Burlington,ca
+Burlington - West,Ontario,43.3255000,-80.0890000,regional_large_offset,28,derived,offset_ring,Burlington,ca
+Burlington - Northeast,Ontario,43.4555000,-79.5890000,regional_large_offset,28,derived,offset_ring,Burlington,ca
+Burlington - Northwest,Ontario,43.4555000,-80.0090000,regional_large_offset,28,derived,offset_ring,Burlington,ca
+Burlington - Southeast,Ontario,43.1955000,-79.5890000,regional_large_offset,28,derived,offset_ring,Burlington,ca
+Burlington - Southwest,Ontario,43.1955000,-80.0090000,regional_large_offset,28,derived,offset_ring,Burlington,ca
+Oshawa,Ontario,43.8971000,-78.8658000,regional_large,29,statscan_ca_2021_175383,anchor_city,Oshawa,ca
+Oshawa - East,Ontario,43.8971000,-78.5758000,regional_large_offset,29,derived,offset_ring,Oshawa,ca
+Oshawa - North,Ontario,44.0771000,-78.8658000,regional_large_offset,29,derived,offset_ring,Oshawa,ca
+Oshawa - South,Ontario,43.7171000,-78.8658000,regional_large_offset,29,derived,offset_ring,Oshawa,ca
+Oshawa - West,Ontario,43.8971000,-79.1558000,regional_large_offset,29,derived,offset_ring,Oshawa,ca
+Oshawa - Northeast,Ontario,44.0271000,-78.6558000,regional_large_offset,29,derived,offset_ring,Oshawa,ca
+Oshawa - Northwest,Ontario,44.0271000,-79.0758000,regional_large_offset,29,derived,offset_ring,Oshawa,ca
+Oshawa - Southeast,Ontario,43.7671000,-78.6558000,regional_large_offset,29,derived,offset_ring,Oshawa,ca
+Oshawa - Southwest,Ontario,43.7671000,-79.0758000,regional_large_offset,29,derived,offset_ring,Oshawa,ca
+Sherbrooke,Quebec,45.4001000,-71.8990000,regional_large,30,statscan_ca_2021_172950,anchor_city,Sherbrooke,ca
+Sherbrooke - East,Quebec,45.4001000,-71.6090000,regional_large_offset,30,derived,offset_ring,Sherbrooke,ca
+Sherbrooke - North,Quebec,45.5801000,-71.8990000,regional_large_offset,30,derived,offset_ring,Sherbrooke,ca
+Sherbrooke - South,Quebec,45.2201000,-71.8990000,regional_large_offset,30,derived,offset_ring,Sherbrooke,ca
+Sherbrooke - West,Quebec,45.4001000,-72.1890000,regional_large_offset,30,derived,offset_ring,Sherbrooke,ca
+Sherbrooke - Northeast,Quebec,45.5301000,-71.6890000,regional_large_offset,30,derived,offset_ring,Sherbrooke,ca
+Sherbrooke - Northwest,Quebec,45.5301000,-72.1090000,regional_large_offset,30,derived,offset_ring,Sherbrooke,ca
+Sherbrooke - Southeast,Quebec,45.2701000,-71.6890000,regional_large_offset,30,derived,offset_ring,Sherbrooke,ca
+Sherbrooke - Southwest,Quebec,45.2701000,-72.1090000,regional_large_offset,30,derived,offset_ring,Sherbrooke,ca
+Greater Sudbury,Ontario,46.4900000,-80.9900000,regional_large,31,statscan_ca_2021_166004,anchor_city,Greater Sudbury,ca
+Greater Sudbury - East,Ontario,46.4900000,-80.7000000,regional_large_offset,31,derived,offset_ring,Greater Sudbury,ca
+Greater Sudbury - North,Ontario,46.6700000,-80.9900000,regional_large_offset,31,derived,offset_ring,Greater Sudbury,ca
+Greater Sudbury - South,Ontario,46.3100000,-80.9900000,regional_large_offset,31,derived,offset_ring,Greater Sudbury,ca
+Greater Sudbury - West,Ontario,46.4900000,-81.2800000,regional_large_offset,31,derived,offset_ring,Greater Sudbury,ca
+Greater Sudbury - Northeast,Ontario,46.6200000,-80.7800000,regional_large_offset,31,derived,offset_ring,Greater Sudbury,ca
+Greater Sudbury - Northwest,Ontario,46.6200000,-81.2000000,regional_large_offset,31,derived,offset_ring,Greater Sudbury,ca
+Greater Sudbury - Southeast,Ontario,46.3600000,-80.7800000,regional_large_offset,31,derived,offset_ring,Greater Sudbury,ca
+Greater Sudbury - Southwest,Ontario,46.3600000,-81.2000000,regional_large_offset,31,derived,offset_ring,Greater Sudbury,ca
+Abbotsford,British Columbia,49.0579000,-122.2526000,regional_large,32,statscan_ca_2021_153524,anchor_city,Abbotsford,ca
+Abbotsford - East,British Columbia,49.0579000,-121.9626000,regional_large_offset,32,derived,offset_ring,Abbotsford,ca
+Abbotsford - North,British Columbia,49.2379000,-122.2526000,regional_large_offset,32,derived,offset_ring,Abbotsford,ca
+Abbotsford - South,British Columbia,48.8779000,-122.2526000,regional_large_offset,32,derived,offset_ring,Abbotsford,ca
+Abbotsford - West,British Columbia,49.0579000,-122.5426000,regional_large_offset,32,derived,offset_ring,Abbotsford,ca
+Abbotsford - Northeast,British Columbia,49.1879000,-122.0426000,regional_large_offset,32,derived,offset_ring,Abbotsford,ca
+Abbotsford - Northwest,British Columbia,49.1879000,-122.4626000,regional_large_offset,32,derived,offset_ring,Abbotsford,ca
+Abbotsford - Southeast,British Columbia,48.9279000,-122.0426000,regional_large_offset,32,derived,offset_ring,Abbotsford,ca
+Abbotsford - Southwest,British Columbia,48.9279000,-122.4626000,regional_large_offset,32,derived,offset_ring,Abbotsford,ca
+Lévis,Quebec,46.7870667,-71.1919333,regional_large,33,statscan_ca_2021_149683,anchor_city,Lévis,ca
+Lévis - East,Quebec,46.7870667,-70.9019333,regional_large_offset,33,derived,offset_ring,Lévis,ca
+Lévis - North,Quebec,46.9670667,-71.1919333,regional_large_offset,33,derived,offset_ring,Lévis,ca
+Lévis - South,Quebec,46.6070667,-71.1919333,regional_large_offset,33,derived,offset_ring,Lévis,ca
+Lévis - West,Quebec,46.7870667,-71.4819333,regional_large_offset,33,derived,offset_ring,Lévis,ca
+Lévis - Northeast,Quebec,46.9170667,-70.9819333,regional_large_offset,33,derived,offset_ring,Lévis,ca
+Lévis - Northwest,Quebec,46.9170667,-71.4019333,regional_large_offset,33,derived,offset_ring,Lévis,ca
+Lévis - Southeast,Quebec,46.6570667,-70.9819333,regional_large_offset,33,derived,offset_ring,Lévis,ca
+Lévis - Southwest,Quebec,46.6570667,-71.4019333,regional_large_offset,33,derived,offset_ring,Lévis,ca
+Coquitlam,British Columbia,49.2838000,-122.7917000,regional_large,34,statscan_ca_2021_148625,anchor_city,Coquitlam,ca
+Coquitlam - East,British Columbia,49.2838000,-122.5017000,regional_large_offset,34,derived,offset_ring,Coquitlam,ca
+Coquitlam - North,British Columbia,49.4638000,-122.7917000,regional_large_offset,34,derived,offset_ring,Coquitlam,ca
+Coquitlam - South,British Columbia,49.1038000,-122.7917000,regional_large_offset,34,derived,offset_ring,Coquitlam,ca
+Coquitlam - West,British Columbia,49.2838000,-123.0817000,regional_large_offset,34,derived,offset_ring,Coquitlam,ca
+Coquitlam - Northeast,British Columbia,49.4138000,-122.5817000,regional_large_offset,34,derived,offset_ring,Coquitlam,ca
+Coquitlam - Northwest,British Columbia,49.4138000,-123.0017000,regional_large_offset,34,derived,offset_ring,Coquitlam,ca
+Coquitlam - Southeast,British Columbia,49.1538000,-122.5817000,regional_large_offset,34,derived,offset_ring,Coquitlam,ca
+Coquitlam - Southwest,British Columbia,49.1538000,-123.0017000,regional_large_offset,34,derived,offset_ring,Coquitlam,ca
+Barrie,Ontario,44.3894000,-79.6903000,regional_large,35,statscan_ca_2021_147829,anchor_city,Barrie,ca
+Barrie - East,Ontario,44.3894000,-79.4003000,regional_large_offset,35,derived,offset_ring,Barrie,ca
+Barrie - North,Ontario,44.5694000,-79.6903000,regional_large_offset,35,derived,offset_ring,Barrie,ca
+Barrie - South,Ontario,44.2094000,-79.6903000,regional_large_offset,35,derived,offset_ring,Barrie,ca
+Barrie - West,Ontario,44.3894000,-79.9803000,regional_large_offset,35,derived,offset_ring,Barrie,ca
+Barrie - Northeast,Ontario,44.5194000,-79.4803000,regional_large_offset,35,derived,offset_ring,Barrie,ca
+Barrie - Northwest,Ontario,44.5194000,-79.9003000,regional_large_offset,35,derived,offset_ring,Barrie,ca
+Barrie - Southeast,Ontario,44.2594000,-79.4803000,regional_large_offset,35,derived,offset_ring,Barrie,ca
+Barrie - Southwest,Ontario,44.2594000,-79.9003000,regional_large_offset,35,derived,offset_ring,Barrie,ca
+Saguenay,Quebec,48.4283000,-71.0683000,regional_large,36,statscan_ca_2021_144723,anchor_city,Saguenay,ca
+Saguenay - East,Quebec,48.4283000,-70.7783000,regional_large_offset,36,derived,offset_ring,Saguenay,ca
+Saguenay - North,Quebec,48.6083000,-71.0683000,regional_large_offset,36,derived,offset_ring,Saguenay,ca
+Saguenay - South,Quebec,48.2483000,-71.0683000,regional_large_offset,36,derived,offset_ring,Saguenay,ca
+Saguenay - West,Quebec,48.4283000,-71.3583000,regional_large_offset,36,derived,offset_ring,Saguenay,ca
+Saguenay - Northeast,Quebec,48.5583000,-70.8583000,regional_large_offset,36,derived,offset_ring,Saguenay,ca
+Saguenay - Northwest,Quebec,48.5583000,-71.2783000,regional_large_offset,36,derived,offset_ring,Saguenay,ca
+Saguenay - Southeast,Quebec,48.2983000,-70.8583000,regional_large_offset,36,derived,offset_ring,Saguenay,ca
+Saguenay - Southwest,Quebec,48.2983000,-71.2783000,regional_large_offset,36,derived,offset_ring,Saguenay,ca
+Kelowna,British Columbia,49.8877000,-119.4960000,regional_large,37,statscan_ca_2021_144576,anchor_city,Kelowna,ca
+Kelowna - East,British Columbia,49.8877000,-119.2060000,regional_large_offset,37,derived,offset_ring,Kelowna,ca
+Kelowna - North,British Columbia,50.0677000,-119.4960000,regional_large_offset,37,derived,offset_ring,Kelowna,ca
+Kelowna - South,British Columbia,49.7077000,-119.4960000,regional_large_offset,37,derived,offset_ring,Kelowna,ca
+Kelowna - West,British Columbia,49.8877000,-119.7860000,regional_large_offset,37,derived,offset_ring,Kelowna,ca
+Kelowna - Northeast,British Columbia,50.0177000,-119.2860000,regional_large_offset,37,derived,offset_ring,Kelowna,ca
+Kelowna - Northwest,British Columbia,50.0177000,-119.7060000,regional_large_offset,37,derived,offset_ring,Kelowna,ca
+Kelowna - Southeast,British Columbia,49.7577000,-119.2860000,regional_large_offset,37,derived,offset_ring,Kelowna,ca
+Kelowna - Southwest,British Columbia,49.7577000,-119.7060000,regional_large_offset,37,derived,offset_ring,Kelowna,ca
+Guelph,Ontario,43.5448000,-80.2482000,regional_large,38,statscan_ca_2021_143740,anchor_city,Guelph,ca
+Guelph - East,Ontario,43.5448000,-79.9582000,regional_large_offset,38,derived,offset_ring,Guelph,ca
+Guelph - North,Ontario,43.7248000,-80.2482000,regional_large_offset,38,derived,offset_ring,Guelph,ca
+Guelph - South,Ontario,43.3648000,-80.2482000,regional_large_offset,38,derived,offset_ring,Guelph,ca
+Guelph - West,Ontario,43.5448000,-80.5382000,regional_large_offset,38,derived,offset_ring,Guelph,ca
+Guelph - Northeast,Ontario,43.6748000,-80.0382000,regional_large_offset,38,derived,offset_ring,Guelph,ca
+Guelph - Northwest,Ontario,43.6748000,-80.4582000,regional_large_offset,38,derived,offset_ring,Guelph,ca
+Guelph - Southeast,Ontario,43.4148000,-80.0382000,regional_large_offset,38,derived,offset_ring,Guelph,ca
+Guelph - Southwest,Ontario,43.4148000,-80.4582000,regional_large_offset,38,derived,offset_ring,Guelph,ca
+Trois-Rivières,Quebec,46.3432000,-72.5797000,regional_large,39,statscan_ca_2021_139163,anchor_city,Trois-Rivières,ca
+Trois-Rivières - East,Quebec,46.3432000,-72.2897000,regional_large_offset,39,derived,offset_ring,Trois-Rivières,ca
+Trois-Rivières - North,Quebec,46.5232000,-72.5797000,regional_large_offset,39,derived,offset_ring,Trois-Rivières,ca
+Trois-Rivières - South,Quebec,46.1632000,-72.5797000,regional_large_offset,39,derived,offset_ring,Trois-Rivières,ca
+Trois-Rivières - West,Quebec,46.3432000,-72.8697000,regional_large_offset,39,derived,offset_ring,Trois-Rivières,ca
+Trois-Rivières - Northeast,Quebec,46.4732000,-72.3697000,regional_large_offset,39,derived,offset_ring,Trois-Rivières,ca
+Trois-Rivières - Northwest,Quebec,46.4732000,-72.7897000,regional_large_offset,39,derived,offset_ring,Trois-Rivières,ca
+Trois-Rivières - Southeast,Quebec,46.2132000,-72.3697000,regional_large_offset,39,derived,offset_ring,Trois-Rivières,ca
+Trois-Rivières - Southwest,Quebec,46.2132000,-72.7897000,regional_large_offset,39,derived,offset_ring,Trois-Rivières,ca
+Whitby,Ontario,43.8975000,-78.9429000,regional_large,40,statscan_ca_2021_138501,anchor_city,Whitby,ca
+Whitby - East,Ontario,43.8975000,-78.6529000,regional_large_offset,40,derived,offset_ring,Whitby,ca
+Whitby - North,Ontario,44.0775000,-78.9429000,regional_large_offset,40,derived,offset_ring,Whitby,ca
+Whitby - South,Ontario,43.7175000,-78.9429000,regional_large_offset,40,derived,offset_ring,Whitby,ca
+Whitby - West,Ontario,43.8975000,-79.2329000,regional_large_offset,40,derived,offset_ring,Whitby,ca
+Whitby - Northeast,Ontario,44.0275000,-78.7329000,regional_large_offset,40,derived,offset_ring,Whitby,ca
+Whitby - Northwest,Ontario,44.0275000,-79.1529000,regional_large_offset,40,derived,offset_ring,Whitby,ca
+Whitby - Southeast,Ontario,43.7675000,-78.7329000,regional_large_offset,40,derived,offset_ring,Whitby,ca
+Whitby - Southwest,Ontario,43.7675000,-79.1529000,regional_large_offset,40,derived,offset_ring,Whitby,ca
+Cambridge,Ontario,43.3616000,-80.3144000,regional_large,41,statscan_ca_2021_138479,anchor_city,Cambridge,ca
+Cambridge - East,Ontario,43.3616000,-80.0244000,regional_large_offset,41,derived,offset_ring,Cambridge,ca
+Cambridge - North,Ontario,43.5416000,-80.3144000,regional_large_offset,41,derived,offset_ring,Cambridge,ca
+Cambridge - South,Ontario,43.1816000,-80.3144000,regional_large_offset,41,derived,offset_ring,Cambridge,ca
+Cambridge - West,Ontario,43.3616000,-80.6044000,regional_large_offset,41,derived,offset_ring,Cambridge,ca
+Cambridge - Northeast,Ontario,43.4916000,-80.1044000,regional_large_offset,41,derived,offset_ring,Cambridge,ca
+Cambridge - Northwest,Ontario,43.4916000,-80.5244000,regional_large_offset,41,derived,offset_ring,Cambridge,ca
+Cambridge - Southeast,Ontario,43.2316000,-80.1044000,regional_large_offset,41,derived,offset_ring,Cambridge,ca
+Cambridge - Southwest,Ontario,43.2316000,-80.5244000,regional_large_offset,41,derived,offset_ring,Cambridge,ca
+St. Catharines,Ontario,43.1594000,-79.2469000,regional_large,42,statscan_ca_2021_136803,anchor_city,St. Catharines,ca
+St. Catharines - East,Ontario,43.1594000,-78.9569000,regional_large_offset,42,derived,offset_ring,St. Catharines,ca
+St. Catharines - North,Ontario,43.3394000,-79.2469000,regional_large_offset,42,derived,offset_ring,St. Catharines,ca
+St. Catharines - South,Ontario,42.9794000,-79.2469000,regional_large_offset,42,derived,offset_ring,St. Catharines,ca
+St. Catharines - West,Ontario,43.1594000,-79.5369000,regional_large_offset,42,derived,offset_ring,St. Catharines,ca
+St. Catharines - Northeast,Ontario,43.2894000,-79.0369000,regional_large_offset,42,derived,offset_ring,St. Catharines,ca
+St. Catharines - Northwest,Ontario,43.2894000,-79.4569000,regional_large_offset,42,derived,offset_ring,St. Catharines,ca
+St. Catharines - Southeast,Ontario,43.0294000,-79.0369000,regional_large_offset,42,derived,offset_ring,St. Catharines,ca
+St. Catharines - Southwest,Ontario,43.0294000,-79.4569000,regional_large_offset,42,derived,offset_ring,St. Catharines,ca
+Milton,Ontario,43.5082000,-79.8842000,regional_large,43,statscan_ca_2021_132979,anchor_city,Milton,ca
+Milton - East,Ontario,43.5082000,-79.5942000,regional_large_offset,43,derived,offset_ring,Milton,ca
+Milton - North,Ontario,43.6882000,-79.8842000,regional_large_offset,43,derived,offset_ring,Milton,ca
+Milton - South,Ontario,43.3282000,-79.8842000,regional_large_offset,43,derived,offset_ring,Milton,ca
+Milton - West,Ontario,43.5082000,-80.1742000,regional_large_offset,43,derived,offset_ring,Milton,ca
+Milton - Northeast,Ontario,43.6382000,-79.6742000,regional_large_offset,43,derived,offset_ring,Milton,ca
+Milton - Northwest,Ontario,43.6382000,-80.0942000,regional_large_offset,43,derived,offset_ring,Milton,ca
+Milton - Southeast,Ontario,43.3782000,-79.6742000,regional_large_offset,43,derived,offset_ring,Milton,ca
+Milton - Southwest,Ontario,43.3782000,-80.0942000,regional_large_offset,43,derived,offset_ring,Milton,ca
+Langley,British Columbia,49.1004000,-122.6587000,regional_large,44,statscan_ca_2021_132603,anchor_city,Langley,ca
+Langley - East,British Columbia,49.1004000,-122.3687000,regional_large_offset,44,derived,offset_ring,Langley,ca
+Langley - North,British Columbia,49.2804000,-122.6587000,regional_large_offset,44,derived,offset_ring,Langley,ca
+Langley - South,British Columbia,48.9204000,-122.6587000,regional_large_offset,44,derived,offset_ring,Langley,ca
+Langley - West,British Columbia,49.1004000,-122.9487000,regional_large_offset,44,derived,offset_ring,Langley,ca
+Langley - Northeast,British Columbia,49.2304000,-122.4487000,regional_large_offset,44,derived,offset_ring,Langley,ca
+Langley - Northwest,British Columbia,49.2304000,-122.8687000,regional_large_offset,44,derived,offset_ring,Langley,ca
+Langley - Southeast,British Columbia,48.9704000,-122.4487000,regional_large_offset,44,derived,offset_ring,Langley,ca
+Langley - Southwest,British Columbia,48.9704000,-122.8687000,regional_large_offset,44,derived,offset_ring,Langley,ca
+Kingston,Ontario,44.2312000,-76.4860000,regional_large,45,statscan_ca_2021_132485,anchor_city,Kingston,ca
+Kingston - East,Ontario,44.2312000,-76.1960000,regional_large_offset,45,derived,offset_ring,Kingston,ca
+Kingston - North,Ontario,44.4112000,-76.4860000,regional_large_offset,45,derived,offset_ring,Kingston,ca
+Kingston - South,Ontario,44.0512000,-76.4860000,regional_large_offset,45,derived,offset_ring,Kingston,ca
+Kingston - West,Ontario,44.2312000,-76.7760000,regional_large_offset,45,derived,offset_ring,Kingston,ca
+Kingston - Northeast,Ontario,44.3612000,-76.2760000,regional_large_offset,45,derived,offset_ring,Kingston,ca
+Kingston - Northwest,Ontario,44.3612000,-76.6960000,regional_large_offset,45,derived,offset_ring,Kingston,ca
+Kingston - Southeast,Ontario,44.1012000,-76.2760000,regional_large_offset,45,derived,offset_ring,Kingston,ca
+Kingston - Southwest,Ontario,44.1012000,-76.6960000,regional_large_offset,45,derived,offset_ring,Kingston,ca
+Ajax,Ontario,43.8673333,-79.0280000,regional_large,46,statscan_ca_2021_126666,anchor_city,Ajax,ca
+Ajax - East,Ontario,43.8673333,-78.7380000,regional_large_offset,46,derived,offset_ring,Ajax,ca
+Ajax - North,Ontario,44.0473333,-79.0280000,regional_large_offset,46,derived,offset_ring,Ajax,ca
+Ajax - South,Ontario,43.6873333,-79.0280000,regional_large_offset,46,derived,offset_ring,Ajax,ca
+Ajax - West,Ontario,43.8673333,-79.3180000,regional_large_offset,46,derived,offset_ring,Ajax,ca
+Ajax - Northeast,Ontario,43.9973333,-78.8180000,regional_large_offset,46,derived,offset_ring,Ajax,ca
+Ajax - Northwest,Ontario,43.9973333,-79.2380000,regional_large_offset,46,derived,offset_ring,Ajax,ca
+Ajax - Southeast,Ontario,43.7373333,-78.8180000,regional_large_offset,46,derived,offset_ring,Ajax,ca
+Ajax - Southwest,Ontario,43.7373333,-79.2380000,regional_large_offset,46,derived,offset_ring,Ajax,ca
+Waterloo,Ontario,43.4643000,-80.5204000,regional_large,47,statscan_ca_2021_121436,anchor_city,Waterloo,ca
+Waterloo - East,Ontario,43.4643000,-80.2304000,regional_large_offset,47,derived,offset_ring,Waterloo,ca
+Waterloo - North,Ontario,43.6443000,-80.5204000,regional_large_offset,47,derived,offset_ring,Waterloo,ca
+Waterloo - South,Ontario,43.2843000,-80.5204000,regional_large_offset,47,derived,offset_ring,Waterloo,ca
+Waterloo - West,Ontario,43.4643000,-80.8104000,regional_large_offset,47,derived,offset_ring,Waterloo,ca
+Waterloo - Northeast,Ontario,43.5943000,-80.3104000,regional_large_offset,47,derived,offset_ring,Waterloo,ca
+Waterloo - Northwest,Ontario,43.5943000,-80.7304000,regional_large_offset,47,derived,offset_ring,Waterloo,ca
+Waterloo - Southeast,Ontario,43.3343000,-80.3104000,regional_large_offset,47,derived,offset_ring,Waterloo,ca
+Waterloo - Southwest,Ontario,43.3343000,-80.7304000,regional_large_offset,47,derived,offset_ring,Waterloo,ca
+Terrebonne,Quebec,45.6995000,-73.6242000,regional_large,48,statscan_ca_2021_119944,anchor_city,Terrebonne,ca
+Terrebonne - East,Quebec,45.6995000,-73.3342000,regional_large_offset,48,derived,offset_ring,Terrebonne,ca
+Terrebonne - North,Quebec,45.8795000,-73.6242000,regional_large_offset,48,derived,offset_ring,Terrebonne,ca
+Terrebonne - South,Quebec,45.5195000,-73.6242000,regional_large_offset,48,derived,offset_ring,Terrebonne,ca
+Terrebonne - West,Quebec,45.6995000,-73.9142000,regional_large_offset,48,derived,offset_ring,Terrebonne,ca
+Terrebonne - Northeast,Quebec,45.8295000,-73.4142000,regional_large_offset,48,derived,offset_ring,Terrebonne,ca
+Terrebonne - Northwest,Quebec,45.8295000,-73.8342000,regional_large_offset,48,derived,offset_ring,Terrebonne,ca
+Terrebonne - Southeast,Quebec,45.5695000,-73.4142000,regional_large_offset,48,derived,offset_ring,Terrebonne,ca
+Terrebonne - Southwest,Quebec,45.5695000,-73.8342000,regional_large_offset,48,derived,offset_ring,Terrebonne,ca
+Saanich,British Columbia,48.4846000,-123.3817000,regional_large,49,statscan_ca_2021_117735,anchor_city,Saanich,ca
+Saanich - East,British Columbia,48.4846000,-123.0917000,regional_large_offset,49,derived,offset_ring,Saanich,ca
+Saanich - North,British Columbia,48.6646000,-123.3817000,regional_large_offset,49,derived,offset_ring,Saanich,ca
+Saanich - South,British Columbia,48.3046000,-123.3817000,regional_large_offset,49,derived,offset_ring,Saanich,ca
+Saanich - West,British Columbia,48.4846000,-123.6717000,regional_large_offset,49,derived,offset_ring,Saanich,ca
+Saanich - Northeast,British Columbia,48.6146000,-123.1717000,regional_large_offset,49,derived,offset_ring,Saanich,ca
+Saanich - Northwest,British Columbia,48.6146000,-123.5917000,regional_large_offset,49,derived,offset_ring,Saanich,ca
+Saanich - Southeast,British Columbia,48.3546000,-123.1717000,regional_large_offset,49,derived,offset_ring,Saanich,ca
+Saanich - Southwest,British Columbia,48.3546000,-123.5917000,regional_large_offset,49,derived,offset_ring,Saanich,ca
+St. John's,Newfoundland and Labrador,47.5615000,-52.7126000,regional_large,50,statscan_ca_2021_110525,anchor_city,St. John's,ca
+St. John's - East,Newfoundland and Labrador,47.5615000,-52.4226000,regional_large_offset,50,derived,offset_ring,St. John's,ca
+St. John's - North,Newfoundland and Labrador,47.7415000,-52.7126000,regional_large_offset,50,derived,offset_ring,St. John's,ca
+St. John's - South,Newfoundland and Labrador,47.3815000,-52.7126000,regional_large_offset,50,derived,offset_ring,St. John's,ca
+St. John's - West,Newfoundland and Labrador,47.5615000,-53.0026000,regional_large_offset,50,derived,offset_ring,St. John's,ca
+St. John's - Northeast,Newfoundland and Labrador,47.6915000,-52.5026000,regional_large_offset,50,derived,offset_ring,St. John's,ca
+St. John's - Northwest,Newfoundland and Labrador,47.6915000,-52.9226000,regional_large_offset,50,derived,offset_ring,St. John's,ca
+St. John's - Southeast,Newfoundland and Labrador,47.4315000,-52.5026000,regional_large_offset,50,derived,offset_ring,St. John's,ca
+St. John's - Southwest,Newfoundland and Labrador,47.4315000,-52.9226000,regional_large_offset,50,derived,offset_ring,St. John's,ca
+Thunder Bay,Ontario,48.3809000,-89.2477000,regional_large,51,statscan_ca_2021_108843,anchor_city,Thunder Bay,ca
+Thunder Bay - East,Ontario,48.3809000,-88.9577000,regional_large_offset,51,derived,offset_ring,Thunder Bay,ca
+Thunder Bay - North,Ontario,48.5609000,-89.2477000,regional_large_offset,51,derived,offset_ring,Thunder Bay,ca
+Thunder Bay - South,Ontario,48.2009000,-89.2477000,regional_large_offset,51,derived,offset_ring,Thunder Bay,ca
+Thunder Bay - West,Ontario,48.3809000,-89.5377000,regional_large_offset,51,derived,offset_ring,Thunder Bay,ca
+Thunder Bay - Northeast,Ontario,48.5109000,-89.0377000,regional_large_offset,51,derived,offset_ring,Thunder Bay,ca
+Thunder Bay - Northwest,Ontario,48.5109000,-89.4577000,regional_large_offset,51,derived,offset_ring,Thunder Bay,ca
+Thunder Bay - Southeast,Ontario,48.2509000,-89.0377000,regional_large_offset,51,derived,offset_ring,Thunder Bay,ca
+Thunder Bay - Southwest,Ontario,48.2509000,-89.4577000,regional_large_offset,51,derived,offset_ring,Thunder Bay,ca
+Delta,British Columbia,49.0951000,-123.0262000,regional_large,52,statscan_ca_2021_108455,anchor_city,Delta,ca
+Delta - East,British Columbia,49.0951000,-122.7362000,regional_large_offset,52,derived,offset_ring,Delta,ca
+Delta - North,British Columbia,49.2751000,-123.0262000,regional_large_offset,52,derived,offset_ring,Delta,ca
+Delta - South,British Columbia,48.9151000,-123.0262000,regional_large_offset,52,derived,offset_ring,Delta,ca
+Delta - West,British Columbia,49.0951000,-123.3162000,regional_large_offset,52,derived,offset_ring,Delta,ca
+Delta - Northeast,British Columbia,49.2251000,-122.8162000,regional_large_offset,52,derived,offset_ring,Delta,ca
+Delta - Northwest,British Columbia,49.2251000,-123.2362000,regional_large_offset,52,derived,offset_ring,Delta,ca
+Delta - Southeast,British Columbia,48.9651000,-122.8162000,regional_large_offset,52,derived,offset_ring,Delta,ca
+Delta - Southwest,British Columbia,48.9651000,-123.2362000,regional_large_offset,52,derived,offset_ring,Delta,ca
+Brantford,Ontario,43.1394000,-80.2644000,regional_large,53,statscan_ca_2021_104688,anchor_city,Brantford,ca
+Brantford - East,Ontario,43.1394000,-79.9744000,regional_large_offset,53,derived,offset_ring,Brantford,ca
+Brantford - North,Ontario,43.3194000,-80.2644000,regional_large_offset,53,derived,offset_ring,Brantford,ca
+Brantford - South,Ontario,42.9594000,-80.2644000,regional_large_offset,53,derived,offset_ring,Brantford,ca
+Brantford - West,Ontario,43.1394000,-80.5544000,regional_large_offset,53,derived,offset_ring,Brantford,ca
+Brantford - Northeast,Ontario,43.2694000,-80.0544000,regional_large_offset,53,derived,offset_ring,Brantford,ca
+Brantford - Northwest,Ontario,43.2694000,-80.4744000,regional_large_offset,53,derived,offset_ring,Brantford,ca
+Brantford - Southeast,Ontario,43.0094000,-80.0544000,regional_large_offset,53,derived,offset_ring,Brantford,ca
+Brantford - Southwest,Ontario,43.0094000,-80.4744000,regional_large_offset,53,derived,offset_ring,Brantford,ca
+Chatham-Kent,Ontario,42.4048000,-82.1914000,regional_large,54,statscan_ca_2021_103988,anchor_city,Chatham-Kent,ca
+Chatham-Kent - East,Ontario,42.4048000,-81.9014000,regional_large_offset,54,derived,offset_ring,Chatham-Kent,ca
+Chatham-Kent - North,Ontario,42.5848000,-82.1914000,regional_large_offset,54,derived,offset_ring,Chatham-Kent,ca
+Chatham-Kent - South,Ontario,42.2248000,-82.1914000,regional_large_offset,54,derived,offset_ring,Chatham-Kent,ca
+Chatham-Kent - West,Ontario,42.4048000,-82.4814000,regional_large_offset,54,derived,offset_ring,Chatham-Kent,ca
+Chatham-Kent - Northeast,Ontario,42.5348000,-81.9814000,regional_large_offset,54,derived,offset_ring,Chatham-Kent,ca
+Chatham-Kent - Northwest,Ontario,42.5348000,-82.4014000,regional_large_offset,54,derived,offset_ring,Chatham-Kent,ca
+Chatham-Kent - Southeast,Ontario,42.2748000,-81.9814000,regional_large_offset,54,derived,offset_ring,Chatham-Kent,ca
+Chatham-Kent - Southwest,Ontario,42.2748000,-82.4014000,regional_large_offset,54,derived,offset_ring,Chatham-Kent,ca
+Clarington,Ontario,43.9352000,-78.6086000,regional_large,55,statscan_ca_2021_101427,anchor_city,Clarington,ca
+Clarington - East,Ontario,43.9352000,-78.3186000,regional_large_offset,55,derived,offset_ring,Clarington,ca
+Clarington - North,Ontario,44.1152000,-78.6086000,regional_large_offset,55,derived,offset_ring,Clarington,ca
+Clarington - South,Ontario,43.7552000,-78.6086000,regional_large_offset,55,derived,offset_ring,Clarington,ca
+Clarington - West,Ontario,43.9352000,-78.8986000,regional_large_offset,55,derived,offset_ring,Clarington,ca
+Clarington - Northeast,Ontario,44.0652000,-78.3986000,regional_large_offset,55,derived,offset_ring,Clarington,ca
+Clarington - Northwest,Ontario,44.0652000,-78.8186000,regional_large_offset,55,derived,offset_ring,Clarington,ca
+Clarington - Southeast,Ontario,43.8052000,-78.3986000,regional_large_offset,55,derived,offset_ring,Clarington,ca
+Clarington - Southwest,Ontario,43.8052000,-78.8186000,regional_large_offset,55,derived,offset_ring,Clarington,ca
+Red Deer,Alberta,52.2681000,-113.8112000,regional_large,56,statscan_ca_2021_100844,anchor_city,Red Deer,ca
+Red Deer - East,Alberta,52.2681000,-113.5212000,regional_large_offset,56,derived,offset_ring,Red Deer,ca
+Red Deer - North,Alberta,52.4481000,-113.8112000,regional_large_offset,56,derived,offset_ring,Red Deer,ca
+Red Deer - South,Alberta,52.0881000,-113.8112000,regional_large_offset,56,derived,offset_ring,Red Deer,ca
+Red Deer - West,Alberta,52.2681000,-114.1012000,regional_large_offset,56,derived,offset_ring,Red Deer,ca
+Red Deer - Northeast,Alberta,52.3981000,-113.6012000,regional_large_offset,56,derived,offset_ring,Red Deer,ca
+Red Deer - Northwest,Alberta,52.3981000,-114.0212000,regional_large_offset,56,derived,offset_ring,Red Deer,ca
+Red Deer - Southeast,Alberta,52.1381000,-113.6012000,regional_large_offset,56,derived,offset_ring,Red Deer,ca
+Red Deer - Southwest,Alberta,52.1381000,-114.0212000,regional_large_offset,56,derived,offset_ring,Red Deer,ca
+Nanaimo,British Columbia,49.1659000,-123.9401000,regional,57,statscan_ca_2021_99863,anchor_city,Nanaimo,ca
+Nanaimo - East,British Columbia,49.1659000,-123.6501000,regional_offset,57,derived,offset_ring,Nanaimo,ca
+Nanaimo - North,British Columbia,49.3459000,-123.9401000,regional_offset,57,derived,offset_ring,Nanaimo,ca
+Nanaimo - South,British Columbia,48.9859000,-123.9401000,regional_offset,57,derived,offset_ring,Nanaimo,ca
+Nanaimo - West,British Columbia,49.1659000,-124.2301000,regional_offset,57,derived,offset_ring,Nanaimo,ca
+Nanaimo - Northeast,British Columbia,49.2959000,-123.7301000,regional_offset,57,derived,offset_ring,Nanaimo,ca
+Nanaimo - Northwest,British Columbia,49.2959000,-124.1501000,regional_offset,57,derived,offset_ring,Nanaimo,ca
+Nanaimo - Southeast,British Columbia,49.0359000,-123.7301000,regional_offset,57,derived,offset_ring,Nanaimo,ca
+Nanaimo - Southwest,British Columbia,49.0359000,-124.1501000,regional_offset,57,derived,offset_ring,Nanaimo,ca
+Strathcona County,Alberta,53.5253000,-113.3019000,regional,58,statscan_ca_2021_99225,anchor_city,Strathcona County,ca
+Strathcona County - East,Alberta,53.5253000,-113.0119000,regional_offset,58,derived,offset_ring,Strathcona County,ca
+Strathcona County - North,Alberta,53.7053000,-113.3019000,regional_offset,58,derived,offset_ring,Strathcona County,ca
+Strathcona County - South,Alberta,53.3453000,-113.3019000,regional_offset,58,derived,offset_ring,Strathcona County,ca
+Strathcona County - West,Alberta,53.5253000,-113.5919000,regional_offset,58,derived,offset_ring,Strathcona County,ca
+Strathcona County - Northeast,Alberta,53.6553000,-113.0919000,regional_offset,58,derived,offset_ring,Strathcona County,ca
+Strathcona County - Northwest,Alberta,53.6553000,-113.5119000,regional_offset,58,derived,offset_ring,Strathcona County,ca
+Strathcona County - Southeast,Alberta,53.3953000,-113.0919000,regional_offset,58,derived,offset_ring,Strathcona County,ca
+Strathcona County - Southwest,Alberta,53.3953000,-113.5119000,regional_offset,58,derived,offset_ring,Strathcona County,ca
+Pickering,Ontario,43.8384000,-79.0868000,regional,59,statscan_ca_2021_99186,anchor_city,Pickering,ca
+Pickering - East,Ontario,43.8384000,-78.7968000,regional_offset,59,derived,offset_ring,Pickering,ca
+Pickering - North,Ontario,44.0184000,-79.0868000,regional_offset,59,derived,offset_ring,Pickering,ca
+Pickering - South,Ontario,43.6584000,-79.0868000,regional_offset,59,derived,offset_ring,Pickering,ca
+Pickering - West,Ontario,43.8384000,-79.3768000,regional_offset,59,derived,offset_ring,Pickering,ca
+Pickering - Northeast,Ontario,43.9684000,-78.8768000,regional_offset,59,derived,offset_ring,Pickering,ca
+Pickering - Northwest,Ontario,43.9684000,-79.2968000,regional_offset,59,derived,offset_ring,Pickering,ca
+Pickering - Southeast,Ontario,43.7084000,-78.8768000,regional_offset,59,derived,offset_ring,Pickering,ca
+Pickering - Southwest,Ontario,43.7084000,-79.2968000,regional_offset,59,derived,offset_ring,Pickering,ca
+Lethbridge,Alberta,49.6942000,-112.8328000,regional,60,statscan_ca_2021_98406,anchor_city,Lethbridge,ca
+Lethbridge - East,Alberta,49.6942000,-112.5428000,regional_offset,60,derived,offset_ring,Lethbridge,ca
+Lethbridge - North,Alberta,49.8742000,-112.8328000,regional_offset,60,derived,offset_ring,Lethbridge,ca
+Lethbridge - South,Alberta,49.5142000,-112.8328000,regional_offset,60,derived,offset_ring,Lethbridge,ca
+Lethbridge - West,Alberta,49.6942000,-113.1228000,regional_offset,60,derived,offset_ring,Lethbridge,ca
+Lethbridge - Northeast,Alberta,49.8242000,-112.6228000,regional_offset,60,derived,offset_ring,Lethbridge,ca
+Lethbridge - Northwest,Alberta,49.8242000,-113.0428000,regional_offset,60,derived,offset_ring,Lethbridge,ca
+Lethbridge - Southeast,Alberta,49.5642000,-112.6228000,regional_offset,60,derived,offset_ring,Lethbridge,ca
+Lethbridge - Southwest,Alberta,49.5642000,-113.0428000,regional_offset,60,derived,offset_ring,Lethbridge,ca
+Kamloops,British Columbia,50.6745000,-120.3273000,regional,61,statscan_ca_2021_97902,anchor_city,Kamloops,ca
+Kamloops - East,British Columbia,50.6745000,-120.0373000,regional_offset,61,derived,offset_ring,Kamloops,ca
+Kamloops - North,British Columbia,50.8545000,-120.3273000,regional_offset,61,derived,offset_ring,Kamloops,ca
+Kamloops - South,British Columbia,50.4945000,-120.3273000,regional_offset,61,derived,offset_ring,Kamloops,ca
+Kamloops - West,British Columbia,50.6745000,-120.6173000,regional_offset,61,derived,offset_ring,Kamloops,ca
+Kamloops - Northeast,British Columbia,50.8045000,-120.1173000,regional_offset,61,derived,offset_ring,Kamloops,ca
+Kamloops - Northwest,British Columbia,50.8045000,-120.5373000,regional_offset,61,derived,offset_ring,Kamloops,ca
+Kamloops - Southeast,British Columbia,50.5445000,-120.1173000,regional_offset,61,derived,offset_ring,Kamloops,ca
+Kamloops - Southwest,British Columbia,50.5445000,-120.5373000,regional_offset,61,derived,offset_ring,Kamloops,ca
+Saint-Jean-sur-Richelieu,Quebec,45.3093750,-73.2820500,regional,62,statscan_ca_2021_97873,anchor_city,Saint-Jean-sur-Richelieu,ca
+Saint-Jean-sur-Richelieu - East,Quebec,45.3093750,-72.9920500,regional_offset,62,derived,offset_ring,Saint-Jean-sur-Richelieu,ca
+Saint-Jean-sur-Richelieu - North,Quebec,45.4893750,-73.2820500,regional_offset,62,derived,offset_ring,Saint-Jean-sur-Richelieu,ca
+Saint-Jean-sur-Richelieu - South,Quebec,45.1293750,-73.2820500,regional_offset,62,derived,offset_ring,Saint-Jean-sur-Richelieu,ca
+Saint-Jean-sur-Richelieu - West,Quebec,45.3093750,-73.5720500,regional_offset,62,derived,offset_ring,Saint-Jean-sur-Richelieu,ca
+Saint-Jean-sur-Richelieu - Northeast,Quebec,45.4393750,-73.0720500,regional_offset,62,derived,offset_ring,Saint-Jean-sur-Richelieu,ca
+Saint-Jean-sur-Richelieu - Northwest,Quebec,45.4393750,-73.4920500,regional_offset,62,derived,offset_ring,Saint-Jean-sur-Richelieu,ca
+Saint-Jean-sur-Richelieu - Southeast,Quebec,45.1793750,-73.0720500,regional_offset,62,derived,offset_ring,Saint-Jean-sur-Richelieu,ca
+Saint-Jean-sur-Richelieu - Southwest,Quebec,45.1793750,-73.4920500,regional_offset,62,derived,offset_ring,Saint-Jean-sur-Richelieu,ca
+Niagara Falls,Ontario,43.0896000,-79.0849000,regional,63,statscan_ca_2021_94415,anchor_city,Niagara Falls,ca
+Niagara Falls - East,Ontario,43.0896000,-78.7949000,regional_offset,63,derived,offset_ring,Niagara Falls,ca
+Niagara Falls - North,Ontario,43.2696000,-79.0849000,regional_offset,63,derived,offset_ring,Niagara Falls,ca
+Niagara Falls - South,Ontario,42.9096000,-79.0849000,regional_offset,63,derived,offset_ring,Niagara Falls,ca
+Niagara Falls - West,Ontario,43.0896000,-79.3749000,regional_offset,63,derived,offset_ring,Niagara Falls,ca
+Niagara Falls - Northeast,Ontario,43.2196000,-78.8749000,regional_offset,63,derived,offset_ring,Niagara Falls,ca
+Niagara Falls - Northwest,Ontario,43.2196000,-79.2949000,regional_offset,63,derived,offset_ring,Niagara Falls,ca
+Niagara Falls - Southeast,Ontario,42.9596000,-78.8749000,regional_offset,63,derived,offset_ring,Niagara Falls,ca
+Niagara Falls - Southwest,Ontario,42.9596000,-79.2949000,regional_offset,63,derived,offset_ring,Niagara Falls,ca
+Cape Breton,Nova Scotia,46.1351000,-60.1831000,regional,64,statscan_ca_2021_93694,anchor_city,Cape Breton,ca
+Cape Breton - East,Nova Scotia,46.1351000,-59.8931000,regional_offset,64,derived,offset_ring,Cape Breton,ca
+Cape Breton - North,Nova Scotia,46.3151000,-60.1831000,regional_offset,64,derived,offset_ring,Cape Breton,ca
+Cape Breton - South,Nova Scotia,45.9551000,-60.1831000,regional_offset,64,derived,offset_ring,Cape Breton,ca
+Cape Breton - West,Nova Scotia,46.1351000,-60.4731000,regional_offset,64,derived,offset_ring,Cape Breton,ca
+Cape Breton - Northeast,Nova Scotia,46.2651000,-59.9731000,regional_offset,64,derived,offset_ring,Cape Breton,ca
+Cape Breton - Northwest,Nova Scotia,46.2651000,-60.3931000,regional_offset,64,derived,offset_ring,Cape Breton,ca
+Cape Breton - Southeast,Nova Scotia,46.0051000,-59.9731000,regional_offset,64,derived,offset_ring,Cape Breton,ca
+Cape Breton - Southwest,Nova Scotia,46.0051000,-60.3931000,regional_offset,64,derived,offset_ring,Cape Breton,ca
+Chilliwack,British Columbia,49.1128333,-121.8342333,regional,65,statscan_ca_2021_93203,anchor_city,Chilliwack,ca
+Chilliwack - East,British Columbia,49.1128333,-121.5442333,regional_offset,65,derived,offset_ring,Chilliwack,ca
+Chilliwack - North,British Columbia,49.2928333,-121.8342333,regional_offset,65,derived,offset_ring,Chilliwack,ca
+Chilliwack - South,British Columbia,48.9328333,-121.8342333,regional_offset,65,derived,offset_ring,Chilliwack,ca
+Chilliwack - West,British Columbia,49.1128333,-122.1242333,regional_offset,65,derived,offset_ring,Chilliwack,ca
+Chilliwack - Northeast,British Columbia,49.2428333,-121.6242333,regional_offset,65,derived,offset_ring,Chilliwack,ca
+Chilliwack - Northwest,British Columbia,49.2428333,-122.0442333,regional_offset,65,derived,offset_ring,Chilliwack,ca
+Chilliwack - Southeast,British Columbia,48.9828333,-121.6242333,regional_offset,65,derived,offset_ring,Chilliwack,ca
+Chilliwack - Southwest,British Columbia,48.9828333,-122.0442333,regional_offset,65,derived,offset_ring,Chilliwack,ca
+Victoria,British Columbia,48.4275333,-123.3623667,regional,66,statscan_ca_2021_91867,anchor_city,Victoria,ca
+Victoria - East,British Columbia,48.4275333,-123.0723667,regional_offset,66,derived,offset_ring,Victoria,ca
+Victoria - North,British Columbia,48.6075333,-123.3623667,regional_offset,66,derived,offset_ring,Victoria,ca
+Victoria - South,British Columbia,48.2475333,-123.3623667,regional_offset,66,derived,offset_ring,Victoria,ca
+Victoria - West,British Columbia,48.4275333,-123.6523667,regional_offset,66,derived,offset_ring,Victoria,ca
+Victoria - Northeast,British Columbia,48.5575333,-123.1523667,regional_offset,66,derived,offset_ring,Victoria,ca
+Victoria - Northwest,British Columbia,48.5575333,-123.5723667,regional_offset,66,derived,offset_ring,Victoria,ca
+Victoria - Southeast,British Columbia,48.2975333,-123.1523667,regional_offset,66,derived,offset_ring,Victoria,ca
+Victoria - Southwest,British Columbia,48.2975333,-123.5723667,regional_offset,66,derived,offset_ring,Victoria,ca
+Brossard,Quebec,45.4585000,-73.4651000,regional,67,statscan_ca_2021_91525,anchor_city,Brossard,ca
+Brossard - East,Quebec,45.4585000,-73.1751000,regional_offset,67,derived,offset_ring,Brossard,ca
+Brossard - North,Quebec,45.6385000,-73.4651000,regional_offset,67,derived,offset_ring,Brossard,ca
+Brossard - South,Quebec,45.2785000,-73.4651000,regional_offset,67,derived,offset_ring,Brossard,ca
+Brossard - West,Quebec,45.4585000,-73.7551000,regional_offset,67,derived,offset_ring,Brossard,ca
+Brossard - Northeast,Quebec,45.5885000,-73.2551000,regional_offset,67,derived,offset_ring,Brossard,ca
+Brossard - Northwest,Quebec,45.5885000,-73.6751000,regional_offset,67,derived,offset_ring,Brossard,ca
+Brossard - Southeast,Quebec,45.3285000,-73.2551000,regional_offset,67,derived,offset_ring,Brossard,ca
+Brossard - Southwest,Quebec,45.3285000,-73.6751000,regional_offset,67,derived,offset_ring,Brossard,ca
+Maple Ridge,British Columbia,49.2194000,-122.5987000,regional,68,statscan_ca_2021_90990,anchor_city,Maple Ridge,ca
+Maple Ridge - East,British Columbia,49.2194000,-122.3087000,regional_offset,68,derived,offset_ring,Maple Ridge,ca
+Maple Ridge - North,British Columbia,49.3994000,-122.5987000,regional_offset,68,derived,offset_ring,Maple Ridge,ca
+Maple Ridge - South,British Columbia,49.0394000,-122.5987000,regional_offset,68,derived,offset_ring,Maple Ridge,ca
+Maple Ridge - West,British Columbia,49.2194000,-122.8887000,regional_offset,68,derived,offset_ring,Maple Ridge,ca
+Maple Ridge - Northeast,British Columbia,49.3494000,-122.3887000,regional_offset,68,derived,offset_ring,Maple Ridge,ca
+Maple Ridge - Northwest,British Columbia,49.3494000,-122.8087000,regional_offset,68,derived,offset_ring,Maple Ridge,ca
+Maple Ridge - Southeast,British Columbia,49.0894000,-122.3887000,regional_offset,68,derived,offset_ring,Maple Ridge,ca
+Maple Ridge - Southwest,British Columbia,49.0894000,-122.8087000,regional_offset,68,derived,offset_ring,Maple Ridge,ca
+North Vancouver,British Columbia,49.3163000,-123.0722000,regional,69,statscan_ca_2021_88168,anchor_city,North Vancouver,ca
+North Vancouver - East,British Columbia,49.3163000,-122.7822000,regional_offset,69,derived,offset_ring,North Vancouver,ca
+North Vancouver - North,British Columbia,49.4963000,-123.0722000,regional_offset,69,derived,offset_ring,North Vancouver,ca
+North Vancouver - South,British Columbia,49.1363000,-123.0722000,regional_offset,69,derived,offset_ring,North Vancouver,ca
+North Vancouver - West,British Columbia,49.3163000,-123.3622000,regional_offset,69,derived,offset_ring,North Vancouver,ca
+North Vancouver - Northeast,British Columbia,49.4463000,-122.8622000,regional_offset,69,derived,offset_ring,North Vancouver,ca
+North Vancouver - Northwest,British Columbia,49.4463000,-123.2822000,regional_offset,69,derived,offset_ring,North Vancouver,ca
+North Vancouver - Southeast,British Columbia,49.1863000,-122.8622000,regional_offset,69,derived,offset_ring,North Vancouver,ca
+North Vancouver - Southwest,British Columbia,49.1863000,-123.2822000,regional_offset,69,derived,offset_ring,North Vancouver,ca
+Newmarket,Ontario,44.0592000,-79.4613000,regional,70,statscan_ca_2021_87942,anchor_city,Newmarket,ca
+Newmarket - East,Ontario,44.0592000,-79.1713000,regional_offset,70,derived,offset_ring,Newmarket,ca
+Newmarket - North,Ontario,44.2392000,-79.4613000,regional_offset,70,derived,offset_ring,Newmarket,ca
+Newmarket - South,Ontario,43.8792000,-79.4613000,regional_offset,70,derived,offset_ring,Newmarket,ca
+Newmarket - West,Ontario,44.0592000,-79.7513000,regional_offset,70,derived,offset_ring,Newmarket,ca
+Newmarket - Northeast,Ontario,44.1892000,-79.2513000,regional_offset,70,derived,offset_ring,Newmarket,ca
+Newmarket - Northwest,Ontario,44.1892000,-79.6713000,regional_offset,70,derived,offset_ring,Newmarket,ca
+Newmarket - Southeast,Ontario,43.9292000,-79.2513000,regional_offset,70,derived,offset_ring,Newmarket,ca
+Newmarket - Southwest,Ontario,43.9292000,-79.6713000,regional_offset,70,derived,offset_ring,Newmarket,ca
+Repentigny,Quebec,45.7416000,-73.4504000,regional,71,statscan_ca_2021_86100,anchor_city,Repentigny,ca
+Repentigny - East,Quebec,45.7416000,-73.1604000,regional_offset,71,derived,offset_ring,Repentigny,ca
+Repentigny - North,Quebec,45.9216000,-73.4504000,regional_offset,71,derived,offset_ring,Repentigny,ca
+Repentigny - South,Quebec,45.5616000,-73.4504000,regional_offset,71,derived,offset_ring,Repentigny,ca
+Repentigny - West,Quebec,45.7416000,-73.7404000,regional_offset,71,derived,offset_ring,Repentigny,ca
+Repentigny - Northeast,Quebec,45.8716000,-73.2404000,regional_offset,71,derived,offset_ring,Repentigny,ca
+Repentigny - Northwest,Quebec,45.8716000,-73.6604000,regional_offset,71,derived,offset_ring,Repentigny,ca
+Repentigny - Southeast,Quebec,45.6116000,-73.2404000,regional_offset,71,derived,offset_ring,Repentigny,ca
+Repentigny - Southwest,Quebec,45.6116000,-73.6604000,regional_offset,71,derived,offset_ring,Repentigny,ca
+Peterborough,Ontario,44.4161200,-78.2414400,regional,72,statscan_ca_2021_83651,anchor_city,Peterborough,ca
+Peterborough - East,Ontario,44.4161200,-77.9514400,regional_offset,72,derived,offset_ring,Peterborough,ca
+Peterborough - North,Ontario,44.5961200,-78.2414400,regional_offset,72,derived,offset_ring,Peterborough,ca
+Peterborough - South,Ontario,44.2361200,-78.2414400,regional_offset,72,derived,offset_ring,Peterborough,ca
+Peterborough - West,Ontario,44.4161200,-78.5314400,regional_offset,72,derived,offset_ring,Peterborough,ca
+Peterborough - Northeast,Ontario,44.5461200,-78.0314400,regional_offset,72,derived,offset_ring,Peterborough,ca
+Peterborough - Northwest,Ontario,44.5461200,-78.4514400,regional_offset,72,derived,offset_ring,Peterborough,ca
+Peterborough - Southeast,Ontario,44.2861200,-78.0314400,regional_offset,72,derived,offset_ring,Peterborough,ca
+Peterborough - Southwest,Ontario,44.2861200,-78.4514400,regional_offset,72,derived,offset_ring,Peterborough,ca
+Saint-Jérôme,Quebec,45.7800000,-74.0034000,regional,73,statscan_ca_2021_80213,anchor_city,Saint-Jérôme,ca
+Saint-Jérôme - East,Quebec,45.7800000,-73.7134000,regional_offset,73,derived,offset_ring,Saint-Jérôme,ca
+Saint-Jérôme - North,Quebec,45.9600000,-74.0034000,regional_offset,73,derived,offset_ring,Saint-Jérôme,ca
+Saint-Jérôme - South,Quebec,45.6000000,-74.0034000,regional_offset,73,derived,offset_ring,Saint-Jérôme,ca
+Saint-Jérôme - West,Quebec,45.7800000,-74.2934000,regional_offset,73,derived,offset_ring,Saint-Jérôme,ca
+Saint-Jérôme - Northeast,Quebec,45.9100000,-73.7934000,regional_offset,73,derived,offset_ring,Saint-Jérôme,ca
+Saint-Jérôme - Northwest,Quebec,45.9100000,-74.2134000,regional_offset,73,derived,offset_ring,Saint-Jérôme,ca
+Saint-Jérôme - Southeast,Quebec,45.6500000,-73.7934000,regional_offset,73,derived,offset_ring,Saint-Jérôme,ca
+Saint-Jérôme - Southwest,Quebec,45.6500000,-74.2134000,regional_offset,73,derived,offset_ring,Saint-Jérôme,ca
+Moncton,New Brunswick,46.1185000,-64.8683000,regional,74,statscan_ca_2021_79470,anchor_city,Moncton,ca
+Moncton - East,New Brunswick,46.1185000,-64.5783000,regional_offset,74,derived,offset_ring,Moncton,ca
+Moncton - North,New Brunswick,46.2985000,-64.8683000,regional_offset,74,derived,offset_ring,Moncton,ca
+Moncton - South,New Brunswick,45.9385000,-64.8683000,regional_offset,74,derived,offset_ring,Moncton,ca
+Moncton - West,New Brunswick,46.1185000,-65.1583000,regional_offset,74,derived,offset_ring,Moncton,ca
+Moncton - Northeast,New Brunswick,46.2485000,-64.6583000,regional_offset,74,derived,offset_ring,Moncton,ca
+Moncton - Northwest,New Brunswick,46.2485000,-65.0783000,regional_offset,74,derived,offset_ring,Moncton,ca
+Moncton - Southeast,New Brunswick,45.9885000,-64.6583000,regional_offset,74,derived,offset_ring,Moncton,ca
+Moncton - Southwest,New Brunswick,45.9885000,-65.0783000,regional_offset,74,derived,offset_ring,Moncton,ca
+Drummondville,Quebec,45.8836000,-72.4824000,regional,75,statscan_ca_2021_79258,anchor_city,Drummondville,ca
+Drummondville - East,Quebec,45.8836000,-72.1924000,regional_offset,75,derived,offset_ring,Drummondville,ca
+Drummondville - North,Quebec,46.0636000,-72.4824000,regional_offset,75,derived,offset_ring,Drummondville,ca
+Drummondville - South,Quebec,45.7036000,-72.4824000,regional_offset,75,derived,offset_ring,Drummondville,ca
+Drummondville - West,Quebec,45.8836000,-72.7724000,regional_offset,75,derived,offset_ring,Drummondville,ca
+Drummondville - Northeast,Quebec,46.0136000,-72.2724000,regional_offset,75,derived,offset_ring,Drummondville,ca
+Drummondville - Northwest,Quebec,46.0136000,-72.6924000,regional_offset,75,derived,offset_ring,Drummondville,ca
+Drummondville - Southeast,Quebec,45.7536000,-72.2724000,regional_offset,75,derived,offset_ring,Drummondville,ca
+Drummondville - Southwest,Quebec,45.7536000,-72.6924000,regional_offset,75,derived,offset_ring,Drummondville,ca
+Kawartha Lakes,Ontario,44.3500000,-78.7500000,regional,76,statscan_ca_2021_79247,anchor_city,Kawartha Lakes,ca
+Kawartha Lakes - East,Ontario,44.3500000,-78.4600000,regional_offset,76,derived,offset_ring,Kawartha Lakes,ca
+Kawartha Lakes - North,Ontario,44.5300000,-78.7500000,regional_offset,76,derived,offset_ring,Kawartha Lakes,ca
+Kawartha Lakes - South,Ontario,44.1700000,-78.7500000,regional_offset,76,derived,offset_ring,Kawartha Lakes,ca
+Kawartha Lakes - West,Ontario,44.3500000,-79.0400000,regional_offset,76,derived,offset_ring,Kawartha Lakes,ca
+Kawartha Lakes - Northeast,Ontario,44.4800000,-78.5400000,regional_offset,76,derived,offset_ring,Kawartha Lakes,ca
+Kawartha Lakes - Northwest,Ontario,44.4800000,-78.9600000,regional_offset,76,derived,offset_ring,Kawartha Lakes,ca
+Kawartha Lakes - Southeast,Ontario,44.2200000,-78.5400000,regional_offset,76,derived,offset_ring,Kawartha Lakes,ca
+Kawartha Lakes - Southwest,Ontario,44.2200000,-78.9600000,regional_offset,76,derived,offset_ring,Kawartha Lakes,ca
+New Westminster,British Columbia,49.2057000,-122.9109000,regional,77,statscan_ca_2021_78916,anchor_city,New Westminster,ca
+New Westminster - East,British Columbia,49.2057000,-122.6209000,regional_offset,77,derived,offset_ring,New Westminster,ca
+New Westminster - North,British Columbia,49.3857000,-122.9109000,regional_offset,77,derived,offset_ring,New Westminster,ca
+New Westminster - South,British Columbia,49.0257000,-122.9109000,regional_offset,77,derived,offset_ring,New Westminster,ca
+New Westminster - West,British Columbia,49.2057000,-123.2009000,regional_offset,77,derived,offset_ring,New Westminster,ca
+New Westminster - Northeast,British Columbia,49.3357000,-122.7009000,regional_offset,77,derived,offset_ring,New Westminster,ca
+New Westminster - Northwest,British Columbia,49.3357000,-123.1209000,regional_offset,77,derived,offset_ring,New Westminster,ca
+New Westminster - Southeast,British Columbia,49.0757000,-122.7009000,regional_offset,77,derived,offset_ring,New Westminster,ca
+New Westminster - Southwest,British Columbia,49.0757000,-123.1209000,regional_offset,77,derived,offset_ring,New Westminster,ca
+Prince George,British Columbia,53.9171000,-122.7497000,regional,78,statscan_ca_2021_76708,anchor_city,Prince George,ca
+Prince George - East,British Columbia,53.9171000,-122.4597000,regional_offset,78,derived,offset_ring,Prince George,ca
+Prince George - North,British Columbia,54.0971000,-122.7497000,regional_offset,78,derived,offset_ring,Prince George,ca
+Prince George - South,British Columbia,53.7371000,-122.7497000,regional_offset,78,derived,offset_ring,Prince George,ca
+Prince George - West,British Columbia,53.9171000,-123.0397000,regional_offset,78,derived,offset_ring,Prince George,ca
+Prince George - Northeast,British Columbia,54.0471000,-122.5397000,regional_offset,78,derived,offset_ring,Prince George,ca
+Prince George - Northwest,British Columbia,54.0471000,-122.9597000,regional_offset,78,derived,offset_ring,Prince George,ca
+Prince George - Southeast,British Columbia,53.7871000,-122.5397000,regional_offset,78,derived,offset_ring,Prince George,ca
+Prince George - Southwest,British Columbia,53.7871000,-122.9597000,regional_offset,78,derived,offset_ring,Prince George,ca
+Caledon,Ontario,43.8667000,-79.8667000,regional,79,statscan_ca_2021_76581,anchor_city,Caledon,ca
+Caledon - East,Ontario,43.8667000,-79.5767000,regional_offset,79,derived,offset_ring,Caledon,ca
+Caledon - North,Ontario,44.0467000,-79.8667000,regional_offset,79,derived,offset_ring,Caledon,ca
+Caledon - South,Ontario,43.6867000,-79.8667000,regional_offset,79,derived,offset_ring,Caledon,ca
+Caledon - West,Ontario,43.8667000,-80.1567000,regional_offset,79,derived,offset_ring,Caledon,ca
+Caledon - Northeast,Ontario,43.9967000,-79.6567000,regional_offset,79,derived,offset_ring,Caledon,ca
+Caledon - Northwest,Ontario,43.9967000,-80.0767000,regional_offset,79,derived,offset_ring,Caledon,ca
+Caledon - Southeast,Ontario,43.7367000,-79.6567000,regional_offset,79,derived,offset_ring,Caledon,ca
+Caledon - Southwest,Ontario,43.7367000,-80.0767000,regional_offset,79,derived,offset_ring,Caledon,ca
+Airdrie,Alberta,51.2940500,-114.0139000,regional,80,statscan_ca_2021_74100,anchor_city,Airdrie,ca
+Airdrie - East,Alberta,51.2940500,-113.7239000,regional_offset,80,derived,offset_ring,Airdrie,ca
+Airdrie - North,Alberta,51.4740500,-114.0139000,regional_offset,80,derived,offset_ring,Airdrie,ca
+Airdrie - South,Alberta,51.1140500,-114.0139000,regional_offset,80,derived,offset_ring,Airdrie,ca
+Airdrie - West,Alberta,51.2940500,-114.3039000,regional_offset,80,derived,offset_ring,Airdrie,ca
+Airdrie - Northeast,Alberta,51.4240500,-113.8039000,regional_offset,80,derived,offset_ring,Airdrie,ca
+Airdrie - Northwest,Alberta,51.4240500,-114.2239000,regional_offset,80,derived,offset_ring,Airdrie,ca
+Airdrie - Southeast,Alberta,51.1640500,-113.8039000,regional_offset,80,derived,offset_ring,Airdrie,ca
+Airdrie - Southwest,Alberta,51.1640500,-114.2239000,regional_offset,80,derived,offset_ring,Airdrie,ca
+Wood Buffalo,Alberta,56.7265000,-111.3790000,regional,81,statscan_ca_2021_72326,anchor_city,Wood Buffalo,ca
+Wood Buffalo - East,Alberta,56.7265000,-111.0890000,regional_offset,81,derived,offset_ring,Wood Buffalo,ca
+Wood Buffalo - North,Alberta,56.9065000,-111.3790000,regional_offset,81,derived,offset_ring,Wood Buffalo,ca
+Wood Buffalo - South,Alberta,56.5465000,-111.3790000,regional_offset,81,derived,offset_ring,Wood Buffalo,ca
+Wood Buffalo - West,Alberta,56.7265000,-111.6690000,regional_offset,81,derived,offset_ring,Wood Buffalo,ca
+Wood Buffalo - Northeast,Alberta,56.8565000,-111.1690000,regional_offset,81,derived,offset_ring,Wood Buffalo,ca
+Wood Buffalo - Northwest,Alberta,56.8565000,-111.5890000,regional_offset,81,derived,offset_ring,Wood Buffalo,ca
+Wood Buffalo - Southeast,Alberta,56.5965000,-111.1690000,regional_offset,81,derived,offset_ring,Wood Buffalo,ca
+Wood Buffalo - Southwest,Alberta,56.5965000,-111.5890000,regional_offset,81,derived,offset_ring,Wood Buffalo,ca
+Sault Ste. Marie,Ontario,46.5219000,-84.3061000,regional,82,statscan_ca_2021_72051,anchor_city,Sault Ste. Marie,ca
+Sault Ste. Marie - East,Ontario,46.5219000,-84.0161000,regional_offset,82,derived,offset_ring,Sault Ste. Marie,ca
+Sault Ste. Marie - North,Ontario,46.7019000,-84.3061000,regional_offset,82,derived,offset_ring,Sault Ste. Marie,ca
+Sault Ste. Marie - South,Ontario,46.3419000,-84.3061000,regional_offset,82,derived,offset_ring,Sault Ste. Marie,ca
+Sault Ste. Marie - West,Ontario,46.5219000,-84.5961000,regional_offset,82,derived,offset_ring,Sault Ste. Marie,ca
+Sault Ste. Marie - Northeast,Ontario,46.6519000,-84.0961000,regional_offset,82,derived,offset_ring,Sault Ste. Marie,ca
+Sault Ste. Marie - Northwest,Ontario,46.6519000,-84.5161000,regional_offset,82,derived,offset_ring,Sault Ste. Marie,ca
+Sault Ste. Marie - Southeast,Ontario,46.3919000,-84.0961000,regional_offset,82,derived,offset_ring,Sault Ste. Marie,ca
+Sault Ste. Marie - Southwest,Ontario,46.3919000,-84.5161000,regional_offset,82,derived,offset_ring,Sault Ste. Marie,ca
+Sarnia,Ontario,42.9864400,-82.3353200,regional,83,statscan_ca_2021_72047,anchor_city,Sarnia,ca
+Sarnia - East,Ontario,42.9864400,-82.0453200,regional_offset,83,derived,offset_ring,Sarnia,ca
+Sarnia - North,Ontario,43.1664400,-82.3353200,regional_offset,83,derived,offset_ring,Sarnia,ca
+Sarnia - South,Ontario,42.8064400,-82.3353200,regional_offset,83,derived,offset_ring,Sarnia,ca
+Sarnia - West,Ontario,42.9864400,-82.6253200,regional_offset,83,derived,offset_ring,Sarnia,ca
+Sarnia - Northeast,Ontario,43.1164400,-82.1253200,regional_offset,83,derived,offset_ring,Sarnia,ca
+Sarnia - Northwest,Ontario,43.1164400,-82.5453200,regional_offset,83,derived,offset_ring,Sarnia,ca
+Sarnia - Southeast,Ontario,42.8564400,-82.1253200,regional_offset,83,derived,offset_ring,Sarnia,ca
+Sarnia - Southwest,Ontario,42.8564400,-82.5453200,regional_offset,83,derived,offset_ring,Sarnia,ca
+Saint John,New Brunswick,45.2733000,-66.0633000,regional,84,statscan_ca_2021_69895,anchor_city,Saint John,ca
+Saint John - East,New Brunswick,45.2733000,-65.7733000,regional_offset,84,derived,offset_ring,Saint John,ca
+Saint John - North,New Brunswick,45.4533000,-66.0633000,regional_offset,84,derived,offset_ring,Saint John,ca
+Saint John - South,New Brunswick,45.0933000,-66.0633000,regional_offset,84,derived,offset_ring,Saint John,ca
+Saint John - West,New Brunswick,45.2733000,-66.3533000,regional_offset,84,derived,offset_ring,Saint John,ca
+Saint John - Northeast,New Brunswick,45.4033000,-65.8533000,regional_offset,84,derived,offset_ring,Saint John,ca
+Saint John - Northwest,New Brunswick,45.4033000,-66.2733000,regional_offset,84,derived,offset_ring,Saint John,ca
+Saint John - Southeast,New Brunswick,45.1433000,-65.8533000,regional_offset,84,derived,offset_ring,Saint John,ca
+Saint John - Southwest,New Brunswick,45.1433000,-66.2733000,regional_offset,84,derived,offset_ring,Saint John,ca
+Granby,Quebec,45.4001000,-72.7322000,regional,85,statscan_ca_2021_69025,anchor_city,Granby,ca
+Granby - East,Quebec,45.4001000,-72.4422000,regional_offset,85,derived,offset_ring,Granby,ca
+Granby - North,Quebec,45.5801000,-72.7322000,regional_offset,85,derived,offset_ring,Granby,ca
+Granby - South,Quebec,45.2201000,-72.7322000,regional_offset,85,derived,offset_ring,Granby,ca
+Granby - West,Quebec,45.4001000,-73.0222000,regional_offset,85,derived,offset_ring,Granby,ca
+Granby - Northeast,Quebec,45.5301000,-72.5222000,regional_offset,85,derived,offset_ring,Granby,ca
+Granby - Northwest,Quebec,45.5301000,-72.9422000,regional_offset,85,derived,offset_ring,Granby,ca
+Granby - Southeast,Quebec,45.2701000,-72.5222000,regional_offset,85,derived,offset_ring,Granby,ca
+Granby - Southwest,Quebec,45.2701000,-72.9422000,regional_offset,85,derived,offset_ring,Granby,ca
+St. Albert,Alberta,53.6600500,-113.6727500,regional,86,statscan_ca_2021_68232,anchor_city,St. Albert,ca
+St. Albert - East,Alberta,53.6600500,-113.3827500,regional_offset,86,derived,offset_ring,St. Albert,ca
+St. Albert - North,Alberta,53.8400500,-113.6727500,regional_offset,86,derived,offset_ring,St. Albert,ca
+St. Albert - South,Alberta,53.4800500,-113.6727500,regional_offset,86,derived,offset_ring,St. Albert,ca
+St. Albert - West,Alberta,53.6600500,-113.9627500,regional_offset,86,derived,offset_ring,St. Albert,ca
+St. Albert - Northeast,Alberta,53.7900500,-113.4627500,regional_offset,86,derived,offset_ring,St. Albert,ca
+St. Albert - Northwest,Alberta,53.7900500,-113.8827500,regional_offset,86,derived,offset_ring,St. Albert,ca
+St. Albert - Southeast,Alberta,53.5300500,-113.4627500,regional_offset,86,derived,offset_ring,St. Albert,ca
+St. Albert - Southwest,Alberta,53.5300500,-113.8827500,regional_offset,86,derived,offset_ring,St. Albert,ca
+Norfolk County,Ontario,42.8500000,-80.2667000,regional,87,statscan_ca_2021_67490,anchor_city,Norfolk County,ca
+Norfolk County - East,Ontario,42.8500000,-79.9767000,regional_offset,87,derived,offset_ring,Norfolk County,ca
+Norfolk County - North,Ontario,43.0300000,-80.2667000,regional_offset,87,derived,offset_ring,Norfolk County,ca
+Norfolk County - South,Ontario,42.6700000,-80.2667000,regional_offset,87,derived,offset_ring,Norfolk County,ca
+Norfolk County - West,Ontario,42.8500000,-80.5567000,regional_offset,87,derived,offset_ring,Norfolk County,ca
+Norfolk County - Northeast,Ontario,42.9800000,-80.0567000,regional_offset,87,derived,offset_ring,Norfolk County,ca
+Norfolk County - Northwest,Ontario,42.9800000,-80.4767000,regional_offset,87,derived,offset_ring,Norfolk County,ca
+Norfolk County - Southeast,Ontario,42.7200000,-80.0567000,regional_offset,87,derived,offset_ring,Norfolk County,ca
+Norfolk County - Southwest,Ontario,42.7200000,-80.4767000,regional_offset,87,derived,offset_ring,Norfolk County,ca
+Grande Prairie,Alberta,55.1700000,-118.7900000,regional,88,statscan_ca_2021_64141,anchor_city,Grande Prairie,ca
+Grande Prairie - East,Alberta,55.1700000,-118.5000000,regional_offset,88,derived,offset_ring,Grande Prairie,ca
+Grande Prairie - North,Alberta,55.3500000,-118.7900000,regional_offset,88,derived,offset_ring,Grande Prairie,ca
+Grande Prairie - South,Alberta,54.9900000,-118.7900000,regional_offset,88,derived,offset_ring,Grande Prairie,ca
+Grande Prairie - West,Alberta,55.1700000,-119.0800000,regional_offset,88,derived,offset_ring,Grande Prairie,ca
+Grande Prairie - Northeast,Alberta,55.3000000,-118.5800000,regional_offset,88,derived,offset_ring,Grande Prairie,ca
+Grande Prairie - Northwest,Alberta,55.3000000,-119.0000000,regional_offset,88,derived,offset_ring,Grande Prairie,ca
+Grande Prairie - Southeast,Alberta,55.0400000,-118.5800000,regional_offset,88,derived,offset_ring,Grande Prairie,ca
+Grande Prairie - Southwest,Alberta,55.0400000,-119.0000000,regional_offset,88,derived,offset_ring,Grande Prairie,ca
+Medicine Hat,Alberta,50.0405000,-110.6764000,regional,89,statscan_ca_2021_63271,anchor_city,Medicine Hat,ca
+Medicine Hat - East,Alberta,50.0405000,-110.3864000,regional_offset,89,derived,offset_ring,Medicine Hat,ca
+Medicine Hat - North,Alberta,50.2205000,-110.6764000,regional_offset,89,derived,offset_ring,Medicine Hat,ca
+Medicine Hat - South,Alberta,49.8605000,-110.6764000,regional_offset,89,derived,offset_ring,Medicine Hat,ca
+Medicine Hat - West,Alberta,50.0405000,-110.9664000,regional_offset,89,derived,offset_ring,Medicine Hat,ca
+Medicine Hat - Northeast,Alberta,50.1705000,-110.4664000,regional_offset,89,derived,offset_ring,Medicine Hat,ca
+Medicine Hat - Northwest,Alberta,50.1705000,-110.8864000,regional_offset,89,derived,offset_ring,Medicine Hat,ca
+Medicine Hat - Southeast,Alberta,49.9105000,-110.4664000,regional_offset,89,derived,offset_ring,Medicine Hat,ca
+Medicine Hat - Southwest,Alberta,49.9105000,-110.8864000,regional_offset,89,derived,offset_ring,Medicine Hat,ca
+Fredericton,New Brunswick,45.9636000,-66.6431000,regional,90,statscan_ca_2021_63116,anchor_city,Fredericton,ca
+Fredericton - East,New Brunswick,45.9636000,-66.3531000,regional_offset,90,derived,offset_ring,Fredericton,ca
+Fredericton - North,New Brunswick,46.1436000,-66.6431000,regional_offset,90,derived,offset_ring,Fredericton,ca
+Fredericton - South,New Brunswick,45.7836000,-66.6431000,regional_offset,90,derived,offset_ring,Fredericton,ca
+Fredericton - West,New Brunswick,45.9636000,-66.9331000,regional_offset,90,derived,offset_ring,Fredericton,ca
+Fredericton - Northeast,New Brunswick,46.0936000,-66.4331000,regional_offset,90,derived,offset_ring,Fredericton,ca
+Fredericton - Northwest,New Brunswick,46.0936000,-66.8531000,regional_offset,90,derived,offset_ring,Fredericton,ca
+Fredericton - Southeast,New Brunswick,45.8336000,-66.4331000,regional_offset,90,derived,offset_ring,Fredericton,ca
+Fredericton - Southwest,New Brunswick,45.8336000,-66.8531000,regional_offset,90,derived,offset_ring,Fredericton,ca
+Halton Hills,Ontario,43.6500000,-79.9167000,regional,91,statscan_ca_2021_62951,anchor_city,Halton Hills,ca
+Halton Hills - East,Ontario,43.6500000,-79.6267000,regional_offset,91,derived,offset_ring,Halton Hills,ca
+Halton Hills - North,Ontario,43.8300000,-79.9167000,regional_offset,91,derived,offset_ring,Halton Hills,ca
+Halton Hills - South,Ontario,43.4700000,-79.9167000,regional_offset,91,derived,offset_ring,Halton Hills,ca
+Halton Hills - West,Ontario,43.6500000,-80.2067000,regional_offset,91,derived,offset_ring,Halton Hills,ca
+Halton Hills - Northeast,Ontario,43.7800000,-79.7067000,regional_offset,91,derived,offset_ring,Halton Hills,ca
+Halton Hills - Northwest,Ontario,43.7800000,-80.1267000,regional_offset,91,derived,offset_ring,Halton Hills,ca
+Halton Hills - Southeast,Ontario,43.5200000,-79.7067000,regional_offset,91,derived,offset_ring,Halton Hills,ca
+Halton Hills - Southwest,Ontario,43.5200000,-80.1267000,regional_offset,91,derived,offset_ring,Halton Hills,ca
+Aurora,Ontario,44.0065000,-79.4504000,regional,92,statscan_ca_2021_62057,anchor_city,Aurora,ca
+Aurora - East,Ontario,44.0065000,-79.1604000,regional_offset,92,derived,offset_ring,Aurora,ca
+Aurora - North,Ontario,44.1865000,-79.4504000,regional_offset,92,derived,offset_ring,Aurora,ca
+Aurora - South,Ontario,43.8265000,-79.4504000,regional_offset,92,derived,offset_ring,Aurora,ca
+Aurora - West,Ontario,44.0065000,-79.7404000,regional_offset,92,derived,offset_ring,Aurora,ca
+Aurora - Northeast,Ontario,44.1365000,-79.2404000,regional_offset,92,derived,offset_ring,Aurora,ca
+Aurora - Northwest,Ontario,44.1365000,-79.6604000,regional_offset,92,derived,offset_ring,Aurora,ca
+Aurora - Southeast,Ontario,43.8765000,-79.2404000,regional_offset,92,derived,offset_ring,Aurora,ca
+Aurora - Southwest,Ontario,43.8765000,-79.6604000,regional_offset,92,derived,offset_ring,Aurora,ca
+Port Coquitlam,British Columbia,49.2627000,-122.7806000,regional,93,statscan_ca_2021_61498,anchor_city,Port Coquitlam,ca
+Port Coquitlam - East,British Columbia,49.2627000,-122.4906000,regional_offset,93,derived,offset_ring,Port Coquitlam,ca
+Port Coquitlam - North,British Columbia,49.4427000,-122.7806000,regional_offset,93,derived,offset_ring,Port Coquitlam,ca
+Port Coquitlam - South,British Columbia,49.0827000,-122.7806000,regional_offset,93,derived,offset_ring,Port Coquitlam,ca
+Port Coquitlam - West,British Columbia,49.2627000,-123.0706000,regional_offset,93,derived,offset_ring,Port Coquitlam,ca
+Port Coquitlam - Northeast,British Columbia,49.3927000,-122.5706000,regional_offset,93,derived,offset_ring,Port Coquitlam,ca
+Port Coquitlam - Northwest,British Columbia,49.3927000,-122.9906000,regional_offset,93,derived,offset_ring,Port Coquitlam,ca
+Port Coquitlam - Southeast,British Columbia,49.1327000,-122.5706000,regional_offset,93,derived,offset_ring,Port Coquitlam,ca
+Port Coquitlam - Southwest,British Columbia,49.1327000,-122.9906000,regional_offset,93,derived,offset_ring,Port Coquitlam,ca
+Mirabel,Quebec,45.6500000,-74.0833000,regional,94,statscan_ca_2021_61108,anchor_city,Mirabel,ca
+Mirabel - East,Quebec,45.6500000,-73.7933000,regional_offset,94,derived,offset_ring,Mirabel,ca
+Mirabel - North,Quebec,45.8300000,-74.0833000,regional_offset,94,derived,offset_ring,Mirabel,ca
+Mirabel - South,Quebec,45.4700000,-74.0833000,regional_offset,94,derived,offset_ring,Mirabel,ca
+Mirabel - West,Quebec,45.6500000,-74.3733000,regional_offset,94,derived,offset_ring,Mirabel,ca
+Mirabel - Northeast,Quebec,45.7800000,-73.8733000,regional_offset,94,derived,offset_ring,Mirabel,ca
+Mirabel - Northwest,Quebec,45.7800000,-74.2933000,regional_offset,94,derived,offset_ring,Mirabel,ca
+Mirabel - Southeast,Quebec,45.5200000,-73.8733000,regional_offset,94,derived,offset_ring,Mirabel,ca
+Mirabel - Southwest,Quebec,45.5200000,-74.2933000,regional_offset,94,derived,offset_ring,Mirabel,ca
+Blainville,Quebec,45.6739000,-73.8789000,regional,95,statscan_ca_2021_59819,anchor_city,Blainville,ca
+Blainville - East,Quebec,45.6739000,-73.5889000,regional_offset,95,derived,offset_ring,Blainville,ca
+Blainville - North,Quebec,45.8539000,-73.8789000,regional_offset,95,derived,offset_ring,Blainville,ca
+Blainville - South,Quebec,45.4939000,-73.8789000,regional_offset,95,derived,offset_ring,Blainville,ca
+Blainville - West,Quebec,45.6739000,-74.1689000,regional_offset,95,derived,offset_ring,Blainville,ca
+Blainville - Northeast,Quebec,45.8039000,-73.6689000,regional_offset,95,derived,offset_ring,Blainville,ca
+Blainville - Northwest,Quebec,45.8039000,-74.0889000,regional_offset,95,derived,offset_ring,Blainville,ca
+Blainville - Southeast,Quebec,45.5439000,-73.6689000,regional_offset,95,derived,offset_ring,Blainville,ca
+Blainville - Southwest,Quebec,45.5439000,-74.0889000,regional_offset,95,derived,offset_ring,Blainville,ca
+Saint-Hyacinthe,Quebec,45.6308000,-72.9534000,regional,96,statscan_ca_2021_57239,anchor_city,Saint-Hyacinthe,ca
+Saint-Hyacinthe - East,Quebec,45.6308000,-72.6634000,regional_offset,96,derived,offset_ring,Saint-Hyacinthe,ca
+Saint-Hyacinthe - North,Quebec,45.8108000,-72.9534000,regional_offset,96,derived,offset_ring,Saint-Hyacinthe,ca
+Saint-Hyacinthe - South,Quebec,45.4508000,-72.9534000,regional_offset,96,derived,offset_ring,Saint-Hyacinthe,ca
+Saint-Hyacinthe - West,Quebec,45.6308000,-73.2434000,regional_offset,96,derived,offset_ring,Saint-Hyacinthe,ca
+Saint-Hyacinthe - Northeast,Quebec,45.7608000,-72.7434000,regional_offset,96,derived,offset_ring,Saint-Hyacinthe,ca
+Saint-Hyacinthe - Northwest,Quebec,45.7608000,-73.1634000,regional_offset,96,derived,offset_ring,Saint-Hyacinthe,ca
+Saint-Hyacinthe - Southeast,Quebec,45.5008000,-72.7434000,regional_offset,96,derived,offset_ring,Saint-Hyacinthe,ca
+Saint-Hyacinthe - Southwest,Quebec,45.5008000,-73.1634000,regional_offset,96,derived,offset_ring,Saint-Hyacinthe,ca
+Welland,Ontario,42.9938000,-79.2437500,regional,97,statscan_ca_2021_55750,anchor_city,Welland,ca
+Welland - East,Ontario,42.9938000,-78.9537500,regional_offset,97,derived,offset_ring,Welland,ca
+Welland - North,Ontario,43.1738000,-79.2437500,regional_offset,97,derived,offset_ring,Welland,ca
+Welland - South,Ontario,42.8138000,-79.2437500,regional_offset,97,derived,offset_ring,Welland,ca
+Welland - West,Ontario,42.9938000,-79.5337500,regional_offset,97,derived,offset_ring,Welland,ca
+Welland - Northeast,Ontario,43.1238000,-79.0337500,regional_offset,97,derived,offset_ring,Welland,ca
+Welland - Northwest,Ontario,43.1238000,-79.4537500,regional_offset,97,derived,offset_ring,Welland,ca
+Welland - Southeast,Ontario,42.8638000,-79.0337500,regional_offset,97,derived,offset_ring,Welland,ca
+Welland - Southwest,Ontario,42.8638000,-79.4537500,regional_offset,97,derived,offset_ring,Welland,ca
+Belleville,Ontario,44.1628000,-77.3832000,regional,98,statscan_ca_2021_55071,anchor_city,Belleville,ca
+Belleville - East,Ontario,44.1628000,-77.0932000,regional_offset,98,derived,offset_ring,Belleville,ca
+Belleville - North,Ontario,44.3428000,-77.3832000,regional_offset,98,derived,offset_ring,Belleville,ca
+Belleville - South,Ontario,43.9828000,-77.3832000,regional_offset,98,derived,offset_ring,Belleville,ca
+Belleville - West,Ontario,44.1628000,-77.6732000,regional_offset,98,derived,offset_ring,Belleville,ca
+Belleville - Northeast,Ontario,44.2928000,-77.1732000,regional_offset,98,derived,offset_ring,Belleville,ca
+Belleville - Northwest,Ontario,44.2928000,-77.5932000,regional_offset,98,derived,offset_ring,Belleville,ca
+Belleville - Southeast,Ontario,44.0328000,-77.1732000,regional_offset,98,derived,offset_ring,Belleville,ca
+Belleville - Southwest,Ontario,44.0328000,-77.5932000,regional_offset,98,derived,offset_ring,Belleville,ca
+North Bay,Ontario,46.3092000,-79.4608000,regional,99,statscan_ca_2021_52662,anchor_city,North Bay,ca
+North Bay - East,Ontario,46.3092000,-79.1708000,regional_offset,99,derived,offset_ring,North Bay,ca
+North Bay - North,Ontario,46.4892000,-79.4608000,regional_offset,99,derived,offset_ring,North Bay,ca
+North Bay - South,Ontario,46.1292000,-79.4608000,regional_offset,99,derived,offset_ring,North Bay,ca
+North Bay - West,Ontario,46.3092000,-79.7508000,regional_offset,99,derived,offset_ring,North Bay,ca
+North Bay - Northeast,Ontario,46.4392000,-79.2508000,regional_offset,99,derived,offset_ring,North Bay,ca
+North Bay - Northwest,Ontario,46.4392000,-79.6708000,regional_offset,99,derived,offset_ring,North Bay,ca
+North Bay - Southeast,Ontario,46.1792000,-79.2508000,regional_offset,99,derived,offset_ring,North Bay,ca
+North Bay - Southwest,Ontario,46.1792000,-79.6708000,regional_offset,99,derived,offset_ring,North Bay,ca

@@ -1,0 +1,53 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Toronto,Ontario,43.6532,-79.3832,metro,1,major_ca_cities,anchor_city,Toronto,ca
+Toronto - East,Ontario,43.6532,-79.1232,metro_offset,1,derived,offset_ring,Toronto,ca
+Toronto - North,Ontario,43.8332,-79.3832,metro_offset,1,derived,offset_ring,Toronto,ca
+Toronto - Northeast,Ontario,43.7432,-79.2532,metro_offset,1,derived,offset_ring,Toronto,ca
+Toronto - Northwest,Ontario,43.7432,-79.5132,metro_offset,1,derived,offset_ring,Toronto,ca
+Toronto - South,Ontario,43.4732,-79.3832,metro_offset,1,derived,offset_ring,Toronto,ca
+Toronto - Southeast,Ontario,43.5632,-79.2532,metro_offset,1,derived,offset_ring,Toronto,ca
+Toronto - West,Ontario,43.6532,-79.6432,metro_offset,1,derived,offset_ring,Toronto,ca
+Vancouver,British Columbia,49.2827,-123.1207,metro,2,major_ca_cities,anchor_city,Vancouver,ca
+Vancouver - East,British Columbia,49.2827,-122.8607,metro_offset,2,derived,offset_ring,Vancouver,ca
+Vancouver - North,British Columbia,49.4627,-123.1207,metro_offset,2,derived,offset_ring,Vancouver,ca
+Vancouver - South,British Columbia,49.1027,-123.1207,metro_offset,2,derived,offset_ring,Vancouver,ca
+Vancouver - West,British Columbia,49.2827,-123.3807,metro_offset,2,derived,offset_ring,Vancouver,ca
+Montreal,Quebec,45.5017,-73.5673,metro,3,major_ca_cities,anchor_city,Montreal,ca
+Montreal - East,Quebec,45.5017,-73.3073,metro_offset,3,derived,offset_ring,Montreal,ca
+Montreal - North,Quebec,45.6817,-73.5673,metro_offset,3,derived,offset_ring,Montreal,ca
+Montreal - South,Quebec,45.3217,-73.5673,metro_offset,3,derived,offset_ring,Montreal,ca
+Montreal - West,Quebec,45.5017,-73.8273,metro_offset,3,derived,offset_ring,Montreal,ca
+Calgary,Alberta,51.0447,-114.0719,metro,4,major_ca_cities,anchor_city,Calgary,ca
+Calgary - East,Alberta,51.0447,-113.8119,metro_offset,4,derived,offset_ring,Calgary,ca
+Calgary - North,Alberta,51.2247,-114.0719,metro_offset,4,derived,offset_ring,Calgary,ca
+Calgary - South,Alberta,50.8647,-114.0719,metro_offset,4,derived,offset_ring,Calgary,ca
+Calgary - West,Alberta,51.0447,-114.3319,metro_offset,4,derived,offset_ring,Calgary,ca
+Edmonton,Alberta,53.5461,-113.4938,metro,5,major_ca_cities,anchor_city,Edmonton,ca
+Edmonton - East,Alberta,53.5461,-113.2338,metro_offset,5,derived,offset_ring,Edmonton,ca
+Edmonton - North,Alberta,53.7261,-113.4938,metro_offset,5,derived,offset_ring,Edmonton,ca
+Edmonton - South,Alberta,53.3661,-113.4938,metro_offset,5,derived,offset_ring,Edmonton,ca
+Edmonton - West,Alberta,53.5461,-113.7538,metro_offset,5,derived,offset_ring,Edmonton,ca
+Ottawa,Ontario,45.4215,-75.6972,metro,6,major_ca_cities,anchor_city,Ottawa,ca
+Ottawa - East,Ontario,45.4215,-75.4372,metro_offset,6,derived,offset_ring,Ottawa,ca
+Ottawa - North,Ontario,45.6015,-75.6972,metro_offset,6,derived,offset_ring,Ottawa,ca
+Ottawa - South,Ontario,45.2415,-75.6972,metro_offset,6,derived,offset_ring,Ottawa,ca
+Ottawa - West,Ontario,45.4215,-75.9572,metro_offset,6,derived,offset_ring,Ottawa,ca
+Winnipeg,Manitoba,49.8954,-97.1385,metro,7,major_ca_cities,anchor_city,Winnipeg,ca
+Quebec City,Quebec,46.8139,-71.2082,metro,8,major_ca_cities,anchor_city,Quebec City,ca
+Hamilton,Ontario,43.2557,-79.8711,metro,9,major_ca_cities,anchor_city,Hamilton,ca
+Kitchener,Ontario,43.4516,-80.4925,metro,10,major_ca_cities,anchor_city,Kitchener,ca
+London,Ontario,42.9849,-81.2453,metro,11,major_ca_cities,anchor_city,London,ca
+Victoria,British Columbia,48.4284,-123.3656,metro,12,major_ca_cities,anchor_city,Victoria,ca
+Halifax,Nova Scotia,44.6488,-63.5752,metro,13,major_ca_cities,anchor_city,Halifax,ca
+Oshawa,Ontario,43.8971,-78.8658,metro,14,major_ca_cities,anchor_city,Oshawa,ca
+Windsor,Ontario,42.3149,-83.0364,metro,15,major_ca_cities,anchor_city,Windsor,ca
+Saskatoon,Saskatchewan,52.1579,-106.6702,metro,16,major_ca_cities,anchor_city,Saskatoon,ca
+Regina,Saskatchewan,50.4452,-104.6189,metro,17,major_ca_cities,anchor_city,Regina,ca
+Sherbrooke,Quebec,45.4001,-71.8990,metro,18,major_ca_cities,anchor_city,Sherbrooke,ca
+St. John's,Newfoundland and Labrador,47.5615,-52.7126,metro,19,major_ca_cities,anchor_city,St. John's,ca
+Barrie,Ontario,44.3894,-79.6903,metro,20,major_ca_cities,anchor_city,Barrie,ca
+Kelowna,British Columbia,49.8877,-119.4960,metro,21,major_ca_cities,anchor_city,Kelowna,ca
+Abbotsford,British Columbia,49.0579,-122.2526,metro,22,major_ca_cities,anchor_city,Abbotsford,ca
+Kingston,Ontario,44.2312,-76.4860,metro,23,major_ca_cities,anchor_city,Kingston,ca
+Trois-Rivieres,Quebec,46.3432,-72.5797,metro,24,major_ca_cities,anchor_city,Trois-Rivieres,ca
+Guelph,Ontario,43.5448,-80.2482,metro,25,major_ca_cities,anchor_city,Guelph,ca

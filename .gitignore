@@ -43,6 +43,10 @@ backend/scraper/data/*.csv
 !backend/scraper/data/no_centers.csv
 !backend/scraper/data/nz_centers.csv
 !backend/scraper/data/.gitkeep
+# Allow Canada expansion files (ca_centers.csv generated from ca_cities_statscan.csv)
+!backend/scraper/data/ca_centers.csv
+!backend/scraper/data/ca_centers.csv.backup
+!backend/scraper/data/ca_cities_statscan.csv
 # Allow template CSV files for user downloads
 !backend/scraper/data/templates/*.csv
 

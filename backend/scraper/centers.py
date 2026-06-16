@@ -128,6 +128,64 @@ STATE_ALIASES: dict[str, str] = {
 CANONICAL_STATES = sorted(set(STATE_ALIASES.values()))
 
 
+# ---------------------------------------------------------------------------
+# Province alias table (Canada)
+# Covers 2-letter codes, common abbreviations, French variants, and any casing
+# (keys are lowercase). Forward-looking: enables a future `mode="provinces"`
+# for country="ca" without another pass through this file.
+# ---------------------------------------------------------------------------
+
+PROVINCE_ALIASES: dict[str, str] = {
+    "ab": "Alberta", "alberta": "Alberta", "alb": "Alberta",
+    "bc": "British Columbia", "b.c.": "British Columbia",
+    "british columbia": "British Columbia", "colombie-britannique": "British Columbia",
+    "mb": "Manitoba", "manitoba": "Manitoba",
+    "nb": "New Brunswick", "n.b.": "New Brunswick", "new brunswick": "New Brunswick",
+    "nouveau-brunswick": "New Brunswick",
+    "nl": "Newfoundland and Labrador", "n.l.": "Newfoundland and Labrador",
+    "newfoundland": "Newfoundland and Labrador", "labrador": "Newfoundland and Labrador",
+    "newfoundland and labrador": "Newfoundland and Labrador",
+    "terre-neuve-et-labrador": "Newfoundland and Labrador",
+    "ns": "Nova Scotia", "n.s.": "Nova Scotia", "nova scotia": "Nova Scotia",
+    "nouvelle-écosse": "Nova Scotia",
+    "nu": "Nunavut", "nunavut": "Nunavut",
+    "nt": "Northwest Territories", "n.w.t.": "Northwest Territories",
+    "northwest territories": "Northwest Territories",
+    "territoires du nord-ouest": "Northwest Territories",
+    "on": "Ontario", "ont": "Ontario", "ontario": "Ontario",
+    "pe": "Prince Edward Island", "pei": "Prince Edward Island",
+    "p.e.i.": "Prince Edward Island", "prince edward island": "Prince Edward Island",
+    "île-du-prince-édouard": "Prince Edward Island",
+    "qc": "Quebec", "que": "Quebec", "quebec": "Quebec", "québec": "Quebec",
+    "pq": "Quebec",
+    "sk": "Saskatchewan", "sask": "Saskatchewan", "saskatchewan": "Saskatchewan",
+    "yt": "Yukon", "yukon": "Yukon", "ynt": "Yukon", "yukon territory": "Yukon",
+}
+
+CANONICAL_PROVINCES = sorted(set(PROVINCE_ALIASES.values()))
+
+
+def normalize_province(raw: str) -> str | None:
+    """Normalize a Canadian province input to its canonical name. Returns None if unrecognized."""
+    return PROVINCE_ALIASES.get(raw.strip().lower())
+
+
+def suggest_province(raw: str) -> list[str]:
+    """Return up to 3 closest canonical province name matches using difflib."""
+    key = raw.strip().lower()
+    matches = difflib.get_close_matches(key, PROVINCE_ALIASES.keys(), n=5, cutoff=0.5)
+    seen: list[str] = []
+    result: list[str] = []
+    for m in matches:
+        canonical = PROVINCE_ALIASES[m]
+        if canonical not in seen:
+            seen.append(canonical)
+            result.append(canonical)
+        if len(result) >= 3:
+            break
+    return result
+
+
 def normalize_state(raw: str) -> str | None:
     """Normalize a state input to its canonical name. Returns None if unrecognized."""
     return STATE_ALIASES.get(raw.strip().lower())
