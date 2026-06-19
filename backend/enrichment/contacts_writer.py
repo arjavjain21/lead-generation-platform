@@ -63,9 +63,43 @@ logger = logging.getLogger(__name__)
 CONTACTS_WRITEBACK_REQUIRED = os.getenv("CONTACTS_WRITEBACK_REQUIRED", "true").lower() == "true"
 CONTACTS_WRITEBACK_ALLOW_OUTBOX = os.getenv("CONTACTS_WRITEBACK_ALLOW_OUTBOX", "true").lower() == "true"
 
+
+def is_v2_enabled() -> bool:
+    """True if the routes.py sync sites should use the new contacts_writer
+    path instead of the legacy sync_contacts path.
+
+    Indirection (function vs constant) so tests can monkeypatch without
+    mutating the import-time env value.
+    """
+    return os.getenv("USE_CONTACTS_WRITER_V2", "false").lower() == "true"
+
+
 # A row is considered to have an "email" only if it has @ and is not the
 # placeholder "no_email" sentinel used in older outputs.
 _PLACEHOLDER_EMAILS = {"", "no_email", "n/a", "none"}
+
+
+def _is_duplicate_response(body: str) -> bool:
+    """Detect a 'row already in DB' response from the Contacts API.
+
+    The Contacts API returns a 400/422 for duplicate-key violations. The
+    response body has the shape:
+
+        {"detail": {"error": "duplicate key value violates unique constraint ..."}}
+
+    but `detail` can also be a string like "Contact already exists" in
+    some cases. We match on multiple substrings to cover both shapes.
+    """
+    if not body:
+        return False
+    s = body.lower()
+    # String form of detail (some endpoints return this)
+    if "already exists" in s:
+        return True
+    # Nested-dict form of detail (the upsert endpoint returns this)
+    if "duplicate key" in s or "duplicate key value" in s:
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -483,16 +517,12 @@ async def _do_upsert(
 
     if resp.status_code in (400, 404, 422):
         # Check if this is a duplicate constraint violation
-        try:
-            data = resp.json()
-            if isinstance(data, dict) and "already exists" in str(data.get("detail", "")).lower():
-                logger.info(
-                    "Contact already exists in DB, skipping upsert (%s) row=%d",
-                    kind, row_index,
-                )
-                return WriteStatus.SKIPPED
-        except Exception:
-            pass
+        if _is_duplicate_response(resp.text):
+            logger.info(
+                "Contact already exists in DB, skipping upsert (%s) row=%d",
+                kind, row_index,
+            )
+            return WriteStatus.SKIPPED
         # Bad data (non-duplicate) — do not retry, do not outbox
         logger.warning(
             "Contacts DB upsert permanent failure (%s) status=%d body=%s",
@@ -633,20 +663,18 @@ async def retry_outbox(
                 result.inserted += 1
             elif resp.status_code in (400, 404, 422):
                 # Check if this is a duplicate constraint violation
-                try:
-                    data = resp.json()
-                    if isinstance(data, dict) and "already exists" in str(data.get("detail", "")).lower():
-                        logger.debug("Outbox duplicate LinkedIn already exists: job=%s row=%d", row["job_id"], row["row_index"])
-                        conn.execute(
-                            "UPDATE contacts_write_outbox SET status='failed', "
-                            "last_error=?, updated_at=? WHERE id=?",
-                            (f"duplicate (already exists): {resp.text[:120]}", _now(), row["id"]),
-                        )
-                        conn.commit()
-                        result.failed += 1
-                        continue
-                except Exception:
-                    pass
+                if _is_duplicate_response(resp.text):
+                    logger.debug("Outbox duplicate already exists: job=%s row=%d",
+                                 row["job_id"], row["row_index"])
+                    # Duplicate = the row is already in Contacts DB. The outbox
+                    # can drop this entry entirely — no further retry needed.
+                    conn.execute(
+                        "DELETE FROM contacts_write_outbox WHERE id=?",
+                        (row["id"],),
+                    )
+                    conn.commit()
+                    result.skipped += 1
+                    continue
                 conn.execute(
                     "UPDATE contacts_write_outbox SET status='failed', "
                     "last_error=?, updated_at=? WHERE id=?",
