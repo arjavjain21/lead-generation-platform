@@ -156,6 +156,25 @@
         .data-sources { background: var(--gray-50); border-radius: 8px; padding: 1rem; margin-top: 1rem; }
         .data-sources h4 { font-size: 0.9rem; margin-bottom: 0.5rem; color: var(--gray-700); }
         .source-tag { display: inline-block; padding: 0.25rem 0.5rem; background: white; border: 1px solid var(--gray-300); border-radius: 4px; font-size: 0.75rem; margin-right: 0.5rem; margin-bottom: 0.25rem; }
+
+        /* Provider Errors Display */
+        .provider-errors { background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
+        .provider-errors h4 { font-size: 0.85rem; font-weight: 600; color: #991b1b; margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.5rem; }
+        .error-item { background: white; border: 1px solid #fecaca; border-radius: 6px; padding: 0.75rem; margin-bottom: 0.5rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+        .error-item:last-child { margin-bottom: 0; }
+        .error-provider { font-weight: 600; font-size: 0.8rem; color: #7f1d1d; }
+        .error-message { flex: 1; font-size: 0.8rem; color: #991b1b; }
+        .error-action { font-size: 0.75rem; color: #1d4ed8; text-decoration: none; white-space: nowrap; }
+        .error-action:hover { text-decoration: underline; }
+
+        /* Inline error badge */
+        .error-badge { display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.2rem 0.5rem; background: #fef2f2; border: 1px solid #fecaca; border-radius: 9999px; font-size: 0.7rem; color: #991b1b; margin-left: 0.5rem; }
+        .error-badge-count { font-weight: 600; }
+
+        /* Job card error enhancement */
+        .job-card .provider-errors-mini { margin-top: 0.5rem; font-size: 0.75rem; }
+        .job-card .error-list { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.3rem; }
+        .job-card .error-tag { background: #fef2f2; color: #991b1b; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.7rem; border: 1px solid #fecaca; }
     </style>
 </head>
 <body>
@@ -389,7 +408,18 @@
             <div id="chainProviderModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;align-items:center;justify-content:center;">
                 <div style="background:white;border-radius:12px;padding:24px;max-width:400px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
                     <h3 style="margin:0 0 16px 0;font-size:1.1rem;color:#1a315d;">Chain to Enrichment</h3>
-                    <p style="margin:0 0 16px 0;font-size:0.85rem;color:#64748b;">Select data sources for enrichment (Internal Database always used):</p>
+                    <p style="margin:0 0 12px 0;font-size:0.85rem;color:#64748b;">Select data sources for enrichment (Internal Database always used):</p>
+                    <div style="margin:0 0 12px 0;padding:10px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;">
+                        <h4 style="margin:0 0 8px 0;font-size:0.85rem;color:#1a315d;">Pre-processing</h4>
+                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:0.85rem;">
+                            <input type="checkbox" id="chain_normalize_domains" checked style="width:16px;height:16px;">
+                            <span>Normalize domains</span>
+                        </label>
+                        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:0.85rem;margin-top:6px;">
+                            <input type="checkbox" id="chain_dedupe_by_domain" checked style="width:16px;height:16px;">
+                            <span>Dedupe by domain</span>
+                        </label>
+                    </div>
                     <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:20px;">
                         <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
                             <input type="checkbox" id="chain_provider_blitz" checked style="width:18px;height:18px;">
@@ -537,10 +567,39 @@
                             <option value="10">10 per company</option>
                         </select>
                     </div>
+                    <div class="filter-group">
+                        <div style="display: flex; align-items: center; gap: 4px; margin-bottom: 4px;">
+                            <label>Decision Maker Titles</label>
+                            <span style="cursor: help; color: var(--gray-400);"
+                                  title="Examples: dentist,orthodontist,dmd (healthcare) | attorney,lawyer,partner (legal) | veterinarian,vet,dvm (veterinary). Leave empty for default business titles.">
+                                ⓘ
+                            </span>
+                        </div>
+                        <input type="text" id="customTitles"
+                               placeholder="e.g. dentist,orthodontist,dental surgeon"
+                               style="width: 100%; padding: 8px; border: 1px solid var(--gray-300); border-radius: 4px; font-size: 0.85rem;">
+                        <p style="margin: 4px 0 0 0; font-size: 0.75rem; color: var(--gray-500);">
+                            Comma-separated titles. Leave empty for default business titles (Owner, CEO, VP, Director).
+                            Enables fuzzy search to find variations (e.g., "dentist" finds Dentist, DDS, DMD, Orthodontist).
+                        </p>
+                    </div>
                 </div>
                 <p style="margin:8px 0 0 0;font-size:0.75rem;color:#64748b;">
                     LinkedIn, phone, company, and existing-email columns are auto-detected from common header names (e.g. <em>LinkedIn Profile</em>, <em>Mobile Phone</em>, <em>Work Email</em>). Select <em>— None —</em> to ignore a column.
                 </p>
+
+                <!-- Pre-processing flags -->
+                <div style="margin-top:1rem;padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;">
+                    <h4 style="margin:0 0 8px 0;font-size:0.85rem;color:#1a315d;">Pre-processing</h4>
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:0.85rem;">
+                        <input type="checkbox" id="domain_normalize_domains" checked style="width:16px;height:16px;">
+                        <span>Normalize domains</span>
+                    </label>
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:0.85rem;margin-top:6px;">
+                        <input type="checkbox" id="domain_dedupe_by_domain" checked style="width:16px;height:16px;">
+                        <span>Dedupe by domain</span>
+                    </label>
+                </div>
 
                 <!-- Provider Selection -->
                 <div style="margin-top:1rem;padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;">
@@ -587,6 +646,7 @@
                 </div>
                 <div class="progress-bar"><div class="progress-fill" id="domainProgressBar" style="width:0%"></div></div>
                 <div class="progress-text"><span id="domainProgressText">0%</span><span id="domainStatus">Running...</span></div>
+                <div id="domainErrors" class="error-list" style="display:none;margin-top:0.75rem;"></div>
                 <div style="margin-top:1rem;"><button class="btn btn-success btn-sm" id="downloadDomainResults" disabled>Download CSV</button></div>
             </div>
         </div>
@@ -645,6 +705,7 @@
                 </div>
                 <div class="progress-bar"><div class="progress-fill" id="searchProgressBar" style="width:0%"></div></div>
                 <div class="progress-text"><span id="searchProgressText">0%</span><span id="searchStatus">Running...</span></div>
+                <div id="searchErrors" class="error-list" style="display:none;margin-top:0.75rem;"></div>
                 <div style="margin-top:1rem;"><button class="btn btn-success btn-sm" id="downloadSearchResults" disabled>Download CSV</button></div>
             </div>
         </div>
@@ -715,6 +776,7 @@
                 </div>
                 <div class="progress-bar"><div class="progress-fill" id="linkedinProgressBar" style="width:0%"></div></div>
                 <div class="progress-text"><span id="linkedinProgressText">0%</span><span id="linkedinStatus">Running...</span></div>
+                <div id="linkedinErrors" class="error-list" style="display:none;margin-top:0.75rem;"></div>
                 <div style="margin-top:1rem;"><button class="btn btn-success btn-sm" id="downloadLinkedinResults" disabled>Download CSV</button></div>
             </div>
         </div>
@@ -1368,6 +1430,27 @@ https://linkedin.com/in/janesmith</pre>
             const domainCol = document.getElementById('domainCol').value;
             const maxResults = parseInt(document.getElementById('maxResults').value);
 
+            // Collect and validate titles value
+            let customTitles = document.getElementById('customTitles').value.trim();
+            if (customTitles) {
+                const titleList = customTitles.split(',').map(t => t.trim());
+                const emptyTitles = titleList.filter(t => t.length === 0);
+                if (emptyTitles.length > 0) {
+                    alert('Invalid titles format. Use comma-separated values without empty values (e.g., "CEO,CTO,HR")');
+                    btn.disabled = false;
+                    btn.textContent = 'Start Enrichment';
+                    return;
+                }
+                if (titleList.length > 50) {
+                    alert('Too many titles. Maximum 50 titles allowed. You have ' + titleList.length + ' titles.');
+                    btn.disabled = false;
+                    btn.textContent = 'Start Enrichment';
+                    return;
+                }
+            } else {
+                customTitles = null;
+            }
+
             // Disable button and show loading state
             btn.disabled = true;
             btn.textContent = 'Starting...';
@@ -1378,6 +1461,10 @@ https://linkedin.com/in/janesmith</pre>
             if (document.getElementById('provider_wizleads').checked) providers.push('wizleads');
             if (document.getElementById('provider_better_enrich').checked) providers.push('better_enrich');
             if (document.getElementById('provider_prospeo').checked) providers.push('prospeo');
+
+            // Read pre-processing flags (default ON via the HTML checked attr)
+            const normalizeDomains = document.getElementById('domain_normalize_domains').checked;
+            const dedupeByDomain = document.getElementById('domain_dedupe_by_domain').checked;
 
             try {
                 const res = await fetch('/api/enrichment/flows/domain-enrich', {
@@ -1394,7 +1481,10 @@ https://linkedin.com/in/janesmith</pre>
                         company_name_col: document.getElementById('companyNameCol').value || null,
                         existing_email_col: document.getElementById('existingEmailCol').value || null,
                         max_results: maxResults,
-                        providers: providers.length > 0 ? providers : null
+                        providers: providers.length > 0 ? providers : null,
+                        normalize_domains: normalizeDomains,
+                        dedupe_by_domain: dedupeByDomain,
+                        titles: customTitles
                     })
                 });
 
@@ -2196,6 +2286,10 @@ https://linkedin.com/in/janesmith</pre>
             if (document.getElementById('chain_provider_wizleads').checked) providers.push('wizleads');
             if (document.getElementById('chain_provider_better_enrich').checked) providers.push('better_enrich');
 
+            // Read pre-processing flags (default ON via the HTML checked attr)
+            const normalizeDomains = document.getElementById('chain_normalize_domains').checked;
+            const dedupeByDomain = document.getElementById('chain_dedupe_by_domain').checked;
+
             try {
                 const res = await fetch('/api/jobs/' + jobId + '/chain', {
                     method: 'POST',
@@ -2203,7 +2297,9 @@ https://linkedin.com/in/janesmith</pre>
                     body: JSON.stringify({
                         cascade: null,
                         max_results: 5,
-                        providers: providers.length > 0 ? providers : null
+                        providers: providers.length > 0 ? providers : null,
+                        normalize_domains: normalizeDomains,
+                        dedupe_by_domain: dedupeByDomain
                     })
                 });
                 if (res.ok) {
@@ -2520,15 +2616,93 @@ https://linkedin.com/in/janesmith</pre>
         function startProgressStream(jobId, type) {
             if (eventSource) eventSource.close();
             eventSource = new EventSource('/api/enrichment/jobs/' + jobId + '/stream', { headers: { 'Authorization': 'Bearer ' + token } });
+            // Store provider errors per job
+            if (!window.jobProviderErrors) window.jobProviderErrors = {};
+            window.jobProviderErrors[jobId] = [];
+
             eventSource.onmessage = (e) => {
                 const data = JSON.parse(e.data);
-                if (data.done) { eventSource.close(); document.getElementById(type + 'Status').textContent = 'Completed'; document.getElementById('download' + type.charAt(0).toUpperCase() + type.slice(1) + 'Results').disabled = false; return; }
+                if (data.done) {
+                    eventSource.close();
+                    document.getElementById(type + 'Status').textContent = 'Completed';
+                    document.getElementById('download' + type.charAt(0).toUpperCase() + type.slice(1) + 'Results').disabled = false;
+                    // Show error summary if any errors occurred
+                    showJobErrors(jobId, type);
+                    return;
+                }
                 const processed = data.processed || 0, total = data.total || 1, percent = Math.round((processed/total)*100);
                 document.getElementById(type + 'Processed').textContent = processed;
                 document.getElementById(type + 'Emails').textContent = data.emails_found || 0;
                 document.getElementById(type + 'ProgressBar').style.width = percent + '%';
                 document.getElementById(type + 'ProgressText').textContent = percent + '%';
+
+                // Track provider errors from SSE events
+                if (data.provider_errors && data.provider_errors.length > 0) {
+                    window.jobProviderErrors[jobId].push(...data.provider_errors);
+                    updateErrorDisplay(type, window.jobProviderErrors[jobId]);
+                }
             };
+        }
+
+        // Update error display for active job
+        function updateErrorDisplay(type, errors) {
+            const errorContainer = document.getElementById(type + 'Errors');
+            if (!errorContainer) return;
+
+            // Deduplicate errors by provider + error_type
+            const uniqueErrors = [];
+            const seen = new Set();
+            for (const err of errors) {
+                const key = err.provider + ':' + err.error_type;
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    uniqueErrors.push(err);
+                }
+            }
+
+            if (uniqueErrors.length === 0) {
+                errorContainer.style.display = 'none';
+                return;
+            }
+
+            errorContainer.style.display = 'block';
+            errorContainer.innerHTML = uniqueErrors.map(err =>
+                `<div class="error-tag">${formatProviderName(err.provider)}: ${formatErrorType(err.error_type)}</div>`
+            ).join('');
+        }
+
+        // Format provider name for display
+        function formatProviderName(provider) {
+            const names = {
+                'contacts_db': 'Contacts DB',
+                'blitz': 'Blitz',
+                'wizleads': 'WizLeads',
+                'better_enrich': 'BetterEnrich',
+                'prospeo': 'Prospeo'
+            };
+            return names[provider] || provider;
+        }
+
+        // Format error type for display
+        function formatErrorType(errorType) {
+            const types = {
+                'insufficient_credits': 'Insufficient Credits',
+                'authentication_failed': 'Auth Failed',
+                'rate_limited': 'Rate Limited',
+                'service_unavailable': 'Service Unavailable',
+                'unknown': 'Error'
+            };
+            return types[errorType] || errorType;
+        }
+
+        // Show error summary when job completes
+        function showJobErrors(jobId, type) {
+            const errors = window.jobProviderErrors?.[jobId] || [];
+            if (errors.length === 0) return;
+
+            // Store for job card display
+            const jobData = { jobId, errors };
+            sessionStorage.setItem('jobErrors_' + jobId, JSON.stringify(errors));
         }
         
         // Download Helper
@@ -2833,7 +3007,36 @@ https://linkedin.com/in/janesmith</pre>
                             const shortError = job.error.length > 60 ? job.error.substring(0, 60) + '...' : job.error;
                             errorInfo = '<div class="job-error" style="font-size: 0.7rem; color: #dc2626; margin-top: 4px; cursor: help;" title="' + fullError + '">' + shortError + '</div>';
                         }
-                        return '<div class="job-card"><div class="job-info"><h4>' + (job.display_filename || job.filename || 'Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.processed||0) + '/' + (job.total||0) + ' | ' + (job.emails_found||0) + ' emails</div><div class="job-providers" style="font-size: 0.75rem; margin-top: 4px;"><div style="color: #1e40af;"><strong>Selected:</strong> ' + selectedDisplay + '</div><div style="color: #059669;"><strong>Used:</strong> ' + usedDisplay + '</div></div>' + errorInfo + '</div><div class="actions">' + actions + '</div></div>';
+
+                        // Show provider errors if any were tracked during processing
+                        let providerErrorsDisplay = '';
+                        const jobErrors = sessionStorage.getItem('jobErrors_' + job.job_id);
+                        if (jobErrors) {
+                            try {
+                                const errors = JSON.parse(jobErrors);
+                                if (errors.length > 0) {
+                                    // Deduplicate by provider + error_type
+                                    const uniqueErrors = [];
+                                    const seen = new Set();
+                                    for (const err of errors) {
+                                        const key = err.provider + ':' + err.error_type;
+                                        if (!seen.has(key)) {
+                                            seen.add(key);
+                                            uniqueErrors.push(err);
+                                        }
+                                    }
+                                    if (uniqueErrors.length > 0) {
+                                        providerErrorsDisplay = '<div class="error-list" style="margin-top: 6px;">' +
+                                            uniqueErrors.map(err => '<span class="error-tag">' + formatProviderName(err.provider) + ': ' + formatErrorType(err.error_type) + '</span>').join('') +
+                                            '</div>';
+                                    }
+                                }
+                            } catch (e) {
+                                console.error('Failed to parse job errors:', e);
+                            }
+                        }
+
+                        return '<div class="job-card"><div class="job-info"><h4>' + (job.display_filename || job.filename || 'Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.processed||0) + '/' + (job.total||0) + ' | ' + (job.emails_found||0) + ' emails</div><div class="job-providers" style="font-size: 0.75rem; margin-top: 4px;"><div style="color: #1e40af;"><strong>Selected:</strong> ' + selectedDisplay + '</div><div style="color: #059669;"><strong>Used:</strong> ' + usedDisplay + '</div></div>' + errorInfo + providerErrorsDisplay + '</div><div class="actions">' + actions + '</div></div>';
                     }).join('');
         }
 
