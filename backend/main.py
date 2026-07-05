@@ -31,6 +31,7 @@ from shared.job_store_base import JobStoreBase
 from scraper import routes as scraper_routes
 from enrichment import routes as enrichment_routes
 from enrichment import blitz_client
+from enrichment import identifier_utils
 from enrichment import job_store
 from phone_enrichment import routes as phone_enrichment_routes
 
@@ -124,6 +125,13 @@ class ChainJobRequest(BaseModel):
     # Optional list of provider names to use (e.g. ["contacts_db", "blitz", "better_enrich"]).
     # If None, uses all enabled providers from enrichment/providers.py.
     providers: Optional[list[str]] = None
+    # Pre-processing flags. Both default ON to preserve existing behavior.
+    # normalize_domains=True: identifier_utils.normalize_domain() is applied
+    # per row. False: the raw value flows to the provider.
+    # dedupe_by_domain=True: input rows are collapsed by the domain column
+    # before enrichment. False: every row is enriched.
+    normalize_domains: bool = True
+    dedupe_by_domain: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -401,6 +409,16 @@ async def chain_to_enrichment(
     if not rows_with_domains:
         raise HTTPException(status_code=400, detail="No valid website domains found in scraper output.")
 
+    # Pre-processing: dedupe by domain column (default ON). Counts
+    # collapsed rows for transparency. Persists skipped raw values for
+    # auditability. Runs BEFORE job creation so total reflects unique rows.
+    if req.dedupe_by_domain:
+        deduped_rows, deduped_count, skipped_domains = identifier_utils.dedupe_rows_by_domain(
+            rows_with_domains, "website", req.normalize_domains
+        )
+    else:
+        deduped_rows, deduped_count, skipped_domains = rows_with_domains, 0, []
+
     cascade = req.cascade if req.cascade else blitz_client.DEFAULT_CASCADE
 
     # Create enrichment job
@@ -419,7 +437,7 @@ async def chain_to_enrichment(
     enrichment_store.create_enrichment_job(
         job_id=enrichment_job_id,
         user_id=current_user["user_id"],
-        total=len(rows_with_domains),
+        total=len(deduped_rows),
         filename=filename,
         domain_col="website",
         parent_job_id=scraper_job_id,
@@ -428,6 +446,10 @@ async def chain_to_enrichment(
         last_name_col=None,
         cascade_config=cascade_json,
         max_results=req.max_results,
+        normalize_domains=req.normalize_domains,
+        dedupe_by_domain=req.dedupe_by_domain,
+        deduped_rows=deduped_count,
+        dedupe_skipped_domains=json.dumps(skipped_domains),
     )
 
     # Set up signals and background task
@@ -438,22 +460,25 @@ async def chain_to_enrichment(
     # (Contacts DB + Blitz + Better Enrich) instead of _run_job which uses
     # the older pipeline with custom cascade. Pass req.providers if specified,
     # otherwise None to use all enabled providers from enrichment/providers.py.
+    # Flags are passed through so the runner can gate normalize_domain() per row.
     background_tasks.add_task(
         enrichment_routes._run_domain_enrich_job,
         job_id=enrichment_job_id,
-        rows=rows_with_domains,
+        rows=deduped_rows,
         domain_col="website",
         name_col=None,
         first_name_col=None,
         last_name_col=None,
         max_results=req.max_results,
         selected_providers=req.providers,  # None = all, or specific list
+        normalize_domains=req.normalize_domains,
     )
 
     return {
         "job_id": enrichment_job_id,
-        "total": len(rows_with_domains),
+        "total": len(deduped_rows),
         "parent_job_id": scraper_job_id,
+        "deduped_count": deduped_count,
     }
 
 

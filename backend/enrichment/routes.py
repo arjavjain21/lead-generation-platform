@@ -40,6 +40,7 @@ from . import better_enrich_client
 from . import wizleads_client
 from . import providers
 from . import identifier_utils
+from . import contacts_writer
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import sync_contacts
@@ -98,8 +99,96 @@ def _titles_to_cascade(titles: str) -> list[dict]:
         "include_title": title_list,
         "exclude_title": ["assistant", "intern", "junior", "associate"],
         "location": ["WORLD"],
-        "include_headline_search": False,
+        "include_headline_search": True,
     }]
+
+
+def _build_contacts_writer_payloads(
+    contacts: list[dict],
+    domain: str,
+    *,
+    job_id: Optional[str] = None,
+) -> list[dict]:
+    """Map routes.py contact dicts (email/full_name/title/linkedin_url) to
+    contacts_writer payloads (dm_email/dm_full_name/dm_title/dm_linkedin_url).
+    Skips contacts without a meaningful email."""
+    payloads: list[dict] = []
+    for idx, c in enumerate(contacts):
+        email = (c.get("email") or "").strip()
+        if not email or "@" not in email or email.lower() in {"no_email", "n/a", "none"}:
+            continue
+        payloads.append({
+            "dm_email": email,
+            "dm_full_name": (c.get("full_name") or "").strip(),
+            "dm_first_name": (c.get("first_name") or "").strip(),
+            "dm_last_name": (c.get("last_name") or "").strip(),
+            "dm_title": (c.get("title") or "").strip(),
+            "dm_linkedin_url": (c.get("linkedin_url") or "").strip(),
+            "domain": domain,
+            "job_id": job_id,
+            "row_index": idx,
+            "source_path": (c.get("email_source") or "").strip(),
+        })
+    return payloads
+
+
+def _csv_rows_to_payloads(output_path: Path) -> list[dict]:
+    """Read an enrichment job's output CSV and convert each row to a
+    contacts_writer payload. CSV columns already use dm_ prefix."""
+    payloads: list[dict] = []
+    if not output_path.exists():
+        return payloads
+    with open(output_path, newline="", encoding="utf-8") as f:
+        for idx, row in enumerate(csv.DictReader(f)):
+            email = (row.get("dm_email") or "").strip()
+            if not email or "@" not in email or email.lower() in {"no_email", "n/a", "none"}:
+                continue
+            payloads.append({
+                "dm_email": email,
+                "dm_full_name": (row.get("dm_full_name") or "").strip(),
+                "dm_first_name": (row.get("dm_first_name") or "").strip(),
+                "dm_last_name": (row.get("dm_last_name") or "").strip(),
+                "dm_title": (row.get("dm_title") or "").strip(),
+                "dm_linkedin_url": (row.get("dm_linkedin_url") or "").strip(),
+                "domain": (row.get("domain") or "").strip(),
+                "job_id": (row.get("job_id") or "").strip() or None,
+                "row_index": idx,
+                "source_path": (row.get("dm_email_source") or row.get("source_path") or "").strip(),
+            })
+    return payloads
+
+
+async def _run_contacts_writer_v2(
+    contacts: list[dict],
+    domain: str,
+    *,
+    job_id: Optional[str] = None,
+) -> tuple[dict, str]:
+    """Call contacts_writer.write_enrichment_result_batch and translate its
+    WriteResult into the legacy {synced, skipped, failed} response shape
+    plus a new records_queued field. LoudFailure is re-raised so callers'
+    outer try/except does not swallow operator-facing signals.
+
+    Returns (sync_result_dict, sync_status_string).
+    """
+    payloads = _build_contacts_writer_payloads(contacts, domain, job_id=job_id)
+    if not payloads:
+        return {"synced": 0, "skipped": 0, "failed": 0, "records_queued": 0}, "no_contacts_to_sync"
+    result = await contacts_writer.write_enrichment_result_batch(payloads, job_id=job_id)
+    synced = result.inserted + result.updated
+    sync_result = {
+        "synced": synced,
+        "skipped": result.skipped,
+        "failed": result.failed,
+        "records_queued": result.queued,
+    }
+    if result.failed == 0:
+        sync_status = "success"
+    elif synced == 0:
+        sync_status = "failed"
+    else:
+        sync_status = "partial"
+    return sync_result, sync_status
 
 
 # Valid provider values for force_provider parameter
@@ -151,11 +240,24 @@ def _build_routing_response(
     `final_email_status`, and `final_email_verification_source` fields
     so callers can inspect every provider call in detail.
     """
+    # Extract provider errors from provider_attempts_json
+    provider_errors = []
+    attempts_json = route_result.get("provider_attempts_json", [])
+    for attempt in attempts_json:
+        if attempt.get("error_type"):
+            provider_errors.append({
+                "provider": attempt.get("provider", ""),
+                "method": attempt.get("method", ""),
+                "error_type": attempt.get("error_type", ""),
+                "message": _get_error_message_from_attempt(attempt),
+            })
+
     base = {
         "mode": route.get("mode", ""),
         "source_path": route_result.get("source_path", ""),
         "provider_attempts": route_result.get("provider_attempts", []),
         "no_email_reason": route_result.get("no_email_reason", ""),
+        "provider_errors": provider_errors,  # Always include for visibility
     }
     if not debug:
         return base
@@ -170,6 +272,22 @@ def _build_routing_response(
             "final_email_verification_source", ""
         ),
     }
+
+
+def _get_error_message_from_attempt(attempt: dict[str, Any]) -> str:
+    """Generate a user-friendly error message from a provider attempt record."""
+    provider = attempt.get("provider", "")
+    error_type = attempt.get("error_type", "")
+
+    # Map error types to user-friendly messages
+    error_messages = {
+        "insufficient_credits": f"{provider}: Insufficient credits. Please top up to continue.",
+        "authentication_failed": f"{provider}: Authentication failed. Check API key.",
+        "rate_limited": f"{provider}: Rate limited. Please try again later.",
+        "service_unavailable": f"{provider}: Service temporarily unavailable. Please try again.",
+    }
+
+    return error_messages.get(error_type, f"{provider}: An error occurred.")
 
 
 DATA_DIR = Path(__file__).parent.parent / "data"
@@ -663,46 +781,63 @@ async def enrich_single_domain(
 
     # Now sync back to Contacts DB
     sync_result = {"synced": 0, "skipped": 0, "failed": 0}
+    sync_status = "no_contacts_to_sync"
     if contacts:
-        try:
-            # Create a temporary CSV with the enriched data for sync
-            import csv
-            import tempfile
+        if contacts_writer.is_v2_enabled():
+            try:
+                sync_result, sync_status = await _run_contacts_writer_v2(
+                    contacts, domain
+                )
+                logger.info("contacts_writer v2 sync result for %s: %s",
+                            domain, sync_result)
+            except contacts_writer.LoudFailure:
+                raise
+            except Exception as sync_err:
+                logger.error("contacts_writer v2 failed for %s: %s",
+                             domain, sync_err)
+                sync_result = {"synced": 0, "skipped": 0, "failed": 1,
+                               "error": str(sync_err), "records_queued": 0}
+                sync_status = "failed"
+        else:
+            try:
+                # Create a temporary CSV with the enriched data for sync
+                import tempfile
 
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, newline='', encoding='utf-8') as tmpfile:
-                fieldnames = ["domain", "dm_full_name", "dm_first_name", "dm_last_name",
-                              "dm_title", "dm_email", "dm_linkedin_url"]
-                writer = csv.DictWriter(tmpfile, fieldnames=fieldnames)
-                writer.writeheader()
-                for contact in contacts:
-                    if contact.get("email") and "@" in contact.get("email", ""):
-                        writer.writerow({
-                            "domain": domain,
-                            "dm_full_name": contact.get("full_name", ""),
-                            "dm_first_name": contact.get("first_name", ""),
-                            "dm_last_name": contact.get("last_name", ""),
-                            "dm_title": contact.get("title", ""),
-                            "dm_email": contact.get("email", ""),
-                            "dm_linkedin_url": contact.get("linkedin_url", ""),
-                        })
-                tmp_path = Path(tmpfile.name)
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, newline='', encoding='utf-8') as tmpfile:
+                    fieldnames = ["domain", "dm_full_name", "dm_first_name", "dm_last_name",
+                                  "dm_title", "dm_email", "dm_linkedin_url"]
+                    writer = csv.DictWriter(tmpfile, fieldnames=fieldnames)
+                    writer.writeheader()
+                    for contact in contacts:
+                        if contact.get("email") and "@" in contact.get("email", ""):
+                            writer.writerow({
+                                "domain": domain,
+                                "dm_full_name": contact.get("full_name", ""),
+                                "dm_first_name": contact.get("first_name", ""),
+                                "dm_last_name": contact.get("last_name", ""),
+                                "dm_title": contact.get("title", ""),
+                                "dm_email": contact.get("email", ""),
+                                "dm_linkedin_url": contact.get("linkedin_url", ""),
+                            })
+                    tmp_path = Path(tmpfile.name)
 
-            # Sync to Contacts DB
-            sync_result = sync_contacts.sync_enrichment_to_contacts(tmp_path)
-            tmp_path.unlink()  # Clean up temp file
+                # Sync to Contacts DB
+                sync_result = sync_contacts.sync_enrichment_to_contacts(tmp_path)
+                tmp_path.unlink()  # Clean up temp file
 
-            logger.info("Sync result for domain %s: %s", domain, sync_result)
-        except Exception as sync_err:
-            logger.error("Failed to sync domain %s to Contacts DB: %s", domain, sync_err)
-            sync_result = {"synced": 0, "skipped": 0, "failed": 1, "error": str(sync_err)}
+                logger.info("Sync result for domain %s: %s", domain, sync_result)
+            except Exception as sync_err:
+                logger.error("Failed to sync domain %s to Contacts DB: %s", domain, sync_err)
+                sync_result = {"synced": 0, "skipped": 0, "failed": 1, "error": str(sync_err)}
 
-    # Determine overall sync status
-    if sync_result.get("failed", 0) > 0:
-        sync_status = "failed"
-    elif sync_result.get("synced", 0) > 0:
-        sync_status = "success"
-    else:
-        sync_status = "no_contacts_to_sync"
+    # Determine overall sync status (legacy path only — v2 already set sync_status)
+    if not contacts_writer.is_v2_enabled():
+        if sync_result.get("failed", 0) > 0:
+            sync_status = "failed"
+        elif sync_result.get("synced", 0) > 0:
+            sync_status = "success"
+        else:
+            sync_status = "no_contacts_to_sync"
 
     # Record source stats for API-only call
     try:
@@ -732,6 +867,7 @@ async def enrich_single_domain(
             "records_synced": sync_result.get("synced", 0),
             "records_skipped": sync_result.get("skipped", 0),
             "records_failed": sync_result.get("failed", 0),
+            "records_queued": sync_result.get("records_queued", 0),
         },
     }
 
@@ -741,7 +877,30 @@ async def enrich_single_domain(
 # ---------------------------------------------------------------------------
 
 class UnifiedEnrichRequest(BaseModel):
-    """Request model for unified enrichment endpoint."""
+    """
+    Request model for unified enrichment endpoint.
+
+    Fields:
+        domain: Optional company domain (e.g., "google.com").
+        full_name: Optional full name of person.
+        first_name: Optional first name (alternative to full_name).
+        last_name: Optional last name (alternative to full_name).
+        linkedin_url: Optional LinkedIn profile URL.
+        phone: Optional phone number.
+        company_name: Optional company name.
+        existing_email: Optional existing email address.
+        max_results: Maximum contacts to return (default: 5).
+        cascade: Custom cascade config - list of title filters (each item is a
+            dict with include_title, exclude_title, etc.). Advanced usage.
+        titles: Optional comma-separated titles for fuzzy search.
+            Example: "CEO,CTO,HR" or "dentist,orthodontist,dmd"
+            Enables fuzzy matching against LinkedIn headlines.
+            Leave empty for default business titles (Owner, CEO, VP, Director).
+            Max 50 titles.
+            Auto-converts to cascade if cascade is not provided.
+        force_provider: Force a specific provider ("contacts_db", "blitz",
+            "better_enrich"). If None, uses normal cascade.
+    """
     domain: Optional[str] = None
     full_name: Optional[str] = None
     first_name: Optional[str] = None
@@ -794,6 +953,13 @@ Provide any combination of:
 - `full_name`: Full name of person
 - `first_name` + `last_name`: Alternative to full_name
 - `linkedin_url`: LinkedIn profile URL
+- `titles`: Optional comma-separated titles for fuzzy search
+    - Example: "CEO,CTO,HR" for business titles or "dentist,orthodontist,dmd" for professional titles
+    - Enables fuzzy matching against LinkedIn headlines
+    - Leave empty for default business titles (Owner, CEO, VP, Director)
+    - Max 50 titles supported
+- `cascade`: Custom cascade config (advanced - list of title filter dicts)
+- `force_provider`: Force specific provider (contacts_db, blitz, better_enrich)
 
 ## Response
 Returns enriched data with source tracking and sync status.
@@ -1376,42 +1542,60 @@ async def unified_enrich(
 
     # Sync to Contacts DB
     sync_result = {"synced": 0, "skipped": 0, "failed": 0}
+    sync_status = "no_contacts_to_sync"
     if contacts:
-        try:
-            import csv
-            import tempfile
-            from pathlib import Path
+        if contacts_writer.is_v2_enabled():
+            try:
+                sync_result, sync_status = await _run_contacts_writer_v2(
+                    contacts, domain
+                )
+                logger.info("contacts_writer v2 sync result for %s: %s",
+                            domain, sync_result)
+            except contacts_writer.LoudFailure:
+                raise
+            except Exception as sync_err:
+                logger.error("contacts_writer v2 failed for %s: %s",
+                             domain, sync_err)
+                sync_result = {"synced": 0, "skipped": 0, "failed": 1,
+                               "error": str(sync_err), "records_queued": 0}
+                sync_status = "failed"
+        else:
+            try:
+                import csv
+                import tempfile
+                from pathlib import Path
 
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, newline='', encoding='utf-8') as tmpfile:
-                fieldnames = ["domain", "dm_full_name", "dm_first_name", "dm_last_name",
-                              "dm_title", "dm_email", "dm_linkedin_url"]
-                writer = csv.DictWriter(tmpfile, fieldnames=fieldnames)
-                writer.writeheader()
-                for contact in contacts:
-                    if contact.get("email") and "@" in contact.get("email", ""):
-                        writer.writerow({
-                            "domain": domain,
-                            "dm_full_name": contact.get("full_name", ""),
-                            "dm_first_name": contact.get("first_name", ""),
-                            "dm_last_name": contact.get("last_name", ""),
-                            "dm_title": contact.get("title", ""),
-                            "dm_email": contact.get("email", ""),
-                            "dm_linkedin_url": contact.get("linkedin_url", ""),
-                        })
-                tmp_path = Path(tmpfile.name)
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, newline='', encoding='utf-8') as tmpfile:
+                    fieldnames = ["domain", "dm_full_name", "dm_first_name", "dm_last_name",
+                                  "dm_title", "dm_email", "dm_linkedin_url"]
+                    writer = csv.DictWriter(tmpfile, fieldnames=fieldnames)
+                    writer.writeheader()
+                    for contact in contacts:
+                        if contact.get("email") and "@" in contact.get("email", ""):
+                            writer.writerow({
+                                "domain": domain,
+                                "dm_full_name": contact.get("full_name", ""),
+                                "dm_first_name": contact.get("first_name", ""),
+                                "dm_last_name": contact.get("last_name", ""),
+                                "dm_title": contact.get("title", ""),
+                                "dm_email": contact.get("email", ""),
+                                "dm_linkedin_url": contact.get("linkedin_url", ""),
+                            })
+                    tmp_path = Path(tmpfile.name)
 
-            sync_result = sync_contacts.sync_enrichment_to_contacts(tmp_path)
-            tmp_path.unlink()
-        except Exception as e:
-            logger.error("Failed to sync to Contacts DB: %s", e)
-            sync_result = {"synced": 0, "skipped": 0, "failed": 1, "error": str(e)}
+                sync_result = sync_contacts.sync_enrichment_to_contacts(tmp_path)
+                tmp_path.unlink()
+            except Exception as e:
+                logger.error("Failed to sync to Contacts DB: %s", e)
+                sync_result = {"synced": 0, "skipped": 0, "failed": 1, "error": str(e)}
 
-    if sync_result.get("failed", 0) > 0:
-        sync_status = "failed"
-    elif sync_result.get("synced", 0) > 0:
-        sync_status = "success"
-    else:
-        sync_status = "no_contacts_to_sync"
+    if not contacts_writer.is_v2_enabled():
+        if sync_result.get("failed", 0) > 0:
+            sync_status = "failed"
+        elif sync_result.get("synced", 0) > 0:
+            sync_status = "success"
+        else:
+            sync_status = "no_contacts_to_sync"
 
     return {
         "domain": domain,
@@ -1425,6 +1609,7 @@ async def unified_enrich(
             "records_synced": sync_result.get("synced", 0),
             "records_skipped": sync_result.get("skipped", 0),
             "records_failed": sync_result.get("failed", 0),
+            "records_queued": sync_result.get("records_queued", 0),
         },
     }
 
@@ -1443,6 +1628,13 @@ Unified enrichment endpoint supporting multiple input types via query parameters
 - `first_name`: First name
 - `last_name`: Last name
 - `max_results`: Maximum contacts to return (default: 5)
+- `titles`: Optional comma-separated titles for fuzzy search (e.g., "CEO,CTO,HR" or "dentist,orthodontist,dmd")
+    - Enables fuzzy matching against LinkedIn headlines
+    - Leave empty for default business titles (Owner, CEO, VP, Director)
+    - Max 50 titles supported
+- `cascade_json`: Custom cascade as JSON string (advanced)
+- `force_provider`: Force specific provider (contacts_db, blitz, better_enrich)
+- `debug`: When true, returns full provider attempt details
 
 ## Flexible Input
 All parameters are optional. The endpoint automatically detects the mode based on which fields have values:
@@ -1667,40 +1859,60 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
             sync_result: dict[str, Any] = {"synced": 0, "skipped": 0, "failed": 0}
             sync_status = "no_contacts_to_sync"
             if mode == "enhanced" and contacts:
-                try:
-                    with tempfile.NamedTemporaryFile(
-                        mode="w", suffix=".csv", delete=False, newline=""
-                    ) as tmp:
-                        fieldnames = [
-                            "domain", "dm_email", "dm_full_name", "dm_first_name",
-                            "dm_last_name", "dm_linkedin_url", "dm_title",
-                        ]
-                        writer = csv.DictWriter(tmp, fieldnames=fieldnames)
-                        writer.writeheader()
-                        for c in contacts:
-                            writer.writerow({
-                                "domain": domain,
-                                "dm_email": c.get("email", ""),
-                                "dm_full_name": c.get("full_name", ""),
-                                "dm_first_name": c.get("first_name", ""),
-                                "dm_last_name": c.get("last_name", ""),
-                                "dm_linkedin_url": c.get("linkedin_url", ""),
-                                "dm_title": c.get("title", ""),
-                            })
-                        tmp_path = Path(tmp.name)
-                    sync_result = sync_contacts.sync_enrichment_to_contacts(tmp_path)
-                    sync_status = "success"
-                    logger.info("Enhanced mode sync result for %s: %s", domain, sync_result)
-                except Exception as sync_err:
-                    logger.warning("Enhanced mode sync failed for %s: %s", domain, sync_err)
-                    sync_status = "failed"
-                    sync_result = {"synced": 0, "skipped": 0, "failed": 1, "error": str(sync_err)}
-                finally:
-                    if "tmp_path" in dir() and tmp_path.exists():
-                        tmp_path.unlink(missing_ok=True)
+                if contacts_writer.is_v2_enabled():
+                    try:
+                        sync_result, sync_status = await _run_contacts_writer_v2(
+                            contacts, domain
+                        )
+                        logger.info("contacts_writer v2 sync result for %s: %s",
+                                    domain, sync_result)
+                    except contacts_writer.LoudFailure:
+                        raise
+                    except Exception as sync_err:
+                        logger.warning("contacts_writer v2 failed for %s: %s",
+                                       domain, sync_err)
+                        sync_result = {"synced": 0, "skipped": 0, "failed": 1,
+                                       "error": str(sync_err), "records_queued": 0}
+                        sync_status = "failed"
+                else:
+                    try:
+                        with tempfile.NamedTemporaryFile(
+                            mode="w", suffix=".csv", delete=False, newline=""
+                        ) as tmp:
+                            fieldnames = [
+                                "domain", "dm_email", "dm_full_name", "dm_first_name",
+                                "dm_last_name", "dm_linkedin_url", "dm_title",
+                            ]
+                            writer = csv.DictWriter(tmp, fieldnames=fieldnames)
+                            writer.writeheader()
+                            for c in contacts:
+                                writer.writerow({
+                                    "domain": domain,
+                                    "dm_email": c.get("email", ""),
+                                    "dm_full_name": c.get("full_name", ""),
+                                    "dm_first_name": c.get("first_name", ""),
+                                    "dm_last_name": c.get("last_name", ""),
+                                    "dm_linkedin_url": c.get("linkedin_url", ""),
+                                    "dm_title": c.get("title", ""),
+                                })
+                            tmp_path = Path(tmp.name)
+                        sync_result = sync_contacts.sync_enrichment_to_contacts(tmp_path)
+                        sync_status = "success"
+                        logger.info("Enhanced mode sync result for %s: %s", domain, sync_result)
+                    except Exception as sync_err:
+                        logger.warning("Enhanced mode sync failed for %s: %s", domain, sync_err)
+                        sync_status = "failed"
+                        sync_result = {"synced": 0, "skipped": 0, "failed": 1, "error": str(sync_err)}
+                    finally:
+                        if "tmp_path" in dir() and tmp_path.exists():
+                            tmp_path.unlink(missing_ok=True)
             elif mode == "linkedin_only" and contacts:
-                sync_status = "success"
-                sync_result = {"synced": len(contacts), "skipped": 0, "failed": 0}
+                # linkedin_only has no domain — contacts_writer needs domain
+                # for the person/company split, so mark as no_contacts_to_sync
+                # rather than fabricating success. Fix applies to both v2
+                # and legacy paths.
+                sync_status = "no_contacts_to_sync"
+                sync_result = {"synced": 0, "skipped": len(contacts), "failed": 0, "records_queued": 0}
 
             # Record source stats for API-only call
             _record_unified_enrich_stats(contacts, domain, current_user)
@@ -1720,6 +1932,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                     "records_synced": sync_result.get("synced", 0),
                     "records_skipped": sync_result.get("skipped", 0),
                     "records_failed": sync_result.get("failed", 0),
+                    "records_queued": sync_result.get("records_queued", 0),
                 },
             }
 
@@ -1976,80 +2189,92 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                         "email_source": email_src,
                     })
 
-        # Sync to Contacts DB using /v1/contact/upsert endpoint
+        # Sync to Contacts DB
         sync_result = {"synced": 0, "skipped": 0, "failed": 0}
         sync_status = "no_contacts_to_sync"
         if enriched_contacts:
-            synced_count = 0
-            failed_count = 0
-            skipped_count = 0
-
-            for contact in enriched_contacts:
-                # Only sync contacts that have email
-                if not contact.get("email"):
-                    skipped_count += 1
-                    continue
-
+            if contacts_writer.is_v2_enabled():
                 try:
-                    # Prepare payload for /v1/contact/upsert
-                    contact_email = contact.get("email", "")
-                    if not contact_email:
-                        logger.debug("Skipping sync - no email for contact: %s", contact.get("full_name"))
+                    sync_result, sync_status = await _run_contacts_writer_v2(
+                        enriched_contacts, domain)
+                except contacts_writer.LoudFailure:
+                    raise
+                except Exception as v2_err:
+                    logger.error("contacts_writer v2 sync failed for %s: %s", domain, v2_err)
+                    sync_result = {"synced": 0, "skipped": 0, "failed": 1,
+                                   "records_queued": 0, "error": str(v2_err)}
+                    sync_status = "failed"
+            else:
+                synced_count = 0
+                failed_count = 0
+                skipped_count = 0
+
+                for contact in enriched_contacts:
+                    # Only sync contacts that have email
+                    if not contact.get("email"):
                         skipped_count += 1
                         continue
 
-                    # Only include linkedin_url if it contains 'linkedin.com' (API requirement)
-                    linkedin_url = contact.get("linkedin_url", "") or ""
-                    if linkedin_url and "linkedin.com" not in linkedin_url:
-                        linkedin_url = ""  # API validates linkedin_url must contain 'linkedin.com'
+                    try:
+                        # Prepare payload for /v1/contact/upsert
+                        contact_email = contact.get("email", "")
+                        if not contact_email:
+                            logger.debug("Skipping sync - no email for contact: %s", contact.get("full_name"))
+                            skipped_count += 1
+                            continue
 
-                    payload = {
-                        "email": contact_email,
-                        "domain": domain,
-                        "full_name": contact.get("full_name", "") or "",
-                        "first_name": contact.get("first_name", "") or "",
-                        "last_name": contact.get("last_name", "") or "",
-                        "title": contact.get("title", "") or "",
-                        "linkedin_url": linkedin_url,
-                    }
+                        # Only include linkedin_url if it contains 'linkedin.com' (API requirement)
+                        linkedin_url = contact.get("linkedin_url", "") or ""
+                        if linkedin_url and "linkedin.com" not in linkedin_url:
+                            linkedin_url = ""  # API validates linkedin_url must contain 'linkedin.com'
 
-                    logger.debug("Syncing contact to contacts API: %s", payload)
+                        payload = {
+                            "email": contact_email,
+                            "domain": domain,
+                            "full_name": contact.get("full_name", "") or "",
+                            "first_name": contact.get("first_name", "") or "",
+                            "last_name": contact.get("last_name", "") or "",
+                            "title": contact.get("title", "") or "",
+                            "linkedin_url": linkedin_url,
+                        }
 
-                    # Acquire rate limit before upsert to respect 75 RPS limit
-                    await contacts_client._acquire_upsert_rate_limit()
+                        logger.debug("Syncing contact to contacts API: %s", payload)
 
-                    # Call contacts API upsert with auth header
-                    contacts_token = os.getenv("CONTACTS_API_TOKEN", "")
-                    resp = await contacts_http.post(
-                        "https://leadsdatabase.cc/v1/contact/upsert",
-                        json=payload,
-                        headers={
-                            "Authorization": f"Bearer {contacts_token}",
-                            "Content-Type": "application/json",
-                        },
-                        timeout=15.0,
-                    )
-                    logger.debug("Contacts API response status: %d, body: %s", resp.status_code, resp.text[:500])
-                    resp.raise_for_status()
-                    synced_count += 1
-                except httpx.HTTPStatusError as e:
-                    logger.warning("HTTP error syncing contact %s: status=%d, body=%s", contact.get("email"), e.response.status_code, e.response.text[:200])
-                    failed_count += 1
-                except Exception as e:
-                    logger.warning("Failed to sync contact %s: %s", contact.get("email"), e)
-                    failed_count += 1
+                        # Acquire rate limit before upsert to respect 75 RPS limit
+                        await contacts_client._acquire_upsert_rate_limit()
 
-            sync_result = {
-                "synced": synced_count,
-                "skipped": skipped_count,
-                "failed": failed_count,
-            }
-            if synced_count > 0:
-                sync_status = "success"
-            elif failed_count > 0:
-                sync_status = "failed"
-            else:
-                sync_status = "no_contacts_to_sync"
+                        # Call contacts API upsert with auth header
+                        contacts_token = os.getenv("CONTACTS_API_TOKEN", "")
+                        resp = await contacts_http.post(
+                            "https://leadsdatabase.cc/v1/contact/upsert",
+                            json=payload,
+                            headers={
+                                "Authorization": f"Bearer {contacts_token}",
+                                "Content-Type": "application/json",
+                            },
+                            timeout=15.0,
+                        )
+                        logger.debug("Contacts API response status: %d, body: %s", resp.status_code, resp.text[:500])
+                        resp.raise_for_status()
+                        synced_count += 1
+                    except httpx.HTTPStatusError as e:
+                        logger.warning("HTTP error syncing contact %s: status=%d, body=%s", contact.get("email"), e.response.status_code, e.response.text[:200])
+                        failed_count += 1
+                    except Exception as e:
+                        logger.warning("Failed to sync contact %s: %s", contact.get("email"), e)
+                        failed_count += 1
+
+                sync_result = {
+                    "synced": synced_count,
+                    "skipped": skipped_count,
+                    "failed": failed_count,
+                }
+                if synced_count > 0:
+                    sync_status = "success"
+                elif failed_count > 0:
+                    sync_status = "failed"
+                else:
+                    sync_status = "no_contacts_to_sync"
 
         # Only use defaults if sources weren't already set by BetterEnrich
         if sources.get("emails") in ("not_found", None):
@@ -2439,9 +2664,20 @@ async def _run_background_sync(job_id: str, output_path: Path) -> None:
     Runs asynchronously without blocking the API.
     """
     try:
-        logger.info("Auto-syncing enrichment job %s to contacts DB (person records)", job_id)
-        sync_result = sync_contacts.sync_enrichment_to_contacts(output_path)
-        logger.info("Auto-sync complete for job %s: %s", job_id, sync_result)
+        if contacts_writer.is_v2_enabled():
+            logger.info("contacts_writer v2 sync for job %s", job_id)
+            payloads = _csv_rows_to_payloads(output_path)
+            result = await contacts_writer.write_enrichment_result_batch(payloads, job_id=job_id)
+            logger.info("contacts_writer v2 sync done for job %s: %s",
+                        job_id, result.to_dict())
+        else:
+            logger.info("Auto-syncing enrichment job %s to contacts DB (person records)", job_id)
+            sync_result = sync_contacts.sync_enrichment_to_contacts(output_path)
+            logger.info("Auto-sync complete for job %s: %s", job_id, sync_result)
+    except contacts_writer.LoudFailure as loud_err:
+        # LoudFailure is operator-facing; log at ERROR so journalctl flags it.
+        # Outbox retry loop should pick it up; do not re-raise into asyncio.create_task.
+        logger.error("LoudFailure during background sync for job %s: %s", job_id, loud_err)
     except Exception as sync_err:
         logger.error("Auto-sync failed for job %s: %s", job_id, sync_err)
 
@@ -2822,6 +3058,23 @@ async def restart_enrichment_job(
         logger.info("Job %s has no selected_providers, defaulting to enabled providers: %s",
                     job_id, selected_providers)
 
+    # Read pre-processing flags from the original job. Old jobs (pre-migration)
+    # default to (1, 1, 0, "") which means normalize on, dedupe on, 0 deduped
+    # rows, no audit list — i.e. behavior identical to today.
+    orig_normalize = bool(original_job.get("normalize_domains", 1))
+    orig_dedupe = bool(original_job.get("dedupe_by_domain", 1))
+    # orig_deduped_count is the historical record; we'll recompute below.
+
+    # Re-run dedupe on the freshly loaded rows (the CSV is re-read from
+    # disk, so this is necessary and deterministic). The deduped_count and
+    # skipped_domains are persisted on the new job for transparency.
+    if orig_dedupe:
+        deduped_rows, deduped_count, skipped_domains = identifier_utils.dedupe_rows_by_domain(
+            rows, domain_col, orig_normalize
+        )
+    else:
+        deduped_rows, deduped_count, skipped_domains = rows, 0, []
+
     # Update restart count
     store = job_store.get_store()
     new_restart_count = store.increment_restart_count(job_id)
@@ -2831,7 +3084,7 @@ async def restart_enrichment_job(
     store.create_enrichment_job(
         job_id=new_job_id,
         user_id=current_user["user_id"],
-        total=len(rows),
+        total=len(deduped_rows),
         filename=original_job['filename'],
         domain_col=original_job['domain_col'],
         original_filename=original_job.get('original_filename', ''),
@@ -2846,6 +3099,10 @@ async def restart_enrichment_job(
         phone_col=original_job.get('phone_col'),
         company_name_col=original_job.get('company_name_col'),
         existing_email_col=original_job.get('existing_email_col'),
+        normalize_domains=orig_normalize,
+        dedupe_by_domain=orig_dedupe,
+        deduped_rows=deduped_count,
+        dedupe_skipped_domains=json.dumps(skipped_domains),
     )
 
     # If we have unprocessed indices, write checkpoints for them so new job can track progress
@@ -2861,7 +3118,7 @@ async def restart_enrichment_job(
     background_tasks.add_task(
         _run_domain_enrich_job,
         job_id=new_job_id,
-        rows=rows,
+        rows=deduped_rows,
         domain_col=original_job['domain_col'],
         name_col=original_job.get('name_col'),
         first_name_col=original_job.get('first_name_col'),
@@ -2872,14 +3129,16 @@ async def restart_enrichment_job(
         existing_email_col=original_job.get('existing_email_col'),
         max_results=original_job.get('max_results', 5),
         selected_providers=selected_providers,
+        normalize_domains=orig_normalize,
     )
 
     logger.info("Restarted enrichment job %s as new job %s with providers %s", job_id, new_job_id, selected_providers)
 
     return {
         "job_id": new_job_id,
-        "total": len(rows),
+        "total": len(deduped_rows),
         "restarted_from": job_id,
+        "deduped_count": deduped_count,
     }
 
 
@@ -3040,7 +3299,9 @@ async def enrich_by_domains(
         )
 
     rows = df.fillna("").astype(str).to_dict(orient="records")
-    cascade = req.cascade if req.cascade else blitz_client.DEFAULT_CASCADE
+    # Build cascade from titles if provided, otherwise use default
+    title_cascade = _titles_to_cascade(req.titles or "")
+    cascade = title_cascade if title_cascade else blitz_client.DEFAULT_CASCADE
 
     # Read metadata
     metadata_path = UPLOAD_DIR / f"{req.upload_id}.metadata.json"
@@ -3098,7 +3359,31 @@ async def enrich_by_domains(
 
 
 class ProviderToggleRequest(BaseModel):
-    """Request with optional provider selection for Flow 1 using list_builder."""
+    """
+    Request with optional provider selection for Flow 1 using list_builder.
+
+    Fields:
+        upload_id: ID of the uploaded CSV file to process.
+        domain_col: Name of the column containing company domains.
+        name_col: Optional column name for full names.
+        first_name_col: Optional column name for first names.
+        last_name_col: Optional column name for last names.
+        max_results: Maximum number of contacts per domain (default: 5).
+        providers: List of providers to use (e.g., ["blitz", "better_enrich"]).
+            contacts_db is always used first and cannot be disabled.
+            If None, all enabled providers are used.
+        linkedin_url_col: Optional column name for LinkedIn URLs.
+        phone_col: Optional column name for phone numbers.
+        company_name_col: Optional column name for company names.
+        existing_email_col: Optional column name for existing emails.
+        titles: Optional comma-separated titles for fuzzy search.
+            Example: "dentist,orthodontist,dmd"
+            Enables fuzzy matching against LinkedIn headlines.
+            Leave empty for default business titles (Owner, CEO, VP, Director).
+            Max 50 titles.
+        normalize_domains: Whether to normalize domain formats (default: True).
+        dedupe_by_domain: Whether to deduplicate results by domain (default: True).
+    """
     upload_id: str
     domain_col: str
     name_col: Optional[str] = None
@@ -3115,6 +3400,14 @@ class ProviderToggleRequest(BaseModel):
     phone_col: Optional[str] = None
     company_name_col: Optional[str] = None
     existing_email_col: Optional[str] = None
+    # Optional comma-separated titles for fuzzy search
+    # Example: "dentist,orthodontist,dmd"
+    # Enables fuzzy matching against LinkedIn headlines
+    # Leave empty for default business titles (Owner, CEO, VP, Director)
+    titles: Optional[str] = None
+    # Pre-processing flags. Both default ON to preserve existing behavior.
+    normalize_domains: bool = True
+    dedupe_by_domain: bool = True
 
 
 @router.post("/flows/domain-enrich")
@@ -3131,6 +3424,12 @@ async def domain_enrich_with_providers(
 
     Cascade order: Contacts DB (always) → (selected providers in order)
     Stop on first hit - if a provider finds contacts, later providers are skipped.
+
+    Title Filtering:
+    - Use the 'titles' field for fuzzy search against LinkedIn headlines.
+    - Example: "dentist,orthodontist,dmd" finds professionals with those titles.
+    - Leave empty for default business titles (Owner, CEO, VP, Director).
+    - Max 50 titles supported.
     """
     upload_path = UPLOAD_DIR / f"{req.upload_id}.csv"
     if not upload_path.exists():
@@ -3142,7 +3441,38 @@ async def domain_enrich_with_providers(
             status_code=400, detail=f"Column '{req.domain_col}' not found in CSV."
         )
 
+    # Validate titles if provided
+    if req.titles is not None and req.titles != "":
+        title_list = [t.strip() for t in req.titles.split(",")]
+        if not title_list or all(t == "" for t in title_list):
+            raise HTTPException(
+                status_code=400,
+                detail="Titles cannot be empty"
+            )
+        if len(title_list) > 50:
+            raise HTTPException(
+                status_code=400,
+                detail="Maximum 50 titles allowed. Contact support for bulk operations."
+            )
+
+    # Convert titles to cascade_config if provided
+    cascade_json = None
+    if req.titles and req.titles.strip():
+        cascade = _titles_to_cascade(req.titles)
+        if cascade:
+            cascade_json = json.dumps(cascade)
+
     rows = df.fillna("").astype(str).to_dict(orient="records")
+
+    # Pre-processing: dedupe by domain column (default ON). Runs BEFORE
+    # job creation so total reflects unique rows. deduped_count and the
+    # raw skipped values are persisted for auditability.
+    if req.dedupe_by_domain:
+        deduped_rows, deduped_count, skipped_domains = identifier_utils.dedupe_rows_by_domain(
+            rows, req.domain_col, req.normalize_domains
+        )
+    else:
+        deduped_rows, deduped_count, skipped_domains = rows, 0, []
 
     # Read metadata
     metadata_path = UPLOAD_DIR / f"{req.upload_id}.metadata.json"
@@ -3169,20 +3499,24 @@ async def domain_enrich_with_providers(
     store.create_enrichment_job(
         job_id=job_id,
         user_id=current_user["user_id"],
-        total=len(rows),
+        total=len(deduped_rows),
         filename=str(req.upload_id),
         domain_col=req.domain_col,
         original_filename=original_filename,
         name_col=req.name_col,
         first_name_col=req.first_name_col,
         last_name_col=req.last_name_col,
-        cascade_config=None,
+        cascade_config=cascade_json,
         max_results=req.max_results,
         selected_providers=req.providers,
         linkedin_url_col=req.linkedin_url_col,
         phone_col=req.phone_col,
         company_name_col=req.company_name_col,
         existing_email_col=req.existing_email_col,
+        normalize_domains=req.normalize_domains,
+        dedupe_by_domain=req.dedupe_by_domain,
+        deduped_rows=deduped_count,
+        dedupe_skipped_domains=json.dumps(skipped_domains),
     )
 
     _job_signals[job_id] = asyncio.Event()
@@ -3191,7 +3525,7 @@ async def domain_enrich_with_providers(
     background_tasks.add_task(
         _run_domain_enrich_job,
         job_id=job_id,
-        rows=rows,
+        rows=deduped_rows,
         domain_col=req.domain_col,
         name_col=req.name_col,
         first_name_col=req.first_name_col,
@@ -3202,9 +3536,15 @@ async def domain_enrich_with_providers(
         existing_email_col=req.existing_email_col,
         max_results=req.max_results,
         selected_providers=req.providers,
+        normalize_domains=req.normalize_domains,
     )
 
-    return {"job_id": job_id, "total": len(rows), "flow": "domain_enrichment"}
+    return {
+        "job_id": job_id,
+        "total": len(deduped_rows),
+        "flow": "domain_enrichment",
+        "deduped_count": deduped_count,
+    }
 
 
 async def _run_domain_enrich_job(
@@ -3220,6 +3560,7 @@ async def _run_domain_enrich_job(
     existing_email_col: Optional[str] = None,
     max_results: int = 5,
     selected_providers: Optional[list[str]] = None,
+    normalize_domains: bool = True,
 ):
     """Background task to run domain enrichment using list_builder."""
     store = job_store.get_store()
@@ -3291,6 +3632,7 @@ async def _run_domain_enrich_job(
             check_cancelled=check_job_cancelled,
             job_id=job_id,
             record_provider_use=record_provider_use,
+            normalize_domains=normalize_domains,
         )
 
         # Attach input_* columns for visibility/debug.
@@ -3657,10 +3999,15 @@ async def _run_linkedin_job(
         store.set_done(job_id, str(output_path))
         logger.info("LinkedIn enrichment job %s completed, %d output rows", job_id, len(output_rows))
 
+        # Sync results back to Contacts DB (async, non-blocking)
+        asyncio.create_task(_run_background_sync(job_id, output_path))
+
     except Exception as e:
         logger.exception("LinkedIn enrichment job %s failed: %s", job_id, e)
         if output_path.exists() and output_path.stat().st_size > 0:
             store.set_done(job_id, str(output_path))
+            # Even on partial success, attempt a sync of whatever rows landed.
+            asyncio.create_task(_run_background_sync(job_id, output_path))
         else:
             store.set_failed(job_id, str(e))
 
@@ -3822,10 +4169,15 @@ async def _run_linkedin_v2_job(
             len(output_rows),
         )
 
+        # Sync results back to Contacts DB (async, non-blocking)
+        asyncio.create_task(_run_background_sync(job_id, output_path))
+
     except Exception as e:
         logger.exception("LinkedIn v2 enrichment job %s failed: %s", job_id, e)
         if output_path.exists() and output_path.stat().st_size > 0:
             store.set_done(job_id, str(output_path))
+            # Even on partial success, attempt a sync of whatever rows landed.
+            asyncio.create_task(_run_background_sync(job_id, output_path))
         else:
             store.set_failed(job_id, str(e))
 
