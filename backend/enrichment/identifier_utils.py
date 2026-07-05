@@ -12,7 +12,7 @@ The functions are pure (no I/O) so they can be unit tested cheaply.
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 
@@ -103,6 +103,69 @@ def normalize_domain(value) -> str:
     if " " in candidate or "/" in candidate:
         return ""
     return candidate
+
+
+def dedupe_rows_by_domain(
+    rows: list[dict[str, Any]],
+    domain_col: str,
+    normalize: bool,
+) -> tuple[list[dict[str, Any]], int, list[str]]:
+    """Dedupe input rows by the domain column. First occurrence wins.
+
+    Args:
+        rows: list of input row dicts (one per CSV row).
+        domain_col: name of the column containing the domain.
+        normalize: if True, use ``normalize_domain()`` for the dedupe key
+            (so ``acme.com`` and ``https://acme.com/?utm=x`` collapse
+            together). If False, use the raw stripped-lowercased value
+            (so franchise locations with different sub-paths are
+            preserved).
+
+    Returns:
+        A 3-tuple ``(kept_rows, deduped_count, skipped_domains)``:
+          * ``kept_rows`` — the input rows in their original order, with
+            all but the first occurrence of each duplicate domain removed.
+          * ``deduped_count`` — how many rows were dropped.
+          * ``skipped_domains`` — the raw values of the dropped rows
+            (for auditability and persistence).
+
+    Notes:
+        * Empty-domain rows are NOT considered duplicates of each other
+          (they pass through). The downstream pipeline's existing
+          empty-domain skip path handles them.
+        * When ``normalize=True``, sub-paths are stripped before
+          comparison — so ``mcdonalds.com/location/001`` and
+          ``mcdonalds.com/location/002`` WILL collapse to
+          ``mcdonalds.com``. For multi-location franchises, use
+          ``normalize=False`` to keep each location distinct.
+        * Subdomains are NEVER collapsed — ``blog.acme.com`` and
+          ``shop.acme.com`` are distinct keys.
+    """
+    seen: set[str] = set()
+    kept_rows: list[dict[str, Any]] = []
+    skipped_domains: list[str] = []
+    deduped_count = 0
+
+    for row in rows:
+        raw = str(row.get(domain_col, "") or "").strip()
+        if not raw:
+            # Empty domain rows pass through untouched.
+            kept_rows.append(row)
+            continue
+
+        if normalize:
+            key = normalize_domain(raw)
+        else:
+            key = raw.lower()
+
+        if key in seen:
+            deduped_count += 1
+            skipped_domains.append(raw)
+        else:
+            seen.add(key)
+            kept_rows.append(row)
+
+    return kept_rows, deduped_count, skipped_domains
 
 
 _LINKEDIN_HOST_RE = re.compile(r"^(?:https?://)?(?:www\.)?linkedin\.com/", re.IGNORECASE)

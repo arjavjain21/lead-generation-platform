@@ -187,6 +187,8 @@ ENRICHED_COLUMNS = [
     "no_email_reason",
     "final_email_status",
     "final_email_verification_source",
+    # Provider errors (user-facing error information)
+    "provider_errors",
     # Company / page-level fallback outputs (BetterEnrich).
     "company_email",
     "company_email_source",
@@ -216,6 +218,8 @@ def _empty_enriched() -> dict[str, Any]:
         "dm_email": "",
         "dm_email_source": "",
         "dm_email_verified": "unknown",
+        "mailtester_code": "",
+        "mailtester_message": "",
         "dm_phone": "",
         "dm_headline": "",
         "dm_location_city": "",
@@ -228,20 +232,49 @@ def _empty_enriched() -> dict[str, Any]:
         "input_phone": "",
         "input_company_name": "",
         "input_existing_email": "",
+        "input_facebook_url": "",
         "normalized_linkedin_url": "",
         "linkedin_username": "",
         "input_fields_used": "",
+        "source_path": "",
+        "provider_attempts": "",
+        "provider_attempts_json": "",
+        "providers_called": "",
+        "providers_skipped": "",
+        "no_email_reason": "",
+        "final_email_status": "",
+        "final_email_verification_source": "",
+        "provider_errors": "",
+        "company_email": "",
+        "company_email_source": "",
+        "company_email_verified": "",
+        "company_email_type": "",
+        "company_email_source_path": "",
+        "final_email": "",
+        "final_email_level": "",
+        "final_email_source_path": "",
     }
 
 
-def _current_title(experiences: list[dict]) -> str:
-    """Extract current job title from experiences."""
+def _current_title(experiences: list[dict], direct_title: str = "") -> str:
+    """
+    Extract current job title from experiences or direct title field.
+
+    Args:
+        experiences: List of experience dicts from Blitz API
+        direct_title: Direct title field from Contacts DB or other sources
+
+    Returns:
+        Current job title, prioritizing experiences array over direct_title
+    """
+    # First try experiences array (Blitz data - has historical context)
     for exp in experiences or []:
         if exp.get("job_is_current"):
             return exp.get("job_title", "")
     if experiences:
         return experiences[0].get("job_title", "")
-    return ""
+    # Fallback to direct title field (Contacts DB data)
+    return direct_title or ""
 
 
 def _normalize_source(source: str) -> str:
@@ -486,6 +519,7 @@ async def _enrich_single_domain(
     selected_providers: Optional[list[str]] = None,
     validate_email: bool = True,  # NEW PARAMETER
     record_provider_use: Optional[callable] = None,  # NEW: callback to record provider usage
+    cascade_config: Optional[str] = None,  # NEW: JSON cascade config from job
 ) -> list[OutputRow]:
     """
     Enrich a single domain: get company info, generic emails, and decision makers.
@@ -496,6 +530,7 @@ async def _enrich_single_domain(
         force_provider: If set, only use that specific provider.
         selected_providers: List of user-selected providers to use (or None for all enabled).
         record_provider_use: Optional callback to record which providers were actually queried.
+        cascade_config: Optional JSON string with custom cascade config from job.
     """
     if not domain_semaphore:
         domain_semaphore = asyncio.Semaphore(DOMAIN_CONCURRENCY)
@@ -578,6 +613,7 @@ async def _enrich_single_domain(
                     for contact in contacts_contacts[:max_decision_makers]:
                         persons.append({
                             "person": {
+                                "title": contact.get("title", ""),  # Preserve title field
                                 "first_name": contact.get("first_name", ""),
                                 "last_name": contact.get("last_name", ""),
                                 "full_name": contact.get("full_name", ""),
@@ -587,7 +623,7 @@ async def _enrich_single_domain(
                                     "city": contact.get("city", ""),
                                     "country_code": contact.get("country_code", ""),
                                 },
-                                "experiences": [],
+                                "experiences": [],  # Empty - Contacts DB doesn't provide historical data
                             },
                             "icp": 0,  # Contacts DB doesn't provide ICP
                         })
@@ -602,7 +638,12 @@ async def _enrich_single_domain(
 
         if use_blitz:
             try:
-                cascade = blitz_client.DEFAULT_CASCADE
+                # Use cascade_config from job if available, otherwise use default
+                if cascade_config:
+                    import json
+                    cascade = json.loads(cascade_config)
+                else:
+                    cascade = blitz_client.DEFAULT_CASCADE
                 icp_result = await blitz_client.waterfall_icp_search(
                     blitz_http, company_linkedin_url, cascade, max_decision_makers
                 )
@@ -653,7 +694,7 @@ async def _enrich_single_domain(
         row["dm_first_name"] = person.get("first_name", "")
         row["dm_last_name"] = person.get("last_name", "")
         row["dm_full_name"] = person.get("full_name", "")
-        row["dm_title"] = _current_title(person.get("experiences", []))
+        row["dm_title"] = _current_title(person.get("experiences", []), person.get("title", ""))
         row["dm_linkedin_url"] = person.get("linkedin_url", "")
         row["dm_email"] = email
         row["dm_email_source"] = source
@@ -739,6 +780,8 @@ async def run_domain_enrichment(
     validate_email: bool = True,  # NEW PARAMETER
     record_provider_use: Optional[Callable[[str], None]] = None,  # NEW: callback to record provider usage
     get_store_fn: Optional[Callable[[], Any]] = None,  # Injected to avoid module-level ref
+    normalize_domains: bool = True,  # Pre-processing flag: gate the per-row normalize_domain() call
+    cascade_config: Optional[str] = None,  # NEW: JSON cascade config from job store
 ) -> list[OutputRow]:
     """
     Main entry point for Flow 1: Domain → Generic Emails + Decision Makers
@@ -758,6 +801,7 @@ async def run_domain_enrichment(
         check_cancelled: Function to check if job is cancelled (DB check)
         job_id: Job ID for cancellation tracking
         record_provider_use: Optional callback called with provider name when that provider is queried.
+        cascade_config: Optional JSON string with custom cascade config from job store.
 
     Returns:
         List of enriched output rows
@@ -771,14 +815,37 @@ async def run_domain_enrichment(
     all_output: list[OutputRow] = []
     total = len(rows)
 
+    # Fetch cascade_config from job store if not provided
+    # This allows the cascade to be customized per job
+    if job_id and not cascade_config:
+        try:
+            _get_store = get_store_fn or job_store.get_store
+            store = _get_store()
+            job = store.get_job(job_id)
+            if job:
+                cascade_config = job.get("cascade_config")
+                if cascade_config:
+                    logger.info("Using cascade_config from job %s", job_id)
+        except Exception as e:
+            logger.warning("Failed to fetch cascade_config from job %s: %s", job_id, e)
+
     async def process_row(idx: int, row: dict[str, Any]) -> list[OutputRow]:
         # Note: Cancellation is now checked at batch level, not per-row
         # This allows the batch to finish but stops subsequent batches
 
         # Normalize the raw CSV domain to bare-domain form so provider
         # APIs don't 404 on full URLs like "https://acme.com/?utm_source=x"
+        # When normalize_domains=False, the raw stripped value flows
+        # through (useful for franchise locations with unique URL paths).
         raw_domain = str(row.get(domain_col, "") or "")
-        domain = identifier_utils.normalize_domain(raw_domain)
+        if normalize_domains:
+            domain = identifier_utils.normalize_domain(raw_domain)
+        else:
+            domain = raw_domain.strip()
+        logger.debug(
+            "Row %d: normalize_domains=%s, raw=%r, domain=%r",
+            idx, normalize_domains, raw_domain, domain,
+        )
 
         if not domain:
             result = [{**row, **_empty_enriched(), "row_status": STATUS_SKIPPED}]
@@ -797,6 +864,7 @@ async def run_domain_enrichment(
                 selected_providers=selected_providers,
                 validate_email=validate_email,
                 record_provider_use=record_provider_use,
+                cascade_config=cascade_config,
             )
 
         # Call progress callback with exception handling
