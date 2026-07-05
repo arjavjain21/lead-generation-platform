@@ -53,6 +53,113 @@ AUDIT_SIDECAR_DIR = Path(os.environ.get(
 AUDIT_JSONL_COMPACT_THRESHOLD_BYTES = 1024
 
 
+# ---------------------------------------------------------------------------
+# Provider Error Structure
+# ---------------------------------------------------------------------------
+
+class _ProviderError:
+    """
+    A provider error that evaluates as False but carries error details.
+
+    This allows provider errors to be surfaced to the API response while
+    maintaining backward compatibility with the existing cascade behavior
+    (which treats falsy values as "not found" and continues to the next provider).
+
+    Usage:
+        error = _ProviderError(
+            provider="better_enrich",
+            method="find_work_email_v3",
+            error_type="insufficient_credits",
+            message="BetterEnrich: Insufficient credits. Please top up."
+        )
+        # error is falsy: if not error: # → True, continues cascade
+        # But error details can be extracted: error.to_dict()
+    """
+
+    def __init__(
+        self,
+        provider: str,
+        method: str,
+        error_type: str,
+        message: str,
+    ):
+        self.provider = provider
+        self.method = method
+        self.error_type = error_type
+        self.message = message
+
+    def __bool__(self):
+        """Evaluate as False so existing cascade logic continues."""
+        return False
+
+    def to_dict(self) -> dict[str, str]:
+        """Convert to dict for API response serialization."""
+        return {
+            "provider": self.provider,
+            "method": self.method,
+            "error_type": self.error_type,
+            "message": self.message,
+        }
+
+
+def _is_provider_error(result: Any) -> bool:
+    """Check if a result is a provider error object."""
+    return isinstance(result, _ProviderError)
+
+
+def _extract_provider_error(result: Any) -> Optional[dict[str, str]]:
+    """
+    If result is a _ProviderError, return the error dict, else None.
+
+    This is the primary way for callers to extract error details from
+    provider return values while maintaining backward compatibility.
+    """
+    if _is_provider_error(result):
+        return result.to_dict()
+    return None
+
+
+def _classify_http_error(exc: httpx.HTTPStatusError, provider: str, method: str) -> tuple[str, str]:
+    """
+    Classify an HTTPStatusError into error_type and user-friendly message.
+
+    Returns:
+        Tuple of (error_type, message) where error_type is one of:
+        - insufficient_credits: 402, or "insufficient" in response
+        - authentication_failed: 401, 403
+        - rate_limited: 429
+        - service_unavailable: 503, 502, 500+
+        - unknown: Other errors
+    """
+    status = exc.response.status_code
+    provider_title = provider.replace("_", " ").title()
+
+    # Try to get more details from response body
+    error_detail = ""
+    try:
+        error_data = exc.response.json()
+        if isinstance(error_data, dict):
+            error_detail = error_data.get("message") or error_data.get("error") or ""
+    except:
+        pass
+
+    # Check response body for "insufficient credits" even on non-402 status codes
+    detail_lower = error_detail.lower()
+
+    if status == 402 or "insufficient" in detail_lower or "no credits" in detail_lower:
+        return "insufficient_credits", f"{provider_title}: Insufficient credits. Please top up to continue."
+    elif status == 401 or status == 403:
+        return "authentication_failed", f"{provider_title}: Authentication failed. Check API key."
+    elif status == 429:
+        return "rate_limited", f"{provider_title}: Rate limited. Please try again later."
+    elif status == 503:
+        return "service_unavailable", f"{provider_title}: Service temporarily unavailable."
+    elif status >= 500:
+        return "service_unavailable", f"{provider_title}: Server error. Please try again."
+    else:
+        return "unknown", f"{provider_title}: An error occurred. Status: {status}"
+
+
 def _build_provider_attempt(
     *,
     job_id: str,
@@ -705,6 +812,15 @@ async def _run_route_step(
                 data = await _cc.person_by_linkedin(
                     contacts_http, inputs["linkedin_url"]
                 )
+            except httpx.HTTPStatusError as e:
+                logger.warning("Contacts DB LinkedIn lookup failed: %s", e)
+                error_type, message = _classify_http_error(e, "contacts_db", "person_by_linkedin")
+                return _ProviderError(
+                    provider="contacts_db",
+                    method="person_by_linkedin",
+                    error_type=error_type,
+                    message=message,
+                )
             except Exception as e:
                 logger.warning("Contacts DB LinkedIn lookup failed: %s", e)
                 return {"email": "", "source": SOURCE_NOT_FOUND}
@@ -733,6 +849,15 @@ async def _run_route_step(
                 result = await _bc.person_enrich_by_linkedin(
                     blitz_http, inputs["linkedin_url"]
                 )
+            except httpx.HTTPStatusError as e:
+                logger.warning("Blitz person_enrich_by_linkedin failed: %s", e)
+                error_type, message = _classify_http_error(e, "blitz", "person_enrich_by_linkedin")
+                return _ProviderError(
+                    provider="blitz",
+                    method="person_enrich_by_linkedin",
+                    error_type=error_type,
+                    message=message,
+                )
             except Exception as e:
                 logger.warning("Blitz person_enrich_by_linkedin failed: %s", e)
                 return {"email": "", "source": SOURCE_NOT_FOUND}
@@ -745,6 +870,15 @@ async def _run_route_step(
             _record("blitz")
             try:
                 result = await _bc.find_work_email(blitz_http, inputs["linkedin_url"])
+            except httpx.HTTPStatusError as e:
+                logger.warning("Blitz find_work_email failed: %s", e)
+                error_type, message = _classify_http_error(e, "blitz", "find_work_email")
+                return _ProviderError(
+                    provider="blitz",
+                    method="find_work_email",
+                    error_type=error_type,
+                    message=message,
+                )
             except Exception as e:
                 logger.warning("Blitz find_work_email failed: %s", e)
                 return {"email": "", "source": SOURCE_NOT_FOUND}
@@ -758,6 +892,15 @@ async def _run_route_step(
             try:
                 data = await _cc.person_by_name_and_domain(
                     contacts_http, inputs["full_name"], inputs["domain"]
+                )
+            except httpx.HTTPStatusError as e:
+                logger.warning("Contacts DB name+domain lookup failed: %s", e)
+                error_type, message = _classify_http_error(e, "contacts_db", "person_by_name_and_domain")
+                return _ProviderError(
+                    provider="contacts_db",
+                    method="person_by_name_and_domain",
+                    error_type=error_type,
+                    message=message,
                 )
             except Exception as e:
                 logger.warning("Contacts DB name+domain lookup failed: %s", e)
@@ -789,6 +932,15 @@ async def _run_route_step(
                     full_name=inputs["full_name"],
                     domain=inputs["domain"],
                     include_phone=False,
+                )
+            except httpx.HTTPStatusError as e:
+                logger.warning("Blitz person_enrich failed: %s", e)
+                error_type, message = _classify_http_error(e, "blitz", "person_enrich")
+                return _ProviderError(
+                    provider="blitz",
+                    method="person_enrich",
+                    error_type=error_type,
+                    message=message,
                 )
             except Exception as e:
                 logger.warning("Blitz person_enrich failed: %s", e)
@@ -837,9 +989,21 @@ async def _run_route_step(
                     last_name=inputs["last_name"],
                     website=inputs["domain"],
                 )
+            except httpx.HTTPStatusError as e:
+                logger.warning("WizLeads find_email failed: %s", e)
+                error_type, message = _classify_http_error(e, "wizleads", "find_email")
+                return _ProviderError(
+                    provider="wizleads",
+                    method="find_email",
+                    error_type=error_type,
+                    message=message,
+                )
             except Exception as e:
                 logger.warning("WizLeads find_email failed: %s", e)
                 return {"email": "", "source": SOURCE_NOT_FOUND}
+            # Check if result is a provider error
+            if _is_provider_error(result):
+                return result  # Return the error object directly
             if result and result.get("email"):
                 verification["dm_email_verified"] = "yes"
                 return {"email": result["email"], "source": SOURCE_WIZLEADS, "verification": verification}
@@ -854,9 +1018,21 @@ async def _run_route_step(
                     company_domain=inputs["domain"],
                     linkedin_url=inputs.get("linkedin_url") or None,
                 )
+            except httpx.HTTPStatusError as e:
+                logger.warning("BetterEnrich V3 failed: %s", e)
+                error_type, message = _classify_http_error(e, "better_enrich", "find_work_email_v3")
+                return _ProviderError(
+                    provider="better_enrich",
+                    method="find_work_email_v3",
+                    error_type=error_type,
+                    message=message,
+                )
             except Exception as e:
                 logger.warning("BetterEnrich V3 failed: %s", e)
                 return {"email": "", "source": SOURCE_NOT_FOUND}
+            # Check if result is a provider error
+            if _is_provider_error(result):
+                return result  # Return the error object directly
             if result and result.get("email"):
                 email_status = result.get("email_status", "verified")
                 verification["dm_email_verified"] = "yes" if email_status in ("verified", "valid") else "unknown"
@@ -971,14 +1147,24 @@ async def run_enrichment_route(
         steps_taken.append(step)
 
         # Build the structured attempt record for this call.
-        email_found = bool(result.get("email"))
-        error_type = ""
-        status = "no_match"
-        if result.get("phone_reverse") is not None:
-            status = "phone_reverse_unavailable"
-            error_type = "phone_reverse_unavailable"
-        elif email_found:
-            status = "email_found"
+        # First check if result is a provider error
+        provider_error_dict = _extract_provider_error(result)
+        if provider_error_dict:
+            # Result is a provider error - no email found
+            email_found = False
+            error_type = provider_error_dict.get("error_type", "")
+            status = "no_match"
+        else:
+            # Result is a normal dict (or None) - extract email info
+            email_found = bool(result and result.get("email"))
+            error_type = ""
+            status = "no_match"
+
+            if result and result.get("phone_reverse") is not None:
+                status = "phone_reverse_unavailable"
+                error_type = "phone_reverse_unavailable"
+            elif email_found:
+                status = "email_found"
         attempt = _build_provider_attempt(
             job_id=job_id,
             row_index=row_index,
@@ -997,6 +1183,10 @@ async def run_enrichment_route(
         attempts_json.append(attempt)
         if emit_logs:
             _log_provider_attempt(attempt)
+
+        # If this was a provider error, skip result processing and continue cascade
+        if provider_error_dict:
+            continue
 
         if result.get("phone_reverse") is not None:
             # Phone reverse hop — append a marker to source_path and stop.
@@ -1239,13 +1429,25 @@ def _attempts_json_compact(attempts: list[dict[str, Any]]) -> list[dict[str, Any
     return compact
 
 
-def _current_title(experiences: list[dict]) -> str:
+def _current_title(experiences: list[dict], direct_title: str = "") -> str:
+    """
+    Extract current job title from experiences or direct title field.
+
+    Args:
+        experiences: List of experience dicts from Blitz API
+        direct_title: Direct title field from Contacts DB or other sources
+
+    Returns:
+        Current job title, prioritizing experiences array over direct_title
+    """
+    # First try experiences array (Blitz data - has historical context)
     for exp in experiences or []:
         if exp.get("job_is_current"):
             return exp.get("job_title", "")
     if experiences:
         return experiences[0].get("job_title", "")
-    return ""
+    # Fallback to direct title field (Contacts DB data)
+    return direct_title or ""
 
 
 def _build_person_row(
@@ -1259,12 +1461,13 @@ def _build_person_row(
 ) -> OutputRow:
     loc = person.get("location") or {}
     experiences = person.get("experiences") or []
+    direct_title = person.get("title", "")
     row = {**base_row, **_empty_enriched()}
     row["company_linkedin_url"] = company_linkedin_url
     row["dm_first_name"] = person.get("first_name", "")
     row["dm_last_name"] = person.get("last_name", "")
     row["dm_full_name"] = person.get("full_name", "")
-    row["dm_title"] = _current_title(experiences)
+    row["dm_title"] = _current_title(experiences, direct_title)
     row["dm_linkedin_url"] = person.get("linkedin_url", "")
     row["dm_email"] = email
     row["dm_email_source"] = email_source
@@ -1781,6 +1984,7 @@ async def _enrich_domain(
                         for contact in contacts_contacts[:max_results]:
                             person_dict = {
                                 "person": {
+                                    "title": contact.get("title", ""),  # Preserve title field
                                     "first_name": contact.get("first_name", ""),
                                     "last_name": contact.get("last_name", ""),
                                     "full_name": contact.get("full_name", ""),
@@ -1790,7 +1994,7 @@ async def _enrich_domain(
                                         "city": contact.get("city", ""),
                                         "country_code": contact.get("country_code", ""),
                                     },
-                                    "experiences": [],
+                                    "experiences": [],  # Empty - Contacts DB doesn't provide historical data
                                 },
                                 "icp": 0,  # Contacts DB doesn't provide ICP scoring
                             }

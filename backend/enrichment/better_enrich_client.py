@@ -44,6 +44,8 @@ from typing import Optional
 
 import httpx
 
+from . import pipeline  # Import for _ProviderError and _classify_http_error
+
 logger = logging.getLogger(__name__)
 
 # Configuration
@@ -295,7 +297,13 @@ async def find_work_email_v2(
 
     except httpx.HTTPStatusError as e:
         logger.warning("BetterEnrich V2 HTTP error: %s", e.response.status_code)
-        return None
+        error_type, message = pipeline._classify_http_error(e, "better_enrich", "find_work_email_v2")
+        return pipeline._ProviderError(
+            provider="better_enrich",
+            method="find_work_email_v2",
+            error_type=error_type,
+            message=message,
+        )
     except Exception as e:
         # Log exception details for debugging
         import traceback
@@ -395,7 +403,13 @@ async def find_work_email_v3(
 
     except httpx.HTTPStatusError as e:
         logger.warning("BetterEnrich V3 HTTP error: %s", e.response.status_code)
-        return None
+        error_type, message = pipeline._classify_http_error(e, "better_enrich", "find_work_email_v3")
+        return pipeline._ProviderError(
+            provider="better_enrich",
+            method="find_work_email_v3",
+            error_type=error_type,
+            message=message,
+        )
     except Exception as e:
         logger.warning("BetterEnrich V3 request failed: %s", e)
         return None
@@ -535,7 +549,13 @@ async def find_company_email(
 
     except httpx.HTTPStatusError as e:
         logger.warning("BetterEnrich company email HTTP error: %s for %s", e.response.status_code, website)
-        return None
+        error_type, message = pipeline._classify_http_error(e, "better_enrich", "find_company_email")
+        return pipeline._ProviderError(
+            provider="better_enrich",
+            method="find_company_email",
+            error_type=error_type,
+            message=message,
+        )
     except Exception as e:
         logger.error("BetterEnrich company email request failed: %s for %s", e, website)
         return None
@@ -612,7 +632,13 @@ async def find_email_from_facebook_page(
 
     except httpx.HTTPStatusError as e:
         logger.warning("BetterEnrich facebook HTTP error: %s for %s", e.response.status_code, page_url)
-        return None
+        error_type, message = pipeline._classify_http_error(e, "better_enrich", "find_email_from_facebook_page")
+        return pipeline._ProviderError(
+            provider="better_enrich",
+            method="find_email_from_facebook_page",
+            error_type=error_type,
+            message=message,
+        )
     except Exception as e:
         logger.error("BetterEnrich facebook request failed: %s for %s", e, page_url)
         return None

@@ -26,6 +26,8 @@ from typing import Any, Optional
 
 import httpx
 
+from . import pipeline  # Import for _ProviderError and _classify_http_error
+
 logger = logging.getLogger(__name__)
 
 # Configuration
@@ -178,7 +180,12 @@ async def find_email(
             # Check for insufficient credits - don't retry
             if resp.status_code == 402:
                 logger.warning("WizLeads: Insufficient credits - skipping")
-                return None
+                return pipeline._ProviderError(
+                    provider="wizleads",
+                    method="find_email",
+                    error_type="insufficient_credits",
+                    message="Wizleads: Insufficient credits. Please top up to continue.",
+                )
 
             # Check for validation error - don't retry
             if resp.status_code == 422:
@@ -226,7 +233,12 @@ async def find_email(
             # Handle known status codes
             if e.response.status_code == 402:
                 logger.warning("WizLeads: Insufficient credits")
-                return None
+                return pipeline._ProviderError(
+                    provider="wizleads",
+                    method="find_email",
+                    error_type="insufficient_credits",
+                    message="Wizleads: Insufficient credits. Please top up to continue.",
+                )
             if e.response.status_code == 422:
                 logger.debug("WizLeads validation error (422): %s", e.response.text[:200])
                 return None
