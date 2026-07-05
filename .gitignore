@@ -84,3 +84,4 @@ archive/
 __pycache__/
 *.pyc
 .env
+rollback_backup_*/
