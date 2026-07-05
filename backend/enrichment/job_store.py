@@ -43,8 +43,20 @@ class EnrichmentJobStore(JobStoreBase):
         phone_col: Optional[str] = None,
         company_name_col: Optional[str] = None,
         existing_email_col: Optional[str] = None,
+        normalize_domains: bool = True,
+        dedupe_by_domain: bool = True,
+        deduped_rows: int = 0,
+        dedupe_skipped_domains: str = "",
     ) -> None:
-        """Create a new enrichment job."""
+        """Create a new enrichment job.
+
+        The ``normalize_domains`` and ``dedupe_by_domain`` flags control
+        pre-processing that runs before the provider cascade. ``deduped_rows``
+        is the count of input rows that were collapsed by dedupe (for
+        transparency). ``dedupe_skipped_domains`` is a JSON-encoded list of
+        the raw domain values that were dropped, for auditability.
+        Defaults preserve prior behavior.
+        """
         # Convert list to JSON string for storage
         providers_json = json.dumps(selected_providers) if selected_providers else ""
         # Initialize with contacts_db since internal DB is always queried first
@@ -69,6 +81,10 @@ class EnrichmentJobStore(JobStoreBase):
             phone_col=phone_col or "",
             company_name_col=company_name_col or "",
             existing_email_col=existing_email_col or "",
+            normalize_domains=normalize_domains,
+            dedupe_by_domain=dedupe_by_domain,
+            deduped_rows=deduped_rows,
+            dedupe_skipped_domains=dedupe_skipped_domains,
         )
 
     def list_enrichment_jobs(

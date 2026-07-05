@@ -235,6 +235,24 @@ def init_db() -> None:
     # rows that were completed before a server crash.
     if "partial_output_path" not in existing_columns:
         c.execute("ALTER TABLE jobs ADD COLUMN partial_output_path TEXT DEFAULT ''")
+    # Pre-processing flags (2026-06-16) — two user-toggleable knobs that
+    # run before the provider cascade: normalize_domains (whether
+    # identifier_utils.normalize_domain() is applied per row) and
+    # dedupe_by_domain (whether to collapse input rows by the domain
+    # column before enrichment). deduped_rows counts the collapsed rows;
+    # dedupe_skipped_domains stores the raw values of the dropped rows
+    # for auditability. Defaults preserve prior behavior.
+    for col, default in (
+        ("normalize_domains", "1"),
+        ("dedupe_by_domain", "1"),
+        ("deduped_rows", "0"),
+    ):
+        if col not in existing_columns:
+            c.execute(
+                f"ALTER TABLE jobs ADD COLUMN {col} INTEGER DEFAULT {default}"
+            )
+    if "dedupe_skipped_domains" not in existing_columns:
+        c.execute("ALTER TABLE jobs ADD COLUMN dedupe_skipped_domains TEXT DEFAULT ''")
 
     c.commit()
 

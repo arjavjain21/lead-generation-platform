@@ -75,7 +75,8 @@ class JobStoreBase:
             columns.extend(["total", "processed", "emails_found", "filename", "domain_col", "original_filename",
                            "name_col", "first_name_col", "last_name_col", "cascade_config", "max_results",
                            "selected_providers", "used_providers",
-                           "linkedin_url_col", "phone_col", "company_name_col", "existing_email_col"])
+                           "linkedin_url_col", "phone_col", "company_name_col", "existing_email_col",
+                           "normalize_domains", "dedupe_by_domain", "deduped_rows", "dedupe_skipped_domains"])
             values.extend([
                 kwargs.get("total", 0),
                 0,
@@ -94,6 +95,10 @@ class JobStoreBase:
                 kwargs.get("phone_col", ""),
                 kwargs.get("company_name_col", ""),
                 kwargs.get("existing_email_col", ""),
+                1 if kwargs.get("normalize_domains", True) else 0,
+                1 if kwargs.get("dedupe_by_domain", True) else 0,
+                kwargs.get("deduped_rows", 0),
+                kwargs.get("dedupe_skipped_domains", ""),
             ])
 
         placeholders = ",".join(["?" for _ in columns])
