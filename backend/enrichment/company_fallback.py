@@ -202,6 +202,8 @@ async def run_company_fallbacks(
     validate_email: bool = True,
     dedupe: Optional[CompanyFallbackDedupe] = None,
     record_provider_use: Optional[Callable[[str], None]] = None,
+    collector: Optional[Any] = None,
+    company_linkedin_url: str = "",
 ) -> dict[str, Any]:
     """Run the company / page-level email fallbacks for a single row.
 
@@ -219,6 +221,14 @@ async def run_company_fallbacks(
             created (so this function is safe to call directly in tests).
         record_provider_use: optional callback for the provider-attempts
             accounting (records "better_enrich" attempts).
+        collector: Optional ``RawContactCollector``. When provided, every
+            company/page-level email discovered (BetterEnrich Facebook page
+            email + BetterEnrich company email) is captured via
+            ``capture_company_email()`` so it routes to the
+            ``company_email`` field in Contacts DB (never overwrites a
+            person email).
+        company_linkedin_url: Optional company LinkedIn URL for the
+            collector payload. Empty for domain-only flows.
 
     Returns a dict with the new company/final columns:
         {
@@ -291,6 +301,21 @@ async def run_company_fallbacks(
                 source_path_prefix,
                 "better_enrich_facebook",
             ])
+            # Phase 2b: capture company email for Contacts DB write-back.
+            # Routed to company_email field (never overwrites person email).
+            if collector is not None:
+                try:
+                    collector.capture_company_email(
+                        source="better_enrich",
+                        domain=domain,
+                        company_linkedin_url=company_linkedin_url,
+                        email_data=fb_result,
+                    )
+                except Exception as _cap_err:
+                    logger.debug(
+                        "collector.capture_company_email(facebook) failed for %s: %s",
+                        domain, _cap_err,
+                    )
 
     # ---- Company email fallback (only if facebook didn't yield) ----
     if not company_email:
@@ -331,6 +356,21 @@ async def run_company_fallbacks(
                     source_path_prefix,
                     "better_enrich_company",
                 ])
+                # Phase 2b: capture company email for Contacts DB write-back.
+                # Routed to company_email field (never overwrites person email).
+                if collector is not None:
+                    try:
+                        collector.capture_company_email(
+                            source="better_enrich",
+                            domain=domain,
+                            company_linkedin_url=company_linkedin_url,
+                            email_data=be_result,
+                        )
+                    except Exception as _cap_err:
+                        logger.debug(
+                            "collector.capture_company_email(company) failed for %s: %s",
+                            domain, _cap_err,
+                        )
 
     # ---- Apply generic-email + final-email policy ----
     final_email = ""

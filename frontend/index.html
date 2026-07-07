@@ -1136,11 +1136,6 @@
                             <label style="font-weight:600;cursor:pointer;">Better Enrich</label>
                             <span style="font-size:0.75rem;color:#64748b;">Runs if WizLeads has no data</span>
                         </div>
-                        <div style="display:flex;align-items:center;gap:8px;opacity:0.5;">
-                            <input type="checkbox" id="provider_prospeo" disabled style="width:16px;height:16px;">
-                            <label style="font-weight:600;cursor:not-allowed;">Prospeo</label>
-                            <span style="font-size:0.75rem;color:#64748b;">Coming soon (admin can enable)</span>
-                        </div>
                     </div>
                 </div>
 
@@ -1470,12 +1465,8 @@
                     </div>
                 </div>
                 <div class="data-sources">
-                    <h4>4. Prospeo (Final Fallback - Paid)</h4>
-                    <p style="font-size:0.85rem;color:var(--gray-600);">Final fallback for person and company enrichment (30 RPS).</p>
-                    <div style="margin-top:0.5rem;">
-                        <span class="source-tag">prospeo_person</span>
-                        <span class="source-tag">prospeo_company</span>
-                    </div>
+                    <h4>4. Prospeo</h4>
+                    <p style="font-size:0.85rem;color:var(--gray-600);">Currently disabled — contact admin to enable.</p>
                 </div>
             </div>
             
@@ -2451,7 +2442,6 @@ example.org,Jane Doe</pre>
             if (document.getElementById('provider_blitz').checked) providers.push('blitz');
             if (document.getElementById('provider_wizleads').checked) providers.push('wizleads');
             if (document.getElementById('provider_better_enrich').checked) providers.push('better_enrich');
-            if (document.getElementById('provider_prospeo').checked) providers.push('prospeo');
 
             // Read pre-processing flags (default ON via the HTML checked attr)
             const normalizeDomains = document.getElementById('domain_normalize_domains').checked;
@@ -3443,7 +3433,7 @@ example.org,Jane Doe</pre>
                     headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         cascade: null,
-                        max_results: 5,
+                        max_results: parseInt(document.getElementById('maxResults').value, 10) || 5,
                         providers: providers.length > 0 ? providers : null,
                         normalize_domains: normalizeDomains,
                         dedupe_by_domain: dedupeByDomain
@@ -3509,7 +3499,7 @@ example.org,Jane Doe</pre>
             errorContainer.style.display = 'none';
             errorContainer.textContent = '';
 
-            const payload = { max_decision_makers: 5, include_generic_emails: true };
+            const payload = { max_decision_makers: parseInt(document.getElementById('maxResults').value, 10) || 5, include_generic_emails: true };
             if (document.getElementById('searchName').value) payload.name = document.getElementById('searchName').value;
             if (document.getElementById('searchIndustry').value) payload.industry = [document.getElementById('searchIndustry').value];
             if (document.getElementById('searchEmployeeRange').value) payload.employee_range = [document.getElementById('searchEmployeeRange').value];
@@ -4022,7 +4012,7 @@ example.org,Jane Doe</pre>
                 // Update activity text
                 const activityText = document.getElementById('enrichmentActivityText');
                 if (activityText && data.current_provider) {
-                    const providerNames = { contacts_db: 'Internal Database', blitz: 'Blitz API', wizleads: 'WizLeads', better_enrich: 'BetterEnrich', prospeo: 'Prospeo' };
+                    const providerNames = { contacts_db: 'Internal Database', blitz: 'Blitz API', wizleads: 'WizLeads', better_enrich: 'BetterEnrich' };
                     activityText.textContent = 'Checking ' + (providerNames[data.current_provider] || data.current_provider) + '...';
                     updateCascadeStep(data.current_provider);
                 }
@@ -4050,7 +4040,7 @@ example.org,Jane Doe</pre>
         // Update cascade step indicator
         function updateCascadeStep(activeProvider) {
             const steps = document.querySelectorAll('#enrichmentCascadeSteps .cascade-step');
-            const providerOrder = ['contacts_db', 'blitz', 'wizleads', 'better_enrich', 'prospeo', 'complete'];
+            const providerOrder = ['contacts_db', 'blitz', 'wizleads', 'better_enrich', 'complete'];
             const activeIndex = providerOrder.indexOf(activeProvider);
 
             steps.forEach((step, i) => {
@@ -4109,8 +4099,7 @@ example.org,Jane Doe</pre>
                 'contacts_db': 'Contacts DB',
                 'blitz': 'Blitz',
                 'wizleads': 'WizLeads',
-                'better_enrich': 'BetterEnrich',
-                'prospeo': 'Prospeo'
+                'better_enrich': 'BetterEnrich'
             };
             return names[provider] || provider;
         }
@@ -4356,7 +4345,6 @@ example.org,Jane Doe</pre>
                             if (p === 'blitz') return 'Blitz';
                             if (p === 'wizleads') return 'WizLeads';
                             if (p === 'better_enrich') return 'Better Enrich';
-                            if (p === 'prospeo') return 'Prospeo';
                             return p;
                         };
 
@@ -4391,12 +4379,10 @@ example.org,Jane Doe</pre>
                             const usedList = ['contacts_db'];  // Internal DB is always queried first
                             const blitzEmails = job.emails_blitz || 0;
                             const betterEmails = job.emails_better_enrich || 0;
-                            const prospeoEmails = job.emails_prospeo || 0;
                             const wizleadsEmails = job.emails_wizleads || 0;
                             if (blitzEmails > 0) usedList.push('blitz');
                             if (wizleadsEmails > 0) usedList.push('wizleads');
                             if (betterEmails > 0) usedList.push('better_enrich');
-                            if (prospeoEmails > 0) usedList.push('prospeo');
                             usedDisplay = usedList.map(labelFor).join(' + ');
                         }
 
@@ -4867,7 +4853,7 @@ example.org,Jane Doe</pre>
                     headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         cascade: null,
-                        max_results: 5,
+                        max_results: parseInt(document.getElementById('maxResults').value, 10) || 5,
                         providers: providers.length > 0 ? providers : null
                     })
                 });

@@ -41,6 +41,7 @@ from . import wizleads_client
 from . import providers
 from . import identifier_utils
 from . import contacts_writer
+from .raw_contact_collector import RawContactCollector
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import sync_contacts
@@ -325,6 +326,363 @@ async def get_enrichment_providers(
         {"providers": ["contacts_db", "blitz", "better_enrich"]}
     """
     return {"providers": providers.get_enabled_providers()}
+
+
+# ---------------------------------------------------------------------------
+# In-API documentation (mirror of docs/LIST_BUILDING_API_2026-07-05.md)
+# ---------------------------------------------------------------------------
+
+_LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
+    "generated_at": "2026-07-05",
+    "document_version": "1.0",
+    "base_url": "https://listbuilding.eagleinfoservice.com",
+    "local_backend": "http://localhost:8765",
+    "markdown_file": "docs/LIST_BUILDING_API_2026-07-05.md",
+    "auth": {
+        "credentials": [
+            {
+                "type": "JWT bearer",
+                "header": "Authorization: Bearer <token>",
+                "obtained_from": "POST /api/auth/login",
+                "expiry": "7 days",
+                "accepted_on": "all endpoints",
+            },
+            {
+                "type": "API key",
+                "header": "X-API-Key: <key>  OR  Authorization: Bearer <key>",
+                "obtained_from": "POST /api/api-keys",
+                "expiry": "does not expire until revoked",
+                "accepted_on": "single /enrich, search, providers, stats, /flows/help (NOT upload/jobs/flows)",
+            },
+        ],
+        "note": "CSV upload, job create/list/cancel/restart, downloads, Flow 1 and Flow 3 require JWT — API key is not accepted.",
+    },
+    "providers": {
+        "cascade_order": [
+            {"name": "contacts_db", "rate": "75 RPS", "role": "Internal PostgreSQL DB, always first, free"},
+            {"name": "blitz", "rate": "25 RPS", "role": "LinkedIn-based enrichment with title cascade"},
+            {"name": "wizleads", "rate": "10 RPS", "role": "Catch-all verified email enrichment"},
+            {"name": "better_enrich", "rate": "10 RPS", "role": "Person + company email (final fallback)"},
+            {"name": "prospeo", "rate": "n/a", "role": "DISABLED — code present, end-to-end off"},
+        ],
+        "cascade_behavior": "Stop on first provider that returns a usable contact. Later providers are skipped for that row.",
+        "title_tiers_default": {
+            "tier_1": ["Owner", "CEO", "Founder", "Co-Founder", "President"],
+            "tier_2": ["CMO", "CTO", "COO", "VP-level"],
+            "tier_3": ["Director of Marketing", "Director of Sales", "Head of Marketing"],
+        },
+        "domain_normalization": "Raw URLs like https://mesterh-service.de/?utm_source=gmb are normalized to mesterh-service.de before any provider call.",
+        "email_verification": "Contacts DB emails run through MailTester (validation.hyperke.org). Invalid emails are marked and cascade continues.",
+    },
+    "endpoints": [
+        {
+            "method": "GET",
+            "path": "/api/enrichment/flows/help",
+            "auth": "none",
+            "summary": "This documentation as JSON.",
+            "response_shape": "{ generated_at, base_url, auth, providers, endpoints[], examples, errors }",
+        },
+        {
+            "method": "GET",
+            "path": "/api/enrichment/providers",
+            "auth": "jwt or api key",
+            "summary": "List currently enabled providers.",
+            "response_shape": '{"providers": ["contacts_db","blitz","wizleads","better_enrich"]}',
+        },
+        {
+            "method": "GET",
+            "path": "/api/enrichment/default-cascade",
+            "auth": "none",
+            "summary": "Default 3-tier title cascade used by Blitz.",
+            "response_shape": '{"cascade": [{include_title, exclude_title, location, include_headline_search}, ...]}',
+        },
+        {
+            "method": "GET",
+            "path": "/api/enrichment/search/options",
+            "auth": "jwt or api key",
+            "summary": "Industries, employee ranges, company types, countries, job levels/functions, sales regions.",
+        },
+        {
+            "method": "GET",
+            "path": "/api/enrichment/stats/sources",
+            "auth": "jwt or api key",
+            "summary": "Email-source aggregation (admin sees all, users see own).",
+            "query_params": [
+                {"name": "start_date", "type": "ISO date", "required": "no"},
+                {"name": "end_date", "type": "ISO date", "required": "no"},
+            ],
+        },
+        {
+            "method": "GET",
+            "path": "/api/enrichment/enrich/{domain}",
+            "auth": "jwt or api key",
+            "summary": "Quick single-domain lookup with cascade.",
+            "query_params": [
+                {"name": "max_results", "type": "int", "default": "5"},
+                {"name": "cascade_json", "type": "string (URL-encoded JSON)", "required": "no"},
+                {"name": "force_provider", "type": "string", "required": "no", "values": ["contacts_db", "blitz", "better_enrich"]},
+            ],
+        },
+        {
+            "method": "GET",
+            "path": "/api/enrichment/enrich",
+            "auth": "jwt or api key",
+            "summary": "Unified single lookup (GET form). Same params as POST below, plus debug=bool.",
+        },
+        {
+            "method": "POST",
+            "path": "/api/enrichment/enrich",
+            "auth": "jwt or api key",
+            "summary": "Unified single lookup with provider cascade + sync to Contacts DB. Auto-detects mode: domain_only / linkedin_only / enhanced.",
+            "body_fields": [
+                {"name": "domain", "type": "string", "required": "one of domain|linkedin_url"},
+                {"name": "linkedin_url", "type": "string", "required": "one of domain|linkedin_url"},
+                {"name": "full_name", "type": "string"},
+                {"name": "first_name", "type": "string", "notes": "use with last_name"},
+                {"name": "last_name", "type": "string", "notes": "use with first_name"},
+                {"name": "phone", "type": "string"},
+                {"name": "company_name", "type": "string"},
+                {"name": "existing_email", "type": "string"},
+                {"name": "max_results", "type": "int", "default": "5", "range": "1-10"},
+                {"name": "titles", "type": "string", "notes": "comma-separated, e.g. 'CEO,CTO', max 50"},
+                {"name": "cascade", "type": "array<dict>", "notes": "advanced — overrides titles"},
+                {"name": "force_provider", "type": "string", "values": ["contacts_db", "blitz", "better_enrich"]},
+            ],
+            "query_params": [{"name": "debug", "type": "bool", "default": "false", "notes": "adds routing block"}],
+            "modes": {
+                "domain_only": "domain only — full cascade, all decision makers",
+                "linkedin_only": "linkedin_url only — specific person via cascade",
+                "enhanced": "domain + full_name/linkedin_url — specific person only; 0 results if not found",
+            },
+        },
+        {
+            "method": "POST",
+            "path": "/api/enrichment/upload",
+            "auth": "jwt only",
+            "summary": "Upload CSV, returns upload_id + column preview.",
+            "content_type": "multipart/form-data",
+            "form_field": "file (must end in .csv)",
+            "response_shape": '{"upload_id","columns","preview","row_count","filename"}',
+        },
+        {
+            "method": "POST",
+            "path": "/api/enrichment/jobs",
+            "auth": "jwt only",
+            "summary": "Start basic enrichment job (legacy — prefer /flows/domain-enrich).",
+            "body_fields": [
+                {"name": "upload_id", "type": "string", "required": True},
+                {"name": "domain_col", "type": "string", "required": True},
+                {"name": "name_col", "type": "string"},
+                {"name": "first_name_col", "type": "string"},
+                {"name": "last_name_col", "type": "string"},
+                {"name": "linkedin_url_col", "type": "string"},
+                {"name": "phone_col", "type": "string"},
+                {"name": "company_name_col", "type": "string"},
+                {"name": "existing_email_col", "type": "string"},
+                {"name": "cascade", "type": "array<dict>"},
+                {"name": "max_results", "type": "int", "default": "5"},
+                {"name": "force_provider", "type": "string"},
+                {"name": "validate_email", "type": "bool", "default": "true"},
+            ],
+            "response_shape": '{"job_id","total"}',
+        },
+        {
+            "method": "GET",
+            "path": "/api/enrichment/jobs",
+            "auth": "jwt only",
+            "summary": "List my jobs (admin sees all).",
+            "response_shape": '{"jobs": [{job_id, status, total, processed, emails_found, ...}]}',
+        },
+        {
+            "method": "GET",
+            "path": "/api/enrichment/jobs/{job_id}",
+            "auth": "jwt only",
+            "summary": "Job status + config.",
+            "status_values": ["queued", "running", "completed", "failed", "cancelled", "partial"],
+        },
+        {
+            "method": "GET",
+            "path": "/api/enrichment/jobs/{job_id}/stream",
+            "auth": "jwt only",
+            "summary": "SSE progress stream with replay; closes on terminal status.",
+            "content_type": "text/event-stream",
+        },
+        {
+            "method": "GET",
+            "path": "/api/enrichment/jobs/{job_id}/download",
+            "auth": "jwt only",
+            "summary": "Full enriched CSV (works for completed/failed/partial).",
+            "content_type": "text/csv",
+        },
+        {
+            "method": "GET",
+            "path": "/api/enrichment/jobs/{job_id}/partial-download",
+            "auth": "jwt only",
+            "summary": "Whatever has been written so far for running jobs.",
+            "content_type": "text/csv",
+        },
+        {
+            "method": "POST",
+            "path": "/api/enrichment/jobs/{job_id}/restart",
+            "auth": "jwt only",
+            "summary": "Restart failed/abandoned job. Re-reads original CSV, skips processed rows, dedupes.",
+            "response_shape": '{"job_id","total","restarted_from","deduped_count"}',
+        },
+        {
+            "method": "POST",
+            "path": "/api/enrichment/jobs/{job_id}/cancel",
+            "auth": "jwt only",
+            "summary": "Cancel running/queued job. Partial results remain downloadable.",
+            "response_shape": '{"job_id","status":"cancelled","message"}',
+        },
+        {
+            "method": "POST",
+            "path": "/api/enrichment/flows/domain-enrich",
+            "auth": "jwt only",
+            "summary": "FLOW 1 (recommended): domains → generic emails + decision makers, with provider selection, fuzzy titles, dedupe.",
+            "body_fields": [
+                {"name": "upload_id", "type": "string", "required": True},
+                {"name": "domain_col", "type": "string", "required": True},
+                {"name": "name_col", "type": "string"},
+                {"name": "first_name_col", "type": "string"},
+                {"name": "last_name_col", "type": "string"},
+                {"name": "linkedin_url_col", "type": "string"},
+                {"name": "phone_col", "type": "string"},
+                {"name": "company_name_col", "type": "string"},
+                {"name": "existing_email_col", "type": "string"},
+                {"name": "max_results", "type": "int", "default": "5"},
+                {"name": "providers", "type": "array<string>", "values": ["blitz", "wizleads", "better_enrich"], "notes": "contacts_db always runs first and cannot be disabled"},
+                {"name": "titles", "type": "string", "notes": "comma-separated fuzzy titles, max 50, e.g. 'dentist,orthodontist,dmd'"},
+                {"name": "normalize_domains", "type": "bool", "default": "true"},
+                {"name": "dedupe_by_domain", "type": "bool", "default": "true"},
+            ],
+            "response_shape": '{"job_id","total"}',
+            "concurrency": "25 domains in parallel",
+            "errors": [
+                "404 — Upload not found.",
+                "400 — Column '<name>' not found in CSV.",
+                "400 — Titles cannot be empty",
+                "400 — Maximum 50 titles allowed.",
+                "400 — Invalid providers: [...].",
+            ],
+        },
+        {
+            "method": "POST",
+            "path": "/api/enrichment/search/companies",
+            "auth": "jwt or api key",
+            "summary": "FLOW 2: search companies by criteria (returns matches only).",
+            "body_fields": [
+                {"name": "name", "type": "string"},
+                {"name": "industry", "type": "array<string>"},
+                {"name": "employee_range", "type": "array<string>", "examples": ["11-50", "51-200"]},
+                {"name": "company_type", "type": "array<string>", "examples": ["Privately Held", "Public Company"]},
+                {"name": "country_code", "type": "string", "format": "ISO 3166-1 alpha-2"},
+                {"name": "limit", "type": "int", "default": "100"},
+                {"name": "offset", "type": "int", "default": "0"},
+            ],
+            "response_shape": '{"count","total","results":[{domain, linkedin_url, name}]}',
+        },
+        {
+            "method": "POST",
+            "path": "/api/enrichment/search/companies/enrich",
+            "auth": "jwt or api key",
+            "summary": "FLOW 2 legacy: search + start enrichment job in one call.",
+            "extra_fields": [
+                {"name": "max_decision_makers", "type": "int", "default": "5"},
+                {"name": "include_generic_emails", "type": "bool", "default": "true"},
+            ],
+            "response_shape": '{"job_id","total","companies_found"}',
+        },
+        {
+            "method": "POST",
+            "path": "/api/enrichment/by-linkedin-v2",
+            "auth": "jwt only",
+            "summary": "FLOW 3 (recommended): unified LinkedIn enrichment for personal AND/OR company URLs.",
+            "body_fields": [
+                {"name": "upload_id", "type": "string", "required": True},
+                {"name": "personal_linkedin_col", "type": "string", "notes": "column with linkedin.com/in/..."},
+                {"name": "company_linkedin_col", "type": "string", "notes": "column with linkedin.com/company/..."},
+                {"name": "max_dms", "type": "int", "default": "5"},
+                {"name": "include_company", "type": "bool", "default": "true"},
+            ],
+            "constraint": "At least one of personal_linkedin_col or company_linkedin_col must be supplied and must exist in the CSV.",
+            "response_shape": '{"job_id","total","flow":"linkedin_v2_enrichment"}',
+        },
+        {
+            "method": "POST",
+            "path": "/api/enrichment/by-linkedin",
+            "auth": "jwt only",
+            "summary": "FLOW 3 legacy: personal LinkedIn URLs only.",
+            "body_fields": [
+                {"name": "upload_id", "type": "string", "required": True},
+                {"name": "linkedin_col", "type": "string", "required": True},
+                {"name": "include_company", "type": "bool", "default": "true"},
+            ],
+        },
+        {
+            "method": "POST",
+            "path": "/api/enrichment/by-domains",
+            "auth": "jwt only",
+            "summary": "Legacy alias for /jobs — prefer /flows/domain-enrich.",
+        },
+    ],
+    "output_csv_columns": [
+        "company_linkedin_url", "company_name", "company_industry", "company_employee_count",
+        "dm_first_name", "dm_last_name", "dm_full_name", "dm_title", "dm_job_level", "dm_job_function",
+        "dm_linkedin_url", "dm_email", "dm_email_source", "dm_email_verified",
+        "mailtester_code", "mailtester_message", "dm_phone", "dm_headline",
+        "dm_location_city", "dm_location_country", "dm_icp_tier", "row_status",
+        "input_domain", "input_full_name", "input_linkedin_url", "normalized_linkedin_url",
+        "source_path", "provider_attempts", "providers_called", "providers_skipped",
+        "final_email", "final_email_level",
+    ],
+    "errors": {
+        "400": "Bad request (bad CSV, bad column, invalid provider, too many titles)",
+        "401": "Missing/invalid token or API key",
+        "403": "Authenticated but not allowed (e.g. another user's job)",
+        "404": "Upload/job/domain not found",
+        "429": "Daily API quota exceeded (non-admin only; 50K/day)",
+        "500": "Internal error (see journalctl -u lead-generation-platform.service)",
+        "503": "SQLite database locked (auto-retry with Retry-After header)",
+    },
+    "rate_limits": {
+        "user_facing": "No per-user throttle on the enrichment API itself.",
+        "upstream_rates_managed_internally": "Sliding window + exponential backoff",
+        "daily_quota": "Non-admin: 50,000 requests/day tracked in daily_api_requests. Admin: unlimited.",
+    },
+    "examples": {
+        "login": 'curl -X POST <base>/api/auth/login -H "Content-Type: application/json" -d \'{"email":"...","password":"..."}\'',
+        "upload_csv": 'curl -X POST <base>/api/enrichment/upload -H "Authorization: Bearer $TOKEN" -F "file=@leads.csv"',
+        "flow1_minimal": 'curl -X POST <base>/api/enrichment/flows/domain-enrich -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d \'{"upload_id":"<uuid>","domain_col":"domain"}\'',
+        "flow1_dental": 'curl -X POST <base>/api/enrichment/flows/domain-enrich -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d \'{"upload_id":"<uuid>","domain_col":"domain","titles":"dentist,orthodontist,dmd,dds","max_results":3,"providers":["blitz","better_enrich"]}\'',
+        "single_enrich": 'curl -X POST <base>/api/enrichment/enrich -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d \'{"domain":"google.com","titles":"CEO,CTO"}\'',
+        "poll_status": "curl <base>/api/enrichment/jobs/$JOB_ID -H \"Authorization: Bearer $TOKEN\"",
+        "download": "curl <base>/api/enrichment/jobs/$JOB_ID/download -H \"Authorization: Bearer $TOKEN\" -o enriched.csv",
+        "sse_stream": "curl -N <base>/api/enrichment/jobs/$JOB_ID/stream -H \"Authorization: Bearer $TOKEN\"",
+    },
+    "support": {
+        "logs": "journalctl -u lead-generation-platform.service -f",
+        "health": "curl http://localhost:8765/api/health",
+        "db_lock_fix": 'cd backend && sqlite3 data/jobs.db "PRAGMA wal_checkpoint(TRUNCATE);"',
+        "postgres_companion": "sudo -u postgres psql -p 5433 lead_gen",
+        "contact": "arjav@eagleinfoservice.com",
+    },
+}
+
+
+@router.get(
+    "/flows/help",
+    summary="List Building API self-documentation",
+    description=(
+        "Returns a structured JSON description of every List Building API endpoint: "
+        "auth scheme, provider cascade, request/response schemas, defaults, errors, "
+        "and ready-to-use curl examples. Mirror of docs/LIST_BUILDING_API_2026-07-05.md. "
+        "No authentication required — intentionally public for client discovery."
+    ),
+)
+async def get_list_building_help():
+    """Return the in-API documentation payload."""
+    return _LIST_BUILDING_HELP_PAYLOAD
 
 
 # ---------------------------------------------------------------------------
@@ -616,15 +974,6 @@ class StartJobRequest(BaseModel):
     phone_col: Optional[str] = None
     company_name_col: Optional[str] = None
     existing_email_col: Optional[str] = None
-
-
-class ChainJobRequest(BaseModel):
-    """Request to chain enrichment from a scraper job output."""
-    cascade: Optional[list[dict[str, Any]]] = None
-    max_results: int = 5
-    # Force a specific provider: "contacts_db", "blitz", "better_enrich"
-    # If None, uses normal cascade
-    force_provider: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -2658,10 +3007,22 @@ async def partial_download_enrichment(
 # Background job runner
 # ---------------------------------------------------------------------------
 
-async def _run_background_sync(job_id: str, output_path: Path) -> None:
+async def _run_background_sync(
+    job_id: str,
+    output_path: Path,
+    collector: Optional[RawContactCollector] = None,
+) -> None:
     """
     Background task to sync enrichment results to Contacts DB.
     Runs asynchronously without blocking the API.
+
+    Args:
+        job_id: Job identifier.
+        output_path: Path to the CSV to sync via the CSV-based path.
+        collector: Optional ``RawContactCollector`` populated during the
+            job. When provided AND non-empty, its payloads are drained via
+            ``contacts_writer.write_enrichment_result_batch`` AFTER the
+            CSV-based sync. Phase 1 capture surface.
     """
     try:
         if contacts_writer.is_v2_enabled():
@@ -2670,6 +3031,19 @@ async def _run_background_sync(job_id: str, output_path: Path) -> None:
             result = await contacts_writer.write_enrichment_result_batch(payloads, job_id=job_id)
             logger.info("contacts_writer v2 sync done for job %s: %s",
                         job_id, result.to_dict())
+
+            # Phase 1: drain the collector (company-level audit captures).
+            # Even when empty we skip cleanly — the writer is not invoked.
+            if collector is not None:
+                extra_payloads = collector.to_payloads()
+                if extra_payloads:
+                    extra_result = await contacts_writer.write_enrichment_result_batch(
+                        extra_payloads, job_id=job_id
+                    )
+                    logger.info(
+                        "Phase 1 collector drain for job %s: %d extra contacts (%s)",
+                        job_id, len(extra_payloads), extra_result.to_dict(),
+                    )
         else:
             logger.info("Auto-syncing enrichment job %s to contacts DB (person records)", job_id)
             sync_result = sync_contacts.sync_enrichment_to_contacts(output_path)
@@ -2703,6 +3077,10 @@ async def _run_job(
     seq = [0]
 
     output_path = OUTPUT_DIR / f"{job_id}.csv"
+
+    # Phase 1: per-job collector for company-level audit captures.
+    # Drained by ``_run_background_sync`` at end of job.
+    collector = RawContactCollector(job_id=job_id)
 
     async def on_progress(e: dict[str, Any]):
         # Get FRESH store instance for this thread
@@ -2766,6 +3144,7 @@ async def _run_job(
             company_name_col=company_name_col,
             existing_email_col=existing_email_col,
             record_provider_use=record_provider_use,
+            collector=collector,
         )
 
         # If not writing incrementally, write final output
@@ -2783,7 +3162,7 @@ async def _run_job(
 
         # Run auto-sync in the background without blocking the API
         # This prevents the refresh button from getting stuck
-        asyncio.create_task(_run_background_sync(job_id, output_path))
+        asyncio.create_task(_run_background_sync(job_id, output_path, collector=collector))
 
         # Get job details for email notification
         job = store.get_enrichment_job(job_id)
@@ -3571,6 +3950,9 @@ async def _run_domain_enrich_job(
 
     output_path = OUTPUT_DIR / f"{job_id}.csv"
 
+    # Phase 1: per-job collector; drained by ``_run_background_sync``.
+    collector = RawContactCollector(job_id=job_id)
+
     # Start heartbeat task (updates last_heartbeat every 30s)
     async def heartbeat_loop():
         try:
@@ -3633,6 +4015,7 @@ async def _run_domain_enrich_job(
             job_id=job_id,
             record_provider_use=record_provider_use,
             normalize_domains=normalize_domains,
+            collector=collector,
         )
 
         # Attach input_* columns for visibility/debug.
@@ -3681,7 +4064,7 @@ async def _run_domain_enrich_job(
         logger.info("Domain enrich job %s completed, %d output rows", job_id, len(output_rows))
 
         # Sync results back to Contacts DB (async, non-blocking)
-        asyncio.create_task(_run_background_sync(job_id, output_path))
+        asyncio.create_task(_run_background_sync(job_id, output_path, collector=collector))
 
         # Send notification
         job = store.get_enrichment_job(job_id)
@@ -3968,6 +4351,13 @@ async def _run_linkedin_job(
 
     output_path = OUTPUT_DIR / f"{job_id}.csv"
 
+    # Phase 1: per-job collector. The legacy ``run_linkedin_enrichment``
+    # path does not feed the collector (person-level captures come in a
+    # later phase), but we still create + drain so the code path is
+    # uniform with the other job runners and any future captures land
+    # automatically.
+    collector = RawContactCollector(job_id=job_id)
+
     async def on_progress(e: dict[str, Any]):
         progress_store = job_store.get_store()
         progress_store.append_event(job_id, seq[0], e)
@@ -4000,14 +4390,14 @@ async def _run_linkedin_job(
         logger.info("LinkedIn enrichment job %s completed, %d output rows", job_id, len(output_rows))
 
         # Sync results back to Contacts DB (async, non-blocking)
-        asyncio.create_task(_run_background_sync(job_id, output_path))
+        asyncio.create_task(_run_background_sync(job_id, output_path, collector=collector))
 
     except Exception as e:
         logger.exception("LinkedIn enrichment job %s failed: %s", job_id, e)
         if output_path.exists() and output_path.stat().st_size > 0:
             store.set_done(job_id, str(output_path))
             # Even on partial success, attempt a sync of whatever rows landed.
-            asyncio.create_task(_run_background_sync(job_id, output_path))
+            asyncio.create_task(_run_background_sync(job_id, output_path, collector=collector))
         else:
             store.set_failed(job_id, str(e))
 
@@ -4132,6 +4522,9 @@ async def _run_linkedin_v2_job(
 
     output_path = OUTPUT_DIR / f"{job_id}.csv"
 
+    # Phase 1: per-job collector; drained by ``_run_background_sync``.
+    collector = RawContactCollector(job_id=job_id)
+
     def on_progress(e: dict[str, Any]):
         progress_store = job_store.get_store()
         progress_store.append_event(job_id, seq[0], e)
@@ -4154,6 +4547,7 @@ async def _run_linkedin_v2_job(
             max_dms=max_dms,
             include_company=include_company,
             on_progress=on_progress,
+            collector=collector,
         )
 
         if output_rows:
@@ -4170,14 +4564,14 @@ async def _run_linkedin_v2_job(
         )
 
         # Sync results back to Contacts DB (async, non-blocking)
-        asyncio.create_task(_run_background_sync(job_id, output_path))
+        asyncio.create_task(_run_background_sync(job_id, output_path, collector=collector))
 
     except Exception as e:
         logger.exception("LinkedIn v2 enrichment job %s failed: %s", job_id, e)
         if output_path.exists() and output_path.stat().st_size > 0:
             store.set_done(job_id, str(output_path))
             # Even on partial success, attempt a sync of whatever rows landed.
-            asyncio.create_task(_run_background_sync(job_id, output_path))
+            asyncio.create_task(_run_background_sync(job_id, output_path, collector=collector))
         else:
             store.set_failed(job_id, str(e))
 

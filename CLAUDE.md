@@ -48,7 +48,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 │   │   ├── blitz_client.py      # Blitz API wrapper (25 RPS, retry logic)
 │   │   ├── contacts_client.py   # Contacts DB wrapper (75 RPS)
 │   │   ├── better_enrich_client.py
-│   │   └── prospeo_client.py    # Final fallback enrichment
+│   │   └── prospeo_client.py    # Disabled fallback (set ENABLE_PROSPEO=true + flip providers.py to re-enable)
 │   ├── phone_enrichment/        # Phone enrichment module (Blitz Direct Phone)
 │   │   ├── routes.py            # Phone enrichment API endpoints
 │   │   ├── pipeline.py          # Phone enrichment workflow
@@ -131,8 +131,10 @@ Each enrichment source has different cost/quality tradeoffs:
 |-----|------------|----------|---------|
 | **Contacts DB** | 75 RPS | 1st (free) | Domain → company → contacts with emails |
 | **Blitz** | 25 RPS | 2nd | LinkedIn-based enrichment with title cascade |
-| **BetterEnrich** | 10 RPS | 3rd | Person email, company email |
-| **Prospeo** | 30 RPS | 4th (paid) | Final fallback - person/company enrichment |
+| **WizLeads** | 10 RPS | 3rd | Catch-all verified email enrichment |
+| **BetterEnrich** | 10 RPS | 4th | Person email, company email |
+
+> **Prospeo** is implemented in `backend/enrichment/prospeo_client.py` but currently **disabled** end-to-end. The frontend no longer exposes it as a selectable provider, and the backend cascade will skip it via both `ENABLED_PROVIDERS["prospeo"]=False` (in `backend/enrichment/providers.py`) and the `ENABLE_PROSPEO=false` env kill-switch in `backend/.env`. To re-enable: set `ENABLE_PROSPEO=true` in `.env` AND flip `prospeo` to `True` in `providers.py`.
 
 ### Blitz Cascade (title tiers)
 ```

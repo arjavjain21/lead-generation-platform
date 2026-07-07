@@ -520,6 +520,7 @@ async def _enrich_single_domain(
     validate_email: bool = True,  # NEW PARAMETER
     record_provider_use: Optional[callable] = None,  # NEW: callback to record provider usage
     cascade_config: Optional[str] = None,  # NEW: JSON cascade config from job
+    collector: Optional[Any] = None,  # RawContactCollector; Phase 1 capture
 ) -> list[OutputRow]:
     """
     Enrich a single domain: get company info, generic emails, and decision makers.
@@ -531,6 +532,8 @@ async def _enrich_single_domain(
         selected_providers: List of user-selected providers to use (or None for all enabled).
         record_provider_use: Optional callback to record which providers were actually queried.
         cascade_config: Optional JSON string with custom cascade config from job.
+        collector: Optional ``RawContactCollector``. Captures every contact
+            returned at the company-level lookup step (Contacts DB + Blitz).
     """
     if not domain_semaphore:
         domain_semaphore = asyncio.Semaphore(DOMAIN_CONCURRENCY)
@@ -576,10 +579,26 @@ async def _enrich_single_domain(
         # Still try to get generic emails from Contacts DB by domain
         if include_generic_emails:
             try:
+                # FIX: previously hardcoded ``limit=10`` regardless of the
+                # user-selected ``max_decision_makers``. Use the user cap
+                # so the audit capture and the user-facing CSV agree on
+                # how many records the provider returned for this domain.
                 contacts = await contacts_client.company_contacts_enriched(
-                    contacts_http, domain, limit=10
+                    contacts_http, domain, limit=max_decision_makers
                 )
                 if contacts and len(contacts) > 0:
+                    # Phase 1: capture every contact before any filtering.
+                    if collector is not None:
+                        for _gc in contacts:
+                            try:
+                                collector.capture_company_contact(
+                                    source="contacts_db",
+                                    domain=domain,
+                                    company_linkedin_url="",
+                                    contact=_gc,
+                                )
+                            except Exception:
+                                pass
                     # Extract any emails found
                     for contact in contacts:
                         email = contact.get("email", "")
@@ -606,6 +625,19 @@ async def _enrich_single_domain(
                 contacts_http, domain, limit=max_decision_makers
             )
             if contacts_contacts and len(contacts_contacts) > 0:
+                # Phase 1: capture every Contacts DB contact BEFORE the
+                # ``[:max_decision_makers]`` truncation in the loop below.
+                if collector is not None:
+                    for _cc in contacts_contacts:
+                        try:
+                            collector.capture_company_contact(
+                                source="contacts_db",
+                                domain=domain,
+                                company_linkedin_url=company_linkedin_url,
+                                contact=_cc,
+                            )
+                        except Exception:
+                            pass
                 # Check quality: need at least 1 person with email
                 emails_count = sum(1 for c in contacts_contacts if c.get("email"))
                 if len(contacts_contacts) >= 1 and emails_count >= 1:
@@ -648,6 +680,18 @@ async def _enrich_single_domain(
                     blitz_http, company_linkedin_url, cascade, max_decision_makers
                 )
                 persons = icp_result.get("results", [])
+                # Phase 1: capture every Blitz contact.
+                if collector is not None and persons:
+                    for _bp in persons:
+                        try:
+                            collector.capture_company_contact(
+                                source="blitz",
+                                domain=domain,
+                                company_linkedin_url=company_linkedin_url,
+                                contact=_bp,
+                            )
+                        except Exception:
+                            pass
                 logger.debug("Using Blitz for %d decision makers", len(persons))
             except Exception as e:
                 logger.debug("Blitz waterfall search failed: %s", e)
@@ -723,6 +767,7 @@ async def _apply_company_fallback_to_output_rows(
     dedupe: company_fallback.CompanyFallbackDedupe,
     record_provider_use: Optional[Callable[[str], None]] = None,
     source_path_prefix: str = "",
+    collector: Optional[Any] = None,
 ) -> None:
     """Run the company/page-level fallback once per domain and apply
     to all output rows that lack a person-level email.
@@ -753,6 +798,8 @@ async def _apply_company_fallback_to_output_rows(
         validate_email=True,
         dedupe=dedupe,
         record_provider_use=record_provider_use,
+        collector=collector,
+        company_linkedin_url=(output_rows[0].get("company_linkedin_url", "") if output_rows else ""),
     )
 
     for row in output_rows:
@@ -782,6 +829,7 @@ async def run_domain_enrichment(
     get_store_fn: Optional[Callable[[], Any]] = None,  # Injected to avoid module-level ref
     normalize_domains: bool = True,  # Pre-processing flag: gate the per-row normalize_domain() call
     cascade_config: Optional[str] = None,  # NEW: JSON cascade config from job store
+    collector: Optional[Any] = None,  # RawContactCollector; Phase 1 capture
 ) -> list[OutputRow]:
     """
     Main entry point for Flow 1: Domain → Generic Emails + Decision Makers
@@ -802,6 +850,8 @@ async def run_domain_enrichment(
         job_id: Job ID for cancellation tracking
         record_provider_use: Optional callback called with provider name when that provider is queried.
         cascade_config: Optional JSON string with custom cascade config from job store.
+        collector: Optional ``RawContactCollector``. When provided, every
+            company-level provider response is captured for audit/write-back.
 
     Returns:
         List of enriched output rows
@@ -865,6 +915,7 @@ async def run_domain_enrichment(
                 validate_email=validate_email,
                 record_provider_use=record_provider_use,
                 cascade_config=cascade_config,
+                collector=collector,
             )
 
         # Call progress callback with exception handling
@@ -909,6 +960,7 @@ async def run_domain_enrichment(
                 facebook_url=row_facebook_url,
                 dedupe=domain_dedupe,
                 record_provider_use=record_provider_use,
+                collector=collector,
             )
 
         return result
@@ -1031,90 +1083,6 @@ async def search_employees(
     )
 
 
-async def enrich_companies_from_search(
-    company_results: list[dict[str, Any]],
-    blitz_http: httpx.AsyncClient,
-    contacts_http: httpx.AsyncClient,
-    max_decision_makers: int = 5,
-    on_progress: Callable[[dict[str, Any]], None] = None,
-    force_provider: Optional[str] = None,
-) -> list[OutputRow]:
-    """
-    Enrich a list of company search results with decision makers.
-
-    Args:
-        company_results: List of company dicts from company search
-        blitz_http: Blitz API client
-        contacts_http: Contacts DB client
-        max_decision_makers: Max DMs per company
-        on_progress: Progress callback
-        force_provider: If set, only use that specific provider.
-
-    Returns:
-        List of enriched output rows
-    """
-    domain_semaphore = asyncio.Semaphore(DOMAIN_CONCURRENCY)
-    output_rows = []
-
-    async def process_company(idx: int, company: dict[str, Any]):
-        domain = company.get("domain", "")
-        if not domain:
-            # Try to extract domain from LinkedIn URL or name
-            linkedin_url = company.get("linkedin_url", "")
-            # Domain extraction logic would go here
-            return []
-
-        base_row = {
-            "company_name": company.get("name", ""),
-            "company_linkedin_url": company.get("linkedin_url", ""),
-            "company_industry": company.get("industry", ""),
-            "company_employee_count": str(company.get("employee_count", "")),
-        }
-
-        result = await _enrich_single_domain(
-            blitz_http,
-            contacts_http,
-            base_row,
-            domain,
-            max_decision_makers,
-            True,
-            domain_semaphore,
-            force_provider=force_provider,
-            validate_email=validate_email,
-            record_provider_use=record_provider_use,
-        )
-
-        if on_progress:
-            # Collect source counts from results (all from Blitz company search)
-            source_counts: dict[str, int] = {}
-            for r in result:
-                source = r.get("dm_email_source", "")
-                if source:
-                    provider = _normalize_source(source)
-                    source_counts[provider] = source_counts.get(provider, 0) + 1
-            emails_found = sum(1 for r in result if r.get("dm_email"))
-            on_progress({
-                "index": idx,
-                "total": len(company_results),
-                "domain": domain,
-                "status": result[0].get("row_status", STATUS_ERROR),
-                "contacts_found": len(result),
-                "emails_found": emails_found,
-                "source_counts": source_counts,
-            })
-
-        return result
-
-    tasks = [process_company(i, c) for i, c in enumerate(company_results)]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    for result in results:
-        if not isinstance(result, Exception):
-            output_rows.extend(result)
-
-    return output_rows
-
-
 # =============================================================================
 # Flow 3: LinkedIn URLs → Full Enrichment
 # =============================================================================
@@ -1207,6 +1175,8 @@ async def run_linkedin_enrichment(
     rows: list[dict[str, Any]],
     linkedin_col: str,
     on_progress: Callable[[dict[str, Any]], None] = None,
+    validate_email: bool = True,
+    record_provider_use: Optional[Callable[[str], None]] = None,
 ) -> list[OutputRow]:
     """
     Main entry point for Flow 3: LinkedIn URLs → Full Enrichment
@@ -1215,6 +1185,11 @@ async def run_linkedin_enrichment(
         rows: List of input rows from CSV
         linkedin_col: Column name containing LinkedIn URL
         on_progress: Callback for progress updates
+        validate_email: If True, verify emails with mailtester (currently
+            unused by ``_enrich_single_linkedin`` but kept for parity with
+            other entry points).
+        record_provider_use: Optional callback invoked with a provider name
+            when that provider is queried. Used for usage telemetry.
 
     Returns:
         List of enriched output rows
@@ -1277,6 +1252,7 @@ async def run_linkedin_enrichment(
                     dedupe=li_dedupe,
                     record_provider_use=record_provider_use,
                     source_path_prefix=result.get("source_path", ""),
+                    collector=None,  # run_linkedin_enrichment has no collector param yet
                 )
 
         return result
@@ -1333,12 +1309,18 @@ async def _enrich_by_company_waterfall(
     cascade: list[dict[str, Any]],
     max_dms: int = 5,
     semaphore: asyncio.Semaphore = None,
+    collector: Optional[Any] = None,  # RawContactCollector; Phase 1 capture
 ) -> list[dict[str, Any]]:
     """
     Use Blitz waterfall_icp_search to find decision makers from company LinkedIn URL.
 
     Returns list of person dictionaries with: first_name, last_name, full_name,
     title, job_level, linkedin_url, email, verified_email.
+
+    Args:
+        collector: Optional ``RawContactCollector``. When provided, every
+            Blitz response person is captured before normalization to the
+            function's flat dict shape.
     """
     if not semaphore:
         semaphore = asyncio.Semaphore(LINKEDIN_CONCURRENCY)
@@ -1354,6 +1336,18 @@ async def _enrich_by_company_waterfall(
             )
 
             if response.get("results"):
+                # Phase 1: capture every Blitz result before any filtering.
+                if collector is not None:
+                    for _br in response["results"]:
+                        try:
+                            collector.capture_company_contact(
+                                source="blitz",
+                                domain="",
+                                company_linkedin_url=company_url,
+                                contact=_br,
+                            )
+                        except Exception:
+                            pass
                 for result in response["results"]:
                     person = result.get("person", {})
                     first_name = person.get("first_name", "")
@@ -1408,6 +1402,7 @@ async def run_unified_linkedin_enrichment(
     max_dms: int = 5,
     include_company: bool = True,
     on_progress: Optional[Callable[[dict[str, Any]], None]] = None,
+    collector: Optional[Any] = None,  # RawContactCollector; Phase 1 capture
 ) -> list[OutputRow]:
     """
     Unified enrichment for CSV with personal and/or company LinkedIn URLs.
@@ -1419,6 +1414,8 @@ async def run_unified_linkedin_enrichment(
         max_dms: Max decision makers to return from company waterfall (default 5)
         include_company: Include company details in output
         on_progress: Callback for progress updates
+        collector: Optional ``RawContactCollector``. When provided, every
+            Blitz response from the company waterfall is captured.
 
     Returns:
         List of enriched output rows (can be > len(rows) due to waterfall expansion)
@@ -1481,7 +1478,8 @@ async def run_unified_linkedin_enrichment(
         if not found_data and company_url and "linkedin.com" in company_url:
             # Try company waterfall to get decision makers
             company_dms = await _enrich_by_company_waterfall(
-                blitz_http, company_url, DEFAULT_CASCADE, max_dms, semaphore
+                blitz_http, company_url, DEFAULT_CASCADE, max_dms, semaphore,
+                collector=collector,
             )
 
             if company_dms:

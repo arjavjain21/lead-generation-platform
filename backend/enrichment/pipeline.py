@@ -275,6 +275,15 @@ def _should_skip_provider(provider: str, force_provider: Optional[str]) -> bool:
       1. Is the provider globally disabled in ENABLED_PROVIDERS?
       2. If force_provider is set, does it match the current provider?
     """
+    # Defensive kill-switch: Prospeo is currently disabled end-to-end.
+    # The cascade never invokes prospeo_client today, but this guard ensures
+    # any future code path that tries to call Prospeo will be skipped when
+    # the ENABLE_PROSPEO env flag is "false" (default). Set ENABLE_PROSPEO=true
+    # in backend/.env AND flip ENABLED_PROVIDERS["prospeo"] to re-enable.
+    if provider == "prospeo" and os.environ.get("ENABLE_PROSPEO", "false").lower() != "true":
+        logger.debug("_should_skip_provider: prospeo skipped (ENABLE_PROSPEO=false)")
+        return True
+
     # First check: is the provider globally disabled?
     if not providers.is_provider_enabled(provider):
         logger.debug("_should_skip_provider: %s disabled in ENABLED_PROVIDERS", provider)
@@ -410,16 +419,22 @@ ROUTE_METHOD_PHONE_REVERSE_LOOKUP = "phone_reverse_lookup"
 
 ENRICHED_COLUMNS = [
     "company_linkedin_url",
+    "company_name",
+    "company_industry",
+    "company_employee_count",
     "dm_first_name",
     "dm_last_name",
     "dm_full_name",
     "dm_title",
+    "dm_job_level",
+    "dm_job_function",
     "dm_linkedin_url",
     "dm_email",
     "dm_email_source",
     "dm_email_verified",
     "mailtester_code",
     "mailtester_message",
+    "dm_phone",
     "dm_headline",
     "dm_location_city",
     "dm_location_country",
@@ -445,6 +460,11 @@ ENRICHED_COLUMNS = [
     "no_email_reason",
     "final_email_status",
     "final_email_verification_source",
+    # Provider errors (user-facing error information)
+    # TODO(Phase 3): populate from cascade error capture. Currently the
+    # column exists for schema parity with list_builder.py but is left
+    # empty by all row builders below.
+    "provider_errors",
     # Company / page-level fallback outputs (BetterEnrich).
     # These are populated only when the person-level waterfall returns no
     # decision-maker email. They MUST never be written into dm_email.
@@ -1262,6 +1282,7 @@ async def _maybe_apply_company_fallbacks(
     validate_email: bool,
     dedupe: "company_fallback.CompanyFallbackDedupe",
     record_provider_use: Optional[Callable[[str], None]] = None,
+    collector: Optional[Any] = None,
 ) -> None:
     """Run the company / page-level fallback tier for a result row and
     mutate it in place.
@@ -1300,6 +1321,8 @@ async def _maybe_apply_company_fallbacks(
         validate_email=validate_email,
         dedupe=dedupe,
         record_provider_use=record_provider_use,
+        collector=collector,
+        company_linkedin_url=(result_rows[0].get("company_linkedin_url", "") if result_rows else ""),
     )
 
     for row in result_rows:
@@ -1541,6 +1564,8 @@ async def _resolve_email_for_person(
     force_provider: Optional[str] = None,
     validate_email: bool = True,
     record_provider_use: Optional[Callable[[str], None]] = None,
+    collector: Optional[Any] = None,  # RawContactCollector; Phase 2a capture
+    company_linkedin_url: str = "",
 ) -> tuple[str, str, dict[str, Any]]:
     """
     Returns (email, source, verification_info).
@@ -1560,6 +1585,13 @@ async def _resolve_email_for_person(
             ("contacts_db" | "blitz" | "wizleads" | "better_enrich") at the
             moment each provider is *attempted* (not gated on success). This
             is what populates `used_providers` on the job.
+        collector: Optional ``RawContactCollector``. When provided, every
+            provider response that returns a non-None dict is captured
+            BEFORE validation/truncation drops it. Phase 2a — no behavior
+            change when None.
+        company_linkedin_url: Optional company LinkedIn URL included in
+            collector payloads for lineage. Defaults to "" for domain-only
+            cascades.
 
     verification_info dict contains:
         - dm_email_verified: "yes", "no", "unknown"
@@ -1585,6 +1617,28 @@ async def _resolve_email_for_person(
             except Exception as e:  # never let accounting break the cascade
                 logger.warning("record_provider_use(%s) failed: %s", provider, e)
 
+    def _capture(source: str, contact: dict[str, Any]) -> None:
+        """Phase 2a: forward every provider response dict to the collector.
+
+        Captures the RAW provider response (BEFORE mailtester validation
+        drops it). No-op when collector is None or contact is falsy. Never
+        raises — capture is a side-effect, not part of the cascade contract.
+        """
+        if collector is None or not contact:
+            return
+        try:
+            collector.capture_company_contact(
+                source=source,
+                domain=domain,
+                company_linkedin_url=company_linkedin_url,
+                contact=contact,
+            )
+        except Exception as cap_err:
+            logger.debug(
+                "collector.capture_company_contact(%s) failed for %s: %s",
+                source, domain, cap_err,
+            )
+
     async with email_semaphore:
         # Step 1: Contacts DB by person's name + domain (PRIMARY - FREE)
         # When both name and LinkedIn URL are available, prefer name+domain to avoid
@@ -1596,6 +1650,16 @@ async def _resolve_email_for_person(
                     contacts_client_inst, full_name, domain
                 )
                 email = contacts_client.extract_email_from_contacts_response(contacts_data)
+                # Phase 2a: capture the Contacts DB response BEFORE validation
+                # drops it. Capture even when email is missing — name+title
+                # is still a meaningful person contact. Mutate a copy so the
+                # downstream extract_email path is unaffected.
+                if contacts_data:
+                    _cap_contact = dict(contacts_data)
+                    _cap_contact.setdefault("full_name", full_name)
+                    if email:
+                        _cap_contact["email"] = email
+                    _capture("contacts_db", _cap_contact)
                 if email:
                     # Verify email with mailtester if enabled
                     if validate_email:
@@ -1641,6 +1705,14 @@ async def _resolve_email_for_person(
                     contacts_client_inst, linkedin_url
                 )
                 email = contacts_client.extract_email_from_contacts_response(contacts_data)
+                # Phase 2a: capture the Contacts DB LinkedIn-URL lookup result
+                # (same shape as Step 1).
+                if contacts_data:
+                    _cap_contact = dict(contacts_data)
+                    _cap_contact.setdefault("linkedin_url", linkedin_url)
+                    if email:
+                        _cap_contact["email"] = email
+                    _capture("contacts_db", _cap_contact)
                 if email:
                     # Verify email with mailtester if enabled
                     if validate_email:
@@ -1689,6 +1761,10 @@ async def _resolve_email_for_person(
                 )
                 if result.get("found") and result.get("person"):
                     person_data = result.get("person", {})
+                    # Phase 2a: capture the Blitz person dict BEFORE any
+                    # mailtester-driven truncation. person_data already
+                    # carries full_name, linkedin_url, title, etc.
+                    _capture("blitz", person_data)
                     # Check for verified_email field first — provider-acceptable
                     verified_email = person_data.get("verified_email", "")
                     if verified_email:
@@ -1742,6 +1818,17 @@ async def _resolve_email_for_person(
                 result = await blitz_client.find_work_email(blitz_client_inst, linkedin_url)
                 if result.get("found") and result.get("email"):
                     candidate = result["email"]
+                    # Phase 2a: capture the Blitz find_work_email response.
+                    # Stitch in identity from the input person so the
+                    # payload has full_name + linkeded_url for lineage.
+                    _capture("blitz", {
+                        **result,
+                        "full_name": full_name,
+                        "first_name": first_name,
+                        "last_name": last_name,
+                        "linkedin_url": linkedin_url,
+                        "email": candidate,
+                    })
                     # Verify with Mailtester; only treat as final if confirmed
                     # or if Mailtester is unavailable. Otherwise fall through.
                     if validate_email:
@@ -1780,6 +1867,16 @@ async def _resolve_email_for_person(
                 )
                 if result and result.get("email"):
                     email = result["email"]
+                    # Phase 2a: capture the WizLeads response (already includes
+                    # email; stitch in identity for lineage).
+                    _capture("wizleads", {
+                        **result,
+                        "full_name": full_name,
+                        "first_name": first_name,
+                        "last_name": last_name,
+                        "linkedin_url": linkedin_url,
+                        "email": email,
+                    })
                     verification_info["dm_email_verified"] = "yes"  # catchall verified by WizLeads
                     logger.info("WizLeads found email for %s: %s (catchall: %s)",
                                 full_name, email, result.get("catchall"))
@@ -1796,6 +1893,16 @@ async def _resolve_email_for_person(
                 )
                 if result and result.get("email"):
                     email = result["email"]
+                    # Phase 2a: capture the BetterEnrich V3 person-email
+                    # response. Stitch identity for lineage.
+                    _capture("better_enrich", {
+                        **result,
+                        "full_name": full_name,
+                        "first_name": first_name,
+                        "last_name": last_name,
+                        "linkedin_url": linkedin_url,
+                        "email": email,
+                    })
                     # V3 provides email_status - map to dm_email_verified
                     email_status = result.get("email_status", "verified")
                     if email_status in ("verified", "valid"):
@@ -1816,6 +1923,14 @@ async def _resolve_email_for_person(
                     contacts_client_inst, input_full_name, domain
                 )
                 email = contacts_client.extract_email_from_contacts_response(contacts_data)
+                # Phase 2a: capture the alternate-name Contacts DB lookup
+                # (uses input_full_name rather than person.full_name).
+                if contacts_data:
+                    _cap_contact = dict(contacts_data)
+                    _cap_contact.setdefault("full_name", input_full_name)
+                    if email:
+                        _cap_contact["email"] = email
+                    _capture("contacts_db", _cap_contact)
                 if email:
                     # Verify email with mailtester if enabled
                     if validate_email:
@@ -1873,6 +1988,7 @@ async def _enrich_domain(
     force_provider: Optional[str] = None,  # "contacts_db", "blitz", "better_enrich"
     validate_email: bool = True,  # NEW PARAMETER
     record_provider_use: Optional[Callable[[str], None]] = None,
+    collector: Optional[Any] = None,  # RawContactCollector; Phase 1 capture
 ) -> list[OutputRow]:
     """
     Enrich a domain with decision-maker contacts.
@@ -1884,6 +2000,9 @@ async def _enrich_domain(
             *attempted* (regardless of success). Used to populate
             `jobs.used_providers` so the job summary shows which providers
             were tried.
+        collector: Optional ``RawContactCollector``. When provided, every
+            provider response at the company-level lookup step is captured
+            BEFORE truncation to the user-facing cap. Phase 1 only.
     """
     logger.info("_enrich_domain called with force_provider=%s for domain=%s", force_provider, domain)
     company_linkedin_url = ""
@@ -1976,6 +2095,25 @@ async def _enrich_domain(
                     contacts_http, domain, limit=max_results
                 )
                 if contacts_contacts and len(contacts_contacts) > 0:
+                    # Phase 1: capture every Contacts DB contact BEFORE the
+                    # ``[:max_results]`` truncation below. The provider already
+                    # capped the response server-side; this audit capture
+                    # simply preserves anything that would be dropped on
+                    # the way to the user's CSV.
+                    if collector is not None:
+                        for _cc in contacts_contacts:
+                            try:
+                                collector.capture_company_contact(
+                                    source="contacts_db",
+                                    domain=domain,
+                                    company_linkedin_url=company_linkedin_url,
+                                    contact=_cc,
+                                )
+                            except Exception as _cap_err:
+                                logger.debug(
+                                    "collector.capture_company_contact(contacts_db) failed for %s: %s",
+                                    domain, _cap_err,
+                                )
                     # Quality check: need at least 1 decision maker AND 1 email
                     emails_count = sum(1 for c in contacts_contacts if c.get("email"))
                     if len(contacts_contacts) >= 1 and emails_count >= 1:
@@ -2013,6 +2151,24 @@ async def _enrich_domain(
                     blitz_http, company_linkedin_url, cascade, max_results
                 )
                 persons = icp_result.get("results", [])
+                # Phase 1: capture every Blitz contact. Blitz already
+                # truncated server-side to ``max_results``; we keep all of
+                # them in the audit surface even if the cascade later
+                # discards some (e.g., email-resolution drops a person).
+                if collector is not None and persons:
+                    for _blitz_person in persons:
+                        try:
+                            collector.capture_company_contact(
+                                source="blitz",
+                                domain=domain,
+                                company_linkedin_url=company_linkedin_url,
+                                contact=_blitz_person,
+                            )
+                        except Exception as _cap_err:
+                            logger.debug(
+                                "collector.capture_company_contact(blitz) failed for %s: %s",
+                                domain, _cap_err,
+                            )
                 logger.debug("Using Blitz API for %d decision makers from %s", len(persons), domain)
             except Exception as e:
                 logger.warning("Blitz waterfall_icp_search failed for %s: %s", company_linkedin_url, e)
@@ -2029,6 +2185,22 @@ async def _enrich_domain(
                 )
                 if be_result and be_result.get("email"):
                     logger.info("BetterEnrich company email found for %s: %s", domain, be_result.get("email"))
+                    # Phase 2b: capture company email for Contacts DB write-back.
+                    # Uses capture_company_email() so the payload routes to
+                    # company_email field (NEVER overwrites a person email).
+                    if collector is not None:
+                        try:
+                            collector.capture_company_email(
+                                source="better_enrich",
+                                domain=domain,
+                                company_linkedin_url=company_linkedin_url,
+                                email_data=be_result,
+                            )
+                        except Exception as _cap_err:
+                            logger.debug(
+                                "collector.capture_company_email failed for %s: %s",
+                                domain, _cap_err,
+                            )
                     return [_company_email_row(
                         base_row,
                         company_linkedin_url,
@@ -2052,6 +2224,8 @@ async def _enrich_domain(
             force_provider=force_provider,
             validate_email=validate_email,
             record_provider_use=record_provider_use,
+            collector=collector,
+            company_linkedin_url=company_linkedin_url,
         )
         for item in persons
     ]
@@ -2095,6 +2269,7 @@ async def run_pipeline(
     force_provider: Optional[str] = None,
     record_provider_use: Optional[Callable[[str], None]] = None,
     use_email_cache: bool = True,
+    collector: Optional[Any] = None,  # RawContactCollector; Phase 1 capture
 ) -> list[OutputRow]:
     """
     Runs the full pipeline over all rows.
@@ -2390,6 +2565,7 @@ async def run_pipeline(
                 validate_email=validate_email,
                 force_provider=force_provider,
                 record_provider_use=record_provider_use,
+                collector=collector,
             )
             # Add a row-level audit stub for the legacy cascade. Per-DM attempts
             # aren't individually tracked here; we report the row's outcome.
@@ -2434,6 +2610,7 @@ async def run_pipeline(
             validate_email=validate_email,
             dedupe=company_fallback_dedupe,
             record_provider_use=record_provider_use,
+            collector=collector,
         )
 
         # Collect source counts from this row's results
