@@ -193,7 +193,7 @@ async def _run_contacts_writer_v2(
 
 
 # Valid provider values for force_provider parameter
-VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "wizleads", "better_enrich"})
+VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "smartprospect", "wizleads", "better_enrich"})
 
 
 def _should_skip_provider(provider: str, force_provider: Optional[str]) -> bool:
@@ -275,6 +275,91 @@ def _build_routing_response(
     }
 
 
+def _build_domain_only_fallback_route_result(
+    data_sources: dict[str, str],
+    company_linkedin_url: str,
+) -> dict[str, Any]:
+    """Synthesize a route_result for domain_only mode showing what was tried.
+
+    The domain_only cascade doesn't use ``route_enrichment`` (which produces
+    the structured attempts list automatically for the per-person cascades).
+    Instead it uses ``_enrich_domain`` (POST endpoint) or inline helpers
+    (GET endpoint) that try Contacts DB and Blitz at the company level before
+    falling back to per-DM lookups.
+
+    Without this helper, domain_only responses with 0 contacts show
+    ``provider_attempts=[]``, which looks like the system didn't try
+    anything. That's misleading — we DID try Contacts DB and Blitz, we
+    just couldn't surface it through the routing layer.
+
+    This helper reconstructs the attempts list from the ``data_sources``
+    signals (which ARE populated by the domain_only handlers) so the
+    response accurately reflects what was attempted.
+
+    Args:
+        data_sources: The ``data_sources`` dict from the response. Must
+            include ``company_linkedin`` and ``contacts`` keys.
+        company_linkedin_url: The resolved company LinkedIn URL (empty
+            string when not found).
+
+    Returns:
+        A synthetic route_result dict with ``mode``, ``source_path``,
+        ``provider_attempts``, and ``no_email_reason`` populated to
+        reflect the actual domain_only cascade attempts.
+    """
+    company_source = data_sources.get("company_linkedin", "")
+    contacts_source = data_sources.get("contacts", "")
+
+    attempts: list[str] = []
+
+    # Company LinkedIn URL resolution: Contacts DB is always tried first.
+    attempts.append("company_by_domain@contacts_db")
+    # Blitz domain_to_linkedin is tried when Contacts DB missed or errored.
+    # We can infer this: if company_source is "blitz" or "not_found", Contacts
+    # DB didn't return a usable URL, so Blitz was attempted as the fallback.
+    if company_source in ("blitz", "not_found"):
+        attempts.append("domain_to_linkedin@blitz")
+
+    # Decision-maker discovery.
+    # Contacts DB company_contacts_enriched runs unconditionally (it doesn't
+    # need a LinkedIn URL). Blitz waterfall_icp_search DOES need one.
+    attempts.append("company_contacts_enriched@contacts_db")
+    if company_linkedin_url:
+        attempts.append("waterfall_icp_search@blitz")
+
+    # Determine the most-specific no_email_reason.
+    if not company_linkedin_url:
+        no_email_reason = pipeline.NO_EMAIL_REASON_DOMAIN_ONLY_NO_LINKEDIN
+        source_path = (
+            "domain -> contacts_db.company_by_domain (no match) -> "
+            "blitz.domain_to_linkedin (no match) -> no company LinkedIn URL -> "
+            "cascade cannot proceed (Blitz waterfall requires LinkedIn URL)"
+        )
+    elif contacts_source == "not_found":
+        no_email_reason = pipeline.NO_EMAIL_REASON_DOMAIN_ONLY_NO_CONTACTS
+        source_path = (
+            "domain -> company LinkedIn found -> "
+            "contacts_db.company_contacts_enriched (no DMs) -> "
+            "blitz.waterfall_icp_search (no DMs) -> no decision makers"
+        )
+    else:
+        # DMs were found but none yielded an email — per-DM cascades ran
+        # and would have populated last_route_result normally. This branch
+        # is a defensive fallback and should rarely trigger.
+        no_email_reason = ""
+        source_path = "domain -> company found -> DMs found -> per-DM cascade ran"
+
+    return {
+        "mode": "domain_only",
+        "source_path": source_path,
+        "provider_attempts": attempts,
+        "no_email_reason": no_email_reason,
+        "provider_attempts_json": [],
+        "providers_called": [],
+        "providers_skipped": [],
+    }
+
+
 def _get_error_message_from_attempt(attempt: dict[str, Any]) -> str:
     """Generate a user-friendly error message from a provider attempt record."""
     provider = attempt.get("provider", "")
@@ -306,6 +391,69 @@ _active_jobs: set[str] = set()
 _job_signals: dict[str, asyncio.Event] = {}
 # Set of jobs that have been cancelled by user
 _cancelled_jobs: set[str] = set()
+
+
+# ---------------------------------------------------------------------------
+# JSON Response Freeze (Option C Phase 3, 2026-07-07)
+#
+# These 6 fields are populated internally by Phase 2's cascade collector
+# wiring but must NOT appear in the JSON API response. External consumers
+# (Clay, Zapier, custom scripts) must see byte-for-byte identical JSON
+# before and after Phase 2.
+#
+# CSV downloads intentionally include these fields (separate code path).
+#
+# See: docs/RESPONSE_SHAPE_BASELINE_2026-07-07.md for the full allowlist.
+# ---------------------------------------------------------------------------
+
+# Row-level fields that get stripped from contact objects in JSON responses.
+# NOTE: routing.provider_errors is a DIFFERENT concept (built by
+# _build_routing_response at the routing-block level) and is NOT stripped.
+_ROW_LEVEL_INTERNAL_FIELDS: frozenset[str] = frozenset({
+    "company_name",
+    "company_industry",
+    "company_employee_count",
+    "dm_job_level",
+    "dm_job_function",
+    "provider_errors",  # row-level only; routing.provider_errors stays
+})
+
+
+def _strip_internal_fields_from_response(response: Any) -> Any:
+    """
+    Remove the 6 internal-only fields from contact objects in the response.
+
+    Applies to:
+    - response["contacts"][*]  (the contact object list)
+
+    Does NOT touch:
+    - response["routing"]["provider_errors"]  (different concept, different location)
+    - Top-level keys, data_sources, sync_to_contacts_db
+    - CSV column data (CSV is generated separately, not from this response)
+
+    Idempotent: running twice == running once. O(n) over contacts list.
+    Returns the response unchanged if it's not a dict or has no contacts list.
+    """
+    if not isinstance(response, dict):
+        return response
+
+    # Shallow copy so we don't mutate the caller's dict.
+    response = dict(response)
+
+    contacts = response.get("contacts")
+    if isinstance(contacts, list):
+        response["contacts"] = [
+            {
+                k: v
+                for k, v in c.items()
+                if k not in _ROW_LEVEL_INTERNAL_FIELDS
+            }
+            if isinstance(c, dict)
+            else c
+            for c in contacts
+        ]
+
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -361,6 +509,7 @@ _LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
         "cascade_order": [
             {"name": "contacts_db", "rate": "75 RPS", "role": "Internal PostgreSQL DB, always first, free"},
             {"name": "blitz", "rate": "25 RPS", "role": "LinkedIn-based enrichment with title cascade"},
+            {"name": "smartprospect", "rate": "30 RPS", "role": "SmartLead Find Emails — self-verifying person-email finder, batch up to 10. Gates on firstName+lastName+domain."},
             {"name": "wizleads", "rate": "10 RPS", "role": "Catch-all verified email enrichment"},
             {"name": "better_enrich", "rate": "10 RPS", "role": "Person + company email (final fallback)"},
             {"name": "prospeo", "rate": "n/a", "role": "DISABLED — code present, end-to-end off"},
@@ -387,7 +536,7 @@ _LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
             "path": "/api/enrichment/providers",
             "auth": "jwt or api key",
             "summary": "List currently enabled providers.",
-            "response_shape": '{"providers": ["contacts_db","blitz","wizleads","better_enrich"]}',
+            "response_shape": '{"providers": ["contacts_db","blitz","smartprospect","wizleads","better_enrich"]}',
         },
         {
             "method": "GET",
@@ -420,7 +569,7 @@ _LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
             "query_params": [
                 {"name": "max_results", "type": "int", "default": "5"},
                 {"name": "cascade_json", "type": "string (URL-encoded JSON)", "required": "no"},
-                {"name": "force_provider", "type": "string", "required": "no", "values": ["contacts_db", "blitz", "better_enrich"]},
+                {"name": "force_provider", "type": "string", "required": "no", "values": ["contacts_db", "blitz", "smartprospect", "wizleads", "better_enrich"]},
             ],
         },
         {
@@ -446,7 +595,7 @@ _LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
                 {"name": "max_results", "type": "int", "default": "5", "range": "1-10"},
                 {"name": "titles", "type": "string", "notes": "comma-separated, e.g. 'CEO,CTO', max 50"},
                 {"name": "cascade", "type": "array<dict>", "notes": "advanced — overrides titles"},
-                {"name": "force_provider", "type": "string", "values": ["contacts_db", "blitz", "better_enrich"]},
+                {"name": "force_provider", "type": "string", "values": ["contacts_db", "blitz", "smartprospect", "wizleads", "better_enrich"]},
             ],
             "query_params": [{"name": "debug", "type": "bool", "default": "false", "notes": "adds routing block"}],
             "modes": {
@@ -922,10 +1071,14 @@ def _friendly_source(source: str) -> str:
 
 
 def _map_validation_status(code: str) -> str:
-    """Map mailtester codes to validation status."""
+    """Map mailtester codes to validation status.
+
+    Under the default ok-only accept policy, 'mb' is treated as invalid
+    (policy-rejected). The raw code is still preserved on the row for audit.
+    """
     code_map = {
         "ok": "valid_ok",
-        "mb": "valid_mb",
+        "mb": "invalid",
         "ko": "invalid",
     }
     return code_map.get(code, "unknown")
@@ -1205,7 +1358,7 @@ async def enrich_single_domain(
     except Exception as stats_err:
         logger.warning("Failed to record source stats for enrich_single_domain: %s", stats_err)
 
-    return {
+    return _strip_internal_fields_from_response({
         "domain": domain,
         "company_linkedin_url": company_linkedin_url,
         "contacts": contacts,
@@ -1218,7 +1371,7 @@ async def enrich_single_domain(
             "records_failed": sync_result.get("failed", 0),
             "records_queued": sync_result.get("records_queued", 0),
         },
-    }
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -1255,6 +1408,7 @@ class UnifiedEnrichRequest(BaseModel):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     linkedin_url: Optional[str] = None
+    company_linkedin_url: Optional[str] = None
     phone: Optional[str] = None
     company_name: Optional[str] = None
     existing_email: Optional[str] = None
@@ -1272,6 +1426,7 @@ class UnifiedEnrichRequest(BaseModel):
             "examples": [
                 {"domain": "google.com"},
                 {"linkedin_url": "https://linkedin.com/in/johndoe"},
+                {"company_linkedin_url": "https://linkedin.com/company/acme"},
                 {"domain": "google.com", "full_name": "John Doe"},
                 {"linkedin_url": "https://linkedin.com/in/johndoe", "domain": "google.com"},
                 {"domain": "google.com", "titles": "CEO,CTO,HR"},
@@ -1280,9 +1435,11 @@ class UnifiedEnrichRequest(BaseModel):
         }
 
     def validate_inputs(self):
-        """Validate that either domain or linkedin_url is provided."""
-        if not self.domain and not self.linkedin_url:
-            raise ValueError("Either 'domain' or 'linkedin_url' must be provided")
+        """Validate that at least one identifier is provided."""
+        if not self.domain and not self.linkedin_url and not self.company_linkedin_url:
+            raise ValueError(
+                "Either 'domain', 'linkedin_url', or 'company_linkedin_url' must be provided"
+            )
 
 
 @router.post(
@@ -1361,19 +1518,48 @@ async def unified_enrich(
     if not full_name and (req.first_name or req.last_name):
         full_name = f"{req.first_name or ''} {req.last_name or ''}".strip()
 
+    # Auto-detect LinkedIn URL type — if a /company/ URL was put into the
+    # person linkedin_url field, move it to company_linkedin_url (and vice
+    # versa for a /in/ URL put into the company field). This makes the API
+    # forgiving for callers who don't know which field to use.
+    if req.linkedin_url:
+        _li_type = list_builder._detect_linkedin_url_type(req.linkedin_url)
+        if _li_type == "company" and not req.company_linkedin_url:
+            req.company_linkedin_url = req.linkedin_url
+            req.linkedin_url = None
+            logger.info("Auto-detected company URL in linkedin_url field; rerouted")
+    if req.company_linkedin_url:
+        _co_type = list_builder._detect_linkedin_url_type(req.company_linkedin_url)
+        if _co_type == "personal" and not req.linkedin_url:
+            req.linkedin_url = req.company_linkedin_url
+            req.company_linkedin_url = None
+            logger.info("Auto-detected person URL in company_linkedin_url field; rerouted")
+
+    # Normalize company_linkedin_url if present
+    if req.company_linkedin_url:
+        req.company_linkedin_url = identifier_utils.normalize_linkedin_url(req.company_linkedin_url)
+
     # Determine input mode
-    # linkedin_only: only LinkedIn URL provided (no domain)
-    # domain_only: only domain provided (no person info)
-    # enhanced: domain + person info (name or LinkedIn)
+    # linkedin_only: only person LinkedIn URL provided (no domain)
+    # company_linkedin_only: only company LinkedIn URL provided (no domain, no person URL)
+    # domain_only: only domain provided (no person/company LinkedIn info)
+    # enhanced: domain + person info (name or LinkedIn), or domain + company LinkedIn URL
     if req.linkedin_url and not domain:
         mode = "linkedin_only"
-    elif not full_name and not req.linkedin_url and domain:
+    elif req.company_linkedin_url and not domain and not req.linkedin_url:
+        mode = "company_linkedin_only"
+    elif not full_name and not req.linkedin_url and not req.company_linkedin_url and domain:
+        mode = "domain_only"
+    elif domain and req.company_linkedin_url and not full_name and not req.linkedin_url:
+        # Domain + company LinkedIn URL but no person info — treat as domain_only
+        # and let _enrich_single_domain consume the company LinkedIn URL directly.
         mode = "domain_only"
     else:
         mode = "enhanced"
 
-    logger.info("Unified enrich: domain=%s, linkedin=%s, mode=%s, user=%s",
-                domain, bool(req.linkedin_url), mode, current_user.get("email"))
+    logger.info("Unified enrich: domain=%s, linkedin=%s, company_linkedin=%s, mode=%s, user=%s",
+                domain, bool(req.linkedin_url), bool(req.company_linkedin_url),
+                mode, current_user.get("email"))
 
     # Create HTTP clients
     blitz_http = httpx.AsyncClient()
@@ -1399,11 +1585,12 @@ async def unified_enrich(
                 try:
                     person = await contacts_client.person_by_linkedin(contacts_http, linkedin_username)
                     if person:
+                        first_bf, last_bf, title_bf = pipeline._backfill_person_identity(person)
                         contacts.append({
                             "full_name": person.get("full_name", ""),
-                            "first_name": person.get("first_name", ""),
-                            "last_name": person.get("last_name", ""),
-                            "title": person.get("title", ""),
+                            "first_name": first_bf,
+                            "last_name": last_bf,
+                            "title": title_bf,
                             "email": person.get("email", ""),
                             "linkedin_url": req.linkedin_url,
                             "headline": person.get("headline", ""),
@@ -1438,11 +1625,12 @@ async def unified_enrich(
                             contacts[0]["email"] = candidate_li
                             contacts[0]["email_source"] = "blitz"
                         else:
+                            first_bf, last_bf, title_bf = pipeline._backfill_person_identity(result)
                             contacts.append({
                                 "full_name": result.get("full_name", ""),
-                                "first_name": result.get("first_name", ""),
-                                "last_name": result.get("last_name", ""),
-                                "title": result.get("title", ""),
+                                "first_name": first_bf,
+                                "last_name": last_bf,
+                                "title": title_bf,
                                 "email": candidate_li,
                                 "linkedin_url": req.linkedin_url,
                                 "headline": result.get("headline", ""),
@@ -1531,6 +1719,53 @@ async def unified_enrich(
                 except Exception as e:
                     logger.debug("BetterEnrich V3 LinkedIn lookup failed: %s", e)
 
+        elif mode == "company_linkedin_only":
+            # Company LinkedIn URL only → run title-waterfall directly.
+            # Bypasses domain resolution; uses _enrich_by_company_linkedin
+            # orchestrator (reuses _enrich_by_company_waterfall + _resolve_person_email).
+            logger.info("company_linkedin_only mode: %s", req.company_linkedin_url)
+            cascade = req.cascade if req.cascade else blitz_client.DEFAULT_CASCADE
+            base_row = {
+                "domain": domain,
+                "linkedin_url": req.linkedin_url or "",
+                "company_linkedin_url": req.company_linkedin_url or "",
+            }
+            company_rows = await list_builder._enrich_by_company_linkedin(
+                blitz_http=blitz_http,
+                contacts_http=contacts_http,
+                base_row=base_row,
+                company_linkedin_url=req.company_linkedin_url,
+                domain=domain,
+                cascade=cascade,
+                max_dms=req.max_results,
+                domain_semaphore=domain_semaphore,
+                email_semaphore=email_semaphore,
+                force_provider=req.force_provider,
+                selected_providers=None,
+            )
+
+            contacts = []
+            sources = {"company_linkedin": "blitz", "contacts": "not_found", "emails": "not_found"}
+            for row in company_rows:
+                if row.get("dm_email"):
+                    contacts.append({
+                        "email": row.get("dm_email", ""),
+                        "title": row.get("dm_title", ""),
+                        "headline": row.get("dm_headline", ""),
+                        "icp_tier": int(row.get("dm_icp_tier") or 0) if str(row.get("dm_icp_tier", "")).isdigit() else 0,
+                        "full_name": row.get("dm_full_name", ""),
+                        "last_name": row.get("dm_last_name", ""),
+                        "first_name": row.get("dm_first_name", ""),
+                        "email_source": row.get("dm_email_source", ""),
+                        "linkedin_url": row.get("dm_linkedin_url", ""),
+                        "location_city": row.get("dm_location_city", ""),
+                        "location_country": row.get("dm_location_country", ""),
+                    })
+                    if sources["emails"] == "not_found":
+                        sources["emails"] = row.get("dm_email_source", "").split(".")[0] or "blitz"
+                        sources["contacts"] = sources["emails"]
+            output_rows = company_rows
+
         elif mode == "domain_only":
             # Domain-only: Use existing pipeline (Contacts DB → Blitz)
             # Use custom cascade if provided, otherwise use default
@@ -1539,6 +1774,8 @@ async def unified_enrich(
             has_custom_cascade = req.cascade is not None and len(req.cascade) > 0
             cascade = req.cascade if has_custom_cascade else blitz_client.DEFAULT_CASCADE
             input_row = {"domain": domain}
+            if req.company_linkedin_url:
+                input_row["company_linkedin_url"] = req.company_linkedin_url
             output_rows = await pipeline._enrich_domain(
                 blitz_http,
                 contacts_http,
@@ -1636,11 +1873,12 @@ async def unified_enrich(
                     if req.linkedin_url:
                         person = await contacts_client.person_by_linkedin(contacts_http, req.linkedin_url)
                         if person and person.get("email"):
+                            first_bf, last_bf, title_bf = pipeline._backfill_person_identity(person)
                             contacts.append({
                                 "full_name": person.get("full_name", full_name or ""),
-                                "first_name": person.get("first_name", ""),
-                                "last_name": person.get("last_name", ""),
-                                "title": person.get("title", ""),
+                                "first_name": first_bf,
+                                "last_name": last_bf,
+                                "title": title_bf,
                                 "email": person.get("email", ""),
                                 "linkedin_url": req.linkedin_url,
                                 "headline": person.get("headline", ""),
@@ -1657,11 +1895,12 @@ async def unified_enrich(
                     if not contacts and full_name and domain:
                         person = await contacts_client.person_by_name_and_domain(contacts_http, full_name, domain)
                         if person and person.get("email"):
+                            first_bf, last_bf, title_bf = pipeline._backfill_person_identity(person)
                             contacts.append({
                                 "full_name": person.get("full_name", full_name or ""),
-                                "first_name": person.get("first_name", ""),
-                                "last_name": person.get("last_name", ""),
-                                "title": person.get("title", ""),
+                                "first_name": first_bf,
+                                "last_name": last_bf,
+                                "title": title_bf,
                                 "email": person.get("email", ""),
                                 "linkedin_url": person.get("linkedin_url", req.linkedin_url or ""),
                                 "headline": person.get("headline", ""),
@@ -1946,7 +2185,7 @@ async def unified_enrich(
         else:
             sync_status = "no_contacts_to_sync"
 
-    return {
+    return _strip_internal_fields_from_response({
         "domain": domain,
         "mode": mode,
         "company_linkedin_url": company_linkedin_url,
@@ -1960,7 +2199,7 @@ async def unified_enrich(
             "records_failed": sync_result.get("failed", 0),
             "records_queued": sync_result.get("records_queued", 0),
         },
-    }
+    })
 
 
 @router.get(
@@ -2142,11 +2381,12 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                         contacts_http, req.linkedin_url or ""
                     )
                     if person:
+                        first_bf, last_bf, title_bf = pipeline._backfill_person_identity(person)
                         contacts.append({
                             "full_name": person.get("full_name", "") or full_name,
-                            "first_name": person.get("first_name", ""),
-                            "last_name": person.get("last_name", ""),
-                            "title": person.get("title", ""),
+                            "first_name": first_bf,
+                            "last_name": last_bf,
+                            "title": title_bf,
                             "email": person.get("email", "") or "",
                             "linkedin_url": req.linkedin_url or "",
                             "headline": person.get("headline", ""),
@@ -2266,7 +2506,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
             # Record source stats for API-only call
             _record_unified_enrich_stats(contacts, domain, current_user)
 
-            return {
+            return _strip_internal_fields_from_response({
                 "domain": domain,
                 "mode": mode,
                 "company_linkedin_url": company_linkedin_url,
@@ -2283,7 +2523,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                     "records_failed": sync_result.get("failed", 0),
                     "records_queued": sync_result.get("records_queued", 0),
                 },
-            }
+            })
 
 
         # For domain_only mode only, call the pipeline
@@ -2362,12 +2602,14 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                         extracted_results = []
                         for result in blitz_response["results"]:
                             person = result.get("person", {})
+                            # Backfill first/last from full_name + try alt title field names.
+                            first_bf, last_bf, title_bf = pipeline._backfill_person_identity(person)
                             # Extract person fields from nested structure
                             extracted_results.append({
                                 "full_name": person.get("full_name", ""),
-                                "first_name": person.get("first_name", ""),
-                                "last_name": person.get("last_name", ""),
-                                "title": person.get("title", ""),
+                                "first_name": first_bf,
+                                "last_name": last_bf,
+                                "title": title_bf,
                                 "headline": person.get("headline", ""),
                                 "linkedin_url": person.get("linkedin_url", ""),
                                 "location": person.get("location", {}),
@@ -2636,7 +2878,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
         # Record source stats for API-only call
         _record_unified_enrich_stats(enriched_contacts, domain, current_user)
 
-        return {
+        return _strip_internal_fields_from_response({
             "domain": domain,
             "mode": mode,
             "company_linkedin_url": company_linkedin_url,
@@ -2644,8 +2886,18 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
             "contact_count": len(enriched_contacts),
             "data_sources": sources,
             "routing": _build_routing_response(
-                last_route if last_route else {"mode": "", "steps": []},
-                last_route_result if last_route_result else {},
+                last_route if last_route else {"mode": mode or "", "steps": []},
+                last_route_result if last_route_result else (
+                    # P1 visibility fix: when domain_only mode found 0 contacts,
+                    # surface what was actually attempted instead of returning
+                    # an empty routing block. Without this, users see
+                    # provider_attempts=[] and reasonably conclude the system
+                    # didn't try anything — actually it tried Contacts DB +
+                    # Blitz at the company level but couldn't find DMs.
+                    _build_domain_only_fallback_route_result(
+                        sources, company_linkedin_url
+                    ) if mode == "domain_only" else {}
+                ),
                 debug=debug,
             ),
             "sync_to_contacts_db": {
@@ -2654,7 +2906,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                 "records_skipped": sync_result.get("skipped", 0),
                 "records_failed": sync_result.get("failed", 0),
             },
-        }
+        })
 
     finally:
         await blitz_http.aclose()
@@ -3352,19 +3604,39 @@ async def restart_enrichment_job(
     # For chained jobs (from scraper), the file is in outputs/ from the parent scraper job
     # For uploaded files, the file is in uploads/
     filename = original_job['filename']
-    upload_path = UPLOAD_DIR / f"{filename}.csv"
+    # Defensive: filename may or may not include the .csv extension. Uploaded
+    # files are stored as "<uuid>.csv" and the DB stores the uuid without
+    # extension, so we append .csv. But scraper outputs and some legacy rows
+    # store the full name WITH .csv — appending again produces "<name>.csv.csv"
+    # which never matches a real file. Strip the extension first if present.
+    clean_filename = filename[:-4] if filename.lower().endswith(".csv") else filename
+    upload_path = UPLOAD_DIR / f"{clean_filename}.csv"
     csv_path = upload_path if upload_path.exists() else None
 
-    # If not in uploads, check if this is a chained job and look at parent's output
+    # If not in uploads, walk up the parent chain looking for a scraper job
+    # with an output_path. Chained enrichment jobs may have another enrichment
+    # job as their parent (e.g., a restart of a restart) — we need to find the
+    # original scraper at the top of the chain that actually has the CSV.
     if csv_path is None and original_job.get('parent_job_id'):
-        parent_job_id = original_job['parent_job_id']
-        # Check if parent is a scraper job with output
         parent_conn = db.get_db()
-        parent_row = parent_conn.execute(
-            "SELECT job_id, output_path FROM jobs WHERE job_id = ?", (parent_job_id,)
-        ).fetchone()
-        if parent_row and parent_row['output_path']:
-            csv_path = Path(parent_row['output_path'])
+        current_parent_id = original_job['parent_job_id']
+        # Safety cap on chain depth to prevent infinite loops on cyclic data.
+        for _ in range(10):
+            if not current_parent_id:
+                break
+            parent_row = parent_conn.execute(
+                "SELECT job_id, output_path, parent_job_id FROM jobs WHERE job_id = ?",
+                (current_parent_id,),
+            ).fetchone()
+            if not parent_row:
+                break
+            if parent_row['output_path']:
+                candidate = Path(parent_row['output_path'])
+                if candidate.exists():
+                    csv_path = candidate
+                    break
+            # Walk up another level.
+            current_parent_id = parent_row['parent_job_id'] if 'parent_job_id' in parent_row.keys() else None
 
     if csv_path is None or not csv_path.exists():
         raise HTTPException(status_code=404, detail="Original CSV file not found")
@@ -3776,6 +4048,7 @@ class ProviderToggleRequest(BaseModel):
     # Optional column mappings for high-value identifiers. All optional and
     # backward-compatible: when omitted, the request behaves as before.
     linkedin_url_col: Optional[str] = None
+    company_linkedin_col: Optional[str] = None
     phone_col: Optional[str] = None
     company_name_col: Optional[str] = None
     existing_email_col: Optional[str] = None
@@ -3910,6 +4183,7 @@ async def domain_enrich_with_providers(
         first_name_col=req.first_name_col,
         last_name_col=req.last_name_col,
         linkedin_url_col=req.linkedin_url_col,
+        company_linkedin_col=req.company_linkedin_col,
         phone_col=req.phone_col,
         company_name_col=req.company_name_col,
         existing_email_col=req.existing_email_col,
@@ -3934,6 +4208,7 @@ async def _run_domain_enrich_job(
     first_name_col: Optional[str],
     last_name_col: Optional[str],
     linkedin_url_col: Optional[str] = None,
+    company_linkedin_col: Optional[str] = None,
     phone_col: Optional[str] = None,
     company_name_col: Optional[str] = None,
     existing_email_col: Optional[str] = None,
@@ -4016,6 +4291,7 @@ async def _run_domain_enrich_job(
             record_provider_use=record_provider_use,
             normalize_domains=normalize_domains,
             collector=collector,
+            company_linkedin_col=company_linkedin_col,
         )
 
         # Attach input_* columns for visibility/debug.

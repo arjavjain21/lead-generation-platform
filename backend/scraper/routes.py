@@ -1373,6 +1373,7 @@ async def _run_job(
         logger.info("Scraper job %s done — %d unique results, %d API requests", job_id[:8], result_count, requests_made[0])
 
         # Store results in cache for future use
+        logger.info("Job %s attempting cache write (path=%s, exists=%s)", job_id[:8], output_path, output_path.exists())
         try:
             from . import cache as cache_module
             # Get actual regions from job for proper cache key
@@ -1564,6 +1565,42 @@ async def _run_job_with_tasks(
         store.update_result_count(job_id, result_count)
         store.set_done(job_id, str(output_path))
         logger.info("Resumed job %s done — %d results", job_id[:8], result_count)
+
+        # Store results in cache for future use (mirrors _run_job behavior).
+        # Previously missing — resumed jobs never populated scraped_cache.
+        try:
+            from . import cache as cache_module
+            job_data = store.get_job(job_id)
+            regions_dict = job_data.get("regions", {
+                "mode": "all",
+                "country": "us",
+                "states": [],
+                "cities": [],
+                "zips": [],
+                "center_ids": [],
+            }) if job_data else {
+                "mode": "all",
+                "country": "us",
+                "states": [],
+                "cities": [],
+                "zips": [],
+                "center_ids": [],
+            }
+
+            cache_module.store_cache(
+                job_id=job_id,
+                user_id=user_id,
+                query=query,
+                regions=regions_dict,
+                zooms=[10, 11, 12],
+                expected_types=expected_types,
+                result_file_path=output_path,
+                total_results=result_count,
+                is_partial=False,
+            )
+            logger.info(f"Resumed job {job_id[:8]} results cached ({result_count} results)")
+        except Exception as e:
+            logger.warning(f"Failed to cache resumed job {job_id[:8]}: {e}")
 
     except RuntimeError as e:
         if "was cancelled" in str(e):

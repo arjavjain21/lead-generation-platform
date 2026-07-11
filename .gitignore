@@ -85,3 +85,18 @@ __pycache__/
 *.pyc
 .env
 rollback_backup_*/
+
+# Backups (runtime DB dumps and service snapshots — large, not source)
+backups/
+
+# Test coverage artifacts
+backend/.coverage
+.coverage
+htmlcov/
+
+# Local Claude Code workspace (skills, plans, agent configs — not project source)
+.claude/
+.loop/
+
+# External reference clones (kept locally for reading, not vendored into repo)
+docs/blitz-api-py/

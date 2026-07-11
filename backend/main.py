@@ -31,6 +31,7 @@ from shared.job_store_base import JobStoreBase
 from scraper import routes as scraper_routes
 from enrichment import routes as enrichment_routes
 from enrichment import blitz_client
+from enrichment import call_tracker
 from enrichment import identifier_utils
 from enrichment import job_store
 from phone_enrichment import routes as phone_enrichment_routes
@@ -122,7 +123,7 @@ class ChainJobRequest(BaseModel):
     """Request to chain enrichment from a scraper job."""
     cascade: Optional[list[dict[str, Any]]] = None
     max_results: int = 5
-    # Optional list of provider names to use (e.g. ["contacts_db", "blitz", "better_enrich"]).
+    # Optional list of provider names to use (e.g. ["contacts_db", "blitz", "smartprospect", "wizleads", "better_enrich"]).
     # If None, uses all enabled providers from enrichment/providers.py.
     providers: Optional[list[str]] = None
     # Pre-processing flags. Both default ON to preserve existing behavior.
@@ -143,6 +144,19 @@ async def startup():
     """Initialize database and clean up stale jobs. users must exist before jobs (FK)."""
     auth.init_auth_db()
     db.init_db()
+
+    # Provider HTTP call tracker: creates schema + installs a global hook on
+    # httpx.AsyncClient so every outbound enrichment call is recorded.
+    # Best-effort, defensive — never blocks the underlying HTTP request.
+    # The purge loop keeps storage bounded; the health loop self-monitors the
+    # tracker itself so we detect any silent outage within ~1 hour.
+    try:
+        call_tracker.init()
+        asyncio.create_task(_call_tracker_purge_loop())
+        asyncio.create_task(_call_tracker_health_loop())
+        logger.info("Started provider call tracker")
+    except Exception as e:
+        logger.warning("Failed to start call tracker: %s", e)
 
     # Restore in-memory job state from database (survives worker restarts)
     try:
@@ -171,6 +185,61 @@ async def startup():
         logger.info("Started contacts_write_outbox retry loop")
     except Exception as e:
         logger.warning("Failed to start outbox retry loop: %s", e)
+
+
+async def _call_tracker_purge_loop() -> None:
+    """Daily purge of provider_call_log rows older than 30 days.
+
+    Best-effort: any failure is logged and the loop continues. Runs every
+    24h, so steady-state disk usage stays bounded regardless of uptime.
+    """
+    while True:
+        await asyncio.sleep(86400)  # 24h
+        try:
+            call_tracker.purge_old(days=30)
+        except Exception as e:
+            logger.warning("call_tracker purge failed: %s", e)
+
+
+async def _call_tracker_health_loop() -> None:
+    """Hourly self-check of the provider call tracker.
+
+    Integrated into the app — runs as a background asyncio task started from
+    startup(), dies with the process, restarts on next service start. Emits an
+    INFO log line every hour with tracker stats, and a WARNING if structural
+    issues are detected (hook not installed, table missing, query error).
+
+    A row count of zero is NOT flagged as a warning — it can simply mean no
+    provider HTTP traffic in the window. Operator watches the INFO trend.
+    """
+    # First check after 60s (give the app time to settle and traffic to start),
+    # then every hour thereafter.
+    await asyncio.sleep(60)
+    while True:
+        try:
+            h = call_tracker.health_check()
+            if not h.get("installed"):
+                logger.warning(
+                    "call_tracker NOT INSTALLED — hook missing, provider calls not being recorded"
+                )
+            elif not h.get("call_log_table_exists"):
+                logger.warning(
+                    "call_tracker table missing — schema init failed, no rows being recorded"
+                )
+            elif h.get("error"):
+                logger.warning("call_tracker health_check error: %s", h["error"])
+            else:
+                logger.info(
+                    "call_tracker healthy: call_log total=%d 1h=%d 24h=%d newest=%s | "
+                    "email_ledger total=%d 1h=%d 24h=%d newest=%s",
+                    h["call_log_total"], h["call_log_last_hour"], h["call_log_last_day"],
+                    h["call_log_newest"],
+                    h["email_ledger_total"], h["email_ledger_last_hour"],
+                    h["email_ledger_last_day"], h["email_ledger_newest"],
+                )
+        except Exception as e:
+            logger.warning("call_tracker health loop exception: %s", e)
+        await asyncio.sleep(3600)  # 1h
 
 
 # ---------------------------------------------------------------------------

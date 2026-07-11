@@ -1,11 +1,11 @@
 """
 Per-provider response normalization for the enrichment cascade.
 
-Different providers (Contacts DB, Blitz, BetterEnrich, WizLeads) return
-contacts in different shapes with different placeholder values for
-missing data. This module normalizes those into a single canonical
-shape and filters out "junk" contacts that have no meaningful
-identifier (email, name, or LinkedIn URL).
+Different providers (Contacts DB, Blitz, BetterEnrich, WizLeads,
+SmartProspect) return contacts in different shapes with different
+placeholder values for missing data. This module normalizes those
+into a single canonical shape and filters out "junk" contacts that
+have no meaningful identifier (email, name, or LinkedIn URL).
 
 Design contract:
   * Pure functions only — no I/O, no logging, no globals.
@@ -583,6 +583,65 @@ def normalize_wizleads_contact(raw: dict) -> Optional[dict[str, str]]:
     )
 
 
+def normalize_smartprospect_contact(raw: dict) -> Optional[dict[str, str]]:
+    """Normalize a SmartProspect contact dict.
+
+    SmartProspect returns a flat shape::
+
+        {
+            "firstName": "John",
+            "lastName": "Doe",
+            "companyDomain": "example.com",
+            "email_id": "john.doe@example.com",
+            "status": "Found",
+            "verification_status": "Valid"
+        }
+
+    Edge cases:
+      * ``status: "Not Found"`` → ``email_id`` is empty,
+        ``verification_status`` is null.
+      * ``status: "Found"`` + ``verification_status: null`` → email
+        found but unverified.
+
+    The ``status`` / ``verification_status`` keys are NOT consumed by
+    ``_build_record`` (which only carries canonical identity fields).
+    They are preserved in the original ``raw`` dict that feeds the
+    downstream ``RawContactCollector``; the collector's
+    ``_extract_verified`` reads them directly from ``raw``.
+
+    SmartProspect responses never carry ``title``, ``headline``, or
+    ``linkedin_url`` — empty strings are passed for those fields unless
+    the caller's synthetic dict supplies them (both shapes tolerated,
+    see key aliasing below).
+
+    Junk filter behavior: a "Not Found" contact has an empty
+    ``email_id`` but still has ``firstName`` + ``lastName``. The
+    ``_build_record`` helper will KEEP it (because ``full_name`` is
+    non-empty), which is intentional — the collector records the name
+    with ``dm_email=""``.
+
+    **Key aliasing:** the raw SmartLead API returns camelCase keys
+    (``firstName``, ``lastName``, ``companyDomain``, ``email_id``).
+    Call sites in ``pipeline.py`` that construct synthetic dicts for
+    capture use snake_case (``first_name``, ``last_name``, ``domain``,
+    ``email``). We accept BOTH so captures normalize correctly.
+    camelCase wins when both are present (matches the raw API contract).
+    """
+    if not isinstance(raw, dict):
+        return None
+    return _build_record(
+        source="smartprospect",
+        email=raw.get("email_id") or raw.get("email"),
+        first_name=raw.get("firstName") or raw.get("first_name"),
+        last_name=raw.get("lastName") or raw.get("last_name"),
+        full_name=raw.get("full_name", ""),
+        title=raw.get("title", ""),
+        headline=raw.get("headline", ""),
+        linkedin_url=raw.get("linkedin_url", ""),
+        domain=raw.get("companyDomain") or raw.get("domain"),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Generic dispatcher
 # ---------------------------------------------------------------------------
@@ -599,6 +658,9 @@ _PROVIDER_DISPATCH: dict[str, Callable[[dict], Optional[dict[str, str]]]] = {
     "wizleads": normalize_wizleads_contact,
     "wiz_leads": normalize_wizleads_contact,
     "wiz-leads": normalize_wizleads_contact,
+    "smartprospect": normalize_smartprospect_contact,
+    "smart_prospect": normalize_smartprospect_contact,
+    "smart-prospect": normalize_smartprospect_contact,
 }
 
 
@@ -636,6 +698,7 @@ __all__ = [
     "is_meaningful_email",
     "is_meaningful_person",
     "normalize_contacts_db_contact",
+    "normalize_smartprospect_contact",
     "normalize_blitz_contact",
     "normalize_better_enrich_contact",
     "normalize_wizleads_contact",

@@ -13,7 +13,7 @@
 
 - A unified lead-generation platform that turns a list of **domains** or **LinkedIn URLs** into enriched contact records.
 - Each record contains decision-maker names, titles, verified work emails, phone numbers, LinkedIn URLs, and company metadata.
-- It runs a **provider cascade** — Contacts DB (free, internal) first, then Blitz, then WizLeads, then BetterEnrich — stopping at the first provider that returns a contact.
+- It runs a **provider cascade** — Contacts DB (free, internal) first, then Blitz, then smartprospect, then WizLeads, then BetterEnrich — stopping at the first provider that returns a contact.
 - Three user-facing **flows** plus a single-shot `/enrich` endpoint for ad-hoc lookups.
 - All bulk work runs as a **background job** with SSE progress streaming and CSV download.
 
@@ -51,9 +51,10 @@
 |---|----------|------|--------|------|
 | 1 | `contacts_db` | 75 RPS | enabled | Internal PostgreSQL DB — always tried first, free |
 | 2 | `blitz` | 25 RPS | enabled | LinkedIn-based enrichment with title cascade |
-| 3 | `wizleads` | 10 RPS | enabled | Catch-all verified email enrichment |
-| 4 | `better_enrich` | 10 RPS | enabled | Person + company email (final fallback) |
-| 5 | `prospeo` | n/a | **disabled** | Code present but end-to-end off (`ENABLE_PROSPEO=false` + `providers.py` flag) |
+| 3 | `smartprospect` | 30 RPS | enabled | SmartLead Find Emails — self-verifying person-email finder, batch up to 10. Gates on `firstName`+`lastName`+`domain` (decoupled from Blitz). `verification_status="Valid"` → `dm_email_verified="yes"` (skips MailTester). `status="Invalid"` discarded, cascade falls through. Kill switch: `ENABLE_SMARTPROSPECT=false`. |
+| 4 | `wizleads` | 10 RPS | enabled | Catch-all verified email enrichment |
+| 5 | `better_enrich` | 10 RPS | enabled | Person + company email (final fallback) |
+| 6 | `prospeo` | n/a | **disabled** | Code present but end-to-end off (`ENABLE_PROSPEO=false` + `providers.py` flag) |
 
 - **Cascade behavior:** stop on first provider that returns a usable contact — later providers are skipped for that row.
 - **Title cascade** (when no custom titles given) — used by Blitz:
@@ -116,7 +117,7 @@
 | `company_name_col` | string | no | null | Company-name hint |
 | `existing_email_col` | string | no | null | Known email hint |
 | `max_results` | int | no | `5` | Decision makers returned per domain |
-| `providers` | string[] | no | null | Subset of `["blitz","wizleads","better_enrich"]`. `contacts_db` always runs first and cannot be disabled. |
+| `providers` | string[] | no | null | Subset of `["blitz","smartprospect","wizleads","better_enrich"]`. `contacts_db` always runs first and cannot be disabled. |
 | `titles` | string | no | null | Comma-separated fuzzy titles, e.g. `"dentist,orthodontist,dmd"`. Max 50. |
 | `normalize_domains` | bool | no | `true` | Strip `https://`, `www.`, query params before lookup |
 | `dedupe_by_domain` | bool | no | `true` | Drop duplicate domains before processing |
@@ -134,7 +135,7 @@
   - `400` — `Column '<name>' not found in CSV.`
   - `400` — `Titles cannot be empty`
   - `400` — `Maximum 50 titles allowed. Contact support for bulk operations.`
-  - `400` — `Invalid providers: [...]. Valid: ['contacts_db','blitz','wizleads','better_enrich']`
+  - `400` — `Invalid providers: [...]. Valid: ['contacts_db','blitz','smartprospect','wizleads','better_enrich']`
 
 ### Flow 1 input CSV — minimum viable file
 
@@ -287,7 +288,7 @@ curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/by-linkedi
 | `titles` | string | null | Comma-separated, e.g. `"CEO,CTO"` |
 | `cascade` | object[] | null | Advanced — overrides `titles`; same shape as `/default-cascade` |
 | `cascade_json` | string | null | URL-encoded JSON of `cascade` (GET only) |
-| `force_provider` | string | null | One of `contacts_db`, `blitz`, `better_enrich` |
+| `force_provider` | string | null | One of `contacts_db`, `blitz`, `smartprospect`, `wizleads`, `better_enrich` |
 | `debug` | bool | `false` | POST/GET `/enrich` only — adds a `routing` block |
 
 - **Response shape (200):**
@@ -393,7 +394,7 @@ curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/upload \
 | `linkedin_url_col` / `phone_col` / `company_name_col` / `existing_email_col` | string | null | Optional hints |
 | `cascade` | object[] | null | Custom cascade (advanced) |
 | `max_results` | int | `5` | Per-domain decision makers |
-| `force_provider` | string | null | `contacts_db` / `blitz` / `better_enrich` |
+| `force_provider` | string | null | `contacts_db` / `blitz` / `smartprospect` / `wizleads` / `better_enrich` |
 | `validate_email` | bool | `true` | Run MailTester on results |
 
 - **Recommended:** prefer Flow 1 (`/flows/domain-enrich`) over `/jobs` — it adds provider selection, fuzzy titles, and per-row dedupe.
@@ -460,7 +461,7 @@ curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/upload \
 | `dm_job_level` / `dm_job_function` | Classified level/function |
 | `dm_linkedin_url` | Personal LinkedIn URL |
 | `dm_email` | Work email |
-| `dm_email_source` | Provider that produced the email (`contacts_db`, `blitz_email`, `wizleads`, `better_enrich`) |
+| `dm_email_source` | Provider that produced the email (`contacts_db`, `blitz_email`, `smartprospect_email`, `wizleads`, `better_enrich`) |
 | `dm_email_verified` | `valid` / `invalid` / `unknown` |
 | `mailtester_code` / `mailtester_message` | MailTester verification result |
 | `dm_phone` | Phone (if found) |
@@ -481,7 +482,7 @@ curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/upload \
 
 ### Providers
 
-- `GET /api/enrichment/providers` → `{ "providers":["contacts_db","blitz","wizleads","better_enrich"] }` (reflects `ENABLED_PROVIDERS`).
+- `GET /api/enrichment/providers` → `{ "providers":["contacts_db","blitz","smartprospect","wizleads","better_enrich"] }` (reflects `ENABLED_PROVIDERS`).
 
 ### Default cascade
 

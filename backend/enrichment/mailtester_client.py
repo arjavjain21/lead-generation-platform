@@ -4,9 +4,10 @@ Mailtester API client for email verification.
 API: https://validation.hyperke.org/ninja?email={email}&key={key}
 Response: {"code": "ok"|"mb"|"ko", "message": "...", "email": "..."}
 
-Response codes:
-- "ok" or "mb" → Accept email
-- "ko" or anything else → Reject email
+Response codes (default policy — configurable via MAILTESTER_ACCEPT_CODES):
+- "ok" → Accept email
+- "mb" → Reject (policy-rejected; accepted under legacy 'ok,mb' policy)
+- "ko" or anything else → Reject (hard invalid)
 """
 
 from __future__ import annotations
@@ -45,15 +46,25 @@ async def _acquire_rate_limit() -> None:
 
 
 def _get_api_key() -> str:
-    key = os.getenv("MAILTESTER_API_KEY", "") or "3WObHwLzCWsLHrOC8ybhzQE9sfNC3TRSW9-GqHQAntI"
+    key = os.getenv("MAILTESTER_API_KEY", "") or "b0b4ddb5bd42ba18c09247611adfbe08374a7d06a128f404"
     if not key:
         raise RuntimeError("MAILTESTER_API_KEY environment variable is not set")
     return key
 
 
+def _accepted_codes() -> tuple[str, ...]:
+    """Codes treated as valid, from MAILTESTER_ACCEPT_CODES env (default 'ok').
+
+    Comma-separated, e.g. 'ok' (strict, default) or 'ok,mb' (legacy lenient).
+    Empty values are ignored.
+    """
+    raw = os.getenv("MAILTESTER_ACCEPT_CODES", "ok")
+    return tuple(c.strip() for c in raw.split(",") if c.strip())
+
+
 def _is_valid_code(code: str) -> bool:
-    """Check if mailtester code indicates valid email."""
-    return code in ("ok", "mb")
+    """Check if mailtester code indicates valid email per the configured policy."""
+    return code in _accepted_codes()
 
 
 def _backoff_delay(attempt: int) -> float:

@@ -46,6 +46,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 │   │   ├── pipeline.py          # Workflow orchestrator
 │   │   ├── list_builder.py      # List Building Tool (Flows 1, 2, 3)
 │   │   ├── blitz_client.py      # Blitz API wrapper (25 RPS, retry logic)
+│   │   ├── smartprospect_client.py  # SmartLead Find Emails wrapper (30 RPS, batch ≤10)
 │   │   ├── contacts_client.py   # Contacts DB wrapper (75 RPS)
 │   │   ├── better_enrich_client.py
 │   │   └── prospeo_client.py    # Disabled fallback (set ENABLE_PROSPEO=true + flip providers.py to re-enable)
@@ -131,8 +132,9 @@ Each enrichment source has different cost/quality tradeoffs:
 |-----|------------|----------|---------|
 | **Contacts DB** | 75 RPS | 1st (free) | Domain → company → contacts with emails |
 | **Blitz** | 25 RPS | 2nd | LinkedIn-based enrichment with title cascade |
-| **WizLeads** | 10 RPS | 3rd | Catch-all verified email enrichment |
-| **BetterEnrich** | 10 RPS | 4th | Person email, company email |
+| **smartprospect** | 30 RPS | 3rd | Person-email finder, batch up to 10, self-verifying |
+| **WizLeads** | 10 RPS | 4th | Catch-all verified email enrichment |
+| **BetterEnrich** | 10 RPS | 5th | Person email, company email |
 
 > **Prospeo** is implemented in `backend/enrichment/prospeo_client.py` but currently **disabled** end-to-end. The frontend no longer exposes it as a selectable provider, and the backend cascade will skip it via both `ENABLED_PROVIDERS["prospeo"]=False` (in `backend/enrichment/providers.py`) and the `ENABLE_PROSPEO=false` env kill-switch in `backend/.env`. To re-enable: set `ENABLE_PROSPEO=true` in `.env` AND flip `prospeo` to `True` in `providers.py`.
 
@@ -189,6 +191,7 @@ Enriches LinkedIn profiles with phone numbers using Blitz Direct Phone API:
 JWT_SECRET=<secret>
 SCRAPER_TECH_KEY=<scraper-tech-key>
 BLITZ_API_KEY=<blitz-key>
+SMARTPROSPECT_API_KEY=<smartprospect-key>
 CONTACTS_API_TOKEN=<contacts-token>
 BETTER_ENRICH_API_KEY=<betterenrich-key>
 PROSPEO_API_KEY=<prospeo-key>
