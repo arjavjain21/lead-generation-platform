@@ -869,6 +869,7 @@ async def run_domain_enrichment(
     job_id: Optional[str] = None,
     validate_email: bool = True,  # NEW PARAMETER
     company_linkedin_col: Optional[str] = None,  # NEW: column name for company LinkedIn URLs
+    linkedin_url_col: Optional[str] = None,  # NEW: column name for person LinkedIn URLs (auto-detect /company/ URLs)
     record_provider_use: Optional[Callable[[str], None]] = None,  # NEW: callback to record provider usage
     get_store_fn: Optional[Callable[[], Any]] = None,  # Injected to avoid module-level ref
     normalize_domains: bool = True,  # Pre-processing flag: gate the per-row normalize_domain() call
