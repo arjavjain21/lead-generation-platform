@@ -375,6 +375,19 @@ async def _write_person_payload(
     if mail_msg:
         body["mailtester_message"] = mail_msg
 
+    # email_type — REQUIRED by Contacts DB PersonUpsert validation.
+    # Contacts DB accepts a fixed enum ('work', 'personal', 'other'). Upstream
+    # providers may emit values outside that enum — e.g. BetterEnrich tags
+    # generic company emails (info@, contact@) as email_type='generic', which
+    # Contacts DB rejects with HTTP 400. We normalize: if the incoming value
+    # isn't in the known-allowed set, default to 'work' (all enrichment-sourced
+    # emails are business/work emails). Bug observed 2026-07-13: 1,457 stuck
+    # outbox rows with email_type='generic'.
+    _ALLOWED_EMAIL_TYPES = frozenset({"work", "personal", "other"})
+    raw_email_type = (payload.get("email_type") or "").strip().lower()
+    email_type = raw_email_type if raw_email_type in _ALLOWED_EMAIL_TYPES else "work"
+    body["email_type"] = email_type
+
     # Source metadata (compact)
     source = (payload.get("dm_email_source") or "").strip()
     if source:
@@ -454,9 +467,21 @@ async def _write_company_payload(
     ce_verified = (payload.get("company_email_verified") or "").strip().lower()
     if ce_verified in ("yes", "no", "unknown"):
         body["email_verified"] = ce_verified
-    ce_type = (payload.get("company_email_type") or "").strip()
+    ce_type = (payload.get("company_email_type") or "").strip().lower()
     if ce_type:
-        body["email_type"] = ce_type
+        # Same normalization as the person-email path: Contacts DB rejects
+        # values outside its enum (e.g. 'generic'). Default invalid → 'work'.
+        _ALLOWED_EMAIL_TYPES = frozenset({"work", "personal", "other"})
+        body["email_type"] = ce_type if ce_type in _ALLOWED_EMAIL_TYPES else "work"
+    else:
+        # email_type is REQUIRED by Contacts DB PersonUpsert. When
+        # company_email_type isn't set, try the generic email_type field
+        # (some upstream payloads use this key), then default to 'work'.
+        # Without this, the upsert is rejected with HTTP 400 (bug observed
+        # 2026-07-13: 1,457 company-email outbox rows stuck failed).
+        _ALLOWED_EMAIL_TYPES = frozenset({"work", "personal", "other"})
+        fallback_type = (payload.get("email_type") or "").strip().lower()
+        body["email_type"] = fallback_type if fallback_type in _ALLOWED_EMAIL_TYPES else "work"
     ce_source_path = (payload.get("company_email_source_path") or payload.get("source_path") or "").strip()
     if ce_source_path:
         body["source_path"] = ce_source_path
