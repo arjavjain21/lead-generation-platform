@@ -263,6 +263,24 @@
         .status-abandoned { background: #f3e8ff; color: #7c3aed; }
         .status-partial { background: #e0f2fe; color: #0284c7; }
 
+        /* Warning banner for jobs that completed with 0 emails on a non-empty
+           input. Almost always indicates a silent cascade bug — see
+           csv_jobs_silent_failure_2026-07-13.md. */
+        .zero-email-warning {
+            background: #fef3c7;
+            border: 1px solid #f59e0b;
+            color: #92400e;
+            padding: 0.4rem 0.6rem;
+            border-radius: 0.375rem;
+            font-size: 0.72rem;
+            margin-top: 0.4rem;
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+        .zero-email-warning strong { color: #b45309; }
+        .job-card.zero-email-card { border-left: 4px solid #f59e0b; }
+
         .btn-sm { padding: 0.4rem 0.75rem; font-size: 0.75rem; }
         .actions { display: flex; gap: 0.5rem; }
 
@@ -4477,7 +4495,22 @@ example.org,Jane Doe</pre>
                             }
                         }
 
-                        return '<div class="job-card"><div class="job-info"><h4>' + (job.display_filename || job.filename || 'Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.processed||0) + '/' + (job.total||0) + ' | ' + (job.emails_found||0) + ' emails</div><div class="job-providers" style="font-size: 0.75rem; margin-top: 4px;"><div style="color: #1e40af;"><strong>Selected:</strong> ' + selectedDisplay + '</div><div style="color: #059669;"><strong>Used:</strong> ' + usedDisplay + '</div></div>' + errorInfo + providerErrorsDisplay + '</div><div class="actions">' + actions + '</div></div>';
+                        // Prominent warning when a "done" job has 0 emails on a
+                        // non-empty input. Almost always a silent cascade bug
+                        // (the 2026-07-11..13 outage looked exactly like this).
+                        // Surfaces the issue instead of letting users waste time
+                        // downloading a 0-byte CSV.
+                        let zeroEmailWarning = '';
+                        let zeroEmailCardClass = '';
+                        if (job.status === 'done' && (job.total || 0) > 0 && (job.emails_found || 0) === 0) {
+                            zeroEmailCardClass = ' zero-email-card';
+                            zeroEmailWarning = '<div class="zero-email-warning" title="Job completed but produced no data. This is almost always a bug — contact support or retry.">' +
+                                '<strong>⚠ 0 emails found</strong> on a ' + job.total + '-row input. ' +
+                                'Output CSV is likely empty. <span style="text-decoration: underline;">Retry the job or contact support.</span>' +
+                                '</div>';
+                        }
+
+                        return '<div class="job-card' + zeroEmailCardClass + '"><div class="job-info"><h4>' + (job.display_filename || job.filename || 'Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.processed||0) + '/' + (job.total||0) + ' | ' + (job.emails_found||0) + ' emails</div><div class="job-providers" style="font-size: 0.75rem; margin-top: 4px;"><div style="color: #1e40af;"><strong>Selected:</strong> ' + selectedDisplay + '</div><div style="color: #059669;"><strong>Used:</strong> ' + usedDisplay + '</div></div>' + errorInfo + providerErrorsDisplay + zeroEmailWarning + '</div><div class="actions">' + actions + '</div></div>';
                     }).join('');
         }
 
