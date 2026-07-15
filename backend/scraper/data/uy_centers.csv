@@ -1,0 +1,14 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Montevideo,Montevideo Department,-34.9032800,-56.1881600,metro,1,geonames_uy_2026_1270737,anchor_city,Montevideo,uy
+Salto,Salto Department,-31.3881100,-57.9598300,regional_large,2,geonames_uy_2026_114084,anchor_city,Salto,uy
+Maldonado,Maldonado,-34.8979100,-54.9502100,regional_large,3,geonames_uy_2026_102000,anchor_city,Maldonado,uy
+Rivera,Rivera Department,-30.9053400,-55.5507600,regional,4,geonames_uy_2026_84775,anchor_city,Rivera,uy
+Paysandú,Paysandú Department,-32.3171000,-58.0807200,regional,5,geonames_uy_2026_81550,anchor_city,Paysandú,uy
+Tacuarembó,Tacuarembó Department,-31.7188200,-55.9792500,regional,6,geonames_uy_2026_60586,anchor_city,Tacuarembó,uy
+Melo,Cerro Largo,-32.3682000,-54.1640900,regional,7,geonames_uy_2026_56013,anchor_city,Melo,uy
+Artigas,Artigas,-30.4043100,-56.4692600,regional,8,geonames_uy_2026_43897,anchor_city,Artigas,uy
+Mercedes,Soriano,-33.2524000,-58.0304700,regional,9,geonames_uy_2026_43543,anchor_city,Mercedes,uy
+Durazno,Durazno Department,-33.3806300,-56.5231200,regional,10,geonames_uy_2026_40279,anchor_city,Durazno,uy
+Minas,Lavalleja,-34.3758900,-55.2377100,regional,11,geonames_uy_2026_38645,anchor_city,Minas,uy
+Florida,Florida,-34.1003200,-56.2147700,regional,12,geonames_uy_2026_36471,anchor_city,Florida,uy
+San José de Mayo,San José Department,-34.3389800,-56.7133900,regional,13,geonames_uy_2026_35883,anchor_city,San José de Mayo,uy

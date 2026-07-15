@@ -1,0 +1,154 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Bogotá,Bogota D.C.,4.6097100,-74.0817500,metro,1,geonames_co_2026_7674366,anchor_city,Bogotá,co
+Bogotá - East,Bogota D.C.,4.6097100,-73.7917500,metro_offset,1,derived,offset_ring,Bogotá,co
+Bogotá - North,Bogota D.C.,4.7897100,-74.0817500,metro_offset,1,derived,offset_ring,Bogotá,co
+Bogotá - South,Bogota D.C.,4.4297100,-74.0817500,metro_offset,1,derived,offset_ring,Bogotá,co
+Bogotá - West,Bogota D.C.,4.6097100,-74.3717500,metro_offset,1,derived,offset_ring,Bogotá,co
+Bogotá - Northeast,Bogota D.C.,4.7397100,-73.8717500,metro_offset,1,derived,offset_ring,Bogotá,co
+Bogotá - Northwest,Bogota D.C.,4.7397100,-74.2917500,metro_offset,1,derived,offset_ring,Bogotá,co
+Bogotá - Southeast,Bogota D.C.,4.4797100,-73.8717500,metro_offset,1,derived,offset_ring,Bogotá,co
+Bogotá - Southwest,Bogota D.C.,4.4797100,-74.2917500,metro_offset,1,derived,offset_ring,Bogotá,co
+Cali,Valle del Cauca Department,3.4305400,-76.5199000,metro,2,geonames_co_2026_2392877,anchor_city,Cali,co
+Cali - East,Valle del Cauca Department,3.4305400,-76.2299000,metro_offset,2,derived,offset_ring,Cali,co
+Cali - North,Valle del Cauca Department,3.6105400,-76.5199000,metro_offset,2,derived,offset_ring,Cali,co
+Cali - South,Valle del Cauca Department,3.2505400,-76.5199000,metro_offset,2,derived,offset_ring,Cali,co
+Cali - West,Valle del Cauca Department,3.4305400,-76.8099000,metro_offset,2,derived,offset_ring,Cali,co
+Cali - Northeast,Valle del Cauca Department,3.5605400,-76.3099000,metro_offset,2,derived,offset_ring,Cali,co
+Cali - Northwest,Valle del Cauca Department,3.5605400,-76.7299000,metro_offset,2,derived,offset_ring,Cali,co
+Cali - Southeast,Valle del Cauca Department,3.3005400,-76.3099000,metro_offset,2,derived,offset_ring,Cali,co
+Cali - Southwest,Valle del Cauca Department,3.3005400,-76.7299000,metro_offset,2,derived,offset_ring,Cali,co
+Medellín,Antioquia,6.2450000,-75.5715100,metro,3,geonames_co_2026_1999979,anchor_city,Medellín,co
+Medellín - East,Antioquia,6.2450000,-75.2815100,metro_offset,3,derived,offset_ring,Medellín,co
+Medellín - North,Antioquia,6.4250000,-75.5715100,metro_offset,3,derived,offset_ring,Medellín,co
+Medellín - South,Antioquia,6.0650000,-75.5715100,metro_offset,3,derived,offset_ring,Medellín,co
+Medellín - West,Antioquia,6.2450000,-75.8615100,metro_offset,3,derived,offset_ring,Medellín,co
+Medellín - Northeast,Antioquia,6.3750000,-75.3615100,metro_offset,3,derived,offset_ring,Medellín,co
+Medellín - Northwest,Antioquia,6.3750000,-75.7815100,metro_offset,3,derived,offset_ring,Medellín,co
+Medellín - Southeast,Antioquia,6.1150000,-75.3615100,metro_offset,3,derived,offset_ring,Medellín,co
+Medellín - Southwest,Antioquia,6.1150000,-75.7815100,metro_offset,3,derived,offset_ring,Medellín,co
+Barranquilla,Atlántico,10.9685400,-74.7813200,metro,4,geonames_co_2026_1206319,anchor_city,Barranquilla,co
+Barranquilla - East,Atlántico,10.9685400,-74.4913200,metro_offset,4,derived,offset_ring,Barranquilla,co
+Barranquilla - North,Atlántico,11.1485400,-74.7813200,metro_offset,4,derived,offset_ring,Barranquilla,co
+Barranquilla - South,Atlántico,10.7885400,-74.7813200,metro_offset,4,derived,offset_ring,Barranquilla,co
+Barranquilla - West,Atlántico,10.9685400,-75.0713200,metro_offset,4,derived,offset_ring,Barranquilla,co
+Barranquilla - Northeast,Atlántico,11.0985400,-74.5713200,metro_offset,4,derived,offset_ring,Barranquilla,co
+Barranquilla - Northwest,Atlántico,11.0985400,-74.9913200,metro_offset,4,derived,offset_ring,Barranquilla,co
+Barranquilla - Southeast,Atlántico,10.8385400,-74.5713200,metro_offset,4,derived,offset_ring,Barranquilla,co
+Barranquilla - Southwest,Atlántico,10.8385400,-74.9913200,metro_offset,4,derived,offset_ring,Barranquilla,co
+Cartagena,Bolívar,10.3981700,-75.4932800,metro,5,geonames_co_2026_914552,anchor_city,Cartagena,co
+Cartagena - East,Bolívar,10.3981700,-75.2032800,metro_offset,5,derived,offset_ring,Cartagena,co
+Cartagena - North,Bolívar,10.5781700,-75.4932800,metro_offset,5,derived,offset_ring,Cartagena,co
+Cartagena - South,Bolívar,10.2181700,-75.4932800,metro_offset,5,derived,offset_ring,Cartagena,co
+Cartagena - West,Bolívar,10.3981700,-75.7832800,metro_offset,5,derived,offset_ring,Cartagena,co
+Cartagena - Northeast,Bolívar,10.5281700,-75.2832800,metro_offset,5,derived,offset_ring,Cartagena,co
+Cartagena - Northwest,Bolívar,10.5281700,-75.7032800,metro_offset,5,derived,offset_ring,Cartagena,co
+Cartagena - Southeast,Bolívar,10.2681700,-75.2832800,metro_offset,5,derived,offset_ring,Cartagena,co
+Cartagena - Southwest,Bolívar,10.2681700,-75.7032800,metro_offset,5,derived,offset_ring,Cartagena,co
+Cúcuta,Norte de Santander Department,7.9074500,-72.5049000,metro,6,geonames_co_2026_777106,anchor_city,Cúcuta,co
+Cúcuta - East,Norte de Santander Department,7.9074500,-72.2149000,metro_offset,6,derived,offset_ring,Cúcuta,co
+Cúcuta - North,Norte de Santander Department,8.0874500,-72.5049000,metro_offset,6,derived,offset_ring,Cúcuta,co
+Cúcuta - South,Norte de Santander Department,7.7274500,-72.5049000,metro_offset,6,derived,offset_ring,Cúcuta,co
+Cúcuta - West,Norte de Santander Department,7.9074500,-72.7949000,metro_offset,6,derived,offset_ring,Cúcuta,co
+Cúcuta - Northeast,Norte de Santander Department,8.0374500,-72.2949000,metro_offset,6,derived,offset_ring,Cúcuta,co
+Cúcuta - Northwest,Norte de Santander Department,8.0374500,-72.7149000,metro_offset,6,derived,offset_ring,Cúcuta,co
+Cúcuta - Southeast,Norte de Santander Department,7.7774500,-72.2949000,metro_offset,6,derived,offset_ring,Cúcuta,co
+Cúcuta - Southwest,Norte de Santander Department,7.7774500,-72.7149000,metro_offset,6,derived,offset_ring,Cúcuta,co
+Bucaramanga,Santander Department,7.1250000,-73.1189500,metro,7,geonames_co_2026_581130,anchor_city,Bucaramanga,co
+Bucaramanga - East,Santander Department,7.1250000,-72.8289500,metro_offset,7,derived,offset_ring,Bucaramanga,co
+Bucaramanga - North,Santander Department,7.3050000,-73.1189500,metro_offset,7,derived,offset_ring,Bucaramanga,co
+Bucaramanga - South,Santander Department,6.9450000,-73.1189500,metro_offset,7,derived,offset_ring,Bucaramanga,co
+Bucaramanga - West,Santander Department,7.1250000,-73.4089500,metro_offset,7,derived,offset_ring,Bucaramanga,co
+Bucaramanga - Northeast,Santander Department,7.2550000,-72.9089500,metro_offset,7,derived,offset_ring,Bucaramanga,co
+Bucaramanga - Northwest,Santander Department,7.2550000,-73.3289500,metro_offset,7,derived,offset_ring,Bucaramanga,co
+Bucaramanga - Southeast,Santander Department,6.9950000,-72.9089500,metro_offset,7,derived,offset_ring,Bucaramanga,co
+Bucaramanga - Southwest,Santander Department,6.9950000,-73.3289500,metro_offset,7,derived,offset_ring,Bucaramanga,co
+Ibagué,Tolima Department,4.4357300,-75.2028900,metro,8,geonames_co_2026_529635,anchor_city,Ibagué,co
+Ibagué - East,Tolima Department,4.4357300,-74.9128900,metro_offset,8,derived,offset_ring,Ibagué,co
+Ibagué - North,Tolima Department,4.6157300,-75.2028900,metro_offset,8,derived,offset_ring,Ibagué,co
+Ibagué - South,Tolima Department,4.2557300,-75.2028900,metro_offset,8,derived,offset_ring,Ibagué,co
+Ibagué - West,Tolima Department,4.4357300,-75.4928900,metro_offset,8,derived,offset_ring,Ibagué,co
+Ibagué - Northeast,Tolima Department,4.5657300,-74.9928900,metro_offset,8,derived,offset_ring,Ibagué,co
+Ibagué - Northwest,Tolima Department,4.5657300,-75.4128900,metro_offset,8,derived,offset_ring,Ibagué,co
+Ibagué - Southeast,Tolima Department,4.3057300,-74.9928900,metro_offset,8,derived,offset_ring,Ibagué,co
+Ibagué - Southwest,Tolima Department,4.3057300,-75.4128900,metro_offset,8,derived,offset_ring,Ibagué,co
+Santa Marta,Magdalena Department,11.2385500,-74.1942700,regional_large,9,geonames_co_2026_499192,anchor_city,Santa Marta,co
+Santa Marta - East,Magdalena Department,11.2385500,-73.9042700,regional_large_offset,9,derived,offset_ring,Santa Marta,co
+Santa Marta - North,Magdalena Department,11.4185500,-74.1942700,regional_large_offset,9,derived,offset_ring,Santa Marta,co
+Santa Marta - South,Magdalena Department,11.0585500,-74.1942700,regional_large_offset,9,derived,offset_ring,Santa Marta,co
+Santa Marta - West,Magdalena Department,11.2385500,-74.4842700,regional_large_offset,9,derived,offset_ring,Santa Marta,co
+Santa Marta - Northeast,Magdalena Department,11.3685500,-73.9842700,regional_large_offset,9,derived,offset_ring,Santa Marta,co
+Santa Marta - Northwest,Magdalena Department,11.3685500,-74.4042700,regional_large_offset,9,derived,offset_ring,Santa Marta,co
+Santa Marta - Southeast,Magdalena Department,11.1085500,-73.9842700,regional_large_offset,9,derived,offset_ring,Santa Marta,co
+Santa Marta - Southwest,Magdalena Department,11.1085500,-74.4042700,regional_large_offset,9,derived,offset_ring,Santa Marta,co
+Montería,Córdoba,8.7508100,-75.8782300,regional_large,10,geonames_co_2026_490935,anchor_city,Montería,co
+Montería - East,Córdoba,8.7508100,-75.5882300,regional_large_offset,10,derived,offset_ring,Montería,co
+Montería - North,Córdoba,8.9308100,-75.8782300,regional_large_offset,10,derived,offset_ring,Montería,co
+Montería - South,Córdoba,8.5708100,-75.8782300,regional_large_offset,10,derived,offset_ring,Montería,co
+Montería - West,Córdoba,8.7508100,-76.1682300,regional_large_offset,10,derived,offset_ring,Montería,co
+Montería - Northeast,Córdoba,8.8808100,-75.6682300,regional_large_offset,10,derived,offset_ring,Montería,co
+Montería - Northwest,Córdoba,8.8808100,-76.0882300,regional_large_offset,10,derived,offset_ring,Montería,co
+Montería - Southeast,Córdoba,8.6208100,-75.6682300,regional_large_offset,10,derived,offset_ring,Montería,co
+Montería - Southwest,Córdoba,8.6208100,-76.0882300,regional_large_offset,10,derived,offset_ring,Montería,co
+Valledupar,Cesar Department,10.4653800,-73.2531000,regional_large,11,geonames_co_2026_490075,anchor_city,Valledupar,co
+Valledupar - East,Cesar Department,10.4653800,-72.9631000,regional_large_offset,11,derived,offset_ring,Valledupar,co
+Valledupar - North,Cesar Department,10.6453800,-73.2531000,regional_large_offset,11,derived,offset_ring,Valledupar,co
+Valledupar - South,Cesar Department,10.2853800,-73.2531000,regional_large_offset,11,derived,offset_ring,Valledupar,co
+Valledupar - West,Cesar Department,10.4653800,-73.5431000,regional_large_offset,11,derived,offset_ring,Valledupar,co
+Valledupar - Northeast,Cesar Department,10.5953800,-73.0431000,regional_large_offset,11,derived,offset_ring,Valledupar,co
+Valledupar - Northwest,Cesar Department,10.5953800,-73.4631000,regional_large_offset,11,derived,offset_ring,Valledupar,co
+Valledupar - Southeast,Cesar Department,10.3353800,-73.0431000,regional_large_offset,11,derived,offset_ring,Valledupar,co
+Valledupar - Southwest,Cesar Department,10.3353800,-73.4631000,regional_large_offset,11,derived,offset_ring,Valledupar,co
+Pereira,Risaralda Department,4.8142800,-75.6948800,regional_large,12,geonames_co_2026_467269,anchor_city,Pereira,co
+Pereira - East,Risaralda Department,4.8142800,-75.4048800,regional_large_offset,12,derived,offset_ring,Pereira,co
+Pereira - North,Risaralda Department,4.9942800,-75.6948800,regional_large_offset,12,derived,offset_ring,Pereira,co
+Pereira - South,Risaralda Department,4.6342800,-75.6948800,regional_large_offset,12,derived,offset_ring,Pereira,co
+Pereira - West,Risaralda Department,4.8142800,-75.9848800,regional_large_offset,12,derived,offset_ring,Pereira,co
+Pereira - Northeast,Risaralda Department,4.9442800,-75.4848800,regional_large_offset,12,derived,offset_ring,Pereira,co
+Pereira - Northwest,Risaralda Department,4.9442800,-75.9048800,regional_large_offset,12,derived,offset_ring,Pereira,co
+Pereira - Southeast,Risaralda Department,4.6842800,-75.4848800,regional_large_offset,12,derived,offset_ring,Pereira,co
+Pereira - Southwest,Risaralda Department,4.6842800,-75.9048800,regional_large_offset,12,derived,offset_ring,Pereira,co
+Manizales,Caldas Department,5.0668000,-75.5068400,regional_large,13,geonames_co_2026_434403,anchor_city,Manizales,co
+Manizales - East,Caldas Department,5.0668000,-75.2168400,regional_large_offset,13,derived,offset_ring,Manizales,co
+Manizales - North,Caldas Department,5.2468000,-75.5068400,regional_large_offset,13,derived,offset_ring,Manizales,co
+Manizales - South,Caldas Department,4.8868000,-75.5068400,regional_large_offset,13,derived,offset_ring,Manizales,co
+Manizales - West,Caldas Department,5.0668000,-75.7968400,regional_large_offset,13,derived,offset_ring,Manizales,co
+Manizales - Northeast,Caldas Department,5.1968000,-75.2968400,regional_large_offset,13,derived,offset_ring,Manizales,co
+Manizales - Northwest,Caldas Department,5.1968000,-75.7168400,regional_large_offset,13,derived,offset_ring,Manizales,co
+Manizales - Southeast,Caldas Department,4.9368000,-75.2968400,regional_large_offset,13,derived,offset_ring,Manizales,co
+Manizales - Southwest,Caldas Department,4.9368000,-75.7168400,regional_large_offset,13,derived,offset_ring,Manizales,co
+Buenaventura,Valle del Cauca Department,3.5833300,-77.0000000,regional_large,14,geonames_co_2026_432385,anchor_city,Buenaventura,co
+Buenaventura - East,Valle del Cauca Department,3.5833300,-76.7100000,regional_large_offset,14,derived,offset_ring,Buenaventura,co
+Buenaventura - North,Valle del Cauca Department,3.7633300,-77.0000000,regional_large_offset,14,derived,offset_ring,Buenaventura,co
+Buenaventura - South,Valle del Cauca Department,3.4033300,-77.0000000,regional_large_offset,14,derived,offset_ring,Buenaventura,co
+Buenaventura - West,Valle del Cauca Department,3.5833300,-77.2900000,regional_large_offset,14,derived,offset_ring,Buenaventura,co
+Buenaventura - Northeast,Valle del Cauca Department,3.7133300,-76.7900000,regional_large_offset,14,derived,offset_ring,Buenaventura,co
+Buenaventura - Northwest,Valle del Cauca Department,3.7133300,-77.2100000,regional_large_offset,14,derived,offset_ring,Buenaventura,co
+Buenaventura - Southeast,Valle del Cauca Department,3.4533300,-76.7900000,regional_large_offset,14,derived,offset_ring,Buenaventura,co
+Buenaventura - Southwest,Valle del Cauca Department,3.4533300,-77.2100000,regional_large_offset,14,derived,offset_ring,Buenaventura,co
+Pasto,Nariño,1.2145600,-77.2784600,regional_large,15,geonames_co_2026_392930,anchor_city,Pasto,co
+Pasto - East,Nariño,1.2145600,-76.9884600,regional_large_offset,15,derived,offset_ring,Pasto,co
+Pasto - North,Nariño,1.3945600,-77.2784600,regional_large_offset,15,derived,offset_ring,Pasto,co
+Pasto - South,Nariño,1.0345600,-77.2784600,regional_large_offset,15,derived,offset_ring,Pasto,co
+Pasto - West,Nariño,1.2145600,-77.5684600,regional_large_offset,15,derived,offset_ring,Pasto,co
+Pasto - Northeast,Nariño,1.3445600,-77.0684600,regional_large_offset,15,derived,offset_ring,Pasto,co
+Pasto - Northwest,Nariño,1.3445600,-77.4884600,regional_large_offset,15,derived,offset_ring,Pasto,co
+Pasto - Southeast,Nariño,1.0845600,-77.0684600,regional_large_offset,15,derived,offset_ring,Pasto,co
+Pasto - Southwest,Nariño,1.0845600,-77.4884600,regional_large_offset,15,derived,offset_ring,Pasto,co
+Neiva,Huila Department,2.9300100,-75.2797300,regional_large,16,geonames_co_2026_357392,anchor_city,Neiva,co
+Neiva - East,Huila Department,2.9300100,-74.9897300,regional_large_offset,16,derived,offset_ring,Neiva,co
+Neiva - North,Huila Department,3.1100100,-75.2797300,regional_large_offset,16,derived,offset_ring,Neiva,co
+Neiva - South,Huila Department,2.7500100,-75.2797300,regional_large_offset,16,derived,offset_ring,Neiva,co
+Neiva - West,Huila Department,2.9300100,-75.5697300,regional_large_offset,16,derived,offset_ring,Neiva,co
+Neiva - Northeast,Huila Department,3.0600100,-75.0697300,regional_large_offset,16,derived,offset_ring,Neiva,co
+Neiva - Northwest,Huila Department,3.0600100,-75.4897300,regional_large_offset,16,derived,offset_ring,Neiva,co
+Neiva - Southeast,Huila Department,2.8000100,-75.0697300,regional_large_offset,16,derived,offset_ring,Neiva,co
+Neiva - Southwest,Huila Department,2.8000100,-75.4897300,regional_large_offset,16,derived,offset_ring,Neiva,co
+Villavicencio,Meta Department,4.1323800,-73.6256400,regional_large,17,geonames_co_2026_321717,anchor_city,Villavicencio,co
+Villavicencio - East,Meta Department,4.1323800,-73.3356400,regional_large_offset,17,derived,offset_ring,Villavicencio,co
+Villavicencio - North,Meta Department,4.3123800,-73.6256400,regional_large_offset,17,derived,offset_ring,Villavicencio,co
+Villavicencio - South,Meta Department,3.9523800,-73.6256400,regional_large_offset,17,derived,offset_ring,Villavicencio,co
+Villavicencio - West,Meta Department,4.1323800,-73.9156400,regional_large_offset,17,derived,offset_ring,Villavicencio,co
+Villavicencio - Northeast,Meta Department,4.2623800,-73.4156400,regional_large_offset,17,derived,offset_ring,Villavicencio,co
+Villavicencio - Northwest,Meta Department,4.2623800,-73.8356400,regional_large_offset,17,derived,offset_ring,Villavicencio,co
+Villavicencio - Southeast,Meta Department,4.0023800,-73.4156400,regional_large_offset,17,derived,offset_ring,Villavicencio,co
+Villavicencio - Southwest,Meta Department,4.0023800,-73.8356400,regional_large_offset,17,derived,offset_ring,Villavicencio,co

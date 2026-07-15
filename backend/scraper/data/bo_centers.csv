@@ -1,0 +1,13 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+La Paz,La Paz Department,-16.5000000,-68.1500000,metro,1,geonames_bo_2026_2004652,anchor_city,La Paz,bo
+Santa Cruz de la Sierra,Santa Cruz Department,-17.7862900,-63.1811700,metro,2,geonames_bo_2026_1831434,anchor_city,Santa Cruz de la Sierra,bo
+Cochabamba,Cochabamba,-17.3819500,-66.1599500,metro,3,geonames_bo_2026_841276,anchor_city,Cochabamba,bo
+Sucre,Chuquisaca Department,-19.0333200,-65.2627400,regional_large,4,geonames_bo_2026_224838,anchor_city,Sucre,bo
+Oruro,Oruro,-17.9715300,-67.0932000,regional_large,5,geonames_bo_2026_208684,anchor_city,Oruro,bo
+Tarija,Tarija Department,-21.5354900,-64.7295600,regional_large,6,geonames_bo_2026_159269,anchor_city,Tarija,bo
+Potosí,Potosí Department,-19.5836100,-65.7530600,regional_large,7,geonames_bo_2026_141251,anchor_city,Potosí,bo
+Riberalta,Beni Department,-11.0102600,-66.0525700,regional,8,geonames_bo_2026_99070,anchor_city,Riberalta,bo
+Montero,Santa Cruz Department,-17.3387400,-63.2509300,regional,9,geonames_bo_2026_88616,anchor_city,Montero,bo
+Viacha,La Paz Department,-16.6500000,-68.3000000,regional,10,geonames_bo_2026_86218,anchor_city,Viacha,bo
+Trinidad,Beni Department,-14.8322300,-64.9033500,regional,11,geonames_bo_2026_84259,anchor_city,Trinidad,bo
+Yacuiba,Tarija Department,-22.0164300,-63.6775300,regional,12,geonames_bo_2026_82803,anchor_city,Yacuiba,bo

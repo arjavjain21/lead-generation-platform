@@ -37,6 +37,18 @@ COUNTRY_FILES: list[tuple[Path, str]] = [
     (DATA_DIR / "pt_centers.csv", "pt"),
     (DATA_DIR / "no_centers.csv", "no"),
     (DATA_DIR / "nz_centers.csv", "nz"),
+    # Latin American countries
+    (DATA_DIR / "mx_centers.csv", "mx"),
+    (DATA_DIR / "br_centers.csv", "br"),
+    (DATA_DIR / "ar_centers.csv", "ar"),
+    (DATA_DIR / "co_centers.csv", "co"),
+    (DATA_DIR / "cl_centers.csv", "cl"),
+    (DATA_DIR / "pe_centers.csv", "pe"),
+    (DATA_DIR / "ve_centers.csv", "ve"),
+    (DATA_DIR / "ec_centers.csv", "ec"),
+    (DATA_DIR / "bo_centers.csv", "bo"),
+    (DATA_DIR / "py_centers.csv", "py"),
+    (DATA_DIR / "uy_centers.csv", "uy"),
 ]
 
 # Country code -> display name
@@ -61,6 +73,18 @@ COUNTRY_NAMES: dict[str, str] = {
     "pt": "Portugal",
     "no": "Norway",
     "nz": "New Zealand",
+    # Latin American countries
+    "mx": "Mexico",
+    "br": "Brazil",
+    "ar": "Argentina",
+    "co": "Colombia",
+    "cl": "Chile",
+    "pe": "Peru",
+    "ve": "Venezuela",
+    "ec": "Ecuador",
+    "bo": "Bolivia",
+    "py": "Paraguay",
+    "uy": "Uruguay",
 }
 
 # ---------------------------------------------------------------------------
@@ -265,7 +289,7 @@ def get_countries() -> list[dict[str, str]]:
                 "name": COUNTRY_NAMES.get(code, code.upper()),
             })
     # Ensure consistent order: Americas, Oceania, Europe
-    order = ["us", "ca", "au", "nz", "gb", "ie", "de", "fr", "es", "it", "nl", "be", "pl", "se", "no", "dk", "at", "ch", "pt"]
+    order = ["us", "ca", "mx", "br", "ar", "co", "cl", "pe", "ve", "ec", "bo", "py", "uy", "au", "nz", "gb", "ie", "de", "fr", "es", "it", "nl", "be", "pl", "se", "no", "dk", "at", "ch", "pt"]
     return sorted(result, key=lambda x: (order.index(x["code"]) if x["code"] in order else 99, x["code"]))
 
 
