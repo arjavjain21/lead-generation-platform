@@ -192,33 +192,51 @@ async def _run_contacts_writer_v2(
     return sync_result, sync_status
 
 
-# Valid provider values for force_provider parameter
+# Valid provider values for force_provider / selected_providers parameter
 VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "smartprospect", "wizleads", "better_enrich"})
 
 
-def _should_skip_provider(provider: str, force_provider: Optional[str]) -> bool:
+def _should_skip_provider(
+    provider: str,
+    force_provider: Optional[str] = None,
+    selected_providers: Optional[list[str]] = None,
+) -> bool:
     """
     Determine if a provider should be skipped.
 
     Args:
         provider: The current provider being considered (e.g., "contacts_db", "blitz")
         force_provider: The forced provider from request (or None for normal cascade)
+        selected_providers: Optional allowlist from request (or None for all enabled).
+            Mirrors list_builder.py semantics — contacts_db is always allowed
+            even if not in the list.
 
     Returns:
         True if the provider should be skipped, False otherwise
 
-    Checks:
-      1. Is the provider globally disabled in ENABLED_PROVIDERS?
-      2. If force_provider is set, does it match the current provider?
+    Checks (in priority order):
+      1. Global ENABLED_PROVIDERS kill switch (beats everything below)
+      2. force_provider (if set) — only that provider passes
+      3. selected_providers (if set) — only those providers pass; contacts_db
+         is always allowed
     """
-    # First check: is the provider globally disabled?
+    # Global enablement check — beats force_provider and selected_providers.
+    # If a provider is globally disabled, no per-request override re-enables it.
     if not providers.is_provider_enabled(provider):
         logger.debug("_should_skip_provider: %s disabled in ENABLED_PROVIDERS", provider)
         return True
 
-    # Second check: force_provider constraint
+    # force_provider takes precedence over selected_providers - if set, only
+    # use that provider.
     if force_provider:
         return provider != force_provider
+
+    # selected_providers is an allowlist. contacts_db is always allowed
+    # (mandatory first step), matching list_builder.py convention.
+    if selected_providers is not None:
+        if provider == "contacts_db":
+            return False
+        return provider not in selected_providers
 
     return False
 
@@ -1402,6 +1420,12 @@ class UnifiedEnrichRequest(BaseModel):
             Auto-converts to cascade if cascade is not provided.
         force_provider: Force a specific provider ("contacts_db", "blitz",
             "better_enrich"). If None, uses normal cascade.
+        selected_providers: Restrict the cascade to a subset of providers
+            (e.g., ["contacts_db", "smartprospect"]). Providers not in this
+            list are skipped entirely, so the cascade stops at the last
+            allowed provider. contacts_db is always allowed (mandatory first
+            step) even if not explicitly listed. Mutually exclusive with
+            force_provider. If None, all enabled providers are used.
     """
     domain: Optional[str] = None
     full_name: Optional[str] = None
@@ -1420,6 +1444,9 @@ class UnifiedEnrichRequest(BaseModel):
     # Force a specific provider: "contacts_db", "blitz", "better_enrich"
     # If None, uses normal cascade
     force_provider: Optional[str] = None
+    # Restrict cascade to a subset of providers (e.g., ["contacts_db", "smartprospect"]).
+    # Mutually exclusive with force_provider. contacts_db always allowed.
+    selected_providers: Optional[list[str]] = None
 
     class Config:
         schema_extra = {
@@ -1431,6 +1458,7 @@ class UnifiedEnrichRequest(BaseModel):
                 {"linkedin_url": "https://linkedin.com/in/johndoe", "domain": "google.com"},
                 {"domain": "google.com", "titles": "CEO,CTO,HR"},
                 {"domain": "google.com", "cascade": [{"include_title": ["CEO", "CTO"]}]},
+                {"domain": "google.com", "selected_providers": ["contacts_db", "smartprospect"]},
             ]
         }
 
@@ -1501,6 +1529,34 @@ async def unified_enrich(
     """
     # Validate inputs - must have domain OR linkedin_url
     req.validate_inputs()
+
+    # Validate selected_providers (allowlist). Mutually exclusive with
+    # force_provider, must reference real provider names, cannot be empty.
+    if req.selected_providers is not None:
+        if req.force_provider:
+            raise HTTPException(
+                status_code=400,
+                detail="force_provider and selected_providers are mutually exclusive. "
+                       "Pick one: force_provider='blitz' (single) or "
+                       "selected_providers=['contacts_db','smartprospect'] (subset).",
+            )
+        if not isinstance(req.selected_providers, list) or len(req.selected_providers) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="selected_providers must be a non-empty list. "
+                       f"Valid providers: {sorted(VALID_PROVIDERS)}",
+            )
+        invalid = [p for p in req.selected_providers if p not in VALID_PROVIDERS]
+        if invalid:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid provider(s) in selected_providers: {invalid}. "
+                       f"Valid: {sorted(VALID_PROVIDERS)}",
+            )
+        logger.info(
+            "DEBUG unified_enrich: selected_providers=%s (contacts_db always allowed)",
+            req.selected_providers,
+        )
 
     # Convert titles to cascade if provided
     if req.titles and not req.cascade:
@@ -1581,7 +1637,7 @@ async def unified_enrich(
             linkedin_for_blitz = req.linkedin_url or ""
 
             # Step 1: Try Contacts DB by LinkedIn
-            if req.linkedin_url:
+            if req.linkedin_url and not _should_skip_provider("contacts_db", req.force_provider, req.selected_providers):
                 try:
                     person = await contacts_client.person_by_linkedin(contacts_http, linkedin_username)
                     if person:
@@ -1612,7 +1668,7 @@ async def unified_enrich(
             # pre-fix behavior; the brief's "unverified" gate applies to
             # `person_enrich` where `emails[]` is explicit, not to
             # `person_enrich_by_linkedin`).
-            if not contacts or not any(c.get("email") for c in contacts):
+            if (not contacts or not any(c.get("email") for c in contacts)) and not _should_skip_provider("blitz", req.force_provider, req.selected_providers):
                 try:
                     # Use Blitz to get email from LinkedIn
                     result = await blitz_client.person_enrich_by_linkedin(
@@ -1652,7 +1708,7 @@ async def unified_enrich(
             # Step 3: Try WizLeads as fallback (between Blitz and BetterEnrich
             # to match documented cascade: Contacts DB → Blitz → WizLeads →
             # BetterEnrich). Eligibility: full_name (or first_name) + domain.
-            if full_name and domain and (not contacts or not any(c.get("email") for c in contacts)):
+            if full_name and domain and (not contacts or not any(c.get("email") for c in contacts)) and not _should_skip_provider("wizleads", req.force_provider, req.selected_providers):
                 try:
                     result = await wizleads_client.find_email(
                         blitz_http,
@@ -1687,7 +1743,7 @@ async def unified_enrich(
 
             # Step 4: Try BetterEnrich V3 as final fallback (requires full_name AND domain)
             # BetterEnrich V3 requires domain, so only try when domain is available
-            if full_name and domain and (not contacts or not any(c.get("email") for c in contacts)):
+            if full_name and domain and (not contacts or not any(c.get("email") for c in contacts)) and not _should_skip_provider("better_enrich", req.force_provider, req.selected_providers):
                 try:
                     be_result = await better_enrich_client.find_work_email_v3(
                         blitz_http,
@@ -1741,7 +1797,7 @@ async def unified_enrich(
                 domain_semaphore=domain_semaphore,
                 email_semaphore=email_semaphore,
                 force_provider=req.force_provider,
-                selected_providers=None,
+                selected_providers=req.selected_providers,
             )
 
             contacts = []
@@ -1770,7 +1826,7 @@ async def unified_enrich(
             # Domain-only: Use existing pipeline (Contacts DB → Blitz)
             # Use custom cascade if provided, otherwise use default
             # Skip Contacts DB contacts if custom cascade is provided
-            logger.info("DEBUG domain_only: force_provider=%s", req.force_provider)
+            logger.info("DEBUG domain_only: force_provider=%s", req.force_provider, req.selected_providers)
             has_custom_cascade = req.cascade is not None and len(req.cascade) > 0
             cascade = req.cascade if has_custom_cascade else blitz_client.DEFAULT_CASCADE
             input_row = {"domain": domain}
@@ -1832,7 +1888,7 @@ async def unified_enrich(
             # Step 2: If no contacts found from Contacts DB/Blitz, try BetterEnrich company email
             # This is a fallback for generic company emails when no decision makers are found
             # Skip if force_provider is set and it's not "better_enrich"
-            if not contacts and not _should_skip_provider("better_enrich", req.force_provider):
+            if not contacts and not _should_skip_provider("better_enrich", req.force_provider, req.selected_providers):
                 try:
                     be_result = await better_enrich_client.find_company_email(
                         blitz_http,
@@ -1866,7 +1922,7 @@ async def unified_enrich(
 
             # Step 1: Try Contacts DB (person lookup by LinkedIn OR by name+domain)
             # Skip if force_provider is set and it's not "contacts_db"
-            if (full_name or req.linkedin_url) and not _should_skip_provider("contacts_db", req.force_provider):
+            if (full_name or req.linkedin_url) and not _should_skip_provider("contacts_db", req.force_provider, req.selected_providers):
                 # Try to find person in Contacts DB
                 try:
                     # Priority 1: LinkedIn URL + domain (if provided)
@@ -1921,7 +1977,7 @@ async def unified_enrich(
             # BetterEnrich. We track whether Blitz produced a candidate that
             # we should fall through from.
             blitz_fall_through = False
-            if not contacts and not _should_skip_provider("blitz", req.force_provider):
+            if not contacts and not _should_skip_provider("blitz", req.force_provider, req.selected_providers):
                 try:
                     # Try to get company first
                     company = await contacts_client.company_by_domain(contacts_http, domain)
@@ -2036,7 +2092,7 @@ async def unified_enrich(
             has_email_now = any(c.get("email") for c in contacts)
             should_try_wizleads = (not has_email_now or blitz_fall_through) and (
                 (full_name or req.first_name) and domain
-            ) and not _should_skip_provider("wizleads", req.force_provider)
+            ) and not _should_skip_provider("wizleads", req.force_provider, req.selected_providers)
             if should_try_wizleads:
                 wizleads_tried = True
                 first_name_wz = (req.first_name or "").strip() or (full_name.split(" ")[0] if full_name else "")
@@ -2076,7 +2132,7 @@ async def unified_enrich(
             # Step 3: If still no email, try BetterEnrich V3 as final fallback
             # BetterEnrich V3 requires both full_name and domain
             # Skip if force_provider is set and it's not "better_enrich"
-            if full_name and domain and not _should_skip_provider("better_enrich", req.force_provider):
+            if full_name and domain and not _should_skip_provider("better_enrich", req.force_provider, req.selected_providers):
                 # If no contacts found at all but we have full_name, try BetterEnrich V3 directly
                 if not contacts:
                     try:
@@ -2245,6 +2301,14 @@ async def unified_enrich_get(
     cascade_json: str = Query(None, description="Custom cascade as JSON string"),
     titles: str = Query(None, description="Simple titles filter (comma-separated, e.g., 'CEO,CTO,HR')"),
     force_provider: str = Query(None, description="Force specific provider: contacts_db, blitz, better_enrich"),
+    selected_providers: str = Query(
+        None,
+        description=(
+            "Comma-separated allowlist of providers (e.g., 'contacts_db,smartprospect'). "
+            "Providers not in this list are skipped entirely. "
+            "contacts_db is always allowed. Mutually exclusive with force_provider."
+        ),
+    ),
     debug: bool = Query(
         False,
         description=(
@@ -2276,6 +2340,15 @@ async def unified_enrich_get(
     if not cascade and titles:
         cascade = _titles_to_cascade(titles)
 
+    # Parse selected_providers CSV query param into a list.
+    # Empty/whitespace entries are dropped so "?selected_providers=" → None
+    # (treated as "no filter" rather than "empty list, which would 400").
+    selected_providers_list: Optional[list[str]] = None
+    if selected_providers:
+        parsed = [p.strip() for p in selected_providers.split(",") if p.strip()]
+        if parsed:
+            selected_providers_list = parsed
+
     # Convert to UnifiedEnrichRequest format
     req = UnifiedEnrichRequest(
         domain=domain,
@@ -2287,6 +2360,7 @@ async def unified_enrich_get(
         cascade=cascade,
         titles=titles,
         force_provider=force_provider,
+        selected_providers=selected_providers_list,
     )
 
     # Call the POST handler logic (reuse by calling unified_enrich internally)
@@ -2314,6 +2388,34 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
 
     # Validate inputs - must have domain OR linkedin_url
     req.validate_inputs()
+
+    # Validate selected_providers (allowlist). Mutually exclusive with
+    # force_provider, must reference real provider names, cannot be empty.
+    if req.selected_providers is not None:
+        if req.force_provider:
+            raise HTTPException(
+                status_code=400,
+                detail="force_provider and selected_providers are mutually exclusive. "
+                       "Pick one: force_provider='blitz' (single) or "
+                       "selected_providers=['contacts_db','smartprospect'] (subset).",
+            )
+        if not isinstance(req.selected_providers, list) or len(req.selected_providers) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="selected_providers must be a non-empty list. "
+                       f"Valid providers: {sorted(VALID_PROVIDERS)}",
+            )
+        invalid = [p for p in req.selected_providers if p not in VALID_PROVIDERS]
+        if invalid:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid provider(s) in selected_providers: {invalid}. "
+                       f"Valid: {sorted(VALID_PROVIDERS)}",
+            )
+        logger.info(
+            "DEBUG _unified_enrich_logic: selected_providers=%s (contacts_db always allowed)",
+            req.selected_providers,
+        )
 
     # Validate domain format if provided
     domain = ""
@@ -2362,7 +2464,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
             # before running the person cascade. Preserve that side effect so
             # downstream consumers still see company_linkedin_url in the
             # response, but only when force_provider doesn't forbid contacts_db.
-            if mode == "enhanced" and domain and not _should_skip_provider("contacts_db", req.force_provider):
+            if mode == "enhanced" and domain and not _should_skip_provider("contacts_db", req.force_provider, req.selected_providers):
                 try:
                     company = await contacts_client.company_by_domain(contacts_http, domain)
                     if company and company.get("linkedin_url"):
@@ -2375,7 +2477,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
             # contact dict is populated even when no email is found. This
             # mirrors the legacy behaviour of populating name fields before
             # the email cascade. Skipped when force_provider forbids it.
-            if not _should_skip_provider("contacts_db", req.force_provider):
+            if not _should_skip_provider("contacts_db", req.force_provider, req.selected_providers):
                 try:
                     person = await contacts_client.person_by_linkedin(
                         contacts_http, req.linkedin_url or ""
@@ -2411,6 +2513,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                 domain=domain,
                 company_name=req.company_name or "",
                 force_provider=req.force_provider,
+                selected_providers=req.selected_providers,
             )
             route_result = await pipeline.run_enrichment_route(
                 route,
@@ -2579,7 +2682,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
 
             # If no custom cascade specified, try Contacts DB contacts first
             # Skip if force_provider is set and it's not "contacts_db"
-            if not has_custom_cascade and not _should_skip_provider("contacts_db", req.force_provider):
+            if not has_custom_cascade and not _should_skip_provider("contacts_db", req.force_provider, req.selected_providers):
                 try:
                     contacts_data = await contacts_client.company_contacts_enriched(
                         contacts_http, domain, req.max_results
@@ -2591,7 +2694,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
 
             # Try Blitz API waterfall (requires company LinkedIn URL)
             # Skip if force_provider is set and it's not "blitz"
-            if company_linkedin_url and not _should_skip_provider("blitz", req.force_provider):
+            if company_linkedin_url and not _should_skip_provider("blitz", req.force_provider, req.selected_providers):
                 try:
                     blitz_response = await blitz_client.waterfall_icp_search(
                         blitz_http, company_linkedin_url, cascade, req.max_results
@@ -2659,6 +2762,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                 last_name=person_last_name or "",
                 domain=domain or "",
                 force_provider=req.force_provider,
+                selected_providers=req.selected_providers,
             )
             route_result = await pipeline.run_enrichment_route(
                 route,
@@ -2728,7 +2832,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
 
         # If no contacts found with current provider, try BetterEnrich company email
         # This is for when force_provider=better_enrich and we want to get company email
-        if not enriched_contacts and not _should_skip_provider("better_enrich", req.force_provider):
+        if not enriched_contacts and not _should_skip_provider("better_enrich", req.force_provider, req.selected_providers):
             try:
                 be_result = await better_enrich_client.find_company_email(
                     blitz_http,
@@ -3408,6 +3512,15 @@ async def _run_job(
                 out_df[ordered].to_csv(str(output_path), index=False)
             else:
                 output_path.write_text("")
+
+        # Defensive guard: 0 output rows on a non-empty input is always a bug.
+        # See csv_jobs_silent_failure_2026-07-13.md for the incident this prevents.
+        rows_param_count = len(rows) if 'rows' in dir() else 0
+        if len(output_rows) == 0 and rows_param_count > 0:
+            raise RuntimeError(
+                f"Job produced 0 output rows from {rows_param_count} input rows. "
+                f"This is always a bug — check logs for 'Row processing failed' warnings."
+            )
 
         store.set_done(job_id, str(output_path))
         logger.info("Enrichment job %s completed, %d output rows", job_id, len(output_rows))
@@ -4292,6 +4405,7 @@ async def _run_domain_enrich_job(
             normalize_domains=normalize_domains,
             collector=collector,
             company_linkedin_col=company_linkedin_col,
+            linkedin_url_col=linkedin_url_col,
         )
 
         # Attach input_* columns for visibility/debug.
@@ -4335,6 +4449,18 @@ async def _run_domain_enrich_job(
             out_df[ordered].to_csv(str(output_path), index=False)
         else:
             output_path.write_text("")
+
+        # Defensive guard: 0 output rows on a non-empty input is always a bug.
+        # Phase 1a in list_builder raises when every row fails, but a silent
+        # zero (e.g. every row returned [] legitimately, which shouldn't be
+        # possible) should still surface as `failed` — not `done` with a
+        # 0-byte CSV the user might try to download. See csv_jobs_silent_failure_2026-07-13.md.
+        rows_param_count = len(rows) if 'rows' in dir() else 0
+        if len(output_rows) == 0 and rows_param_count > 0:
+            raise RuntimeError(
+                f"Job produced 0 output rows from {rows_param_count} input rows. "
+                f"This is always a bug — check logs for 'Row processing failed' warnings."
+            )
 
         store.set_done(job_id, str(output_path))
         logger.info("Domain enrich job %s completed, %d output rows", job_id, len(output_rows))

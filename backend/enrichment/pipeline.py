@@ -257,24 +257,34 @@ def _compact_attempts_summary(attempts: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-# Valid provider values for force_provider parameter
+# Valid provider values for force_provider / selected_providers parameter
 VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "smartprospect", "wizleads", "better_enrich"})
 
 
-def _should_skip_provider(provider: str, force_provider: Optional[str]) -> bool:
+def _should_skip_provider(
+    provider: str,
+    force_provider: Optional[str] = None,
+    selected_providers: Optional[list[str]] = None,
+) -> bool:
     """
     Determine if a provider should be skipped.
 
     Args:
         provider: The current provider being considered (e.g., "contacts_db", "blitz")
         force_provider: The forced provider from request (or None for normal cascade)
+        selected_providers: Optional allowlist from request (or None for all enabled).
+            Mirrors list_builder.py semantics — contacts_db is always allowed
+            even if not in the list.
 
     Returns:
         True if the provider should be skipped, False otherwise
 
-    Checks:
-      1. Is the provider globally disabled in ENABLED_PROVIDERS?
-      2. If force_provider is set, does it match the current provider?
+    Checks (in priority order):
+      1. Prospeo defensive kill-switch (env flag)
+      2. Global ENABLED_PROVIDERS kill switch (beats everything below)
+      3. force_provider (if set) — only that provider passes
+      4. selected_providers (if set) — only those providers pass; contacts_db
+         is always allowed
     """
     # Defensive kill-switch: Prospeo is currently disabled end-to-end.
     # The cascade never invokes prospeo_client today, but this guard ensures
@@ -285,16 +295,25 @@ def _should_skip_provider(provider: str, force_provider: Optional[str]) -> bool:
         logger.debug("_should_skip_provider: prospeo skipped (ENABLE_PROSPEO=false)")
         return True
 
-    # First check: is the provider globally disabled?
+    # Global enablement check — beats force_provider and selected_providers.
+    # If a provider is globally disabled, no per-request override re-enables it.
     if not providers.is_provider_enabled(provider):
         logger.debug("_should_skip_provider: %s disabled in ENABLED_PROVIDERS", provider)
         return True
 
-    # Second check: force_provider constraint
+    # force_provider takes precedence over selected_providers - if set, only
+    # use that provider.
     if force_provider:
         result = provider != force_provider
         logger.debug("_should_skip_provider(provider=%s, force_provider=%s) = %s", provider, force_provider, result)
         return result
+
+    # selected_providers is an allowlist. contacts_db is always allowed
+    # (mandatory first step), matching list_builder.py convention.
+    if selected_providers is not None:
+        if provider == "contacts_db":
+            return False
+        return provider not in selected_providers
 
     return False
 
@@ -569,6 +588,7 @@ def route_enrichment(
     domain: str = "",
     company_name: str = "",
     force_provider: Optional[str] = None,
+    selected_providers: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     """Decide provider order based on available identifiers.
 
@@ -609,6 +629,14 @@ def route_enrichment(
       * "smartprospect": keep only smartprospect steps.
       * "wizleads": keep only wizleads steps.
       * "better_enrich": keep only better_enrich steps.
+
+    selected_providers semantics (mutually exclusive with force_provider):
+      * None: no allowlist filtering (all enabled providers considered).
+      * ["contacts_db", "smartprospect"]: keep only steps whose provider is
+        in the set. contacts_db steps are ALWAYS kept even if not listed
+        (mandatory first step). If filtering removes every step, return
+        no_email_reason="forced_provider_cannot_use_input" so callers see
+        an explicit signal rather than an empty cascade.
 
     **first_name / last_name auto-derivation:** when the caller supplies
     ``full_name`` but not ``first_name``/``last_name`` (the common case for
@@ -794,6 +822,23 @@ def route_enrichment(
             }
         raw_steps = filtered
 
+    # Apply selected_providers allowlist. contacts_db steps are always kept
+    # (mandatory first step) even when not explicitly listed — mirrors
+    # list_builder._should_skip_provider semantics. If filtering removes
+    # every step, surface an explicit no_email_reason so the caller sees a
+    # clear signal rather than a silent empty cascade.
+    if selected_providers is not None:
+        allowed = set(selected_providers)
+        allowed.add("contacts_db")  # mandatory first step
+        filtered = [s for s in raw_steps if s["provider"] in allowed]
+        if not filtered:
+            return {
+                "mode": mode,
+                "steps": [],
+                "no_email_reason": NO_EMAIL_REASON_FORCED_PROVIDER_CANNOT_USE_INPUT,
+            }
+        raw_steps = filtered
+
     # Capability gate: drop any step whose method the inputs do not satisfy.
     filtered_steps: list[dict[str, str]] = []
     for s in raw_steps:
@@ -802,6 +847,15 @@ def route_enrichment(
 
     # If force_provider was set and capability-gating removed everything, surface that.
     if force_provider and not filtered_steps:
+        return {
+            "mode": mode,
+            "steps": [],
+            "no_email_reason": NO_EMAIL_REASON_FORCED_PROVIDER_CANNOT_USE_INPUT,
+        }
+
+    # Same surfacing for selected_providers: if the allowlist + capability
+    # gate together removed every step, return an explicit reason.
+    if selected_providers is not None and not filtered_steps:
         return {
             "mode": mode,
             "steps": [],

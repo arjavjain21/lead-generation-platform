@@ -1068,6 +1068,13 @@ async def run_domain_enrichment(
     BATCH_SIZE = 50  # Process 50 rows at a time
     all_output = []
 
+    # Track row-level failures so we can surface them when the job produces
+    # zero output. Without this, asyncio.gather(return_exceptions=True)
+    # silently swallows per-row exceptions and the job finishes as "done"
+    # with an empty CSV — exactly the 2026-07-12..13 outage pattern.
+    first_row_exception: Optional[Exception] = None
+    row_exception_count = 0
+
     for batch_start in range(0, total, BATCH_SIZE):
         # Check cancellation at start of each batch
         await check_cancelled_and_raise()
@@ -1087,11 +1094,24 @@ async def run_domain_enrichment(
                     logger.info("Job %s cancellation raised, stopping batch processing", job_id)
                     raise result
                 logger.error("Row processing failed: %s", result)
+                row_exception_count += 1
+                if first_row_exception is None:
+                    first_row_exception = result
             else:
                 all_output.extend(result)
 
     await blitz_http.aclose()
     await contacts_http.aclose()
+
+    # If every single row failed, surface the exception so the caller marks
+    # the job as failed rather than "done with 0 rows". This is the safety
+    # net that would have caught the 2026-07-11 linkedin_url_col regression
+    # at the first failing job instead of letting 22 jobs silently fail.
+    if total > 0 and len(all_output) == 0 and first_row_exception is not None:
+        raise RuntimeError(
+            f"All {row_exception_count}/{total} rows failed. "
+            f"First error: {type(first_row_exception).__name__}: {first_row_exception}"
+        )
 
     return all_output
 

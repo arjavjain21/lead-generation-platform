@@ -596,7 +596,7 @@ class TestUnifiedEnrichUsesRouter(unittest.IsolatedAsyncioTestCase):
             },
         }
 
-        def fake_route_enrichment(*, linkedin_url, phone, full_name, first_name, last_name, domain, company_name, force_provider=None):
+        def fake_route_enrichment(*, linkedin_url, phone, full_name, first_name, last_name, domain, company_name, force_provider=None, selected_providers=None):
             called["route"] = {
                 "linkedin_url": linkedin_url,
                 "phone": phone,
@@ -606,6 +606,7 @@ class TestUnifiedEnrichUsesRouter(unittest.IsolatedAsyncioTestCase):
                 "domain": domain,
                 "company_name": company_name,
                 "force_provider": force_provider,
+                "selected_providers": selected_providers,
             }
             return route
 
