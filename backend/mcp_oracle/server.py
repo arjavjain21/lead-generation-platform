@@ -28,6 +28,13 @@ mcp.settings.streamable_http_path = "/"
 mcp.settings.transport_security.enable_dns_rebinding_protection = False
 
 
+# Register Phase 2 (Resources) and Phase 3 (Tools).
+# These imports must come AFTER the mcp instance is created and configured.
+# Each module imports mcp from this file and registers its functions.
+from . import resources  # noqa: F401, E402 — registers resources on mcp
+from . import tools      # noqa: F401, E402 — registers tools on mcp
+
+
 @mcp.resource("health://status")
 def health_status() -> str:
     """MCP server health check.
