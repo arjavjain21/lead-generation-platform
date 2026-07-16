@@ -1189,9 +1189,15 @@ async def _enrich_single_linkedin(
     linkedin_url: str,
     include_company: bool = True,
     semaphore: asyncio.Semaphore = None,
+    record_provider_use: Optional[Callable[[str], None]] = None,
 ) -> OutputRow:
     """
     Enrich a single LinkedIn URL with person + company details.
+
+    Args:
+        record_provider_use: Optional callback invoked with each provider that is
+            actually queried (``"contacts_db"``, ``"blitz"``) so the job's
+            ``used_providers`` tally stays accurate.
 
     Returns single output row.
     """
@@ -1203,6 +1209,8 @@ async def _enrich_single_linkedin(
     async with semaphore:
         # Step 1: Try Contacts DB first (FREE)
         contacts_data = None
+        if record_provider_use:
+            record_provider_use("contacts_db")
         try:
             contacts_data = await contacts_client.person_by_linkedin(contacts_http, linkedin_url)
         except Exception as e:
@@ -1229,33 +1237,23 @@ async def _enrich_single_linkedin(
             return row
 
         # Step 2: Fallback to Blitz API (PAID)
+        # /v2/enrichment/email returns a FLAT shape {found, email, all_emails}
+        # (no "person" object) — same endpoint as blitz_client.find_work_email.
+        # The old code read result["person"], which never exists, so every Blitz
+        # email was silently dropped (2026-07-15 zero-email bug).
+        if record_provider_use:
+            record_provider_use("blitz")
         try:
             result = await blitz_client.person_enrich_by_linkedin(blitz_http, linkedin_url, include_phone=True)
-            if result.get("found") and result.get("person"):
-                person = result.get("person", {})
-                row["dm_full_name"] = person.get("full_name", "")
-                row["dm_first_name"] = person.get("first_name", "")
-                row["dm_last_name"] = person.get("last_name", "")
-                row["dm_title"] = person.get("title", "")
-                row["dm_headline"] = person.get("headline", "")
+            if result.get("found") and result.get("email"):
+                all_emails = result.get("all_emails") or []
+                verified = "yes" if (all_emails and all_emails[0].get("verified")) else "unknown"
                 row["dm_linkedin_url"] = linkedin_url
-                # Check for verified_email - if present, email is verified
-                verified_email = person.get("verified_email", "")
-                if verified_email:
-                    row["dm_email"] = verified_email
-                    row["dm_email_verified"] = "yes"
-                else:
-                    row["dm_email"] = person.get("emails", [{}])[0].get("email", "") if person.get("emails") else ""
-                    row["dm_email_verified"] = "no"
-                row["dm_phone"] = person.get("phone", "")
+                row["dm_email"] = result.get("email", "")
+                row["dm_email_verified"] = verified
                 row["dm_email_source"] = SOURCE_BLITZ_LINKEDIN
-
-                if include_company and person.get("company"):
-                    company = person.get("company", {})
-                    row["company_name"] = company.get("name", "")
-                    row["company_linkedin_url"] = company.get("linkedin_url", "")
-
-                row["row_status"] = STATUS_ENRICHED if row["dm_email"] else STATUS_NO_CONTACTS
+                # email-only endpoint: name/title/company are not returned here
+                row["row_status"] = STATUS_ENRICHED
                 return row
         except Exception as e:
             logger.debug("Blitz person enrich failed: %s", e)
@@ -1613,6 +1611,7 @@ async def run_unified_linkedin_enrichment(
     include_company: bool = True,
     on_progress: Optional[Callable[[dict[str, Any]], None]] = None,
     collector: Optional[Any] = None,  # RawContactCollector; Phase 1 capture
+    record_provider_use: Optional[Callable[[str], None]] = None,
 ) -> list[OutputRow]:
     """
     Unified enrichment for CSV with personal and/or company LinkedIn URLs.
@@ -1634,66 +1633,69 @@ async def run_unified_linkedin_enrichment(
     blitz_http = httpx.AsyncClient()
     contacts_http = httpx.AsyncClient()
 
-    all_output: list[OutputRow] = []
     total = len(rows)
 
-    for idx, row in enumerate(rows):
+    async def _emit(idx: int, status: str, emails_count: int, source_counts: dict[str, int]) -> None:
+        """Fire on_progress with the keys append_event expects (emails_found count)."""
+        if not on_progress:
+            return
+        event = {
+            "index": idx,
+            "total": total,
+            "status": status,
+            "emails_found": emails_count,
+            "source_counts": source_counts,
+        }
+        try:
+            if asyncio.iscoroutinefunction(on_progress):
+                await on_progress(event)
+            else:
+                on_progress(event)
+        except Exception as prog_err:
+            logger.warning("LinkedIn progress callback failed for row %s: %s", idx, prog_err)
+
+    async def process_row(idx: int, row: dict[str, Any]) -> list[OutputRow]:
         personal_url = str(row.get(personal_col, "")).strip() if personal_col else ""
         company_url = str(row.get(company_col, "")).strip() if company_col else ""
 
-        # Skip if neither URL is present
+        # No usable URL at all → genuinely skipped
         if not personal_url and not company_url:
-            output_row = {**row, **_empty_enriched(), "row_status": STATUS_SKIPPED}
-            all_output.append(output_row)
-            if on_progress:
-                on_progress({
-                    "index": idx,
-                    "total": total,
-                    "status": STATUS_SKIPPED,
-                    "email_found": False,
-                    "source_counts": {},
-                })
-            continue
+            await _emit(idx, STATUS_SKIPPED, 0, {})
+            return [{**row, **_empty_enriched(), "row_status": STATUS_SKIPPED}]
 
-        # Track if we found any data
-        found_data = False
+        results: list[OutputRow] = []
+        found = False
+        person_result: Optional[OutputRow] = None
 
-        # Step 1: Try personal URL enrichment
+        # Step 1: personal LinkedIn URL
         if personal_url and "linkedin.com" in personal_url:
             person_result = await _enrich_single_linkedin(
                 blitz_http, contacts_http, row, personal_url,
-                include_company=include_company, semaphore=semaphore
+                include_company=include_company, semaphore=semaphore,
+                record_provider_use=record_provider_use,
             )
-
-            # If we got email from personal URL, use it
             if person_result.get("dm_email") or person_result.get("row_status") == STATUS_ENRICHED:
-                all_output.append(person_result)
-                found_data = True
+                results.append(person_result)
+                found = True
+                has_email = bool(person_result.get("dm_email"))
+                source = person_result.get("dm_email_source", "")
+                provider = _normalize_source(source) if source else "unknown"
+                await _emit(
+                    idx, STATUS_ENRICHED, 1 if has_email else 0,
+                    {provider: 1} if has_email else {},
+                )
+            # else: NO_CONTACTS or NOT_FOUND — keep person_result for Step 3
 
-                if on_progress:
-                    source = person_result.get("dm_email_source", "")
-                    provider = _normalize_source(source) if source else "unknown"
-                    on_progress({
-                        "index": idx,
-                        "total": total,
-                        "status": person_result.get("row_status", STATUS_ENRICHED),
-                        "email_found": bool(person_result.get("dm_email")),
-                        "source_counts": {provider: 1},
-                    })
-            elif person_result.get("row_status") == STATUS_NO_CONTACTS:
-                # Personal URL found but no contacts - continue to company fallback
-                pass
-
-        # Step 2: If personal failed or not provided, try company waterfall
-        if not found_data and company_url and "linkedin.com" in company_url:
-            # Try company waterfall to get decision makers
+        # Step 2: company LinkedIn waterfall fallback
+        if not found and company_url and "linkedin.com" in company_url:
+            # Blitz title-waterfall
+            if record_provider_use:
+                record_provider_use("blitz")
             company_dms = await _enrich_by_company_waterfall(
                 blitz_http, company_url, DEFAULT_CASCADE, max_dms, semaphore,
                 collector=collector,
             )
-
             if company_dms:
-                # Create one output row per decision maker
                 for dm in company_dms:
                     output_row = {
                         **row,
@@ -1715,40 +1717,47 @@ async def run_unified_linkedin_enrichment(
                     }
                     if include_company:
                         output_row["company_name"] = _extract_company_name_from_url(company_url)
-
-                    all_output.append(output_row)
-                    found_data = True
-
-                # Send ONE progress event for the company row (not one per DM)
-                if on_progress:
-                    emails_found = sum(1 for dm in company_dms if dm.get("email"))
-                    on_progress({
-                        "index": idx,
-                        "total": total,
-                        "status": STATUS_ENRICHED,
-                        "email_found": emails_found,
-                        "source_counts": {"blitz_company": emails_found} if emails_found else {},
-                    })
+                    results.append(output_row)
+                found = True
+                emails_count = sum(1 for dm in company_dms if dm.get("email"))
+                await _emit(
+                    idx, STATUS_ENRICHED, emails_count,
+                    {"blitz": emails_count} if emails_count else {},
+                )
             else:
-                # Company waterfall also failed
-                output_row = {**row, **_empty_enriched(), "row_status": STATUS_NOT_FOUND}
-                output_row["company_linkedin_url"] = company_url if company_url else ""
-                all_output.append(output_row)
-                found_data = True
+                nr = {**row, **_empty_enriched(), "row_status": STATUS_NOT_FOUND}
+                nr["company_linkedin_url"] = company_url
+                results.append(nr)
+                found = True
+                await _emit(idx, STATUS_NOT_FOUND, 0, {})
 
-                if on_progress:
-                    on_progress({
-                        "index": idx,
-                        "total": total,
-                        "status": STATUS_NOT_FOUND,
-                        "email_found": False,
-                        "source_counts": {},
-                    })
+        # Step 3: URL present but no data found
+        if not found:
+            if person_result is not None:
+                # Preserve provider detail; status is already NOT_FOUND/NO_CONTACTS.
+                results.append(person_result)
+                await _emit(idx, person_result.get("row_status", STATUS_NOT_FOUND), 0, {})
+            else:
+                # Personal URL wasn't a linkedin.com URL and no company URL
+                results.append({**row, **_empty_enriched(), "row_status": STATUS_SKIPPED})
+                await _emit(idx, STATUS_SKIPPED, 0, {})
 
-        # Step 3: If no URLs at all, mark as skipped
-        if not found_data:
-            output_row = {**row, **_empty_enriched(), "row_status": STATUS_SKIPPED}
-            all_output.append(output_row)
+        return results
+
+    # Process in batches for real concurrency (mirrors run_domain_enrichment).
+    # Previously this was a sequential for…await loop (effective concurrency 1),
+    # making LinkedIn enrichment ~15–25x slower than domain enrichment.
+    BATCH_SIZE = 50
+    all_output: list[OutputRow] = []
+    for batch_start in range(0, total, BATCH_SIZE):
+        batch_rows = rows[batch_start:batch_start + BATCH_SIZE]
+        tasks = [process_row(batch_start + i, row) for i, row in enumerate(batch_rows)]
+        batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in batch_results:
+            if isinstance(result, Exception):
+                logger.error("LinkedIn row processing failed: %s", result)
+            else:
+                all_output.extend(result)
 
     await blitz_http.aclose()
     await contacts_http.aclose()

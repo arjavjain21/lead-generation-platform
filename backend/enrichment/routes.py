@@ -4920,12 +4920,31 @@ async def _run_linkedin_v2_job(
     """Background task to run unified LinkedIn (personal + company) enrichment job."""
     store = job_store.get_store()
     store.set_running(job_id)
+    # Set initial heartbeat so cleanup_stale_jobs doesn't mark us as abandoned too soon
+    store.heartbeat(job_id)
     seq = [0]
 
     output_path = OUTPUT_DIR / f"{job_id}.csv"
 
     # Phase 1: per-job collector; drained by ``_run_background_sync``.
     collector = RawContactCollector(job_id=job_id)
+
+    # Start heartbeat task (updates last_heartbeat every 30s). Mirrors the
+    # domain-enrich path. Without it the stale-job reaper marks LinkedIn jobs
+    # abandoned after ~3 minutes even while healthy (the 2026-07-15 outage).
+    async def heartbeat_loop():
+        try:
+            while True:
+                await asyncio.sleep(30)
+                try:
+                    heartbeat_store = job_store.get_store()
+                    heartbeat_store.heartbeat(job_id)
+                except Exception as hb_err:
+                    logger.warning("Heartbeat failed for %s: %s", job_id, hb_err)
+        except asyncio.CancelledError:
+            pass
+
+    heartbeat_task = asyncio.create_task(heartbeat_loop())
 
     def on_progress(e: dict[str, Any]):
         progress_store = job_store.get_store()
@@ -4941,6 +4960,20 @@ async def _run_linkedin_v2_job(
         if sig:
             sig.set()
 
+    # Track which providers are actually used so the job's ``used_providers``
+    # tally stays accurate (mirrors the domain-enrich path). Without this the
+    # LinkedIn flow always reported only the default ``["contacts_db"]``.
+    used_providers_set: set[str] = set()
+
+    def record_provider_use(provider: str) -> None:
+        if provider not in used_providers_set:
+            used_providers_set.add(provider)
+            try:
+                usage_store = job_store.get_store()
+                usage_store.update_used_providers(job_id, provider)
+            except Exception as e:
+                logger.warning("update_used_providers(%s, %s) failed: %s", job_id, provider, e)
+
     try:
         output_rows = await list_builder.run_unified_linkedin_enrichment(
             rows=rows,
@@ -4950,6 +4983,7 @@ async def _run_linkedin_v2_job(
             include_company=include_company,
             on_progress=on_progress,
             collector=collector,
+            record_provider_use=record_provider_use,
         )
 
         if output_rows:
@@ -4978,6 +5012,9 @@ async def _run_linkedin_v2_job(
             store.set_failed(job_id, str(e))
 
     finally:
+        # Cancel heartbeat task
+        if 'heartbeat_task' in locals():
+            heartbeat_task.cancel()
         _active_jobs.discard(job_id)
         sig = _job_signals.pop(job_id, None)
         if sig:
