@@ -1,0 +1,870 @@
+# ListBuilding Platform — Full API Reference
+
+- **Updated on:** 2026-07-16
+- **Updated by:** @Arjav Jain
+- **Scope:** Every user-facing endpoint on https://listbuilding.eagleinfoservice.com/
+- **Base URL:** `https://listbuilding.eagleinfoservice.com`
+
+---
+
+## Overview
+
+The ListBuilding platform exposes four user-facing API families:
+
+1. **Enrichment API** — find decision-maker emails for companies and people
+2. **Phone Enrichment API** — find phone numbers for LinkedIn profiles
+3. **Google Maps Scraper API** — scrape business listings by country and query
+4. **Auth + API Keys API** — manage login tokens and long-lived API keys
+
+All endpoints accept and return JSON (with the exception of CSV upload/download endpoints, which use multipart and file responses).
+
+Public health check: `GET /api/health` (no auth) returns `{"status": "ok"}`.
+
+---
+
+## Authentication
+
+Two authentication methods are supported. **They are not interchangeable across all endpoints** — see the matrix below.
+
+### Option A: API Key (recommended for integrations)
+
+API keys are long-lived tokens formatted as `lgp_<43 characters>`. They do not expire. Generate one in the app under **Account → API Keys**, or via the API:
+
+```bash
+curl -X POST https://listbuilding.eagleinfoservice.com/api/api-keys \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "my-integration-key"}'
+```
+
+Use the returned key in one of two ways:
+
+```bash
+# Preferred
+-H "X-API-Key: lgp_YOUR_API_KEY"
+
+# Also accepted (treated as API key, not JWT)
+-H "Authorization: Bearer lgp_YOUR_API_KEY"
+```
+
+Revoke a key with `DELETE /api/api-keys/{key_id}` (requires JWT, not another API key).
+
+### Option B: JWT Bearer token
+
+```bash
+# Login to get a token (7-day expiry)
+curl -X POST https://listbuilding.eagleinfoservice.com/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "your@email.com", "password": "yourpassword"}'
+# → {"token": "...", "user_id": "...", "email": "...", "is_admin": false}
+
+# Refresh an existing token (resets the 7-day clock)
+curl -X POST https://listbuilding.eagleinfoservice.com/api/auth/refresh \
+  -H "Authorization: Bearer YOUR_CURRENT_JWT"
+
+# Use the token
+-H "Authorization: Bearer YOUR_JWT_TOKEN"
+```
+
+JWT expiry: **7 days**.
+
+### Auth matrix — which method works where
+
+| Endpoint category | JWT Bearer | API Key |
+| --- | :---: | :---: |
+| `POST /api/enrichment/enrich` (single row) | ✅ | ✅ |
+| `GET /api/enrichment/enrich` (single row) | ✅ | ✅ |
+| `GET /api/enrichment/enrich/{domain}` (legacy single row) | ✅ | ✅ |
+| `GET /api/enrichment/providers` | ✅ | ✅ |
+| `GET /api/enrichment/stats/sources` | ✅ | ✅ |
+| `GET /api/auth/me` | ✅ | ✅ |
+| Scraper cache + download + resume endpoints | ✅ | ✅ |
+| **`POST /api/enrichment/upload` (CSV upload)** | ✅ | ❌ JWT only |
+| **All `/api/enrichment/flows/*` endpoints** | ✅ | ❌ JWT only |
+| **All `/api/enrichment/by-*` endpoints** | ✅ | ❌ JWT only |
+| **All `/api/enrichment/jobs/*` endpoints** | ✅ | ❌ JWT only |
+| **All `/api/phone-enrichment/*` endpoints** | ✅ | ❌ JWT only |
+| **`POST /api/scraper/jobs` (scraper job creation)** | ✅ | ❌ JWT only |
+| **`/api/api-keys/*` (key management)** | ✅ | ❌ JWT only |
+
+**Rule of thumb:** API keys work for read-only / single-row lookups (e.g., from Clay HTTP cells). Anything that creates or modifies a job requires JWT.
+
+### Self-registration
+
+There is no public signup endpoint. New users are created by an administrator via the in-app UI. If you need an account, contact the platform owner.
+
+---
+
+## Section A: Enrichment API
+
+### A.1 Single-row enrichment: `POST /api/enrichment/enrich`
+
+The primary endpoint for finding contact data for one company or person.
+
+#### Request body parameters
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `domain` | string | Yes* | — | Company domain (e.g., `google.com`). Must contain a `.`. |
+| `linkedin_url` | string | Yes* | — | Personal LinkedIn URL (e.g., `https://linkedin.com/in/johndoe`). Auto-rerouted to `company_linkedin_url` if a `/company/` URL is passed. |
+| `company_linkedin_url` | string | No | — | Company LinkedIn URL (e.g., `https://linkedin.com/company/acme`). |
+| `full_name` | string | No | — | Full name of target person. |
+| `first_name` | string | No | — | First name (alternative to `full_name`). |
+| `last_name` | string | No | — | Last name. |
+| `phone` | string | No | — | Phone number hint. |
+| `company_name` | string | No | — | Company name hint. |
+| `existing_email` | string | No | — | Existing email hint (skips email resolution). |
+| `max_results` | integer | No | 5 | Max contacts to return (1–10). |
+| `titles` | string | No | — | Comma-separated titles filter (e.g., `"CEO,CTO,VP"`). Max 50. |
+| `cascade` | array of objects | No | — | Advanced: list of title-filter dicts (see A.7). |
+| `force_provider` | string | No | — | Force a single provider. One of: `contacts_db`, `blitz`, `smartprospect`, `wizleads`, `better_enrich`. Mutually exclusive with `selected_providers`. |
+| `selected_providers` | array of strings | No | — | Restrict cascade to a subset (see A.6). Mutually exclusive with `force_provider`. |
+
+\*At least one of `domain`, `linkedin_url`, or `company_linkedin_url` is required.
+
+#### Input modes (auto-detected)
+
+| Input | Mode | Behavior |
+| --- | --- | --- |
+| `domain` only | `domain_only` | All decision makers (cascade) |
+| `linkedin_url` only (no domain) | `linkedin_only` | Specific person via cascade |
+| `company_linkedin_url` only (no domain) | `company_linkedin_only` | Decision makers via company LinkedIn URL |
+| `domain` + (`full_name` or `linkedin_url`) | `enhanced` | Company contacts + specific person |
+
+#### Example: domain only
+
+```bash
+curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/enrich \
+  -H "X-API-Key: lgp_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"domain": "google.com"}'
+```
+
+#### Example: domain + full name
+
+```bash
+curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/enrich \
+  -H "X-API-Key: lgp_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"domain": "google.com", "full_name": "John Doe"}'
+```
+
+#### Example: LinkedIn URL only
+
+```bash
+curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/enrich \
+  -H "X-API-Key: lgp_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"linkedin_url": "https://linkedin.com/in/johndoe"}'
+```
+
+#### Response shape
+
+```json
+{
+  "domain": "google.com",
+  "mode": "domain_only",
+  "company_linkedin_url": "https://linkedin.com/company/google",
+  "contacts": [
+    {
+      "full_name": "John Doe",
+      "first_name": "John",
+      "last_name": "Doe",
+      "title": "VP of Sales",
+      "email": "john@google.com",
+      "linkedin_url": "https://linkedin.com/in/johndoe",
+      "headline": "VP of Sales at Google",
+      "location_city": "San Francisco",
+      "location_country": "US",
+      "icp_tier": 1,
+      "email_source": "blitz_email"
+    }
+  ],
+  "contact_count": 1,
+  "data_sources": {
+    "company_linkedin": "contacts_db",
+    "contacts": "blitz",
+    "emails": "blitz_email"
+  },
+  "sync_to_contacts_db": {
+    "status": "success",
+    "records_synced": 1,
+    "records_skipped": 0,
+    "records_failed": 0
+  }
+}
+```
+
+#### Email source values
+
+The `email_source` field on each contact tells you which provider found the email:
+
+| `email_source` | Provider |
+| --- | --- |
+| `contacts_db_email`, `contacts_db_name`, `contacts_db_linkedin`, `contacts_db_contacts` | Contacts DB (free) |
+| `blitz_email`, `blitz_linkedin` | Blitz |
+| `smartprospect_email` | SmartProspect |
+| `wizleads_email` | WizLeads |
+| `better_enrich`, `better_enrich_company_email` | BetterEnrich |
+| `not_found` | No provider found an email |
+
+### A.2 Single-row enrichment via GET
+
+Identical behavior to POST, but parameters are passed as query strings.
+
+```bash
+curl -G https://listbuilding.eagleinfoservice.com/api/enrichment/enrich \
+  -H "X-API-Key: lgp_YOUR_KEY" \
+  --data-urlencode "domain=google.com" \
+  --data-urlencode "titles=CEO,CTO"
+```
+
+For `selected_providers` on GET, pass it as a comma-separated string:
+```
+?selected_providers=contacts_db,smartprospect
+```
+
+### A.3 Legacy: `GET /api/enrichment/enrich/{domain}`
+
+Older path-style single-domain lookup. Accepts `max_results`, `cascade_json`, `force_provider` as query params. Prefer the POST/GET form above for new integrations.
+
+### A.4 Provider cascade order
+
+When resolving emails, the system queries providers in this order, stopping at the first one that returns a valid email:
+
+| # | Provider | Rate Limit | Cost | Purpose |
+| --- | --- | --- | --- | --- |
+| 1 | Contacts DB | 75 RPS | Free | Internal database lookup |
+| 2 | Blitz | 25 RPS | Paid | LinkedIn-based enrichment with title cascade |
+| 3 | SmartProspect | 30 RPS | Paid | Self-verifying person-email finder |
+| 4 | WizLeads | 10 RPS | Paid | Catch-all verified email |
+| 5 | BetterEnrich | 10 RPS | Paid | Person + company email fallback |
+
+### A.5 `selected_providers` (new 2026-07-13)
+
+Restricts the cascade to a subset of providers.
+
+**Valid names:** `contacts_db`, `blitz`, `smartprospect`, `wizleads`, `better_enrich`
+
+**Rules:**
+- `contacts_db` is always allowed even if not in your list (mandatory first step)
+- Mutually exclusive with `force_provider` (HTTP 400 if both are set)
+- Empty list rejected (HTTP 400)
+- Unknown provider names rejected (HTTP 400)
+
+**Example — free tier only:**
+```bash
+curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/enrich \
+  -H "X-API-Key: lgp_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"domain": "acme.com", "selected_providers": ["contacts_db"]}'
+```
+
+**Example — Contacts DB + SmartProspect only:**
+```bash
+curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/enrich \
+  -H "X-API-Key: lgp_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"domain": "acme.com", "selected_providers": ["contacts_db", "smartprospect"]}'
+```
+
+### A.6 Title filtering
+
+#### Simple titles filter
+```
+?titles=CEO,CTO,VP
+```
+Converts to a single-tier cascade requesting only people with those titles.
+
+#### Custom cascade (advanced)
+```json
+{
+  "cascade": [
+    {
+      "include_title": ["CEO", "Founder", "Owner"],
+      "exclude_title": ["assistant", "intern", "junior"],
+      "location": ["WORLD"],
+      "include_headline_search": false
+    },
+    {
+      "include_title": ["VP", "Director"],
+      "exclude_title": ["assistant"],
+      "location": ["US"],
+      "include_headline_search": true
+    }
+  ]
+}
+```
+
+**Cascade properties:**
+- `include_title`: Array of job titles to include
+- `exclude_title`: Array of titles to exclude
+- `location`: Geographic filter (e.g., `["WORLD"]`, `["US"]`, `["UK"]`)
+- `include_headline_search`: Search LinkedIn headlines in addition to titles
+
+#### Default cascade (no filter)
+If no `titles` or `cascade` is provided, the default 3-tier cascade is used:
+1. **Tier 1:** Owner, CEO, Founder, Co-Founder, President
+2. **Tier 2:** CMO, VP Marketing, VP Sales, Chief Revenue Officer
+3. **Tier 3:** Director of Marketing, Director of Sales, Head of Marketing, Head of Sales
+
+Fetch the current default via `GET /api/enrichment/default-cascade` (no auth).
+
+---
+
+## Section B: Bulk / CSV Enrichment
+
+All endpoints in this section require **JWT Bearer authentication** (API keys are not accepted).
+
+### B.1 Upload a CSV: `POST /api/enrichment/upload`
+
+Step 1 of any bulk flow. Accepts a CSV file, returns an `upload_id` you use to start a job.
+
+```bash
+curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/upload \
+  -H "Authorization: Bearer YOUR_JWT" \
+  -F "file=@domains.csv"
+```
+
+**Response:**
+```json
+{
+  "upload_id": "8ec32b12-fb17-4a5a-b8d2-6142f59df480",
+  "columns": ["domain", "company_name", "..."],
+  "preview": [{}, {}, {}],
+  "row_count": 4619,
+  "filename": "8ec32b12-fb17-4a5a-b8d2-6142f59df480"
+}
+```
+
+### B.2 Flow 1 — Domain CSV enrichment: `POST /api/enrichment/flows/domain-enrich`
+
+The modern endpoint for bulk domain-CSV enrichment (used by the current UI).
+
+```bash
+curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/flows/domain-enrich \
+  -H "Authorization: Bearer YOUR_JWT" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "upload_id": "8ec32b12-fb17-4a5a-b8d2-6142f59df480",
+    "domain_col": "domain",
+    "max_results": 5,
+    "providers": ["contacts_db", "blitz", "smartprospect", "wizleads", "better_enrich"],
+    "titles": "CEO,CTO",
+    "normalize_domains": true,
+    "dedupe_by_domain": true
+  }'
+```
+
+**Request body parameters:**
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `upload_id` | string | Yes | — | From B.1 upload response. |
+| `domain_col` | string | Yes | — | Name of the domain column in your CSV. |
+| `name_col` | string | No | — | Column with full names. |
+| `first_name_col` | string | No | — | Column with first names. |
+| `last_name_col` | string | No | — | Column with last names. |
+| `linkedin_url_col` | string | No | — | Column with personal LinkedIn URLs. |
+| `company_linkedin_col` | string | No | — | Column with company LinkedIn URLs. |
+| `phone_col` | string | No | — | Column with phone numbers. |
+| `company_name_col` | string | No | — | Column with company names. |
+| `existing_email_col` | string | No | — | Column with existing emails. |
+| `titles` | string | No | — | Comma-separated titles filter. |
+| `max_results` | integer | No | 5 | Max contacts per domain. |
+| `providers` | array of strings | No | all enabled | Provider allowlist (same semantics as `selected_providers` on the single-row endpoint). |
+| `normalize_domains` | boolean | No | true | Normalize raw URLs to bare domains. |
+| `dedupe_by_domain` | boolean | No | true | Drop duplicate-domain rows before processing. |
+
+**Response:**
+```json
+{
+  "job_id": "114e9ec3-51b8-445e-8fbc-417cba1fc516",
+  "total": 4619,
+  "flow": "domain_enrichment",
+  "deduped_count": 4619
+}
+```
+
+### B.3 Flow 3 — LinkedIn CSV enrichment: `POST /api/enrichment/by-linkedin-v2`
+
+Bulk enrichment from a CSV of LinkedIn URLs (personal and/or company).
+
+```bash
+curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/by-linkedin-v2 \
+  -H "Authorization: Bearer YOUR_JWT" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "upload_id": "...",
+    "personal_linkedin_col": "linkedin_url",
+    "company_linkedin_col": "company_linkedin_url",
+    "max_results": 5
+  }'
+```
+
+At least one of `personal_linkedin_col` or `company_linkedin_col` is required.
+
+### B.4 Flow 2 — Company search: `POST /api/enrichment/search/companies`
+
+Search Blitz for companies matching criteria, returns matching companies (no contacts yet).
+
+```bash
+curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/search/companies \
+  -H "Authorization: Bearer YOUR_JWT" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "acme",
+    "industry": ["Software"],
+    "employee_range": ["50-200"],
+    "country": ["US"]
+  }'
+```
+
+Use `GET /api/enrichment/search/options` to discover allowed values for each filter.
+
+### B.5 Search options: `GET /api/enrichment/search/options`
+
+Returns allowed values for company-search filters: `industries`, `employee_ranges`, `company_types`, `countries`, `job_levels`, `job_functions`, `sales_regions`.
+
+### B.6 List jobs: `GET /api/enrichment/jobs`
+
+Returns the caller's enrichment jobs (admin sees all). Limit 200.
+
+```bash
+curl https://listbuilding.eagleinfoservice.com/api/enrichment/jobs \
+  -H "Authorization: Bearer YOUR_JWT"
+```
+
+### B.7 Job status: `GET /api/enrichment/jobs/{job_id}`
+
+```bash
+curl https://listbuilding.eagleinfoservice.com/api/enrichment/jobs/114e9ec3-... \
+  -H "Authorization: Bearer YOUR_JWT"
+```
+
+**Response includes:** `status` (`queued` | `running` | `done` | `failed` | `cancelled` | `abandoned` | `partial`), `processed`, `total`, `emails_found`, `used_providers`, `selected_providers`, `error`.
+
+### B.8 SSE progress stream: `GET /api/enrichment/jobs/{job_id}/stream`
+
+Server-sent events stream of progress updates. Use to render live progress bars.
+
+### B.9 Download final CSV: `GET /api/enrichment/jobs/{job_id}/download`
+
+Returns the final enriched CSV once the job is `done`. Returns HTTP 202 with `"Job not finished yet."` if the job is still queued or running.
+
+### B.10 Download partial CSV: `GET /api/enrichment/jobs/{job_id}/partial-download`
+
+Returns whatever rows have been written so far while the job is still running. Useful for early inspection on long jobs.
+
+### B.11 Restart job: `POST /api/enrichment/jobs/{job_id}/restart`
+
+Restart a `failed` or `abandoned` job from scratch. Returns a new `job_id`.
+
+### B.12 Cancel job: `POST /api/enrichment/jobs/{job_id}/cancel`
+
+Cancel a `queued` or `running` job.
+
+### B.13 Source stats: `GET /api/enrichment/stats/sources`
+
+```bash
+curl -G https://listbuilding.eagleinfoservice.com/api/enrichment/stats/sources \
+  -H "Authorization: Bearer YOUR_JWT" \
+  --data-urlencode "start_date=2026-07-01T00:00:00" \
+  --data-urlencode "end_date=2026-07-31T23:59:59"
+```
+
+Returns per-provider email-extraction counts for the date range. Non-admins see only their own stats; admins see global.
+
+### B.14 Legacy endpoints
+
+These endpoints still work but are deprecated. Prefer the modern equivalents above.
+
+| Endpoint | Modern equivalent |
+| --- | --- |
+| `POST /api/enrichment/by-domains` | `POST /api/enrichment/flows/domain-enrich` |
+| `POST /api/enrichment/by-linkedin` | `POST /api/enrichment/by-linkedin-v2` |
+| `POST /api/enrichment/search/companies/enrich` | `POST /api/enrichment/flows/domain-enrich` after extracting domains |
+| `POST /api/enrichment/jobs` (with `StartJobRequest`) | `POST /api/enrichment/flows/domain-enrich` |
+
+---
+
+## Section C: Phone Enrichment API
+
+Find phone numbers for LinkedIn profiles via the Blitz Direct Phone API. All endpoints require **JWT Bearer authentication** (API keys not accepted).
+
+### C.1 Upload CSV + start job: `POST /api/phone-enrichment/jobs`
+
+```bash
+curl -X POST "https://listbuilding.eagleinfoservice.com/api/phone-enrichment/jobs?linkedin_col=linkedin_url" \
+  -H "Authorization: Bearer YOUR_JWT" \
+  -F "file=@linkedin_profiles.csv"
+```
+
+**Query parameter:** `linkedin_col` (optional) — column name containing LinkedIn URLs. If omitted, auto-detected. Recognized column names: `linkedin_url`, `linkedinurl`, `linkedin`, `person_linkedin_url`, `person_linkedinurl`, `url`, `profile_url`, `profileurl` — or any column whose name contains "linkedin".
+
+**CSV requirement:** At least one row's value must contain `linkedin.com`. Otherwise HTTP 400.
+
+**Response:**
+```json
+{
+  "job_id": "...",
+  "status": "queued",
+  "total": 1500,
+  "valid_urls": 1487,
+  "linkedin_col": "linkedin_url",
+  "message": "..."
+}
+```
+
+### C.2 List jobs: `GET /api/phone-enrichment/jobs`
+
+Returns the caller's phone-enrichment jobs.
+
+### C.3 Job status: `GET /api/phone-enrichment/jobs/{job_id}`
+
+Returns `status`, counters, output path. Status values: `queued`, `running`, `done`, `failed`.
+
+### C.4 SSE progress stream: `GET /api/phone-enrichment/jobs/{job_id}/stream`
+
+Server-sent events with heartbeat every 30 seconds. Note: phone enrichment SSE supports **header auth only** (no `?token=` query fallback, unlike the scraper).
+
+### C.5 Download enriched CSV: `GET /api/phone-enrichment/jobs/{job_id}/download`
+
+Available once status is `done`. Output CSV preserves all original columns and appends:
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `phone_number` | string | The phone number found, or empty if none. |
+| `phone_found` | string | `"true"` or `"false"`. |
+
+Download filename pattern: `{original_filename}_with_phones.csv`.
+
+### C.6 Rate limit
+
+Phone enrichment has its own rate limit: **5 requests/second** with 5 concurrent workers. No cancel, restart, resume, or partial-download endpoints exist for phone jobs — if a job hangs, contact support.
+
+---
+
+## Section D: Google Maps Scraper API
+
+Scrape business listings from Google Maps by country, query, and geographic mode. Most endpoints require **JWT Bearer authentication**. Cache and resume endpoints also accept **API keys**.
+
+### D.1 Supported countries (19)
+
+The scraper currently supports these 19 countries (ISO 2-letter codes):
+
+| Code | Country | Code | Country |
+| --- | --- | --- | --- |
+| `us` | United States | `nl` | Netherlands |
+| `gb` | United Kingdom | `be` | Belgium |
+| `ie` | Ireland | `pl` | Poland |
+| `au` | Australia | `se` | Sweden |
+| `ca` | Canada | `dk` | Denmark |
+| `de` | Germany | `at` | Austria |
+| `fr` | France | `ch` | Switzerland |
+| `es` | Spain | `pt` | Portugal |
+| `it` | Italy | `no` | Norway |
+| | | `nz` | New Zealand |
+
+List dynamically via `GET /api/scraper/regions/countries` (no auth).
+
+### D.2 Region discovery endpoints (all no-auth, read-only)
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/scraper/regions/countries` | List of supported countries `{code, name}` |
+| `GET /api/scraper/regions/centers?country=us` | All centers for a country `{name, state, lat, lng}` |
+| `GET /api/scraper/regions/states` | Canonical US state names (USA only) |
+| `GET /api/scraper/regions/cities?country=us&q=...` | Fuzzy city search (max 20 results) |
+| `GET /api/scraper/regions/cities?country=us` (no q) | All cities (US: ~29,546; others: anchor cities) |
+| `POST /api/scraper/regions/parse-zip-csv` | Upload CSV of US 5-digit zip codes, validate |
+| `POST /api/scraper/regions/parse-uk-postcode-csv` | Upload CSV of UK postcodes |
+| `POST /api/scraper/regions/parse-ca-postal-csv` | Upload CSV of Canada postal codes |
+| `POST /api/scraper/regions/cities-to-zips` | Map city names → zip/postal codes |
+| `GET /api/scraper/regions/download-template?type=us_cities` | Download template CSV (`us_cities`, `us_zips`, `uk_postcodes`, `ca_postal_codes`) |
+| `POST /api/scraper/regions/estimate` | Estimate task count + quota check for a planned job (JWT required) |
+
+### D.3 Create a scraper job: `POST /api/scraper/jobs`
+
+```bash
+curl -X POST https://listbuilding.eagleinfoservice.com/api/scraper/jobs \
+  -H "Authorization: Bearer YOUR_JWT" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "coffee shop",
+    "mode": "cities",
+    "country": "us",
+    "cities": ["New York", "Los Angeles", "Chicago"],
+    "expected_types": []
+  }'
+```
+
+**Request body parameters:**
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `query` | string | required | Search query (e.g., `"coffee shop"`, `"dentist"`) |
+| `mode` | string | `"all"` | One of `"all"`, `"states"`, `"cities"`, `"zips"` |
+| `country` | string | `"us"` | ISO 2-letter country code |
+| `states` | array of strings | `[]` | US state names (mode=`states`) |
+| `cities` | array of strings | `[]` | City names (mode=`cities`) |
+| `zips` | array of strings | `[]` | US zips, UK postcodes, or CA postal codes (mode=`zips`) |
+| `center_ids` | array of strings | `[]` | Center name filter (non-US) |
+| `expected_types` | array of strings | `[]` | Expected place types |
+
+**Response:** `{job_id, total_tasks, center_count, warnings}`.
+
+**Note:** Each job targets a single country. To scrape multiple countries, create separate jobs.
+
+### D.4 Other job endpoints
+
+| Method + Path | Auth | Description |
+| --- | --- | --- |
+| `GET /api/scraper/jobs` | JWT | List caller's jobs (admin sees all, limit 200) |
+| `GET /api/scraper/jobs/{id}` | JWT | Get one job |
+| `GET /api/scraper/jobs/{id}/stream` | JWT via header **or** `?token=...` query | SSE progress stream |
+| `GET /api/scraper/jobs/{id}/download` | JWT **or** API key | Full CSV for finished/stopped/failed/cancelled/abandoned jobs |
+| `GET /api/scraper/jobs/{id}/partial-download` | JWT **or** API key | CSV of rows collected so far while job is still running |
+| `POST /api/scraper/jobs/{id}/cancel` | JWT | Cancel a queued or running job |
+| `POST /api/scraper/jobs/{id}/restart` | JWT | Restart a failed/abandoned/cancelled/stopped job from scratch (new `job_id`) |
+
+### D.5 Resume feature (skip completed tasks)
+
+| Method + Path | Auth | Description |
+| --- | --- | --- |
+| `GET /api/scraper/jobs/{id}/resume-info` | JWT **or** API key | Returns `{can_resume, checkpoint_count, total_tasks, completion_pct, is_resumable}` |
+| `POST /api/scraper/jobs/{id}/resume` | JWT **or** API key | Resume from checkpoints. Body: `{include_previous: true}` — copies the prior partial CSV into the new job so you end up with one combined file. Returns new `job_id`. |
+
+**Resume vs Restart:** Resume skips already-completed tasks and continues from where the prior job stopped. Restart re-runs everything from scratch.
+
+### D.6 Scraper → Enrichment chain: `POST /api/jobs/{scraper_job_id}/chain`
+
+Hand off a completed scraper job's results to the enrichment pipeline.
+
+```bash
+curl -X POST https://listbuilding.eagleinfoservice.com/api/jobs/SCRAPER_JOB_ID/chain \
+  -H "Authorization: Bearer YOUR_JWT" \
+  -H "Content-Type: application/json" \
+  -d '{"providers": ["contacts_db", "blitz", "smartprospect"]}'
+```
+
+Reads the scraper output CSV (requires a `website` column), filters valid domains, creates an enrichment job with `parent_job_id` set to the scraper job.
+
+### D.7 Cache feature (avoid re-scraping identical queries)
+
+The scraper caches results for 90 days. Identical queries return cached results instantly without consuming your daily quota.
+
+| Method + Path | Auth | Description |
+| --- | --- | --- |
+| `POST /api/scraper/cache/check` | JWT **or** API key | Check if an identical query was run before. Returns cache metadata if hit. |
+| `GET /api/scraper/cache/download/{cache_id}` | JWT **or** API key | Download a cached result CSV. |
+| `POST /api/scraper/cache/subset-count` | JWT | Return row count for a geographic subset of cached results. |
+
+**Cache key inputs:** normalized query, region signature (mode + country + states/cities/zips), zoom signature (`[10, 11, 12]`), and expected-types signature.
+
+### D.8 Scraper output CSV columns
+
+Each row in the output CSV represents one scraped business:
+
+```
+dedupe_key, query, center_name, center_state, center_lat, center_lng, zoom,
+place_id, business_id, name, category_name, full_address, city, city_state,
+latitude, longitude, distance_km, rating, review_count, website, phone, types,
+price_level, timezone, working_hours, is_claimed, verified,
+is_permanently_closed, is_temporarily_closed, place_link, photo_count,
+first_photo_url, inserted_at, center_id
+```
+
+Download filename pattern: `{query}_{total_tasks}_centers_{result_count}_results_{status}.csv`. Partial downloads append `_INCOMPLETE`.
+
+---
+
+## Section E: Helper Endpoints
+
+### E.1 Health check: `GET /api/health` (no auth)
+
+```json
+{"status": "ok"}
+```
+
+### E.2 List enabled providers: `GET /api/enrichment/providers`
+
+Returns the dynamic list of currently-enabled providers. Useful for building UIs that adapt to provider availability.
+
+```json
+{"providers": ["contacts_db", "blitz", "smartprospect", "wizleads", "better_enrich"]}
+```
+
+### E.3 Default title cascade: `GET /api/enrichment/default-cascade` (no auth)
+
+Returns the 3-tier default Blitz cascade (Tier 1: Owner/CEO/Founder; Tier 2: C-level; Tier 3: Director-level). Useful when constructing custom `cascade` payloads.
+
+### E.4 Daily quota: `GET /api/quota` (JWT)
+
+```bash
+curl https://listbuilding.eagleinfoservice.com/api/quota \
+  -H "Authorization: Bearer YOUR_JWT"
+```
+
+```json
+{
+  "limit": 50000,
+  "used": 12345,
+  "remaining": 37655,
+  "resets_at": "2026-07-17T00:00:00Z",
+  "is_admin": false
+}
+```
+
+---
+
+## Section F: Rate Limits & Quotas
+
+### F.1 Daily request quota
+
+| User type | Daily quota | Reset time |
+| --- | --- | --- |
+| Non-admin | **50,000 requests/day** | Midnight UTC (calendar-day reset) |
+| Admin | Unlimited | — |
+
+The quota applies to scraper-job creation, scraper restarts, and scraper estimate calls. Single-row enrichment (`POST /api/enrichment/enrich`) calls also count.
+
+### F.2 Quota-exceeded response
+
+HTTP **429** with a human-readable message. No `Retry-After` or `X-RateLimit-*` headers are attached.
+
+### F.3 SQLite lock contention
+
+When the database is briefly locked (rare), the API returns HTTP **503** with `Retry-After: 3` (seconds).
+
+### F.4 Per-provider rate limits (throughput ceilings)
+
+These are the per-provider ceilings the platform respects when calling upstream APIs. Total throughput for any single job is bounded by these.
+
+| Provider | Rate | Concurrency |
+| --- | --- | --- |
+| Contacts DB | 75 requests/sec | 25 concurrent domain lookups |
+| Blitz | 25 requests/sec | 25 concurrent |
+| SmartProspect | 30 requests/sec (account-level 2000 req/min) | batch up to 10 per call |
+| WizLeads | 10 requests/sec | 15 concurrent email lookups |
+| BetterEnrich | 10 requests/sec | shared with company-email fallback |
+| Phone Enrichment | 5 requests/sec | 5 concurrent |
+| Scraper | 8 concurrent workers | per-job |
+
+### F.5 Practical throughput
+
+For a bulk CSV enrichment job with no contention, expect **30–110 rows per minute** depending on hit rate (rows that miss all providers cost ~5–10s each; rows that hit Contacts DB cost <1s each).
+
+---
+
+## Section G: UI Features Summary
+
+The platform's UI lives at `https://listbuilding.eagleinfoservice.com/`. Sidebar pages:
+
+| Page | Purpose |
+| --- | --- |
+| **Home** | Welcome screen with flow chooser cards |
+| **Google Maps Scraper** | Build a scraper job (query, country, mode, providers) |
+| **Upload Domains** | CSV upload + column mapping + provider selection for enrichment |
+| **Company Search** | Search companies by criteria, then enrich matching ones |
+| **LinkedIn Enrich** | CSV of LinkedIn URLs → work emails |
+| **Phone Enrichment** | CSV of LinkedIn URLs → US phone numbers |
+| **Enrichment Jobs** | List of enrichment jobs with filter tabs and per-job actions |
+| **API Keys** | Create / list / delete API keys |
+| **Help & Guide** | In-app documentation |
+
+### Job filter tabs
+
+- **Enrichment Jobs:** All, Running, Starting, Done, Partial, Failed, Abandoned, Cancelled
+- **Scraper Jobs:** All, Done, Running, Failed, Abandoned, Cancelled
+
+### Per-job actions
+
+- **Download** — get final CSV
+- **Resume** — restart a stopped/abandoned/failed job from checkpoints (scraper) or from scratch (enrichment)
+- **Retry** — restart from scratch
+- **Download Partial** — get rows collected so far while job is still running
+- **Cancel** — stop a queued or running job
+
+### Modals
+
+- **Cache modal** — shown when starting a scraper job that matches a cached query. Offers "Use Cached Results" (instant, free) or "Scrape Fresh".
+- **Resume modal** — shown when restarting a job. Shows checkpoint counts and includes a "Include previous results" checkbox.
+- **Chain to Enrichment modal** — shown after a scraper job completes. Lets you pick providers and hand off results to enrichment.
+
+### 0-email warning banner (new 2026-07-13)
+
+Any enrichment job that completes with `emails_found = 0` on a non-empty input shows a prominent yellow banner:
+
+> ⚠ 0 emails found on a N-row input. Output CSV is likely empty. Retry the job or contact support.
+
+The card also gets an orange left-border. The backend now marks such jobs as `failed` (not `done`) when the failure is detected at the row level — so the API `status` field and the UI banner agree.
+
+### Provider selection UI
+
+On the Upload Domains page, the provider checkboxes let you pick which providers run for that job:
+- **Contacts DB** is always on and locked (mandatory first step)
+- **Blitz**, **SmartProspect**, **WizLeads**, **BetterEnrich** are toggleable
+
+This UI maps to the `providers` field in `ProviderToggleRequest` (same semantics as `selected_providers` on the single-row endpoint).
+
+---
+
+## Error Code Reference
+
+### HTTP 400 — Bad Request
+
+Common cases and their exact messages:
+
+| Trigger | Message |
+| --- | --- |
+| Bad domain | `Invalid domain format` |
+| Missing identifier | `Either 'domain', 'linkedin_url', or 'company_linkedin_url' must be provided` |
+| `force_provider` + `selected_providers` both set | `force_provider and selected_providers are mutually exclusive. Pick one: force_provider='blitz' (single) or selected_providers=['contacts_db','smartprospect'] (subset).` |
+| Empty `selected_providers` list | `selected_providers must be a non-empty list. Valid providers: ['better_enrich', 'blitz', 'contacts_db', 'smartprospect', 'wizleads']` |
+| Unknown provider name | `Invalid provider(s) in selected_providers: ['fake_provider']. Valid: ['better_enrich', 'blitz', 'contacts_db', 'smartprospect', 'wizleads']` |
+| Bad titles value | `Titles cannot be empty` |
+| Too many titles | `Maximum 50 titles allowed. Contact support for bulk operations.` |
+| Non-CSV upload | `Only CSV files are accepted.` |
+| Missing column | `Column '<col>' not found in CSV.` |
+| Bad cascade JSON | `Could not parse CSV: ...` or `Invalid cascade JSON` |
+
+### HTTP 401 — Unauthorized
+
+`Invalid token.` or `Authentication required. Provide either JWT token or X-API-Key header.`
+
+### HTTP 403 — Forbidden
+
+`Access denied.` — returned when a non-owner non-admin tries to access another user's job.
+
+### HTTP 404 — Not Found
+
+`Job not found.` / `Upload not found.` / `Output file not found.` / `No enriched data yet.`
+
+### HTTP 409 — Conflict
+
+`A restart for this job is already in progress (job_id: ..., status: ...). Please wait for it to complete or cancel it first.`
+
+### HTTP 429 — Quota Exceeded
+
+Plain-text message about daily quota. No `Retry-After` header.
+
+### HTTP 500 — Internal Server Error
+
+`Could not read original CSV: ...` / `Search failed: ...` / `Job failed: <error_msg>`
+
+### HTTP 503 — Service Unavailable
+
+`The platform database is briefly busy. Please retry in a few seconds.` — with `Retry-After: 3` header.
+
+---
+
+## Changelog
+
+| Date | Change |
+| --- | --- |
+| 2026-07-16 | Full API reference published. Added: phone enrichment, scraper, helper endpoints, auth matrix, rate limits, UI features, error reference. |
+| 2026-07-13 | `selected_providers` parameter added to `/api/enrichment/enrich`. Fail-loud guards prevent silent 0-email jobs. UI warning banner added. |
+| 2026-07-08 | SmartProspect (SmartLead Find Emails) added as 3rd provider. |
+| 2026-07-06 | Prospeo disabled end-to-end. |
+| 2026-04-15 | Original SOP published (Clay step-by-step guide only). |

@@ -100,3 +100,4 @@ htmlcov/
 
 # External reference clones (kept locally for reading, not vendored into repo)
 docs/blitz-api-py/
+LOOP-latam.md
