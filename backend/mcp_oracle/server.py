@@ -33,6 +33,7 @@ mcp.settings.transport_security.enable_dns_rebinding_protection = False
 # Each module imports mcp from this file and registers its functions.
 from . import resources  # noqa: F401, E402 — registers resources on mcp
 from . import tools      # noqa: F401, E402 — registers tools on mcp
+from . import prompts    # noqa: F401, E402 — registers prompts on mcp
 
 
 @mcp.resource("health://status")
