@@ -8,12 +8,14 @@ The cascade logic in pipeline.py, routes.py, and list_builder.py
 reads from this module to decide whether to call each provider.
 """
 
+import os
 from typing import Final
 
 # Single source of truth — edit here to enable/disable providers
 ENABLED_PROVIDERS: Final[dict[str, bool]] = {
     "contacts_db": True,
     "blitz": True,
+    "smartprospect": True,   # SmartLead Find Emails API (prospect-api.smartlead.ai), 30 RPS, batch up to 10
     "wizleads": True,
     "better_enrich": True,
     "prospeo": False,   # ← disable Prospeo (was paid, temporarily disabled)
@@ -30,7 +32,13 @@ def is_provider_enabled(provider: str) -> bool:
     Returns:
         True if enabled, False otherwise. Defaults to False for unknown providers.
     """
-    return ENABLED_PROVIDERS.get(provider, False)
+    if not ENABLED_PROVIDERS.get(provider, False):
+        return False
+    # Per-provider env kill-switches (default true unless explicitly disabled)
+    if provider == "smartprospect":
+        if os.environ.get("ENABLE_SMARTPROSPECT", "true").lower() != "true":
+            return False
+    return True
 
 
 def get_enabled_providers() -> list[str]:

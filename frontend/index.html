@@ -263,6 +263,24 @@
         .status-abandoned { background: #f3e8ff; color: #7c3aed; }
         .status-partial { background: #e0f2fe; color: #0284c7; }
 
+        /* Warning banner for jobs that completed with 0 emails on a non-empty
+           input. Almost always indicates a silent cascade bug — see
+           csv_jobs_silent_failure_2026-07-13.md. */
+        .zero-email-warning {
+            background: #fef3c7;
+            border: 1px solid #f59e0b;
+            color: #92400e;
+            padding: 0.4rem 0.6rem;
+            border-radius: 0.375rem;
+            font-size: 0.72rem;
+            margin-top: 0.4rem;
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+        .zero-email-warning strong { color: #b45309; }
+        .job-card.zero-email-card { border-left: 4px solid #f59e0b; }
+
         .btn-sm { padding: 0.4rem 0.75rem; font-size: 0.75rem; }
         .actions { display: flex; gap: 0.5rem; }
 
@@ -673,16 +691,17 @@
         <div class="page active" id="page-home">
             <div class="welcome-card">
                 <h2>Find Decision Makers with Verified Emails</h2>
-                <p>Build targeted lead lists by uploading domains, searching companies, or enriching LinkedIn profiles. Get emails using our 4-source cascade: Contacts DB, Blitz API, WizLeads, and BetterEnrich.</p>
+                <p>Build targeted lead lists by uploading domains, searching companies, or enriching LinkedIn profiles. Get emails using our 5-source cascade: Contacts DB, Blitz API, smartprospect, WizLeads, and BetterEnrich.</p>
             </div>
             
             <div class="info-grid">
                 <div class="info-card">
                     <h3>Data Sources</h3>
-                    <p>We use 4 data sources (in priority order):</p>
+                    <p>We use 5 data sources (in priority order):</p>
                     <ol>
                         <li><strong>Contacts DB</strong> - Free, cached data (75 RPS)</li>
                         <li><strong>Blitz API</strong> - LinkedIn-based enrichment (25 RPS)</li>
+                        <li><strong>smartprospect</strong> - Verified email finder (30 RPS, batch up to 10)</li>
                         <li><strong>WizLeads</strong> - Catchall email verification (10 RPS)</li>
                         <li><strong>BetterEnrich</strong> - Person/company email lookup (10 RPS)</li>
                     </ol>
@@ -895,6 +914,11 @@
                                 <input type="checkbox" id="chain_provider_blitz" checked style="width:18px;height:18px;">
                                 <span style="font-weight:500;">Blitz API</span>
                                 <span style="font-size:0.75rem;color:#64748b;margin-left:auto;">LinkedIn-based</span>
+                            </label>
+                            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+                                <input type="checkbox" id="chain_provider_smartprospect" checked style="width:18px;height:18px;">
+                                <span style="font-weight:500;">smartprospect</span>
+                                <span style="font-size:0.75rem;color:#64748b;margin-left:auto;">Verified · 2000 req/min</span>
                             </label>
                             <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
                                 <input type="checkbox" id="chain_provider_wizleads" checked style="width:18px;height:18px;">
@@ -1127,19 +1151,19 @@
                             <span style="font-size:0.75rem;color:#64748b;">Runs if Internal DB has no data</span>
                         </div>
                         <div style="display:flex;align-items:center;gap:8px;">
+                            <input type="checkbox" id="provider_smartprospect" checked style="width:16px;height:16px;cursor:pointer;">
+                            <label style="font-weight:600;cursor:pointer;">smartprospect</label>
+                            <span style="font-size:0.75rem;color:#64748b;">Verified emails · 2000 req/min</span>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:8px;">
                             <input type="checkbox" id="provider_wizleads" checked style="width:16px;height:16px;cursor:pointer;">
                             <label style="font-weight:600;cursor:pointer;">WizLeads</label>
-                            <span style="font-size:0.75rem;color:#64748b;">Runs if Blitz has no data</span>
+                            <span style="font-size:0.75rem;color:#64748b;">Runs if smartprospect has no data</span>
                         </div>
                         <div style="display:flex;align-items:center;gap:8px;">
                             <input type="checkbox" id="provider_better_enrich" checked style="width:16px;height:16px;cursor:pointer;">
                             <label style="font-weight:600;cursor:pointer;">Better Enrich</label>
                             <span style="font-size:0.75rem;color:#64748b;">Runs if WizLeads has no data</span>
-                        </div>
-                        <div style="display:flex;align-items:center;gap:8px;opacity:0.5;">
-                            <input type="checkbox" id="provider_prospeo" disabled style="width:16px;height:16px;">
-                            <label style="font-weight:600;cursor:not-allowed;">Prospeo</label>
-                            <span style="font-size:0.75rem;color:#64748b;">Coming soon (admin can enable)</span>
                         </div>
                     </div>
                 </div>
@@ -1166,6 +1190,7 @@
                     <div class="cascade-steps" id="enrichmentCascadeSteps">
                         <div class="cascade-step" data-provider="contacts_db">Contacts DB</div>
                         <div class="cascade-step" data-provider="blitz">Blitz API</div>
+                        <div class="cascade-step" data-provider="smartprospect">smartprospect</div>
                         <div class="cascade-step" data-provider="wizleads">WizLeads</div>
                         <div class="cascade-step" data-provider="better_enrich">BetterEnrich</div>
                         <div class="cascade-step" data-provider="complete">Complete</div>
@@ -1178,6 +1203,10 @@
                         <div class="provider-result-item">
                             <span class="provider-result-value" id="blitzResults">0</span>
                             <span class="provider-result-label">Blitz</span>
+                        </div>
+                        <div class="provider-result-item">
+                            <span class="provider-result-value" id="smartprospectResults">0</span>
+                            <span class="provider-result-label">smartprospect</span>
                         </div>
                         <div class="provider-result-item">
                             <span class="provider-result-value" id="wizleadsResults">0</span>
@@ -1470,12 +1499,8 @@
                     </div>
                 </div>
                 <div class="data-sources">
-                    <h4>4. Prospeo (Final Fallback - Paid)</h4>
-                    <p style="font-size:0.85rem;color:var(--gray-600);">Final fallback for person and company enrichment (30 RPS).</p>
-                    <div style="margin-top:0.5rem;">
-                        <span class="source-tag">prospeo_person</span>
-                        <span class="source-tag">prospeo_company</span>
-                    </div>
+                    <h4>4. Prospeo</h4>
+                    <p style="font-size:0.85rem;color:var(--gray-600);">Currently disabled — contact admin to enable.</p>
                 </div>
             </div>
             
@@ -2449,9 +2474,9 @@ example.org,Jane Doe</pre>
             // Collect selected providers (contacts_db is always sent but backend enforces it)
             const providers = [];
             if (document.getElementById('provider_blitz').checked) providers.push('blitz');
+            if (document.getElementById('provider_smartprospect').checked) providers.push('smartprospect');
             if (document.getElementById('provider_wizleads').checked) providers.push('wizleads');
             if (document.getElementById('provider_better_enrich').checked) providers.push('better_enrich');
-            if (document.getElementById('provider_prospeo').checked) providers.push('prospeo');
 
             // Read pre-processing flags (default ON via the HTML checked attr)
             const normalizeDomains = document.getElementById('domain_normalize_domains').checked;
@@ -3428,6 +3453,7 @@ example.org,Jane Doe</pre>
             // Collect selected providers (contacts_db is always enabled on backend)
             const providers = [];
             if (document.getElementById('chain_provider_blitz').checked) providers.push('blitz');
+            if (document.getElementById('chain_provider_smartprospect').checked) providers.push('smartprospect');
             if (document.getElementById('chain_provider_wizleads').checked) providers.push('wizleads');
             if (document.getElementById('chain_provider_better_enrich').checked) providers.push('better_enrich');
 
@@ -3443,7 +3469,7 @@ example.org,Jane Doe</pre>
                     headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         cascade: null,
-                        max_results: 5,
+                        max_results: parseInt(document.getElementById('maxResults').value, 10) || 5,
                         providers: providers.length > 0 ? providers : null,
                         normalize_domains: normalizeDomains,
                         dedupe_by_domain: dedupeByDomain
@@ -3509,7 +3535,7 @@ example.org,Jane Doe</pre>
             errorContainer.style.display = 'none';
             errorContainer.textContent = '';
 
-            const payload = { max_decision_makers: 5, include_generic_emails: true };
+            const payload = { max_decision_makers: parseInt(document.getElementById('maxResults').value, 10) || 5, include_generic_emails: true };
             if (document.getElementById('searchName').value) payload.name = document.getElementById('searchName').value;
             if (document.getElementById('searchIndustry').value) payload.industry = [document.getElementById('searchIndustry').value];
             if (document.getElementById('searchEmployeeRange').value) payload.employee_range = [document.getElementById('searchEmployeeRange').value];
@@ -4022,7 +4048,7 @@ example.org,Jane Doe</pre>
                 // Update activity text
                 const activityText = document.getElementById('enrichmentActivityText');
                 if (activityText && data.current_provider) {
-                    const providerNames = { contacts_db: 'Internal Database', blitz: 'Blitz API', wizleads: 'WizLeads', better_enrich: 'BetterEnrich', prospeo: 'Prospeo' };
+                    const providerNames = { contacts_db: 'Internal Database', blitz: 'Blitz API', smartprospect: 'smartprospect', wizleads: 'WizLeads', better_enrich: 'BetterEnrich' };
                     activityText.textContent = 'Checking ' + (providerNames[data.current_provider] || data.current_provider) + '...';
                     updateCascadeStep(data.current_provider);
                 }
@@ -4050,7 +4076,7 @@ example.org,Jane Doe</pre>
         // Update cascade step indicator
         function updateCascadeStep(activeProvider) {
             const steps = document.querySelectorAll('#enrichmentCascadeSteps .cascade-step');
-            const providerOrder = ['contacts_db', 'blitz', 'wizleads', 'better_enrich', 'prospeo', 'complete'];
+            const providerOrder = ['contacts_db', 'blitz', 'smartprospect', 'wizleads', 'better_enrich', 'complete'];
             const activeIndex = providerOrder.indexOf(activeProvider);
 
             steps.forEach((step, i) => {
@@ -4072,6 +4098,7 @@ example.org,Jane Doe</pre>
         function updateProviderResults(results) {
             if (results.contacts_db !== undefined) document.getElementById('contactsDbResults').textContent = results.contacts_db;
             if (results.blitz !== undefined) document.getElementById('blitzResults').textContent = results.blitz;
+            if (results.smartprospect !== undefined) document.getElementById('smartprospectResults').textContent = results.smartprospect;
             if (results.wizleads !== undefined) document.getElementById('wizleadsResults').textContent = results.wizleads;
             if (results.better_enrich !== undefined) document.getElementById('betterEnrichResults').textContent = results.better_enrich;
         }
@@ -4108,9 +4135,9 @@ example.org,Jane Doe</pre>
             const names = {
                 'contacts_db': 'Contacts DB',
                 'blitz': 'Blitz',
+                'smartprospect': 'smartprospect',
                 'wizleads': 'WizLeads',
-                'better_enrich': 'BetterEnrich',
-                'prospeo': 'Prospeo'
+                'better_enrich': 'BetterEnrich'
             };
             return names[provider] || provider;
         }
@@ -4354,9 +4381,9 @@ example.org,Jane Doe</pre>
                         const labelFor = (p) => {
                             if (p === 'contacts_db') return 'Internal Contacts DB';
                             if (p === 'blitz') return 'Blitz';
+                            if (p === 'smartprospect') return 'smartprospect';
                             if (p === 'wizleads') return 'WizLeads';
                             if (p === 'better_enrich') return 'Better Enrich';
-                            if (p === 'prospeo') return 'Prospeo';
                             return p;
                         };
 
@@ -4377,7 +4404,7 @@ example.org,Jane Doe</pre>
                             selectedDisplay = selectedParsed.map(labelFor).join(' + ');
                         } else {
                             // Old job without selection field - assume defaults (all enabled)
-                            selectedDisplay = 'Internal Contacts DB + Blitz + WizLeads + Better Enrich';
+                            selectedDisplay = 'Internal Contacts DB + Blitz + smartprospect + WizLeads + Better Enrich';
                         }
 
                         // 2. USED: from job.used_providers (new), or infer from email counts (old)
@@ -4390,13 +4417,13 @@ example.org,Jane Doe</pre>
                             // Old job - infer from email counts
                             const usedList = ['contacts_db'];  // Internal DB is always queried first
                             const blitzEmails = job.emails_blitz || 0;
+                            const smartprospectEmails = job.emails_smartprospect || 0;
                             const betterEmails = job.emails_better_enrich || 0;
-                            const prospeoEmails = job.emails_prospeo || 0;
                             const wizleadsEmails = job.emails_wizleads || 0;
                             if (blitzEmails > 0) usedList.push('blitz');
+                            if (smartprospectEmails > 0) usedList.push('smartprospect');
                             if (wizleadsEmails > 0) usedList.push('wizleads');
                             if (betterEmails > 0) usedList.push('better_enrich');
-                            if (prospeoEmails > 0) usedList.push('prospeo');
                             usedDisplay = usedList.map(labelFor).join(' + ');
                         }
 
@@ -4468,7 +4495,22 @@ example.org,Jane Doe</pre>
                             }
                         }
 
-                        return '<div class="job-card"><div class="job-info"><h4>' + (job.display_filename || job.filename || 'Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.processed||0) + '/' + (job.total||0) + ' | ' + (job.emails_found||0) + ' emails</div><div class="job-providers" style="font-size: 0.75rem; margin-top: 4px;"><div style="color: #1e40af;"><strong>Selected:</strong> ' + selectedDisplay + '</div><div style="color: #059669;"><strong>Used:</strong> ' + usedDisplay + '</div></div>' + errorInfo + providerErrorsDisplay + '</div><div class="actions">' + actions + '</div></div>';
+                        // Prominent warning when a "done" job has 0 emails on a
+                        // non-empty input. Almost always a silent cascade bug
+                        // (the 2026-07-11..13 outage looked exactly like this).
+                        // Surfaces the issue instead of letting users waste time
+                        // downloading a 0-byte CSV.
+                        let zeroEmailWarning = '';
+                        let zeroEmailCardClass = '';
+                        if (job.status === 'done' && (job.total || 0) > 0 && (job.emails_found || 0) === 0) {
+                            zeroEmailCardClass = ' zero-email-card';
+                            zeroEmailWarning = '<div class="zero-email-warning" title="Job completed but produced no data. This is almost always a bug — contact support or retry.">' +
+                                '<strong>⚠ 0 emails found</strong> on a ' + job.total + '-row input. ' +
+                                'Output CSV is likely empty. <span style="text-decoration: underline;">Retry the job or contact support.</span>' +
+                                '</div>';
+                        }
+
+                        return '<div class="job-card' + zeroEmailCardClass + '"><div class="job-info"><h4>' + (job.display_filename || job.filename || 'Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.processed||0) + '/' + (job.total||0) + ' | ' + (job.emails_found||0) + ' emails</div><div class="job-providers" style="font-size: 0.75rem; margin-top: 4px;"><div style="color: #1e40af;"><strong>Selected:</strong> ' + selectedDisplay + '</div><div style="color: #059669;"><strong>Used:</strong> ' + usedDisplay + '</div></div>' + errorInfo + providerErrorsDisplay + zeroEmailWarning + '</div><div class="actions">' + actions + '</div></div>';
                     }).join('');
         }
 
@@ -4859,6 +4901,7 @@ example.org,Jane Doe</pre>
                 // Collect selected providers (contacts_db is always enabled on backend)
                 const providers = [];
                 if (document.getElementById('chain_provider_blitz').checked) providers.push('blitz');
+                if (document.getElementById('chain_provider_smartprospect').checked) providers.push('smartprospect');
                 if (document.getElementById('chain_provider_wizleads').checked) providers.push('wizleads');
                 if (document.getElementById('chain_provider_better_enrich').checked) providers.push('better_enrich');
 
@@ -4867,7 +4910,7 @@ example.org,Jane Doe</pre>
                     headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         cascade: null,
-                        max_results: 5,
+                        max_results: parseInt(document.getElementById('maxResults').value, 10) || 5,
                         providers: providers.length > 0 ? providers : null
                     })
                 });

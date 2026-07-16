@@ -186,10 +186,14 @@ class TestRouteEnrichmentPure(unittest.TestCase):
         )
 
     def test_wizleads_requires_first_and_last_name(self):
-        """wizleads step only appears when first_name and last_name are present."""
-        # No first/last -> no wizleads step
+        """wizleads step only appears when first_name and last_name are present.
+
+        Note: ``route_enrichment`` auto-derives first/last from a multi-word
+        ``full_name``. To test the genuine "last name unknowable" case we use
+        a single-word full_name, which leaves last_name empty after derivation."""
+        # Single-word full_name -> last_name empty after derivation -> no wizleads step
         route = pipeline_mod.route_enrichment(
-            full_name="Jane Doe", domain="acme.com"
+            full_name="Jane", domain="acme.com"
         )
         methods = [s["method"] for s in route["steps"]]
         self.assertNotIn(pipeline_mod.ROUTE_METHOD_FIND_EMAIL, methods)
@@ -592,7 +596,7 @@ class TestUnifiedEnrichUsesRouter(unittest.IsolatedAsyncioTestCase):
             },
         }
 
-        def fake_route_enrichment(*, linkedin_url, phone, full_name, first_name, last_name, domain, company_name, force_provider=None):
+        def fake_route_enrichment(*, linkedin_url, phone, full_name, first_name, last_name, domain, company_name, force_provider=None, selected_providers=None):
             called["route"] = {
                 "linkedin_url": linkedin_url,
                 "phone": phone,
@@ -602,6 +606,7 @@ class TestUnifiedEnrichUsesRouter(unittest.IsolatedAsyncioTestCase):
                 "domain": domain,
                 "company_name": company_name,
                 "force_provider": force_provider,
+                "selected_providers": selected_providers,
             }
             return route
 

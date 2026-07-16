@@ -421,13 +421,6 @@
                                 <span style="font-size:0.75rem;color:#64748b;">Runs if Blitz has no data</span>
                             </label>
                         </div>
-                        <div class="filter-group" style="flex-direction:column;align-items:flex-start;">
-                            <label style="display:flex;align-items:center;gap:8px;cursor:not-allowed;opacity:0.5;">
-                                <input type="checkbox" id="provider_prospeo" disabled style="width:16px;height:16px;">
-                                <span style="font-weight:600;">Prospeo</span>
-                                <span style="font-size:0.75rem;color:#64748b;">Coming soon (admin can enable)</span>
-                            </label>
-                        </div>
                     </div>
                 </div>
 
@@ -795,7 +788,6 @@ https://linkedin.com/in/janesmith</pre>
             const providers = [];
             if (document.getElementById('provider_blitz').checked) providers.push('blitz');
             if (document.getElementById('provider_better_enrich').checked) providers.push('better_enrich');
-            if (document.getElementById('provider_prospeo').checked) providers.push('prospeo');
 
             const res = await fetch('/api/enrichment/flows/domain-enrich', {
                 method: 'POST',

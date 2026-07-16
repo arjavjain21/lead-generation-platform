@@ -41,6 +41,7 @@ from . import wizleads_client
 from . import providers
 from . import identifier_utils
 from . import contacts_writer
+from .raw_contact_collector import RawContactCollector
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import sync_contacts
@@ -191,33 +192,51 @@ async def _run_contacts_writer_v2(
     return sync_result, sync_status
 
 
-# Valid provider values for force_provider parameter
-VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "wizleads", "better_enrich"})
+# Valid provider values for force_provider / selected_providers parameter
+VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "smartprospect", "wizleads", "better_enrich"})
 
 
-def _should_skip_provider(provider: str, force_provider: Optional[str]) -> bool:
+def _should_skip_provider(
+    provider: str,
+    force_provider: Optional[str] = None,
+    selected_providers: Optional[list[str]] = None,
+) -> bool:
     """
     Determine if a provider should be skipped.
 
     Args:
         provider: The current provider being considered (e.g., "contacts_db", "blitz")
         force_provider: The forced provider from request (or None for normal cascade)
+        selected_providers: Optional allowlist from request (or None for all enabled).
+            Mirrors list_builder.py semantics — contacts_db is always allowed
+            even if not in the list.
 
     Returns:
         True if the provider should be skipped, False otherwise
 
-    Checks:
-      1. Is the provider globally disabled in ENABLED_PROVIDERS?
-      2. If force_provider is set, does it match the current provider?
+    Checks (in priority order):
+      1. Global ENABLED_PROVIDERS kill switch (beats everything below)
+      2. force_provider (if set) — only that provider passes
+      3. selected_providers (if set) — only those providers pass; contacts_db
+         is always allowed
     """
-    # First check: is the provider globally disabled?
+    # Global enablement check — beats force_provider and selected_providers.
+    # If a provider is globally disabled, no per-request override re-enables it.
     if not providers.is_provider_enabled(provider):
         logger.debug("_should_skip_provider: %s disabled in ENABLED_PROVIDERS", provider)
         return True
 
-    # Second check: force_provider constraint
+    # force_provider takes precedence over selected_providers - if set, only
+    # use that provider.
     if force_provider:
         return provider != force_provider
+
+    # selected_providers is an allowlist. contacts_db is always allowed
+    # (mandatory first step), matching list_builder.py convention.
+    if selected_providers is not None:
+        if provider == "contacts_db":
+            return False
+        return provider not in selected_providers
 
     return False
 
@@ -274,6 +293,91 @@ def _build_routing_response(
     }
 
 
+def _build_domain_only_fallback_route_result(
+    data_sources: dict[str, str],
+    company_linkedin_url: str,
+) -> dict[str, Any]:
+    """Synthesize a route_result for domain_only mode showing what was tried.
+
+    The domain_only cascade doesn't use ``route_enrichment`` (which produces
+    the structured attempts list automatically for the per-person cascades).
+    Instead it uses ``_enrich_domain`` (POST endpoint) or inline helpers
+    (GET endpoint) that try Contacts DB and Blitz at the company level before
+    falling back to per-DM lookups.
+
+    Without this helper, domain_only responses with 0 contacts show
+    ``provider_attempts=[]``, which looks like the system didn't try
+    anything. That's misleading — we DID try Contacts DB and Blitz, we
+    just couldn't surface it through the routing layer.
+
+    This helper reconstructs the attempts list from the ``data_sources``
+    signals (which ARE populated by the domain_only handlers) so the
+    response accurately reflects what was attempted.
+
+    Args:
+        data_sources: The ``data_sources`` dict from the response. Must
+            include ``company_linkedin`` and ``contacts`` keys.
+        company_linkedin_url: The resolved company LinkedIn URL (empty
+            string when not found).
+
+    Returns:
+        A synthetic route_result dict with ``mode``, ``source_path``,
+        ``provider_attempts``, and ``no_email_reason`` populated to
+        reflect the actual domain_only cascade attempts.
+    """
+    company_source = data_sources.get("company_linkedin", "")
+    contacts_source = data_sources.get("contacts", "")
+
+    attempts: list[str] = []
+
+    # Company LinkedIn URL resolution: Contacts DB is always tried first.
+    attempts.append("company_by_domain@contacts_db")
+    # Blitz domain_to_linkedin is tried when Contacts DB missed or errored.
+    # We can infer this: if company_source is "blitz" or "not_found", Contacts
+    # DB didn't return a usable URL, so Blitz was attempted as the fallback.
+    if company_source in ("blitz", "not_found"):
+        attempts.append("domain_to_linkedin@blitz")
+
+    # Decision-maker discovery.
+    # Contacts DB company_contacts_enriched runs unconditionally (it doesn't
+    # need a LinkedIn URL). Blitz waterfall_icp_search DOES need one.
+    attempts.append("company_contacts_enriched@contacts_db")
+    if company_linkedin_url:
+        attempts.append("waterfall_icp_search@blitz")
+
+    # Determine the most-specific no_email_reason.
+    if not company_linkedin_url:
+        no_email_reason = pipeline.NO_EMAIL_REASON_DOMAIN_ONLY_NO_LINKEDIN
+        source_path = (
+            "domain -> contacts_db.company_by_domain (no match) -> "
+            "blitz.domain_to_linkedin (no match) -> no company LinkedIn URL -> "
+            "cascade cannot proceed (Blitz waterfall requires LinkedIn URL)"
+        )
+    elif contacts_source == "not_found":
+        no_email_reason = pipeline.NO_EMAIL_REASON_DOMAIN_ONLY_NO_CONTACTS
+        source_path = (
+            "domain -> company LinkedIn found -> "
+            "contacts_db.company_contacts_enriched (no DMs) -> "
+            "blitz.waterfall_icp_search (no DMs) -> no decision makers"
+        )
+    else:
+        # DMs were found but none yielded an email — per-DM cascades ran
+        # and would have populated last_route_result normally. This branch
+        # is a defensive fallback and should rarely trigger.
+        no_email_reason = ""
+        source_path = "domain -> company found -> DMs found -> per-DM cascade ran"
+
+    return {
+        "mode": "domain_only",
+        "source_path": source_path,
+        "provider_attempts": attempts,
+        "no_email_reason": no_email_reason,
+        "provider_attempts_json": [],
+        "providers_called": [],
+        "providers_skipped": [],
+    }
+
+
 def _get_error_message_from_attempt(attempt: dict[str, Any]) -> str:
     """Generate a user-friendly error message from a provider attempt record."""
     provider = attempt.get("provider", "")
@@ -308,6 +412,69 @@ _cancelled_jobs: set[str] = set()
 
 
 # ---------------------------------------------------------------------------
+# JSON Response Freeze (Option C Phase 3, 2026-07-07)
+#
+# These 6 fields are populated internally by Phase 2's cascade collector
+# wiring but must NOT appear in the JSON API response. External consumers
+# (Clay, Zapier, custom scripts) must see byte-for-byte identical JSON
+# before and after Phase 2.
+#
+# CSV downloads intentionally include these fields (separate code path).
+#
+# See: docs/RESPONSE_SHAPE_BASELINE_2026-07-07.md for the full allowlist.
+# ---------------------------------------------------------------------------
+
+# Row-level fields that get stripped from contact objects in JSON responses.
+# NOTE: routing.provider_errors is a DIFFERENT concept (built by
+# _build_routing_response at the routing-block level) and is NOT stripped.
+_ROW_LEVEL_INTERNAL_FIELDS: frozenset[str] = frozenset({
+    "company_name",
+    "company_industry",
+    "company_employee_count",
+    "dm_job_level",
+    "dm_job_function",
+    "provider_errors",  # row-level only; routing.provider_errors stays
+})
+
+
+def _strip_internal_fields_from_response(response: Any) -> Any:
+    """
+    Remove the 6 internal-only fields from contact objects in the response.
+
+    Applies to:
+    - response["contacts"][*]  (the contact object list)
+
+    Does NOT touch:
+    - response["routing"]["provider_errors"]  (different concept, different location)
+    - Top-level keys, data_sources, sync_to_contacts_db
+    - CSV column data (CSV is generated separately, not from this response)
+
+    Idempotent: running twice == running once. O(n) over contacts list.
+    Returns the response unchanged if it's not a dict or has no contacts list.
+    """
+    if not isinstance(response, dict):
+        return response
+
+    # Shallow copy so we don't mutate the caller's dict.
+    response = dict(response)
+
+    contacts = response.get("contacts")
+    if isinstance(contacts, list):
+        response["contacts"] = [
+            {
+                k: v
+                for k, v in c.items()
+                if k not in _ROW_LEVEL_INTERNAL_FIELDS
+            }
+            if isinstance(c, dict)
+            else c
+            for c in contacts
+        ]
+
+    return response
+
+
+# ---------------------------------------------------------------------------
 # Enrichment Providers
 # ---------------------------------------------------------------------------
 
@@ -325,6 +492,364 @@ async def get_enrichment_providers(
         {"providers": ["contacts_db", "blitz", "better_enrich"]}
     """
     return {"providers": providers.get_enabled_providers()}
+
+
+# ---------------------------------------------------------------------------
+# In-API documentation (mirror of docs/LIST_BUILDING_API_2026-07-05.md)
+# ---------------------------------------------------------------------------
+
+_LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
+    "generated_at": "2026-07-05",
+    "document_version": "1.0",
+    "base_url": "https://listbuilding.eagleinfoservice.com",
+    "local_backend": "http://localhost:8765",
+    "markdown_file": "docs/LIST_BUILDING_API_2026-07-05.md",
+    "auth": {
+        "credentials": [
+            {
+                "type": "JWT bearer",
+                "header": "Authorization: Bearer <token>",
+                "obtained_from": "POST /api/auth/login",
+                "expiry": "7 days",
+                "accepted_on": "all endpoints",
+            },
+            {
+                "type": "API key",
+                "header": "X-API-Key: <key>  OR  Authorization: Bearer <key>",
+                "obtained_from": "POST /api/api-keys",
+                "expiry": "does not expire until revoked",
+                "accepted_on": "single /enrich, search, providers, stats, /flows/help (NOT upload/jobs/flows)",
+            },
+        ],
+        "note": "CSV upload, job create/list/cancel/restart, downloads, Flow 1 and Flow 3 require JWT — API key is not accepted.",
+    },
+    "providers": {
+        "cascade_order": [
+            {"name": "contacts_db", "rate": "75 RPS", "role": "Internal PostgreSQL DB, always first, free"},
+            {"name": "blitz", "rate": "25 RPS", "role": "LinkedIn-based enrichment with title cascade"},
+            {"name": "smartprospect", "rate": "30 RPS", "role": "SmartLead Find Emails — self-verifying person-email finder, batch up to 10. Gates on firstName+lastName+domain."},
+            {"name": "wizleads", "rate": "10 RPS", "role": "Catch-all verified email enrichment"},
+            {"name": "better_enrich", "rate": "10 RPS", "role": "Person + company email (final fallback)"},
+            {"name": "prospeo", "rate": "n/a", "role": "DISABLED — code present, end-to-end off"},
+        ],
+        "cascade_behavior": "Stop on first provider that returns a usable contact. Later providers are skipped for that row.",
+        "title_tiers_default": {
+            "tier_1": ["Owner", "CEO", "Founder", "Co-Founder", "President"],
+            "tier_2": ["CMO", "CTO", "COO", "VP-level"],
+            "tier_3": ["Director of Marketing", "Director of Sales", "Head of Marketing"],
+        },
+        "domain_normalization": "Raw URLs like https://mesterh-service.de/?utm_source=gmb are normalized to mesterh-service.de before any provider call.",
+        "email_verification": "Contacts DB emails run through MailTester (validation.hyperke.org). Invalid emails are marked and cascade continues.",
+    },
+    "endpoints": [
+        {
+            "method": "GET",
+            "path": "/api/enrichment/flows/help",
+            "auth": "none",
+            "summary": "This documentation as JSON.",
+            "response_shape": "{ generated_at, base_url, auth, providers, endpoints[], examples, errors }",
+        },
+        {
+            "method": "GET",
+            "path": "/api/enrichment/providers",
+            "auth": "jwt or api key",
+            "summary": "List currently enabled providers.",
+            "response_shape": '{"providers": ["contacts_db","blitz","smartprospect","wizleads","better_enrich"]}',
+        },
+        {
+            "method": "GET",
+            "path": "/api/enrichment/default-cascade",
+            "auth": "none",
+            "summary": "Default 3-tier title cascade used by Blitz.",
+            "response_shape": '{"cascade": [{include_title, exclude_title, location, include_headline_search}, ...]}',
+        },
+        {
+            "method": "GET",
+            "path": "/api/enrichment/search/options",
+            "auth": "jwt or api key",
+            "summary": "Industries, employee ranges, company types, countries, job levels/functions, sales regions.",
+        },
+        {
+            "method": "GET",
+            "path": "/api/enrichment/stats/sources",
+            "auth": "jwt or api key",
+            "summary": "Email-source aggregation (admin sees all, users see own).",
+            "query_params": [
+                {"name": "start_date", "type": "ISO date", "required": "no"},
+                {"name": "end_date", "type": "ISO date", "required": "no"},
+            ],
+        },
+        {
+            "method": "GET",
+            "path": "/api/enrichment/enrich/{domain}",
+            "auth": "jwt or api key",
+            "summary": "Quick single-domain lookup with cascade.",
+            "query_params": [
+                {"name": "max_results", "type": "int", "default": "5"},
+                {"name": "cascade_json", "type": "string (URL-encoded JSON)", "required": "no"},
+                {"name": "force_provider", "type": "string", "required": "no", "values": ["contacts_db", "blitz", "smartprospect", "wizleads", "better_enrich"]},
+            ],
+        },
+        {
+            "method": "GET",
+            "path": "/api/enrichment/enrich",
+            "auth": "jwt or api key",
+            "summary": "Unified single lookup (GET form). Same params as POST below, plus debug=bool.",
+        },
+        {
+            "method": "POST",
+            "path": "/api/enrichment/enrich",
+            "auth": "jwt or api key",
+            "summary": "Unified single lookup with provider cascade + sync to Contacts DB. Auto-detects mode: domain_only / linkedin_only / enhanced.",
+            "body_fields": [
+                {"name": "domain", "type": "string", "required": "one of domain|linkedin_url"},
+                {"name": "linkedin_url", "type": "string", "required": "one of domain|linkedin_url"},
+                {"name": "full_name", "type": "string"},
+                {"name": "first_name", "type": "string", "notes": "use with last_name"},
+                {"name": "last_name", "type": "string", "notes": "use with first_name"},
+                {"name": "phone", "type": "string"},
+                {"name": "company_name", "type": "string"},
+                {"name": "existing_email", "type": "string"},
+                {"name": "max_results", "type": "int", "default": "5", "range": "1-10"},
+                {"name": "titles", "type": "string", "notes": "comma-separated, e.g. 'CEO,CTO', max 50"},
+                {"name": "cascade", "type": "array<dict>", "notes": "advanced — overrides titles"},
+                {"name": "force_provider", "type": "string", "values": ["contacts_db", "blitz", "smartprospect", "wizleads", "better_enrich"]},
+            ],
+            "query_params": [{"name": "debug", "type": "bool", "default": "false", "notes": "adds routing block"}],
+            "modes": {
+                "domain_only": "domain only — full cascade, all decision makers",
+                "linkedin_only": "linkedin_url only — specific person via cascade",
+                "enhanced": "domain + full_name/linkedin_url — specific person only; 0 results if not found",
+            },
+        },
+        {
+            "method": "POST",
+            "path": "/api/enrichment/upload",
+            "auth": "jwt only",
+            "summary": "Upload CSV, returns upload_id + column preview.",
+            "content_type": "multipart/form-data",
+            "form_field": "file (must end in .csv)",
+            "response_shape": '{"upload_id","columns","preview","row_count","filename"}',
+        },
+        {
+            "method": "POST",
+            "path": "/api/enrichment/jobs",
+            "auth": "jwt only",
+            "summary": "Start basic enrichment job (legacy — prefer /flows/domain-enrich).",
+            "body_fields": [
+                {"name": "upload_id", "type": "string", "required": True},
+                {"name": "domain_col", "type": "string", "required": True},
+                {"name": "name_col", "type": "string"},
+                {"name": "first_name_col", "type": "string"},
+                {"name": "last_name_col", "type": "string"},
+                {"name": "linkedin_url_col", "type": "string"},
+                {"name": "phone_col", "type": "string"},
+                {"name": "company_name_col", "type": "string"},
+                {"name": "existing_email_col", "type": "string"},
+                {"name": "cascade", "type": "array<dict>"},
+                {"name": "max_results", "type": "int", "default": "5"},
+                {"name": "force_provider", "type": "string"},
+                {"name": "validate_email", "type": "bool", "default": "true"},
+            ],
+            "response_shape": '{"job_id","total"}',
+        },
+        {
+            "method": "GET",
+            "path": "/api/enrichment/jobs",
+            "auth": "jwt only",
+            "summary": "List my jobs (admin sees all).",
+            "response_shape": '{"jobs": [{job_id, status, total, processed, emails_found, ...}]}',
+        },
+        {
+            "method": "GET",
+            "path": "/api/enrichment/jobs/{job_id}",
+            "auth": "jwt only",
+            "summary": "Job status + config.",
+            "status_values": ["queued", "running", "completed", "failed", "cancelled", "partial"],
+        },
+        {
+            "method": "GET",
+            "path": "/api/enrichment/jobs/{job_id}/stream",
+            "auth": "jwt only",
+            "summary": "SSE progress stream with replay; closes on terminal status.",
+            "content_type": "text/event-stream",
+        },
+        {
+            "method": "GET",
+            "path": "/api/enrichment/jobs/{job_id}/download",
+            "auth": "jwt only",
+            "summary": "Full enriched CSV (works for completed/failed/partial).",
+            "content_type": "text/csv",
+        },
+        {
+            "method": "GET",
+            "path": "/api/enrichment/jobs/{job_id}/partial-download",
+            "auth": "jwt only",
+            "summary": "Whatever has been written so far for running jobs.",
+            "content_type": "text/csv",
+        },
+        {
+            "method": "POST",
+            "path": "/api/enrichment/jobs/{job_id}/restart",
+            "auth": "jwt only",
+            "summary": "Restart failed/abandoned job. Re-reads original CSV, skips processed rows, dedupes.",
+            "response_shape": '{"job_id","total","restarted_from","deduped_count"}',
+        },
+        {
+            "method": "POST",
+            "path": "/api/enrichment/jobs/{job_id}/cancel",
+            "auth": "jwt only",
+            "summary": "Cancel running/queued job. Partial results remain downloadable.",
+            "response_shape": '{"job_id","status":"cancelled","message"}',
+        },
+        {
+            "method": "POST",
+            "path": "/api/enrichment/flows/domain-enrich",
+            "auth": "jwt only",
+            "summary": "FLOW 1 (recommended): domains → generic emails + decision makers, with provider selection, fuzzy titles, dedupe.",
+            "body_fields": [
+                {"name": "upload_id", "type": "string", "required": True},
+                {"name": "domain_col", "type": "string", "required": True},
+                {"name": "name_col", "type": "string"},
+                {"name": "first_name_col", "type": "string"},
+                {"name": "last_name_col", "type": "string"},
+                {"name": "linkedin_url_col", "type": "string"},
+                {"name": "phone_col", "type": "string"},
+                {"name": "company_name_col", "type": "string"},
+                {"name": "existing_email_col", "type": "string"},
+                {"name": "max_results", "type": "int", "default": "5"},
+                {"name": "providers", "type": "array<string>", "values": ["blitz", "wizleads", "better_enrich"], "notes": "contacts_db always runs first and cannot be disabled"},
+                {"name": "titles", "type": "string", "notes": "comma-separated fuzzy titles, max 50, e.g. 'dentist,orthodontist,dmd'"},
+                {"name": "normalize_domains", "type": "bool", "default": "true"},
+                {"name": "dedupe_by_domain", "type": "bool", "default": "true"},
+            ],
+            "response_shape": '{"job_id","total"}',
+            "concurrency": "25 domains in parallel",
+            "errors": [
+                "404 — Upload not found.",
+                "400 — Column '<name>' not found in CSV.",
+                "400 — Titles cannot be empty",
+                "400 — Maximum 50 titles allowed.",
+                "400 — Invalid providers: [...].",
+            ],
+        },
+        {
+            "method": "POST",
+            "path": "/api/enrichment/search/companies",
+            "auth": "jwt or api key",
+            "summary": "FLOW 2: search companies by criteria (returns matches only).",
+            "body_fields": [
+                {"name": "name", "type": "string"},
+                {"name": "industry", "type": "array<string>"},
+                {"name": "employee_range", "type": "array<string>", "examples": ["11-50", "51-200"]},
+                {"name": "company_type", "type": "array<string>", "examples": ["Privately Held", "Public Company"]},
+                {"name": "country_code", "type": "string", "format": "ISO 3166-1 alpha-2"},
+                {"name": "limit", "type": "int", "default": "100"},
+                {"name": "offset", "type": "int", "default": "0"},
+            ],
+            "response_shape": '{"count","total","results":[{domain, linkedin_url, name}]}',
+        },
+        {
+            "method": "POST",
+            "path": "/api/enrichment/search/companies/enrich",
+            "auth": "jwt or api key",
+            "summary": "FLOW 2 legacy: search + start enrichment job in one call.",
+            "extra_fields": [
+                {"name": "max_decision_makers", "type": "int", "default": "5"},
+                {"name": "include_generic_emails", "type": "bool", "default": "true"},
+            ],
+            "response_shape": '{"job_id","total","companies_found"}',
+        },
+        {
+            "method": "POST",
+            "path": "/api/enrichment/by-linkedin-v2",
+            "auth": "jwt only",
+            "summary": "FLOW 3 (recommended): unified LinkedIn enrichment for personal AND/OR company URLs.",
+            "body_fields": [
+                {"name": "upload_id", "type": "string", "required": True},
+                {"name": "personal_linkedin_col", "type": "string", "notes": "column with linkedin.com/in/..."},
+                {"name": "company_linkedin_col", "type": "string", "notes": "column with linkedin.com/company/..."},
+                {"name": "max_dms", "type": "int", "default": "5"},
+                {"name": "include_company", "type": "bool", "default": "true"},
+            ],
+            "constraint": "At least one of personal_linkedin_col or company_linkedin_col must be supplied and must exist in the CSV.",
+            "response_shape": '{"job_id","total","flow":"linkedin_v2_enrichment"}',
+        },
+        {
+            "method": "POST",
+            "path": "/api/enrichment/by-linkedin",
+            "auth": "jwt only",
+            "summary": "FLOW 3 legacy: personal LinkedIn URLs only.",
+            "body_fields": [
+                {"name": "upload_id", "type": "string", "required": True},
+                {"name": "linkedin_col", "type": "string", "required": True},
+                {"name": "include_company", "type": "bool", "default": "true"},
+            ],
+        },
+        {
+            "method": "POST",
+            "path": "/api/enrichment/by-domains",
+            "auth": "jwt only",
+            "summary": "Legacy alias for /jobs — prefer /flows/domain-enrich.",
+        },
+    ],
+    "output_csv_columns": [
+        "company_linkedin_url", "company_name", "company_industry", "company_employee_count",
+        "dm_first_name", "dm_last_name", "dm_full_name", "dm_title", "dm_job_level", "dm_job_function",
+        "dm_linkedin_url", "dm_email", "dm_email_source", "dm_email_verified",
+        "mailtester_code", "mailtester_message", "dm_phone", "dm_headline",
+        "dm_location_city", "dm_location_country", "dm_icp_tier", "row_status",
+        "input_domain", "input_full_name", "input_linkedin_url", "normalized_linkedin_url",
+        "source_path", "provider_attempts", "providers_called", "providers_skipped",
+        "final_email", "final_email_level",
+    ],
+    "errors": {
+        "400": "Bad request (bad CSV, bad column, invalid provider, too many titles)",
+        "401": "Missing/invalid token or API key",
+        "403": "Authenticated but not allowed (e.g. another user's job)",
+        "404": "Upload/job/domain not found",
+        "429": "Daily API quota exceeded (non-admin only; 50K/day)",
+        "500": "Internal error (see journalctl -u lead-generation-platform.service)",
+        "503": "SQLite database locked (auto-retry with Retry-After header)",
+    },
+    "rate_limits": {
+        "user_facing": "No per-user throttle on the enrichment API itself.",
+        "upstream_rates_managed_internally": "Sliding window + exponential backoff",
+        "daily_quota": "Non-admin: 50,000 requests/day tracked in daily_api_requests. Admin: unlimited.",
+    },
+    "examples": {
+        "login": 'curl -X POST <base>/api/auth/login -H "Content-Type: application/json" -d \'{"email":"...","password":"..."}\'',
+        "upload_csv": 'curl -X POST <base>/api/enrichment/upload -H "Authorization: Bearer $TOKEN" -F "file=@leads.csv"',
+        "flow1_minimal": 'curl -X POST <base>/api/enrichment/flows/domain-enrich -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d \'{"upload_id":"<uuid>","domain_col":"domain"}\'',
+        "flow1_dental": 'curl -X POST <base>/api/enrichment/flows/domain-enrich -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d \'{"upload_id":"<uuid>","domain_col":"domain","titles":"dentist,orthodontist,dmd,dds","max_results":3,"providers":["blitz","better_enrich"]}\'',
+        "single_enrich": 'curl -X POST <base>/api/enrichment/enrich -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d \'{"domain":"google.com","titles":"CEO,CTO"}\'',
+        "poll_status": "curl <base>/api/enrichment/jobs/$JOB_ID -H \"Authorization: Bearer $TOKEN\"",
+        "download": "curl <base>/api/enrichment/jobs/$JOB_ID/download -H \"Authorization: Bearer $TOKEN\" -o enriched.csv",
+        "sse_stream": "curl -N <base>/api/enrichment/jobs/$JOB_ID/stream -H \"Authorization: Bearer $TOKEN\"",
+    },
+    "support": {
+        "logs": "journalctl -u lead-generation-platform.service -f",
+        "health": "curl http://localhost:8765/api/health",
+        "db_lock_fix": 'cd backend && sqlite3 data/jobs.db "PRAGMA wal_checkpoint(TRUNCATE);"',
+        "postgres_companion": "sudo -u postgres psql -p 5433 lead_gen",
+        "contact": "arjav@eagleinfoservice.com",
+    },
+}
+
+
+@router.get(
+    "/flows/help",
+    summary="List Building API self-documentation",
+    description=(
+        "Returns a structured JSON description of every List Building API endpoint: "
+        "auth scheme, provider cascade, request/response schemas, defaults, errors, "
+        "and ready-to-use curl examples. Mirror of docs/LIST_BUILDING_API_2026-07-05.md. "
+        "No authentication required — intentionally public for client discovery."
+    ),
+)
+async def get_list_building_help():
+    """Return the in-API documentation payload."""
+    return _LIST_BUILDING_HELP_PAYLOAD
 
 
 # ---------------------------------------------------------------------------
@@ -564,10 +1089,14 @@ def _friendly_source(source: str) -> str:
 
 
 def _map_validation_status(code: str) -> str:
-    """Map mailtester codes to validation status."""
+    """Map mailtester codes to validation status.
+
+    Under the default ok-only accept policy, 'mb' is treated as invalid
+    (policy-rejected). The raw code is still preserved on the row for audit.
+    """
     code_map = {
         "ok": "valid_ok",
-        "mb": "valid_mb",
+        "mb": "invalid",
         "ko": "invalid",
     }
     return code_map.get(code, "unknown")
@@ -616,15 +1145,6 @@ class StartJobRequest(BaseModel):
     phone_col: Optional[str] = None
     company_name_col: Optional[str] = None
     existing_email_col: Optional[str] = None
-
-
-class ChainJobRequest(BaseModel):
-    """Request to chain enrichment from a scraper job output."""
-    cascade: Optional[list[dict[str, Any]]] = None
-    max_results: int = 5
-    # Force a specific provider: "contacts_db", "blitz", "better_enrich"
-    # If None, uses normal cascade
-    force_provider: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -856,7 +1376,7 @@ async def enrich_single_domain(
     except Exception as stats_err:
         logger.warning("Failed to record source stats for enrich_single_domain: %s", stats_err)
 
-    return {
+    return _strip_internal_fields_from_response({
         "domain": domain,
         "company_linkedin_url": company_linkedin_url,
         "contacts": contacts,
@@ -869,7 +1389,7 @@ async def enrich_single_domain(
             "records_failed": sync_result.get("failed", 0),
             "records_queued": sync_result.get("records_queued", 0),
         },
-    }
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -900,12 +1420,19 @@ class UnifiedEnrichRequest(BaseModel):
             Auto-converts to cascade if cascade is not provided.
         force_provider: Force a specific provider ("contacts_db", "blitz",
             "better_enrich"). If None, uses normal cascade.
+        selected_providers: Restrict the cascade to a subset of providers
+            (e.g., ["contacts_db", "smartprospect"]). Providers not in this
+            list are skipped entirely, so the cascade stops at the last
+            allowed provider. contacts_db is always allowed (mandatory first
+            step) even if not explicitly listed. Mutually exclusive with
+            force_provider. If None, all enabled providers are used.
     """
     domain: Optional[str] = None
     full_name: Optional[str] = None
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     linkedin_url: Optional[str] = None
+    company_linkedin_url: Optional[str] = None
     phone: Optional[str] = None
     company_name: Optional[str] = None
     existing_email: Optional[str] = None
@@ -917,23 +1444,30 @@ class UnifiedEnrichRequest(BaseModel):
     # Force a specific provider: "contacts_db", "blitz", "better_enrich"
     # If None, uses normal cascade
     force_provider: Optional[str] = None
+    # Restrict cascade to a subset of providers (e.g., ["contacts_db", "smartprospect"]).
+    # Mutually exclusive with force_provider. contacts_db always allowed.
+    selected_providers: Optional[list[str]] = None
 
     class Config:
         schema_extra = {
             "examples": [
                 {"domain": "google.com"},
                 {"linkedin_url": "https://linkedin.com/in/johndoe"},
+                {"company_linkedin_url": "https://linkedin.com/company/acme"},
                 {"domain": "google.com", "full_name": "John Doe"},
                 {"linkedin_url": "https://linkedin.com/in/johndoe", "domain": "google.com"},
                 {"domain": "google.com", "titles": "CEO,CTO,HR"},
                 {"domain": "google.com", "cascade": [{"include_title": ["CEO", "CTO"]}]},
+                {"domain": "google.com", "selected_providers": ["contacts_db", "smartprospect"]},
             ]
         }
 
     def validate_inputs(self):
-        """Validate that either domain or linkedin_url is provided."""
-        if not self.domain and not self.linkedin_url:
-            raise ValueError("Either 'domain' or 'linkedin_url' must be provided")
+        """Validate that at least one identifier is provided."""
+        if not self.domain and not self.linkedin_url and not self.company_linkedin_url:
+            raise ValueError(
+                "Either 'domain', 'linkedin_url', or 'company_linkedin_url' must be provided"
+            )
 
 
 @router.post(
@@ -996,6 +1530,34 @@ async def unified_enrich(
     # Validate inputs - must have domain OR linkedin_url
     req.validate_inputs()
 
+    # Validate selected_providers (allowlist). Mutually exclusive with
+    # force_provider, must reference real provider names, cannot be empty.
+    if req.selected_providers is not None:
+        if req.force_provider:
+            raise HTTPException(
+                status_code=400,
+                detail="force_provider and selected_providers are mutually exclusive. "
+                       "Pick one: force_provider='blitz' (single) or "
+                       "selected_providers=['contacts_db','smartprospect'] (subset).",
+            )
+        if not isinstance(req.selected_providers, list) or len(req.selected_providers) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="selected_providers must be a non-empty list. "
+                       f"Valid providers: {sorted(VALID_PROVIDERS)}",
+            )
+        invalid = [p for p in req.selected_providers if p not in VALID_PROVIDERS]
+        if invalid:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid provider(s) in selected_providers: {invalid}. "
+                       f"Valid: {sorted(VALID_PROVIDERS)}",
+            )
+        logger.info(
+            "DEBUG unified_enrich: selected_providers=%s (contacts_db always allowed)",
+            req.selected_providers,
+        )
+
     # Convert titles to cascade if provided
     if req.titles and not req.cascade:
         req.cascade = _titles_to_cascade(req.titles)
@@ -1012,19 +1574,48 @@ async def unified_enrich(
     if not full_name and (req.first_name or req.last_name):
         full_name = f"{req.first_name or ''} {req.last_name or ''}".strip()
 
+    # Auto-detect LinkedIn URL type — if a /company/ URL was put into the
+    # person linkedin_url field, move it to company_linkedin_url (and vice
+    # versa for a /in/ URL put into the company field). This makes the API
+    # forgiving for callers who don't know which field to use.
+    if req.linkedin_url:
+        _li_type = list_builder._detect_linkedin_url_type(req.linkedin_url)
+        if _li_type == "company" and not req.company_linkedin_url:
+            req.company_linkedin_url = req.linkedin_url
+            req.linkedin_url = None
+            logger.info("Auto-detected company URL in linkedin_url field; rerouted")
+    if req.company_linkedin_url:
+        _co_type = list_builder._detect_linkedin_url_type(req.company_linkedin_url)
+        if _co_type == "personal" and not req.linkedin_url:
+            req.linkedin_url = req.company_linkedin_url
+            req.company_linkedin_url = None
+            logger.info("Auto-detected person URL in company_linkedin_url field; rerouted")
+
+    # Normalize company_linkedin_url if present
+    if req.company_linkedin_url:
+        req.company_linkedin_url = identifier_utils.normalize_linkedin_url(req.company_linkedin_url)
+
     # Determine input mode
-    # linkedin_only: only LinkedIn URL provided (no domain)
-    # domain_only: only domain provided (no person info)
-    # enhanced: domain + person info (name or LinkedIn)
+    # linkedin_only: only person LinkedIn URL provided (no domain)
+    # company_linkedin_only: only company LinkedIn URL provided (no domain, no person URL)
+    # domain_only: only domain provided (no person/company LinkedIn info)
+    # enhanced: domain + person info (name or LinkedIn), or domain + company LinkedIn URL
     if req.linkedin_url and not domain:
         mode = "linkedin_only"
-    elif not full_name and not req.linkedin_url and domain:
+    elif req.company_linkedin_url and not domain and not req.linkedin_url:
+        mode = "company_linkedin_only"
+    elif not full_name and not req.linkedin_url and not req.company_linkedin_url and domain:
+        mode = "domain_only"
+    elif domain and req.company_linkedin_url and not full_name and not req.linkedin_url:
+        # Domain + company LinkedIn URL but no person info — treat as domain_only
+        # and let _enrich_single_domain consume the company LinkedIn URL directly.
         mode = "domain_only"
     else:
         mode = "enhanced"
 
-    logger.info("Unified enrich: domain=%s, linkedin=%s, mode=%s, user=%s",
-                domain, bool(req.linkedin_url), mode, current_user.get("email"))
+    logger.info("Unified enrich: domain=%s, linkedin=%s, company_linkedin=%s, mode=%s, user=%s",
+                domain, bool(req.linkedin_url), bool(req.company_linkedin_url),
+                mode, current_user.get("email"))
 
     # Create HTTP clients
     blitz_http = httpx.AsyncClient()
@@ -1046,15 +1637,16 @@ async def unified_enrich(
             linkedin_for_blitz = req.linkedin_url or ""
 
             # Step 1: Try Contacts DB by LinkedIn
-            if req.linkedin_url:
+            if req.linkedin_url and not _should_skip_provider("contacts_db", req.force_provider, req.selected_providers):
                 try:
                     person = await contacts_client.person_by_linkedin(contacts_http, linkedin_username)
                     if person:
+                        first_bf, last_bf, title_bf = pipeline._backfill_person_identity(person)
                         contacts.append({
                             "full_name": person.get("full_name", ""),
-                            "first_name": person.get("first_name", ""),
-                            "last_name": person.get("last_name", ""),
-                            "title": person.get("title", ""),
+                            "first_name": first_bf,
+                            "last_name": last_bf,
+                            "title": title_bf,
                             "email": person.get("email", ""),
                             "linkedin_url": req.linkedin_url,
                             "headline": person.get("headline", ""),
@@ -1076,7 +1668,7 @@ async def unified_enrich(
             # pre-fix behavior; the brief's "unverified" gate applies to
             # `person_enrich` where `emails[]` is explicit, not to
             # `person_enrich_by_linkedin`).
-            if not contacts or not any(c.get("email") for c in contacts):
+            if (not contacts or not any(c.get("email") for c in contacts)) and not _should_skip_provider("blitz", req.force_provider, req.selected_providers):
                 try:
                     # Use Blitz to get email from LinkedIn
                     result = await blitz_client.person_enrich_by_linkedin(
@@ -1089,11 +1681,12 @@ async def unified_enrich(
                             contacts[0]["email"] = candidate_li
                             contacts[0]["email_source"] = "blitz"
                         else:
+                            first_bf, last_bf, title_bf = pipeline._backfill_person_identity(result)
                             contacts.append({
                                 "full_name": result.get("full_name", ""),
-                                "first_name": result.get("first_name", ""),
-                                "last_name": result.get("last_name", ""),
-                                "title": result.get("title", ""),
+                                "first_name": first_bf,
+                                "last_name": last_bf,
+                                "title": title_bf,
                                 "email": candidate_li,
                                 "linkedin_url": req.linkedin_url,
                                 "headline": result.get("headline", ""),
@@ -1115,7 +1708,7 @@ async def unified_enrich(
             # Step 3: Try WizLeads as fallback (between Blitz and BetterEnrich
             # to match documented cascade: Contacts DB → Blitz → WizLeads →
             # BetterEnrich). Eligibility: full_name (or first_name) + domain.
-            if full_name and domain and (not contacts or not any(c.get("email") for c in contacts)):
+            if full_name and domain and (not contacts or not any(c.get("email") for c in contacts)) and not _should_skip_provider("wizleads", req.force_provider, req.selected_providers):
                 try:
                     result = await wizleads_client.find_email(
                         blitz_http,
@@ -1150,7 +1743,7 @@ async def unified_enrich(
 
             # Step 4: Try BetterEnrich V3 as final fallback (requires full_name AND domain)
             # BetterEnrich V3 requires domain, so only try when domain is available
-            if full_name and domain and (not contacts or not any(c.get("email") for c in contacts)):
+            if full_name and domain and (not contacts or not any(c.get("email") for c in contacts)) and not _should_skip_provider("better_enrich", req.force_provider, req.selected_providers):
                 try:
                     be_result = await better_enrich_client.find_work_email_v3(
                         blitz_http,
@@ -1182,14 +1775,63 @@ async def unified_enrich(
                 except Exception as e:
                     logger.debug("BetterEnrich V3 LinkedIn lookup failed: %s", e)
 
+        elif mode == "company_linkedin_only":
+            # Company LinkedIn URL only → run title-waterfall directly.
+            # Bypasses domain resolution; uses _enrich_by_company_linkedin
+            # orchestrator (reuses _enrich_by_company_waterfall + _resolve_person_email).
+            logger.info("company_linkedin_only mode: %s", req.company_linkedin_url)
+            cascade = req.cascade if req.cascade else blitz_client.DEFAULT_CASCADE
+            base_row = {
+                "domain": domain,
+                "linkedin_url": req.linkedin_url or "",
+                "company_linkedin_url": req.company_linkedin_url or "",
+            }
+            company_rows = await list_builder._enrich_by_company_linkedin(
+                blitz_http=blitz_http,
+                contacts_http=contacts_http,
+                base_row=base_row,
+                company_linkedin_url=req.company_linkedin_url,
+                domain=domain,
+                cascade=cascade,
+                max_dms=req.max_results,
+                domain_semaphore=domain_semaphore,
+                email_semaphore=email_semaphore,
+                force_provider=req.force_provider,
+                selected_providers=req.selected_providers,
+            )
+
+            contacts = []
+            sources = {"company_linkedin": "blitz", "contacts": "not_found", "emails": "not_found"}
+            for row in company_rows:
+                if row.get("dm_email"):
+                    contacts.append({
+                        "email": row.get("dm_email", ""),
+                        "title": row.get("dm_title", ""),
+                        "headline": row.get("dm_headline", ""),
+                        "icp_tier": int(row.get("dm_icp_tier") or 0) if str(row.get("dm_icp_tier", "")).isdigit() else 0,
+                        "full_name": row.get("dm_full_name", ""),
+                        "last_name": row.get("dm_last_name", ""),
+                        "first_name": row.get("dm_first_name", ""),
+                        "email_source": row.get("dm_email_source", ""),
+                        "linkedin_url": row.get("dm_linkedin_url", ""),
+                        "location_city": row.get("dm_location_city", ""),
+                        "location_country": row.get("dm_location_country", ""),
+                    })
+                    if sources["emails"] == "not_found":
+                        sources["emails"] = row.get("dm_email_source", "").split(".")[0] or "blitz"
+                        sources["contacts"] = sources["emails"]
+            output_rows = company_rows
+
         elif mode == "domain_only":
             # Domain-only: Use existing pipeline (Contacts DB → Blitz)
             # Use custom cascade if provided, otherwise use default
             # Skip Contacts DB contacts if custom cascade is provided
-            logger.info("DEBUG domain_only: force_provider=%s", req.force_provider)
+            logger.info("DEBUG domain_only: force_provider=%s", req.force_provider, req.selected_providers)
             has_custom_cascade = req.cascade is not None and len(req.cascade) > 0
             cascade = req.cascade if has_custom_cascade else blitz_client.DEFAULT_CASCADE
             input_row = {"domain": domain}
+            if req.company_linkedin_url:
+                input_row["company_linkedin_url"] = req.company_linkedin_url
             output_rows = await pipeline._enrich_domain(
                 blitz_http,
                 contacts_http,
@@ -1246,7 +1888,7 @@ async def unified_enrich(
             # Step 2: If no contacts found from Contacts DB/Blitz, try BetterEnrich company email
             # This is a fallback for generic company emails when no decision makers are found
             # Skip if force_provider is set and it's not "better_enrich"
-            if not contacts and not _should_skip_provider("better_enrich", req.force_provider):
+            if not contacts and not _should_skip_provider("better_enrich", req.force_provider, req.selected_providers):
                 try:
                     be_result = await better_enrich_client.find_company_email(
                         blitz_http,
@@ -1280,18 +1922,19 @@ async def unified_enrich(
 
             # Step 1: Try Contacts DB (person lookup by LinkedIn OR by name+domain)
             # Skip if force_provider is set and it's not "contacts_db"
-            if (full_name or req.linkedin_url) and not _should_skip_provider("contacts_db", req.force_provider):
+            if (full_name or req.linkedin_url) and not _should_skip_provider("contacts_db", req.force_provider, req.selected_providers):
                 # Try to find person in Contacts DB
                 try:
                     # Priority 1: LinkedIn URL + domain (if provided)
                     if req.linkedin_url:
                         person = await contacts_client.person_by_linkedin(contacts_http, req.linkedin_url)
                         if person and person.get("email"):
+                            first_bf, last_bf, title_bf = pipeline._backfill_person_identity(person)
                             contacts.append({
                                 "full_name": person.get("full_name", full_name or ""),
-                                "first_name": person.get("first_name", ""),
-                                "last_name": person.get("last_name", ""),
-                                "title": person.get("title", ""),
+                                "first_name": first_bf,
+                                "last_name": last_bf,
+                                "title": title_bf,
                                 "email": person.get("email", ""),
                                 "linkedin_url": req.linkedin_url,
                                 "headline": person.get("headline", ""),
@@ -1308,11 +1951,12 @@ async def unified_enrich(
                     if not contacts and full_name and domain:
                         person = await contacts_client.person_by_name_and_domain(contacts_http, full_name, domain)
                         if person and person.get("email"):
+                            first_bf, last_bf, title_bf = pipeline._backfill_person_identity(person)
                             contacts.append({
                                 "full_name": person.get("full_name", full_name or ""),
-                                "first_name": person.get("first_name", ""),
-                                "last_name": person.get("last_name", ""),
-                                "title": person.get("title", ""),
+                                "first_name": first_bf,
+                                "last_name": last_bf,
+                                "title": title_bf,
                                 "email": person.get("email", ""),
                                 "linkedin_url": person.get("linkedin_url", req.linkedin_url or ""),
                                 "headline": person.get("headline", ""),
@@ -1333,7 +1977,7 @@ async def unified_enrich(
             # BetterEnrich. We track whether Blitz produced a candidate that
             # we should fall through from.
             blitz_fall_through = False
-            if not contacts and not _should_skip_provider("blitz", req.force_provider):
+            if not contacts and not _should_skip_provider("blitz", req.force_provider, req.selected_providers):
                 try:
                     # Try to get company first
                     company = await contacts_client.company_by_domain(contacts_http, domain)
@@ -1448,7 +2092,7 @@ async def unified_enrich(
             has_email_now = any(c.get("email") for c in contacts)
             should_try_wizleads = (not has_email_now or blitz_fall_through) and (
                 (full_name or req.first_name) and domain
-            ) and not _should_skip_provider("wizleads", req.force_provider)
+            ) and not _should_skip_provider("wizleads", req.force_provider, req.selected_providers)
             if should_try_wizleads:
                 wizleads_tried = True
                 first_name_wz = (req.first_name or "").strip() or (full_name.split(" ")[0] if full_name else "")
@@ -1488,7 +2132,7 @@ async def unified_enrich(
             # Step 3: If still no email, try BetterEnrich V3 as final fallback
             # BetterEnrich V3 requires both full_name and domain
             # Skip if force_provider is set and it's not "better_enrich"
-            if full_name and domain and not _should_skip_provider("better_enrich", req.force_provider):
+            if full_name and domain and not _should_skip_provider("better_enrich", req.force_provider, req.selected_providers):
                 # If no contacts found at all but we have full_name, try BetterEnrich V3 directly
                 if not contacts:
                     try:
@@ -1597,7 +2241,7 @@ async def unified_enrich(
         else:
             sync_status = "no_contacts_to_sync"
 
-    return {
+    return _strip_internal_fields_from_response({
         "domain": domain,
         "mode": mode,
         "company_linkedin_url": company_linkedin_url,
@@ -1611,7 +2255,7 @@ async def unified_enrich(
             "records_failed": sync_result.get("failed", 0),
             "records_queued": sync_result.get("records_queued", 0),
         },
-    }
+    })
 
 
 @router.get(
@@ -1657,6 +2301,14 @@ async def unified_enrich_get(
     cascade_json: str = Query(None, description="Custom cascade as JSON string"),
     titles: str = Query(None, description="Simple titles filter (comma-separated, e.g., 'CEO,CTO,HR')"),
     force_provider: str = Query(None, description="Force specific provider: contacts_db, blitz, better_enrich"),
+    selected_providers: str = Query(
+        None,
+        description=(
+            "Comma-separated allowlist of providers (e.g., 'contacts_db,smartprospect'). "
+            "Providers not in this list are skipped entirely. "
+            "contacts_db is always allowed. Mutually exclusive with force_provider."
+        ),
+    ),
     debug: bool = Query(
         False,
         description=(
@@ -1688,6 +2340,15 @@ async def unified_enrich_get(
     if not cascade and titles:
         cascade = _titles_to_cascade(titles)
 
+    # Parse selected_providers CSV query param into a list.
+    # Empty/whitespace entries are dropped so "?selected_providers=" → None
+    # (treated as "no filter" rather than "empty list, which would 400").
+    selected_providers_list: Optional[list[str]] = None
+    if selected_providers:
+        parsed = [p.strip() for p in selected_providers.split(",") if p.strip()]
+        if parsed:
+            selected_providers_list = parsed
+
     # Convert to UnifiedEnrichRequest format
     req = UnifiedEnrichRequest(
         domain=domain,
@@ -1699,6 +2360,7 @@ async def unified_enrich_get(
         cascade=cascade,
         titles=titles,
         force_provider=force_provider,
+        selected_providers=selected_providers_list,
     )
 
     # Call the POST handler logic (reuse by calling unified_enrich internally)
@@ -1726,6 +2388,34 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
 
     # Validate inputs - must have domain OR linkedin_url
     req.validate_inputs()
+
+    # Validate selected_providers (allowlist). Mutually exclusive with
+    # force_provider, must reference real provider names, cannot be empty.
+    if req.selected_providers is not None:
+        if req.force_provider:
+            raise HTTPException(
+                status_code=400,
+                detail="force_provider and selected_providers are mutually exclusive. "
+                       "Pick one: force_provider='blitz' (single) or "
+                       "selected_providers=['contacts_db','smartprospect'] (subset).",
+            )
+        if not isinstance(req.selected_providers, list) or len(req.selected_providers) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="selected_providers must be a non-empty list. "
+                       f"Valid providers: {sorted(VALID_PROVIDERS)}",
+            )
+        invalid = [p for p in req.selected_providers if p not in VALID_PROVIDERS]
+        if invalid:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid provider(s) in selected_providers: {invalid}. "
+                       f"Valid: {sorted(VALID_PROVIDERS)}",
+            )
+        logger.info(
+            "DEBUG _unified_enrich_logic: selected_providers=%s (contacts_db always allowed)",
+            req.selected_providers,
+        )
 
     # Validate domain format if provided
     domain = ""
@@ -1774,7 +2464,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
             # before running the person cascade. Preserve that side effect so
             # downstream consumers still see company_linkedin_url in the
             # response, but only when force_provider doesn't forbid contacts_db.
-            if mode == "enhanced" and domain and not _should_skip_provider("contacts_db", req.force_provider):
+            if mode == "enhanced" and domain and not _should_skip_provider("contacts_db", req.force_provider, req.selected_providers):
                 try:
                     company = await contacts_client.company_by_domain(contacts_http, domain)
                     if company and company.get("linkedin_url"):
@@ -1787,17 +2477,18 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
             # contact dict is populated even when no email is found. This
             # mirrors the legacy behaviour of populating name fields before
             # the email cascade. Skipped when force_provider forbids it.
-            if not _should_skip_provider("contacts_db", req.force_provider):
+            if not _should_skip_provider("contacts_db", req.force_provider, req.selected_providers):
                 try:
                     person = await contacts_client.person_by_linkedin(
                         contacts_http, req.linkedin_url or ""
                     )
                     if person:
+                        first_bf, last_bf, title_bf = pipeline._backfill_person_identity(person)
                         contacts.append({
                             "full_name": person.get("full_name", "") or full_name,
-                            "first_name": person.get("first_name", ""),
-                            "last_name": person.get("last_name", ""),
-                            "title": person.get("title", ""),
+                            "first_name": first_bf,
+                            "last_name": last_bf,
+                            "title": title_bf,
                             "email": person.get("email", "") or "",
                             "linkedin_url": req.linkedin_url or "",
                             "headline": person.get("headline", ""),
@@ -1822,6 +2513,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                 domain=domain,
                 company_name=req.company_name or "",
                 force_provider=req.force_provider,
+                selected_providers=req.selected_providers,
             )
             route_result = await pipeline.run_enrichment_route(
                 route,
@@ -1917,7 +2609,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
             # Record source stats for API-only call
             _record_unified_enrich_stats(contacts, domain, current_user)
 
-            return {
+            return _strip_internal_fields_from_response({
                 "domain": domain,
                 "mode": mode,
                 "company_linkedin_url": company_linkedin_url,
@@ -1934,7 +2626,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                     "records_failed": sync_result.get("failed", 0),
                     "records_queued": sync_result.get("records_queued", 0),
                 },
-            }
+            })
 
 
         # For domain_only mode only, call the pipeline
@@ -1990,7 +2682,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
 
             # If no custom cascade specified, try Contacts DB contacts first
             # Skip if force_provider is set and it's not "contacts_db"
-            if not has_custom_cascade and not _should_skip_provider("contacts_db", req.force_provider):
+            if not has_custom_cascade and not _should_skip_provider("contacts_db", req.force_provider, req.selected_providers):
                 try:
                     contacts_data = await contacts_client.company_contacts_enriched(
                         contacts_http, domain, req.max_results
@@ -2002,7 +2694,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
 
             # Try Blitz API waterfall (requires company LinkedIn URL)
             # Skip if force_provider is set and it's not "blitz"
-            if company_linkedin_url and not _should_skip_provider("blitz", req.force_provider):
+            if company_linkedin_url and not _should_skip_provider("blitz", req.force_provider, req.selected_providers):
                 try:
                     blitz_response = await blitz_client.waterfall_icp_search(
                         blitz_http, company_linkedin_url, cascade, req.max_results
@@ -2013,12 +2705,14 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                         extracted_results = []
                         for result in blitz_response["results"]:
                             person = result.get("person", {})
+                            # Backfill first/last from full_name + try alt title field names.
+                            first_bf, last_bf, title_bf = pipeline._backfill_person_identity(person)
                             # Extract person fields from nested structure
                             extracted_results.append({
                                 "full_name": person.get("full_name", ""),
-                                "first_name": person.get("first_name", ""),
-                                "last_name": person.get("last_name", ""),
-                                "title": person.get("title", ""),
+                                "first_name": first_bf,
+                                "last_name": last_bf,
+                                "title": title_bf,
                                 "headline": person.get("headline", ""),
                                 "linkedin_url": person.get("linkedin_url", ""),
                                 "location": person.get("location", {}),
@@ -2068,6 +2762,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                 last_name=person_last_name or "",
                 domain=domain or "",
                 force_provider=req.force_provider,
+                selected_providers=req.selected_providers,
             )
             route_result = await pipeline.run_enrichment_route(
                 route,
@@ -2137,7 +2832,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
 
         # If no contacts found with current provider, try BetterEnrich company email
         # This is for when force_provider=better_enrich and we want to get company email
-        if not enriched_contacts and not _should_skip_provider("better_enrich", req.force_provider):
+        if not enriched_contacts and not _should_skip_provider("better_enrich", req.force_provider, req.selected_providers):
             try:
                 be_result = await better_enrich_client.find_company_email(
                     blitz_http,
@@ -2287,7 +2982,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
         # Record source stats for API-only call
         _record_unified_enrich_stats(enriched_contacts, domain, current_user)
 
-        return {
+        return _strip_internal_fields_from_response({
             "domain": domain,
             "mode": mode,
             "company_linkedin_url": company_linkedin_url,
@@ -2295,8 +2990,18 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
             "contact_count": len(enriched_contacts),
             "data_sources": sources,
             "routing": _build_routing_response(
-                last_route if last_route else {"mode": "", "steps": []},
-                last_route_result if last_route_result else {},
+                last_route if last_route else {"mode": mode or "", "steps": []},
+                last_route_result if last_route_result else (
+                    # P1 visibility fix: when domain_only mode found 0 contacts,
+                    # surface what was actually attempted instead of returning
+                    # an empty routing block. Without this, users see
+                    # provider_attempts=[] and reasonably conclude the system
+                    # didn't try anything — actually it tried Contacts DB +
+                    # Blitz at the company level but couldn't find DMs.
+                    _build_domain_only_fallback_route_result(
+                        sources, company_linkedin_url
+                    ) if mode == "domain_only" else {}
+                ),
                 debug=debug,
             ),
             "sync_to_contacts_db": {
@@ -2305,7 +3010,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                 "records_skipped": sync_result.get("skipped", 0),
                 "records_failed": sync_result.get("failed", 0),
             },
-        }
+        })
 
     finally:
         await blitz_http.aclose()
@@ -2658,10 +3363,22 @@ async def partial_download_enrichment(
 # Background job runner
 # ---------------------------------------------------------------------------
 
-async def _run_background_sync(job_id: str, output_path: Path) -> None:
+async def _run_background_sync(
+    job_id: str,
+    output_path: Path,
+    collector: Optional[RawContactCollector] = None,
+) -> None:
     """
     Background task to sync enrichment results to Contacts DB.
     Runs asynchronously without blocking the API.
+
+    Args:
+        job_id: Job identifier.
+        output_path: Path to the CSV to sync via the CSV-based path.
+        collector: Optional ``RawContactCollector`` populated during the
+            job. When provided AND non-empty, its payloads are drained via
+            ``contacts_writer.write_enrichment_result_batch`` AFTER the
+            CSV-based sync. Phase 1 capture surface.
     """
     try:
         if contacts_writer.is_v2_enabled():
@@ -2670,6 +3387,19 @@ async def _run_background_sync(job_id: str, output_path: Path) -> None:
             result = await contacts_writer.write_enrichment_result_batch(payloads, job_id=job_id)
             logger.info("contacts_writer v2 sync done for job %s: %s",
                         job_id, result.to_dict())
+
+            # Phase 1: drain the collector (company-level audit captures).
+            # Even when empty we skip cleanly — the writer is not invoked.
+            if collector is not None:
+                extra_payloads = collector.to_payloads()
+                if extra_payloads:
+                    extra_result = await contacts_writer.write_enrichment_result_batch(
+                        extra_payloads, job_id=job_id
+                    )
+                    logger.info(
+                        "Phase 1 collector drain for job %s: %d extra contacts (%s)",
+                        job_id, len(extra_payloads), extra_result.to_dict(),
+                    )
         else:
             logger.info("Auto-syncing enrichment job %s to contacts DB (person records)", job_id)
             sync_result = sync_contacts.sync_enrichment_to_contacts(output_path)
@@ -2703,6 +3433,10 @@ async def _run_job(
     seq = [0]
 
     output_path = OUTPUT_DIR / f"{job_id}.csv"
+
+    # Phase 1: per-job collector for company-level audit captures.
+    # Drained by ``_run_background_sync`` at end of job.
+    collector = RawContactCollector(job_id=job_id)
 
     async def on_progress(e: dict[str, Any]):
         # Get FRESH store instance for this thread
@@ -2766,6 +3500,7 @@ async def _run_job(
             company_name_col=company_name_col,
             existing_email_col=existing_email_col,
             record_provider_use=record_provider_use,
+            collector=collector,
         )
 
         # If not writing incrementally, write final output
@@ -2778,12 +3513,21 @@ async def _run_job(
             else:
                 output_path.write_text("")
 
+        # Defensive guard: 0 output rows on a non-empty input is always a bug.
+        # See csv_jobs_silent_failure_2026-07-13.md for the incident this prevents.
+        rows_param_count = len(rows) if 'rows' in dir() else 0
+        if len(output_rows) == 0 and rows_param_count > 0:
+            raise RuntimeError(
+                f"Job produced 0 output rows from {rows_param_count} input rows. "
+                f"This is always a bug — check logs for 'Row processing failed' warnings."
+            )
+
         store.set_done(job_id, str(output_path))
         logger.info("Enrichment job %s completed, %d output rows", job_id, len(output_rows))
 
         # Run auto-sync in the background without blocking the API
         # This prevents the refresh button from getting stuck
-        asyncio.create_task(_run_background_sync(job_id, output_path))
+        asyncio.create_task(_run_background_sync(job_id, output_path, collector=collector))
 
         # Get job details for email notification
         job = store.get_enrichment_job(job_id)
@@ -2973,19 +3717,39 @@ async def restart_enrichment_job(
     # For chained jobs (from scraper), the file is in outputs/ from the parent scraper job
     # For uploaded files, the file is in uploads/
     filename = original_job['filename']
-    upload_path = UPLOAD_DIR / f"{filename}.csv"
+    # Defensive: filename may or may not include the .csv extension. Uploaded
+    # files are stored as "<uuid>.csv" and the DB stores the uuid without
+    # extension, so we append .csv. But scraper outputs and some legacy rows
+    # store the full name WITH .csv — appending again produces "<name>.csv.csv"
+    # which never matches a real file. Strip the extension first if present.
+    clean_filename = filename[:-4] if filename.lower().endswith(".csv") else filename
+    upload_path = UPLOAD_DIR / f"{clean_filename}.csv"
     csv_path = upload_path if upload_path.exists() else None
 
-    # If not in uploads, check if this is a chained job and look at parent's output
+    # If not in uploads, walk up the parent chain looking for a scraper job
+    # with an output_path. Chained enrichment jobs may have another enrichment
+    # job as their parent (e.g., a restart of a restart) — we need to find the
+    # original scraper at the top of the chain that actually has the CSV.
     if csv_path is None and original_job.get('parent_job_id'):
-        parent_job_id = original_job['parent_job_id']
-        # Check if parent is a scraper job with output
         parent_conn = db.get_db()
-        parent_row = parent_conn.execute(
-            "SELECT job_id, output_path FROM jobs WHERE job_id = ?", (parent_job_id,)
-        ).fetchone()
-        if parent_row and parent_row['output_path']:
-            csv_path = Path(parent_row['output_path'])
+        current_parent_id = original_job['parent_job_id']
+        # Safety cap on chain depth to prevent infinite loops on cyclic data.
+        for _ in range(10):
+            if not current_parent_id:
+                break
+            parent_row = parent_conn.execute(
+                "SELECT job_id, output_path, parent_job_id FROM jobs WHERE job_id = ?",
+                (current_parent_id,),
+            ).fetchone()
+            if not parent_row:
+                break
+            if parent_row['output_path']:
+                candidate = Path(parent_row['output_path'])
+                if candidate.exists():
+                    csv_path = candidate
+                    break
+            # Walk up another level.
+            current_parent_id = parent_row['parent_job_id'] if 'parent_job_id' in parent_row.keys() else None
 
     if csv_path is None or not csv_path.exists():
         raise HTTPException(status_code=404, detail="Original CSV file not found")
@@ -3397,6 +4161,7 @@ class ProviderToggleRequest(BaseModel):
     # Optional column mappings for high-value identifiers. All optional and
     # backward-compatible: when omitted, the request behaves as before.
     linkedin_url_col: Optional[str] = None
+    company_linkedin_col: Optional[str] = None
     phone_col: Optional[str] = None
     company_name_col: Optional[str] = None
     existing_email_col: Optional[str] = None
@@ -3531,6 +4296,7 @@ async def domain_enrich_with_providers(
         first_name_col=req.first_name_col,
         last_name_col=req.last_name_col,
         linkedin_url_col=req.linkedin_url_col,
+        company_linkedin_col=req.company_linkedin_col,
         phone_col=req.phone_col,
         company_name_col=req.company_name_col,
         existing_email_col=req.existing_email_col,
@@ -3555,6 +4321,7 @@ async def _run_domain_enrich_job(
     first_name_col: Optional[str],
     last_name_col: Optional[str],
     linkedin_url_col: Optional[str] = None,
+    company_linkedin_col: Optional[str] = None,
     phone_col: Optional[str] = None,
     company_name_col: Optional[str] = None,
     existing_email_col: Optional[str] = None,
@@ -3570,6 +4337,9 @@ async def _run_domain_enrich_job(
     seq = [0]
 
     output_path = OUTPUT_DIR / f"{job_id}.csv"
+
+    # Phase 1: per-job collector; drained by ``_run_background_sync``.
+    collector = RawContactCollector(job_id=job_id)
 
     # Start heartbeat task (updates last_heartbeat every 30s)
     async def heartbeat_loop():
@@ -3633,6 +4403,9 @@ async def _run_domain_enrich_job(
             job_id=job_id,
             record_provider_use=record_provider_use,
             normalize_domains=normalize_domains,
+            collector=collector,
+            company_linkedin_col=company_linkedin_col,
+            linkedin_url_col=linkedin_url_col,
         )
 
         # Attach input_* columns for visibility/debug.
@@ -3677,11 +4450,23 @@ async def _run_domain_enrich_job(
         else:
             output_path.write_text("")
 
+        # Defensive guard: 0 output rows on a non-empty input is always a bug.
+        # Phase 1a in list_builder raises when every row fails, but a silent
+        # zero (e.g. every row returned [] legitimately, which shouldn't be
+        # possible) should still surface as `failed` — not `done` with a
+        # 0-byte CSV the user might try to download. See csv_jobs_silent_failure_2026-07-13.md.
+        rows_param_count = len(rows) if 'rows' in dir() else 0
+        if len(output_rows) == 0 and rows_param_count > 0:
+            raise RuntimeError(
+                f"Job produced 0 output rows from {rows_param_count} input rows. "
+                f"This is always a bug — check logs for 'Row processing failed' warnings."
+            )
+
         store.set_done(job_id, str(output_path))
         logger.info("Domain enrich job %s completed, %d output rows", job_id, len(output_rows))
 
         # Sync results back to Contacts DB (async, non-blocking)
-        asyncio.create_task(_run_background_sync(job_id, output_path))
+        asyncio.create_task(_run_background_sync(job_id, output_path, collector=collector))
 
         # Send notification
         job = store.get_enrichment_job(job_id)
@@ -3968,6 +4753,13 @@ async def _run_linkedin_job(
 
     output_path = OUTPUT_DIR / f"{job_id}.csv"
 
+    # Phase 1: per-job collector. The legacy ``run_linkedin_enrichment``
+    # path does not feed the collector (person-level captures come in a
+    # later phase), but we still create + drain so the code path is
+    # uniform with the other job runners and any future captures land
+    # automatically.
+    collector = RawContactCollector(job_id=job_id)
+
     async def on_progress(e: dict[str, Any]):
         progress_store = job_store.get_store()
         progress_store.append_event(job_id, seq[0], e)
@@ -4000,14 +4792,14 @@ async def _run_linkedin_job(
         logger.info("LinkedIn enrichment job %s completed, %d output rows", job_id, len(output_rows))
 
         # Sync results back to Contacts DB (async, non-blocking)
-        asyncio.create_task(_run_background_sync(job_id, output_path))
+        asyncio.create_task(_run_background_sync(job_id, output_path, collector=collector))
 
     except Exception as e:
         logger.exception("LinkedIn enrichment job %s failed: %s", job_id, e)
         if output_path.exists() and output_path.stat().st_size > 0:
             store.set_done(job_id, str(output_path))
             # Even on partial success, attempt a sync of whatever rows landed.
-            asyncio.create_task(_run_background_sync(job_id, output_path))
+            asyncio.create_task(_run_background_sync(job_id, output_path, collector=collector))
         else:
             store.set_failed(job_id, str(e))
 
@@ -4132,6 +4924,9 @@ async def _run_linkedin_v2_job(
 
     output_path = OUTPUT_DIR / f"{job_id}.csv"
 
+    # Phase 1: per-job collector; drained by ``_run_background_sync``.
+    collector = RawContactCollector(job_id=job_id)
+
     def on_progress(e: dict[str, Any]):
         progress_store = job_store.get_store()
         progress_store.append_event(job_id, seq[0], e)
@@ -4154,6 +4949,7 @@ async def _run_linkedin_v2_job(
             max_dms=max_dms,
             include_company=include_company,
             on_progress=on_progress,
+            collector=collector,
         )
 
         if output_rows:
@@ -4170,14 +4966,14 @@ async def _run_linkedin_v2_job(
         )
 
         # Sync results back to Contacts DB (async, non-blocking)
-        asyncio.create_task(_run_background_sync(job_id, output_path))
+        asyncio.create_task(_run_background_sync(job_id, output_path, collector=collector))
 
     except Exception as e:
         logger.exception("LinkedIn v2 enrichment job %s failed: %s", job_id, e)
         if output_path.exists() and output_path.stat().st_size > 0:
             store.set_done(job_id, str(output_path))
             # Even on partial success, attempt a sync of whatever rows landed.
-            asyncio.create_task(_run_background_sync(job_id, output_path))
+            asyncio.create_task(_run_background_sync(job_id, output_path, collector=collector))
         else:
             store.set_failed(job_id, str(e))
 
