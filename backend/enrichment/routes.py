@@ -3208,9 +3208,18 @@ async def get_enrichment_job(
 @router.get("/jobs/{job_id}/stream")
 async def stream_enrichment_job_progress(
     job_id: str,
-    current_user: dict = Depends(auth.get_current_user),
+    token: Optional[str] = Query(default=None),
+    current_user: Optional[dict] = Depends(auth.get_current_user_optional),
 ):
     """SSE stream of enrichment progress events with replay support."""
+    # EventSource cannot send custom headers, so accept the JWT via ?token=
+    # (mirrors the scraper stream endpoint). Header-based auth still works
+    # for non-EventSource clients via get_current_user_optional.
+    if current_user is None:
+        if token:
+            current_user = auth.decode_token(token)
+        else:
+            raise HTTPException(status_code=401, detail="Authentication required.")
     store = job_store.get_store()
     job_data = store.get_job(job_id)
     if not job_data:
@@ -3430,6 +3439,8 @@ async def _run_job(
 ):
     store = job_store.get_store()
     store.set_running(job_id)
+    # Set initial heartbeat so cleanup_stale_jobs doesn't mark us as abandoned too soon
+    store.heartbeat(job_id)
     seq = [0]
 
     output_path = OUTPUT_DIR / f"{job_id}.csv"
@@ -3437,6 +3448,21 @@ async def _run_job(
     # Phase 1: per-job collector for company-level audit captures.
     # Drained by ``_run_background_sync`` at end of job.
     collector = RawContactCollector(job_id=job_id)
+
+    # Start heartbeat task (updates last_heartbeat every 30s)
+    async def heartbeat_loop():
+        try:
+            while True:
+                await asyncio.sleep(30)
+                try:
+                    heartbeat_store = job_store.get_store()
+                    heartbeat_store.heartbeat(job_id)
+                except Exception as hb_err:
+                    logger.warning("Heartbeat failed for %s: %s", job_id, hb_err)
+        except asyncio.CancelledError:
+            pass
+
+    heartbeat_task = asyncio.create_task(heartbeat_loop())
 
     async def on_progress(e: dict[str, Any]):
         # Get FRESH store instance for this thread
@@ -3662,6 +3688,9 @@ async def _run_job(
                 )
 
     finally:
+        # Cancel heartbeat task
+        if 'heartbeat_task' in locals():
+            heartbeat_task.cancel()
         _active_jobs.discard(job_id)
         sig = _job_signals.pop(job_id, None)
         if sig:
@@ -4749,6 +4778,8 @@ async def _run_linkedin_job(
     """Background task to run LinkedIn enrichment job."""
     store = job_store.get_store()
     store.set_running(job_id)
+    # Set initial heartbeat so cleanup_stale_jobs doesn't mark us as abandoned too soon
+    store.heartbeat(job_id)
     seq = [0]
 
     output_path = OUTPUT_DIR / f"{job_id}.csv"
@@ -4759,6 +4790,21 @@ async def _run_linkedin_job(
     # uniform with the other job runners and any future captures land
     # automatically.
     collector = RawContactCollector(job_id=job_id)
+
+    # Start heartbeat task (updates last_heartbeat every 30s)
+    async def heartbeat_loop():
+        try:
+            while True:
+                await asyncio.sleep(30)
+                try:
+                    heartbeat_store = job_store.get_store()
+                    heartbeat_store.heartbeat(job_id)
+                except Exception as hb_err:
+                    logger.warning("Heartbeat failed for %s: %s", job_id, hb_err)
+        except asyncio.CancelledError:
+            pass
+
+    heartbeat_task = asyncio.create_task(heartbeat_loop())
 
     async def on_progress(e: dict[str, Any]):
         progress_store = job_store.get_store()
@@ -4804,6 +4850,9 @@ async def _run_linkedin_job(
             store.set_failed(job_id, str(e))
 
     finally:
+        # Cancel heartbeat task
+        if 'heartbeat_task' in locals():
+            heartbeat_task.cancel()
         _active_jobs.discard(job_id)
         sig = _job_signals.pop(job_id, None)
         if sig:

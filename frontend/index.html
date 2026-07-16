@@ -4006,7 +4006,10 @@ example.org,Jane Doe</pre>
         // Progress Stream
         function startProgressStream(jobId, type) {
             if (eventSource) eventSource.close();
-            eventSource = new EventSource('/api/enrichment/jobs/' + jobId + '/stream', { headers: { 'Authorization': 'Bearer ' + token } });
+            // Native EventSource silently ignores the `headers` option (only `withCredentials` is honored),
+            // so the Authorization header never gets sent and the backend returns 401. Pass the token as a
+            // query param instead — same workaround the scraper stream uses.
+            eventSource = new EventSource('/api/enrichment/jobs/' + jobId + '/stream?token=' + encodeURIComponent(token));
             // Store provider errors per job
             if (!window.jobProviderErrors) window.jobProviderErrors = {};
             window.jobProviderErrors[jobId] = [];
@@ -4069,6 +4072,23 @@ example.org,Jane Doe</pre>
                 if (data.provider_errors && data.provider_errors.length > 0) {
                     window.jobProviderErrors[jobId].push(...data.provider_errors);
                     updateErrorDisplay(type, window.jobProviderErrors[jobId]);
+                }
+            };
+
+            // If the live stream drops (401/auth hiccup, network blip, etc.), close it and surface a
+            // non-fatal message. The job keeps running server-side — the user can refresh the Jobs page.
+            // Conservative: close on first error so this fires once; never throws or rejects.
+            eventSource.onerror = () => {
+                eventSource.close();
+                const statusEl = document.getElementById(type + 'Status');
+                // Don't clobber a cleanly-completed status if a stray error fires after completion.
+                if (statusEl && statusEl.textContent.trim() === 'Completed') return;
+                const msg = 'Live progress connection lost — the job is still running server-side. Refresh the Jobs page to see latest status.';
+                if (statusEl) statusEl.textContent = msg;
+                const errContainer = document.getElementById(type + 'Errors');
+                if (errContainer) {
+                    errContainer.style.display = 'block';
+                    errContainer.innerHTML = '<div class="error-tag">' + msg + '</div>';
                 }
             };
         }
