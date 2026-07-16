@@ -1,0 +1,30 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Santiago,Santiago Metropolitan,-33.4569400,-70.6482700,metro,1,geonames_cl_2026_4837295,anchor_city,Santiago,cl
+Santiago - East,Santiago Metropolitan,-33.4569400,-70.3582700,metro_offset,1,derived,offset_ring,Santiago,cl
+Santiago - North,Santiago Metropolitan,-33.2769400,-70.6482700,metro_offset,1,derived,offset_ring,Santiago,cl
+Santiago - South,Santiago Metropolitan,-33.6369400,-70.6482700,metro_offset,1,derived,offset_ring,Santiago,cl
+Santiago - West,Santiago Metropolitan,-33.4569400,-70.9382700,metro_offset,1,derived,offset_ring,Santiago,cl
+Santiago - Northeast,Santiago Metropolitan,-33.3269400,-70.4382700,metro_offset,1,derived,offset_ring,Santiago,cl
+Santiago - Northwest,Santiago Metropolitan,-33.3269400,-70.8582700,metro_offset,1,derived,offset_ring,Santiago,cl
+Santiago - Southeast,Santiago Metropolitan,-33.5869400,-70.4382700,metro_offset,1,derived,offset_ring,Santiago,cl
+Santiago - Southwest,Santiago Metropolitan,-33.5869400,-70.8582700,metro_offset,1,derived,offset_ring,Santiago,cl
+Antofagasta,Antofagasta,-23.6509400,-70.3975200,regional_large,2,geonames_cl_2026_401096,anchor_city,Antofagasta,cl
+Antofagasta - East,Antofagasta,-23.6509400,-70.1075200,regional_large_offset,2,derived,offset_ring,Antofagasta,cl
+Antofagasta - North,Antofagasta,-23.4709400,-70.3975200,regional_large_offset,2,derived,offset_ring,Antofagasta,cl
+Antofagasta - South,Antofagasta,-23.8309400,-70.3975200,regional_large_offset,2,derived,offset_ring,Antofagasta,cl
+Antofagasta - West,Antofagasta,-23.6509400,-70.6875200,regional_large_offset,2,derived,offset_ring,Antofagasta,cl
+Antofagasta - Northeast,Antofagasta,-23.5209400,-70.1875200,regional_large_offset,2,derived,offset_ring,Antofagasta,cl
+Antofagasta - Northwest,Antofagasta,-23.5209400,-70.6075200,regional_large_offset,2,derived,offset_ring,Antofagasta,cl
+Antofagasta - Southeast,Antofagasta,-23.7809400,-70.1875200,regional_large_offset,2,derived,offset_ring,Antofagasta,cl
+Antofagasta - Southwest,Antofagasta,-23.7809400,-70.6075200,regional_large_offset,2,derived,offset_ring,Antofagasta,cl
+Viña del Mar,Valparaiso,-33.0245700,-71.5518300,regional_large,3,geonames_cl_2026_334248,anchor_city,Viña del Mar,cl
+Puerto Montt,Los Lagos Region,-41.4693000,-72.9423700,regional_large,4,geonames_cl_2026_245902,anchor_city,Puerto Montt,cl
+Arica,Arica y Parinacota Region,-18.4755200,-70.3005800,regional_large,5,geonames_cl_2026_241653,anchor_city,Arica,cl
+Temuco,Araucania,-38.7362800,-72.5973800,regional_large,6,geonames_cl_2026_238129,anchor_city,Temuco,cl
+Concepción,Biobio,-36.8269900,-73.0497700,regional_large,7,geonames_cl_2026_223574,anchor_city,Concepción,cl
+Rancagua,O'Higgins Region,-34.1691000,-70.7405300,regional_large,8,geonames_cl_2026_212695,anchor_city,Rancagua,cl
+Iquique,Tarapacá,-20.2132600,-70.1502700,regional_large,9,geonames_cl_2026_199587,anchor_city,Iquique,cl
+Talca,Maule Region,-35.4232000,-71.6497400,regional_large,10,geonames_cl_2026_197479,anchor_city,Talca,cl
+Calama,Antofagasta,-22.4566700,-68.9237100,regional_large,11,geonames_cl_2026_166334,anchor_city,Calama,cl
+Coquimbo,Coquimbo Region,-29.9533200,-71.3394700,regional_large,12,geonames_cl_2026_161317,anchor_city,Coquimbo,cl
+Punta Arenas,Region of Magallanes,-53.1628200,-70.9092200,regional_large,13,geonames_cl_2026_117430,anchor_city,Punta Arenas,cl

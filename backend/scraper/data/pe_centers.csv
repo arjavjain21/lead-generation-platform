@@ -1,0 +1,16 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Lima,Lima Province,-12.0431800,-77.0282400,metro,1,geonames_pe_2026_7737002,anchor_city,Lima,pe
+Arequipa,Arequipa,-16.3989900,-71.5374700,metro,2,geonames_pe_2026_1195700,anchor_city,Arequipa,pe
+Trujillo,La Libertad,-8.1159900,-79.0299800,metro,3,geonames_pe_2026_1067700,anchor_city,Trujillo,pe
+Piura,Piura,-5.1819200,-80.6571500,metro,4,geonames_pe_2026_630000,anchor_city,Piura,pe
+Chiclayo,Lambayeque,-6.7700800,-79.8549500,metro,5,geonames_pe_2026_609400,anchor_city,Chiclayo,pe
+Huancayo,Junin,-12.0686600,-75.2102700,regional_large,6,geonames_pe_2026_456250,anchor_city,Huancayo,pe
+Cusco,Cuzco Department,-13.5318800,-71.9670100,regional_large,7,geonames_pe_2026_428450,anchor_city,Cusco,pe
+Iquitos,Loreto,-3.7481400,-73.2529000,regional_large,8,geonames_pe_2026_377609,anchor_city,Iquitos,pe
+Pucallpa,Ucayali,-8.3791500,-74.5538700,regional_large,9,geonames_pe_2026_326040,anchor_city,Pucallpa,pe
+Chimbote,Ancash,-9.0750800,-78.5937300,regional_large,10,geonames_pe_2026_316966,anchor_city,Chimbote,pe
+Tacna,Tacna,-18.0146500,-70.2536200,regional_large,11,geonames_pe_2026_286240,anchor_city,Tacna,pe
+Ica,Ica,-14.0753800,-75.7342200,regional_large,12,geonames_pe_2026_282407,anchor_city,Ica,pe
+Juliaca,Puno,-15.5000000,-70.1333300,regional_large,13,geonames_pe_2026_245675,anchor_city,Juliaca,pe
+Cajamarca,Cajamarca Department,-7.1637800,-78.5002700,regional_large,14,geonames_pe_2026_201329,anchor_city,Cajamarca,pe
+Huánuco,Huánuco Department,-9.9288200,-76.2398900,regional_large,15,geonames_pe_2026_196627,anchor_city,Huánuco,pe

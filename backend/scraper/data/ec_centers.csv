@@ -1,0 +1,16 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Quito,Pichincha,-0.2298500,-78.5249500,metro,1,geonames_ec_2026_2781641,anchor_city,Quito,ec
+Guayaquil,Guayas,-2.1961600,-79.8862100,metro,2,geonames_ec_2026_2723665,anchor_city,Guayaquil,ec
+Cuenca,Azuay,-2.8953000,-78.9963000,metro,3,geonames_ec_2026_636996,anchor_city,Cuenca,ec
+Santo Domingo de los Colorados,Santo Domingo de los Tsáchilas,-0.2536800,-79.1762800,regional_large,4,geonames_ec_2026_458580,anchor_city,Santo Domingo de los Colorados,ec
+Ambato,Tungurahua Province,-1.2490800,-78.6167500,regional_large,5,geonames_ec_2026_387309,anchor_city,Ambato,ec
+Portoviejo,Manabí,-1.0576400,-80.4514500,regional_large,6,geonames_ec_2026_321800,anchor_city,Portoviejo,ec
+Machala,El Oro,-3.2588600,-79.9587600,regional_large,7,geonames_ec_2026_289141,anchor_city,Machala,ec
+Loja,Loja,-3.9931300,-79.2042200,regional_large,8,geonames_ec_2026_274112,anchor_city,Loja,ec
+Manta,Manabí,-0.9493700,-80.7313700,regional_large,9,geonames_ec_2026_264281,anchor_city,Manta,ec
+Riobamba,Chimborazo Province,-1.6650600,-78.6588700,regional_large,10,geonames_ec_2026_264048,anchor_city,Riobamba,ec
+Ibarra,Imbabura,0.3488100,-78.1246200,regional_large,11,geonames_ec_2026_221149,anchor_city,Ibarra,ec
+Esmeraldas,Esmeraldas,0.9592000,-79.6539700,regional_large,12,geonames_ec_2026_218727,anchor_city,Esmeraldas,ec
+Quevedo,Los Ríos,-1.0288100,-79.4626400,regional_large,13,geonames_ec_2026_213842,anchor_city,Quevedo,ec
+Latacunga,Cotopaxi,-0.9342400,-78.6152000,regional_large,14,geonames_ec_2026_205624,anchor_city,Latacunga,ec
+Daule,Guayas,-1.8603200,-79.9768300,regional_large,15,geonames_ec_2026_173684,anchor_city,Daule,ec

@@ -1,0 +1,244 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Mexico City,Mexico City,19.4284700,-99.1276600,metro,1,geonames_mx_2026_12294193,anchor_city,Mexico City,mx
+Mexico City - East,Mexico City,19.4284700,-98.8376600,metro_offset,1,derived,offset_ring,Mexico City,mx
+Mexico City - North,Mexico City,19.6084700,-99.1276600,metro_offset,1,derived,offset_ring,Mexico City,mx
+Mexico City - South,Mexico City,19.2484700,-99.1276600,metro_offset,1,derived,offset_ring,Mexico City,mx
+Mexico City - West,Mexico City,19.4284700,-99.4176600,metro_offset,1,derived,offset_ring,Mexico City,mx
+Mexico City - Northeast,Mexico City,19.5584700,-98.9176600,metro_offset,1,derived,offset_ring,Mexico City,mx
+Mexico City - Northwest,Mexico City,19.5584700,-99.3376600,metro_offset,1,derived,offset_ring,Mexico City,mx
+Mexico City - Southeast,Mexico City,19.2984700,-98.9176600,metro_offset,1,derived,offset_ring,Mexico City,mx
+Mexico City - Southwest,Mexico City,19.2984700,-99.3376600,metro_offset,1,derived,offset_ring,Mexico City,mx
+Tijuana,Baja California,32.5027000,-117.0037100,metro,2,geonames_mx_2026_1922523,anchor_city,Tijuana,mx
+Tijuana - East,Baja California,32.5027000,-116.7137100,metro_offset,2,derived,offset_ring,Tijuana,mx
+Tijuana - North,Baja California,32.6827000,-117.0037100,metro_offset,2,derived,offset_ring,Tijuana,mx
+Tijuana - South,Baja California,32.3227000,-117.0037100,metro_offset,2,derived,offset_ring,Tijuana,mx
+Tijuana - West,Baja California,32.5027000,-117.2937100,metro_offset,2,derived,offset_ring,Tijuana,mx
+Tijuana - Northeast,Baja California,32.6327000,-116.7937100,metro_offset,2,derived,offset_ring,Tijuana,mx
+Tijuana - Northwest,Baja California,32.6327000,-117.2137100,metro_offset,2,derived,offset_ring,Tijuana,mx
+Tijuana - Southeast,Baja California,32.3727000,-116.7937100,metro_offset,2,derived,offset_ring,Tijuana,mx
+Tijuana - Southwest,Baja California,32.3727000,-117.2137100,metro_offset,2,derived,offset_ring,Tijuana,mx
+Puebla,Puebla,19.0477800,-98.2072300,metro,3,geonames_mx_2026_1692181,anchor_city,Puebla,mx
+Puebla - East,Puebla,19.0477800,-97.9172300,metro_offset,3,derived,offset_ring,Puebla,mx
+Puebla - North,Puebla,19.2277800,-98.2072300,metro_offset,3,derived,offset_ring,Puebla,mx
+Puebla - South,Puebla,18.8677800,-98.2072300,metro_offset,3,derived,offset_ring,Puebla,mx
+Puebla - West,Puebla,19.0477800,-98.4972300,metro_offset,3,derived,offset_ring,Puebla,mx
+Puebla - Northeast,Puebla,19.1777800,-97.9972300,metro_offset,3,derived,offset_ring,Puebla,mx
+Puebla - Northwest,Puebla,19.1777800,-98.4172300,metro_offset,3,derived,offset_ring,Puebla,mx
+Puebla - Southeast,Puebla,18.9177800,-97.9972300,metro_offset,3,derived,offset_ring,Puebla,mx
+Puebla - Southwest,Puebla,18.9177800,-98.4172300,metro_offset,3,derived,offset_ring,Puebla,mx
+Ecatepec de Morelos,México,19.6049200,-99.0606400,metro,4,geonames_mx_2026_1645352,anchor_city,Ecatepec de Morelos,mx
+Ecatepec de Morelos - East,México,19.6049200,-98.7706400,metro_offset,4,derived,offset_ring,Ecatepec de Morelos,mx
+Ecatepec de Morelos - North,México,19.7849200,-99.0606400,metro_offset,4,derived,offset_ring,Ecatepec de Morelos,mx
+Ecatepec de Morelos - South,México,19.4249200,-99.0606400,metro_offset,4,derived,offset_ring,Ecatepec de Morelos,mx
+Ecatepec de Morelos - West,México,19.6049200,-99.3506400,metro_offset,4,derived,offset_ring,Ecatepec de Morelos,mx
+Ecatepec de Morelos - Northeast,México,19.7349200,-98.8506400,metro_offset,4,derived,offset_ring,Ecatepec de Morelos,mx
+Ecatepec de Morelos - Northwest,México,19.7349200,-99.2706400,metro_offset,4,derived,offset_ring,Ecatepec de Morelos,mx
+Ecatepec de Morelos - Southeast,México,19.4749200,-98.8506400,metro_offset,4,derived,offset_ring,Ecatepec de Morelos,mx
+Ecatepec de Morelos - Southwest,México,19.4749200,-99.2706400,metro_offset,4,derived,offset_ring,Ecatepec de Morelos,mx
+Santiago de Querétaro,Querétaro,20.5880600,-100.3880600,metro,5,geonames_mx_2026_1594212,anchor_city,Santiago de Querétaro,mx
+Santiago de Querétaro - East,Querétaro,20.5880600,-100.0980600,metro_offset,5,derived,offset_ring,Santiago de Querétaro,mx
+Santiago de Querétaro - North,Querétaro,20.7680600,-100.3880600,metro_offset,5,derived,offset_ring,Santiago de Querétaro,mx
+Santiago de Querétaro - South,Querétaro,20.4080600,-100.3880600,metro_offset,5,derived,offset_ring,Santiago de Querétaro,mx
+Santiago de Querétaro - West,Querétaro,20.5880600,-100.6780600,metro_offset,5,derived,offset_ring,Santiago de Querétaro,mx
+Santiago de Querétaro - Northeast,Querétaro,20.7180600,-100.1780600,metro_offset,5,derived,offset_ring,Santiago de Querétaro,mx
+Santiago de Querétaro - Northwest,Querétaro,20.7180600,-100.5980600,metro_offset,5,derived,offset_ring,Santiago de Querétaro,mx
+Santiago de Querétaro - Southeast,Querétaro,20.4580600,-100.1780600,metro_offset,5,derived,offset_ring,Santiago de Querétaro,mx
+Santiago de Querétaro - Southwest,Querétaro,20.4580600,-100.5980600,metro_offset,5,derived,offset_ring,Santiago de Querétaro,mx
+León de los Aldama,Guanajuato,21.1218300,-101.6825300,metro,6,geonames_mx_2026_1579803,anchor_city,León de los Aldama,mx
+León de los Aldama - East,Guanajuato,21.1218300,-101.3925300,metro_offset,6,derived,offset_ring,León de los Aldama,mx
+León de los Aldama - North,Guanajuato,21.3018300,-101.6825300,metro_offset,6,derived,offset_ring,León de los Aldama,mx
+León de los Aldama - South,Guanajuato,20.9418300,-101.6825300,metro_offset,6,derived,offset_ring,León de los Aldama,mx
+León de los Aldama - West,Guanajuato,21.1218300,-101.9725300,metro_offset,6,derived,offset_ring,León de los Aldama,mx
+León de los Aldama - Northeast,Guanajuato,21.2518300,-101.4725300,metro_offset,6,derived,offset_ring,León de los Aldama,mx
+León de los Aldama - Northwest,Guanajuato,21.2518300,-101.8925300,metro_offset,6,derived,offset_ring,León de los Aldama,mx
+León de los Aldama - Southeast,Guanajuato,20.9918300,-101.4725300,metro_offset,6,derived,offset_ring,León de los Aldama,mx
+León de los Aldama - Southwest,Guanajuato,20.9918300,-101.8925300,metro_offset,6,derived,offset_ring,León de los Aldama,mx
+Ciudad Juárez,Chihuahua,31.7202400,-106.4608400,metro,7,geonames_mx_2026_1512450,anchor_city,Ciudad Juárez,mx
+Ciudad Juárez - East,Chihuahua,31.7202400,-106.1708400,metro_offset,7,derived,offset_ring,Ciudad Juárez,mx
+Ciudad Juárez - North,Chihuahua,31.9002400,-106.4608400,metro_offset,7,derived,offset_ring,Ciudad Juárez,mx
+Ciudad Juárez - South,Chihuahua,31.5402400,-106.4608400,metro_offset,7,derived,offset_ring,Ciudad Juárez,mx
+Ciudad Juárez - West,Chihuahua,31.7202400,-106.7508400,metro_offset,7,derived,offset_ring,Ciudad Juárez,mx
+Ciudad Juárez - Northeast,Chihuahua,31.8502400,-106.2508400,metro_offset,7,derived,offset_ring,Ciudad Juárez,mx
+Ciudad Juárez - Northwest,Chihuahua,31.8502400,-106.6708400,metro_offset,7,derived,offset_ring,Ciudad Juárez,mx
+Ciudad Juárez - Southeast,Chihuahua,31.5902400,-106.2508400,metro_offset,7,derived,offset_ring,Ciudad Juárez,mx
+Ciudad Juárez - Southwest,Chihuahua,31.5902400,-106.6708400,metro_offset,7,derived,offset_ring,Ciudad Juárez,mx
+Guadalajara,Jalisco,20.6773800,-103.3474900,metro,8,geonames_mx_2026_1385629,anchor_city,Guadalajara,mx
+Guadalajara - East,Jalisco,20.6773800,-103.0574900,metro_offset,8,derived,offset_ring,Guadalajara,mx
+Guadalajara - North,Jalisco,20.8573800,-103.3474900,metro_offset,8,derived,offset_ring,Guadalajara,mx
+Guadalajara - South,Jalisco,20.4973800,-103.3474900,metro_offset,8,derived,offset_ring,Guadalajara,mx
+Guadalajara - West,Jalisco,20.6773800,-103.6374900,metro_offset,8,derived,offset_ring,Guadalajara,mx
+Guadalajara - Northeast,Jalisco,20.8073800,-103.1374900,metro_offset,8,derived,offset_ring,Guadalajara,mx
+Guadalajara - Northwest,Jalisco,20.8073800,-103.5574900,metro_offset,8,derived,offset_ring,Guadalajara,mx
+Guadalajara - Southeast,Jalisco,20.5473800,-103.1374900,metro_offset,8,derived,offset_ring,Guadalajara,mx
+Guadalajara - Southwest,Jalisco,20.5473800,-103.5574900,metro_offset,8,derived,offset_ring,Guadalajara,mx
+Mérida,Yucatán,20.9670000,-89.6231800,metro,9,geonames_mx_2026_1201000,anchor_city,Mérida,mx
+Mérida - East,Yucatán,20.9670000,-89.3331800,metro_offset,9,derived,offset_ring,Mérida,mx
+Mérida - North,Yucatán,21.1470000,-89.6231800,metro_offset,9,derived,offset_ring,Mérida,mx
+Mérida - South,Yucatán,20.7870000,-89.6231800,metro_offset,9,derived,offset_ring,Mérida,mx
+Mérida - West,Yucatán,20.9670000,-89.9131800,metro_offset,9,derived,offset_ring,Mérida,mx
+Mérida - Northeast,Yucatán,21.0970000,-89.4131800,metro_offset,9,derived,offset_ring,Mérida,mx
+Mérida - Northwest,Yucatán,21.0970000,-89.8331800,metro_offset,9,derived,offset_ring,Mérida,mx
+Mérida - Southeast,Yucatán,20.8370000,-89.4131800,metro_offset,9,derived,offset_ring,Mérida,mx
+Mérida - Southwest,Yucatán,20.8370000,-89.8331800,metro_offset,9,derived,offset_ring,Mérida,mx
+Monterrey,Nuevo León,25.6843500,-100.3172100,metro,10,geonames_mx_2026_1135512,anchor_city,Monterrey,mx
+Monterrey - East,Nuevo León,25.6843500,-100.0272100,metro_offset,10,derived,offset_ring,Monterrey,mx
+Monterrey - North,Nuevo León,25.8643500,-100.3172100,metro_offset,10,derived,offset_ring,Monterrey,mx
+Monterrey - South,Nuevo León,25.5043500,-100.3172100,metro_offset,10,derived,offset_ring,Monterrey,mx
+Monterrey - West,Nuevo León,25.6843500,-100.6072100,metro_offset,10,derived,offset_ring,Monterrey,mx
+Monterrey - Northeast,Nuevo León,25.8143500,-100.1072100,metro_offset,10,derived,offset_ring,Monterrey,mx
+Monterrey - Northwest,Nuevo León,25.8143500,-100.5272100,metro_offset,10,derived,offset_ring,Monterrey,mx
+Monterrey - Southeast,Nuevo León,25.5543500,-100.1072100,metro_offset,10,derived,offset_ring,Monterrey,mx
+Monterrey - Southwest,Nuevo León,25.5543500,-100.5272100,metro_offset,10,derived,offset_ring,Monterrey,mx
+Mexicali,Baja California,32.6278100,-115.4544600,metro,11,geonames_mx_2026_1032686,anchor_city,Mexicali,mx
+Mexicali - East,Baja California,32.6278100,-115.1644600,metro_offset,11,derived,offset_ring,Mexicali,mx
+Mexicali - North,Baja California,32.8078100,-115.4544600,metro_offset,11,derived,offset_ring,Mexicali,mx
+Mexicali - South,Baja California,32.4478100,-115.4544600,metro_offset,11,derived,offset_ring,Mexicali,mx
+Mexicali - West,Baja California,32.6278100,-115.7444600,metro_offset,11,derived,offset_ring,Mexicali,mx
+Mexicali - Northeast,Baja California,32.7578100,-115.2444600,metro_offset,11,derived,offset_ring,Mexicali,mx
+Mexicali - Northwest,Baja California,32.7578100,-115.6644600,metro_offset,11,derived,offset_ring,Mexicali,mx
+Mexicali - Southeast,Baja California,32.4978100,-115.2444600,metro_offset,11,derived,offset_ring,Mexicali,mx
+Mexicali - Southwest,Baja California,32.4978100,-115.6644600,metro_offset,11,derived,offset_ring,Mexicali,mx
+Chihuahua,Chihuahua,28.6352800,-106.0888900,metro,12,geonames_mx_2026_925762,anchor_city,Chihuahua,mx
+Chihuahua - East,Chihuahua,28.6352800,-105.7988900,metro_offset,12,derived,offset_ring,Chihuahua,mx
+Chihuahua - North,Chihuahua,28.8152800,-106.0888900,metro_offset,12,derived,offset_ring,Chihuahua,mx
+Chihuahua - South,Chihuahua,28.4552800,-106.0888900,metro_offset,12,derived,offset_ring,Chihuahua,mx
+Chihuahua - West,Chihuahua,28.6352800,-106.3788900,metro_offset,12,derived,offset_ring,Chihuahua,mx
+Chihuahua - Northeast,Chihuahua,28.7652800,-105.8788900,metro_offset,12,derived,offset_ring,Chihuahua,mx
+Chihuahua - Northwest,Chihuahua,28.7652800,-106.2988900,metro_offset,12,derived,offset_ring,Chihuahua,mx
+Chihuahua - Southeast,Chihuahua,28.5052800,-105.8788900,metro_offset,12,derived,offset_ring,Chihuahua,mx
+Chihuahua - Southwest,Chihuahua,28.5052800,-106.2988900,metro_offset,12,derived,offset_ring,Chihuahua,mx
+Cancún,Quintana Roo,21.1742900,-86.8465600,metro,13,geonames_mx_2026_888797,anchor_city,Cancún,mx
+Cancún - East,Quintana Roo,21.1742900,-86.5565600,metro_offset,13,derived,offset_ring,Cancún,mx
+Cancún - North,Quintana Roo,21.3542900,-86.8465600,metro_offset,13,derived,offset_ring,Cancún,mx
+Cancún - South,Quintana Roo,20.9942900,-86.8465600,metro_offset,13,derived,offset_ring,Cancún,mx
+Cancún - West,Quintana Roo,21.1742900,-87.1365600,metro_offset,13,derived,offset_ring,Cancún,mx
+Cancún - Northeast,Quintana Roo,21.3042900,-86.6365600,metro_offset,13,derived,offset_ring,Cancún,mx
+Cancún - Northwest,Quintana Roo,21.3042900,-87.0565600,metro_offset,13,derived,offset_ring,Cancún,mx
+Cancún - Southeast,Quintana Roo,21.0442900,-86.6365600,metro_offset,13,derived,offset_ring,Cancún,mx
+Cancún - Southwest,Quintana Roo,21.0442900,-87.0565600,metro_offset,13,derived,offset_ring,Cancún,mx
+Hermosillo,Sonora,29.0887400,-110.9667700,metro,14,geonames_mx_2026_812229,anchor_city,Hermosillo,mx
+Hermosillo - East,Sonora,29.0887400,-110.6767700,metro_offset,14,derived,offset_ring,Hermosillo,mx
+Hermosillo - North,Sonora,29.2687400,-110.9667700,metro_offset,14,derived,offset_ring,Hermosillo,mx
+Hermosillo - South,Sonora,28.9087400,-110.9667700,metro_offset,14,derived,offset_ring,Hermosillo,mx
+Hermosillo - West,Sonora,29.0887400,-111.2567700,metro_offset,14,derived,offset_ring,Hermosillo,mx
+Hermosillo - Northeast,Sonora,29.2187400,-110.7567700,metro_offset,14,derived,offset_ring,Hermosillo,mx
+Hermosillo - Northwest,Sonora,29.2187400,-111.1767700,metro_offset,14,derived,offset_ring,Hermosillo,mx
+Hermosillo - Southeast,Sonora,28.9587400,-110.7567700,metro_offset,14,derived,offset_ring,Hermosillo,mx
+Hermosillo - Southwest,Sonora,28.9587400,-111.1767700,metro_offset,14,derived,offset_ring,Hermosillo,mx
+Culiacán,Sinaloa,24.8020900,-107.3942100,metro,15,geonames_mx_2026_808416,anchor_city,Culiacán,mx
+Culiacán - East,Sinaloa,24.8020900,-107.1042100,metro_offset,15,derived,offset_ring,Culiacán,mx
+Culiacán - North,Sinaloa,24.9820900,-107.3942100,metro_offset,15,derived,offset_ring,Culiacán,mx
+Culiacán - South,Sinaloa,24.6220900,-107.3942100,metro_offset,15,derived,offset_ring,Culiacán,mx
+Culiacán - West,Sinaloa,24.8020900,-107.6842100,metro_offset,15,derived,offset_ring,Culiacán,mx
+Culiacán - Northeast,Sinaloa,24.9320900,-107.1842100,metro_offset,15,derived,offset_ring,Culiacán,mx
+Culiacán - Northwest,Sinaloa,24.9320900,-107.6042100,metro_offset,15,derived,offset_ring,Culiacán,mx
+Culiacán - Southeast,Sinaloa,24.6720900,-107.1842100,metro_offset,15,derived,offset_ring,Culiacán,mx
+Culiacán - Southwest,Sinaloa,24.6720900,-107.6042100,metro_offset,15,derived,offset_ring,Culiacán,mx
+Morelia,Michoacán,19.7007800,-101.1844300,metro,16,geonames_mx_2026_743275,anchor_city,Morelia,mx
+Morelia - East,Michoacán,19.7007800,-100.8944300,metro_offset,16,derived,offset_ring,Morelia,mx
+Morelia - North,Michoacán,19.8807800,-101.1844300,metro_offset,16,derived,offset_ring,Morelia,mx
+Morelia - South,Michoacán,19.5207800,-101.1844300,metro_offset,16,derived,offset_ring,Morelia,mx
+Morelia - West,Michoacán,19.7007800,-101.4744300,metro_offset,16,derived,offset_ring,Morelia,mx
+Morelia - Northeast,Michoacán,19.8307800,-100.9744300,metro_offset,16,derived,offset_ring,Morelia,mx
+Morelia - Northwest,Michoacán,19.8307800,-101.3944300,metro_offset,16,derived,offset_ring,Morelia,mx
+Morelia - Southeast,Michoacán,19.5707800,-100.9744300,metro_offset,16,derived,offset_ring,Morelia,mx
+Morelia - Southwest,Michoacán,19.5707800,-101.3944300,metro_offset,16,derived,offset_ring,Morelia,mx
+Torreón,Coahuila,25.5438900,-103.4189800,metro,17,geonames_mx_2026_735340,anchor_city,Torreón,mx
+Torreón - East,Coahuila,25.5438900,-103.1289800,metro_offset,17,derived,offset_ring,Torreón,mx
+Torreón - North,Coahuila,25.7238900,-103.4189800,metro_offset,17,derived,offset_ring,Torreón,mx
+Torreón - South,Coahuila,25.3638900,-103.4189800,metro_offset,17,derived,offset_ring,Torreón,mx
+Torreón - West,Coahuila,25.5438900,-103.7089800,metro_offset,17,derived,offset_ring,Torreón,mx
+Torreón - Northeast,Coahuila,25.6738900,-103.2089800,metro_offset,17,derived,offset_ring,Torreón,mx
+Torreón - Northwest,Coahuila,25.6738900,-103.6289800,metro_offset,17,derived,offset_ring,Torreón,mx
+Torreón - Southeast,Coahuila,25.4138900,-103.2089800,metro_offset,17,derived,offset_ring,Torreón,mx
+Torreón - Southwest,Coahuila,25.4138900,-103.6289800,metro_offset,17,derived,offset_ring,Torreón,mx
+San Luis Potosí,San Luis Potosí,22.1523400,-100.9713500,metro,18,geonames_mx_2026_722772,anchor_city,San Luis Potosí,mx
+San Luis Potosí - East,San Luis Potosí,22.1523400,-100.6813500,metro_offset,18,derived,offset_ring,San Luis Potosí,mx
+San Luis Potosí - North,San Luis Potosí,22.3323400,-100.9713500,metro_offset,18,derived,offset_ring,San Luis Potosí,mx
+San Luis Potosí - South,San Luis Potosí,21.9723400,-100.9713500,metro_offset,18,derived,offset_ring,San Luis Potosí,mx
+San Luis Potosí - West,San Luis Potosí,22.1523400,-101.2613500,metro_offset,18,derived,offset_ring,San Luis Potosí,mx
+San Luis Potosí - Northeast,San Luis Potosí,22.2823400,-100.7613500,metro_offset,18,derived,offset_ring,San Luis Potosí,mx
+San Luis Potosí - Northwest,San Luis Potosí,22.2823400,-101.1813500,metro_offset,18,derived,offset_ring,San Luis Potosí,mx
+San Luis Potosí - Southeast,San Luis Potosí,22.0223400,-100.7613500,metro_offset,18,derived,offset_ring,San Luis Potosí,mx
+San Luis Potosí - Southwest,San Luis Potosí,22.0223400,-101.1813500,metro_offset,18,derived,offset_ring,San Luis Potosí,mx
+Aguascalientes,Aguascalientes,21.8826200,-102.2843000,metro,19,geonames_mx_2026_722250,anchor_city,Aguascalientes,mx
+Aguascalientes - East,Aguascalientes,21.8826200,-101.9943000,metro_offset,19,derived,offset_ring,Aguascalientes,mx
+Aguascalientes - North,Aguascalientes,22.0626200,-102.2843000,metro_offset,19,derived,offset_ring,Aguascalientes,mx
+Aguascalientes - South,Aguascalientes,21.7026200,-102.2843000,metro_offset,19,derived,offset_ring,Aguascalientes,mx
+Aguascalientes - West,Aguascalientes,21.8826200,-102.5743000,metro_offset,19,derived,offset_ring,Aguascalientes,mx
+Aguascalientes - Northeast,Aguascalientes,22.0126200,-102.0743000,metro_offset,19,derived,offset_ring,Aguascalientes,mx
+Aguascalientes - Northwest,Aguascalientes,22.0126200,-102.4943000,metro_offset,19,derived,offset_ring,Aguascalientes,mx
+Aguascalientes - Southeast,Aguascalientes,21.7526200,-102.0743000,metro_offset,19,derived,offset_ring,Aguascalientes,mx
+Aguascalientes - Southwest,Aguascalientes,21.7526200,-102.4943000,metro_offset,19,derived,offset_ring,Aguascalientes,mx
+Saltillo,Coahuila,25.4259500,-100.9796300,metro,20,geonames_mx_2026_709671,anchor_city,Saltillo,mx
+Saltillo - East,Coahuila,25.4259500,-100.6896300,metro_offset,20,derived,offset_ring,Saltillo,mx
+Saltillo - North,Coahuila,25.6059500,-100.9796300,metro_offset,20,derived,offset_ring,Saltillo,mx
+Saltillo - South,Coahuila,25.2459500,-100.9796300,metro_offset,20,derived,offset_ring,Saltillo,mx
+Saltillo - West,Coahuila,25.4259500,-101.2696300,metro_offset,20,derived,offset_ring,Saltillo,mx
+Saltillo - Northeast,Coahuila,25.5559500,-100.7696300,metro_offset,20,derived,offset_ring,Saltillo,mx
+Saltillo - Northwest,Coahuila,25.5559500,-101.1896300,metro_offset,20,derived,offset_ring,Saltillo,mx
+Saltillo - Southeast,Coahuila,25.2959500,-100.7696300,metro_offset,20,derived,offset_ring,Saltillo,mx
+Saltillo - Southwest,Coahuila,25.2959500,-101.1896300,metro_offset,20,derived,offset_ring,Saltillo,mx
+Acapulco de Juárez,Guerrero,16.8494200,-99.9089100,metro,21,geonames_mx_2026_658609,anchor_city,Acapulco de Juárez,mx
+Acapulco de Juárez - East,Guerrero,16.8494200,-99.6189100,metro_offset,21,derived,offset_ring,Acapulco de Juárez,mx
+Acapulco de Juárez - North,Guerrero,17.0294200,-99.9089100,metro_offset,21,derived,offset_ring,Acapulco de Juárez,mx
+Acapulco de Juárez - South,Guerrero,16.6694200,-99.9089100,metro_offset,21,derived,offset_ring,Acapulco de Juárez,mx
+Acapulco de Juárez - West,Guerrero,16.8494200,-100.1989100,metro_offset,21,derived,offset_ring,Acapulco de Juárez,mx
+Acapulco de Juárez - Northeast,Guerrero,16.9794200,-99.6989100,metro_offset,21,derived,offset_ring,Acapulco de Juárez,mx
+Acapulco de Juárez - Northwest,Guerrero,16.9794200,-100.1189100,metro_offset,21,derived,offset_ring,Acapulco de Juárez,mx
+Acapulco de Juárez - Southeast,Guerrero,16.7194200,-99.6989100,metro_offset,21,derived,offset_ring,Acapulco de Juárez,mx
+Acapulco de Juárez - Southwest,Guerrero,16.7194200,-100.1189100,metro_offset,21,derived,offset_ring,Acapulco de Juárez,mx
+Tuxtla,Chiapas,16.7535700,-93.1157800,metro,22,geonames_mx_2026_604147,anchor_city,Tuxtla,mx
+Tuxtla - East,Chiapas,16.7535700,-92.8257800,metro_offset,22,derived,offset_ring,Tuxtla,mx
+Tuxtla - North,Chiapas,16.9335700,-93.1157800,metro_offset,22,derived,offset_ring,Tuxtla,mx
+Tuxtla - South,Chiapas,16.5735700,-93.1157800,metro_offset,22,derived,offset_ring,Tuxtla,mx
+Tuxtla - West,Chiapas,16.7535700,-93.4057800,metro_offset,22,derived,offset_ring,Tuxtla,mx
+Tuxtla - Northeast,Chiapas,16.8835700,-92.9057800,metro_offset,22,derived,offset_ring,Tuxtla,mx
+Tuxtla - Northwest,Chiapas,16.8835700,-93.3257800,metro_offset,22,derived,offset_ring,Tuxtla,mx
+Tuxtla - Southeast,Chiapas,16.6235700,-92.9057800,metro_offset,22,derived,offset_ring,Tuxtla,mx
+Tuxtla - Southwest,Chiapas,16.6235700,-93.3257800,metro_offset,22,derived,offset_ring,Tuxtla,mx
+Reynosa,Tamaulipas,26.0800500,-98.2845600,metro,23,geonames_mx_2026_589466,anchor_city,Reynosa,mx
+Reynosa - East,Tamaulipas,26.0800500,-97.9945600,metro_offset,23,derived,offset_ring,Reynosa,mx
+Reynosa - North,Tamaulipas,26.2600500,-98.2845600,metro_offset,23,derived,offset_ring,Reynosa,mx
+Reynosa - South,Tamaulipas,25.9000500,-98.2845600,metro_offset,23,derived,offset_ring,Reynosa,mx
+Reynosa - West,Tamaulipas,26.0800500,-98.5745600,metro_offset,23,derived,offset_ring,Reynosa,mx
+Reynosa - Northeast,Tamaulipas,26.2100500,-98.0745600,metro_offset,23,derived,offset_ring,Reynosa,mx
+Reynosa - Northwest,Tamaulipas,26.2100500,-98.4945600,metro_offset,23,derived,offset_ring,Reynosa,mx
+Reynosa - Southeast,Tamaulipas,25.9500500,-98.0745600,metro_offset,23,derived,offset_ring,Reynosa,mx
+Reynosa - Southwest,Tamaulipas,25.9500500,-98.4945600,metro_offset,23,derived,offset_ring,Reynosa,mx
+Victoria de Durango,Durango,24.0203200,-104.6575600,metro,24,geonames_mx_2026_518709,anchor_city,Victoria de Durango,mx
+Victoria de Durango - East,Durango,24.0203200,-104.3675600,metro_offset,24,derived,offset_ring,Victoria de Durango,mx
+Victoria de Durango - North,Durango,24.2003200,-104.6575600,metro_offset,24,derived,offset_ring,Victoria de Durango,mx
+Victoria de Durango - South,Durango,23.8403200,-104.6575600,metro_offset,24,derived,offset_ring,Victoria de Durango,mx
+Victoria de Durango - West,Durango,24.0203200,-104.9475600,metro_offset,24,derived,offset_ring,Victoria de Durango,mx
+Victoria de Durango - Northeast,Durango,24.1503200,-104.4475600,metro_offset,24,derived,offset_ring,Victoria de Durango,mx
+Victoria de Durango - Northwest,Durango,24.1503200,-104.8675600,metro_offset,24,derived,offset_ring,Victoria de Durango,mx
+Victoria de Durango - Southeast,Durango,23.8903200,-104.4475600,metro_offset,24,derived,offset_ring,Victoria de Durango,mx
+Victoria de Durango - Southwest,Durango,23.8903200,-104.8675600,metro_offset,24,derived,offset_ring,Victoria de Durango,mx
+Heroica Matamoros,Tamaulipas,25.8797200,-97.5041700,metro,25,geonames_mx_2026_510739,anchor_city,Heroica Matamoros,mx
+Heroica Matamoros - East,Tamaulipas,25.8797200,-97.2141700,metro_offset,25,derived,offset_ring,Heroica Matamoros,mx
+Heroica Matamoros - North,Tamaulipas,26.0597200,-97.5041700,metro_offset,25,derived,offset_ring,Heroica Matamoros,mx
+Heroica Matamoros - South,Tamaulipas,25.6997200,-97.5041700,metro_offset,25,derived,offset_ring,Heroica Matamoros,mx
+Heroica Matamoros - West,Tamaulipas,25.8797200,-97.7941700,metro_offset,25,derived,offset_ring,Heroica Matamoros,mx
+Heroica Matamoros - Northeast,Tamaulipas,26.0097200,-97.2941700,metro_offset,25,derived,offset_ring,Heroica Matamoros,mx
+Heroica Matamoros - Northwest,Tamaulipas,26.0097200,-97.7141700,metro_offset,25,derived,offset_ring,Heroica Matamoros,mx
+Heroica Matamoros - Southeast,Tamaulipas,25.7497200,-97.2941700,metro_offset,25,derived,offset_ring,Heroica Matamoros,mx
+Heroica Matamoros - Southwest,Tamaulipas,25.7497200,-97.7141700,metro_offset,25,derived,offset_ring,Heroica Matamoros,mx
+Toluca,México,19.2878600,-99.6532400,regional_large,26,geonames_mx_2026_489333,anchor_city,Toluca,mx
+Toluca - East,México,19.2878600,-99.3632400,regional_large_offset,26,derived,offset_ring,Toluca,mx
+Toluca - North,México,19.4678600,-99.6532400,regional_large_offset,26,derived,offset_ring,Toluca,mx
+Toluca - South,México,19.1078600,-99.6532400,regional_large_offset,26,derived,offset_ring,Toluca,mx
+Toluca - West,México,19.2878600,-99.9432400,regional_large_offset,26,derived,offset_ring,Toluca,mx
+Toluca - Northeast,México,19.4178600,-99.4432400,regional_large_offset,26,derived,offset_ring,Toluca,mx
+Toluca - Northwest,México,19.4178600,-99.8632400,regional_large_offset,26,derived,offset_ring,Toluca,mx
+Toluca - Southeast,México,19.1578600,-99.4432400,regional_large_offset,26,derived,offset_ring,Toluca,mx
+Toluca - Southwest,México,19.1578600,-99.8632400,regional_large_offset,26,derived,offset_ring,Toluca,mx
+Ensenada,Baja California,31.8714900,-116.6007100,regional_large,27,geonames_mx_2026_443807,anchor_city,Ensenada,mx
+Ensenada - East,Baja California,31.8714900,-116.3107100,regional_large_offset,27,derived,offset_ring,Ensenada,mx
+Ensenada - North,Baja California,32.0514900,-116.6007100,regional_large_offset,27,derived,offset_ring,Ensenada,mx
+Ensenada - South,Baja California,31.6914900,-116.6007100,regional_large_offset,27,derived,offset_ring,Ensenada,mx
+Ensenada - West,Baja California,31.8714900,-116.8907100,regional_large_offset,27,derived,offset_ring,Ensenada,mx
+Ensenada - Northeast,Baja California,32.0014900,-116.3907100,regional_large_offset,27,derived,offset_ring,Ensenada,mx
+Ensenada - Northwest,Baja California,32.0014900,-116.8107100,regional_large_offset,27,derived,offset_ring,Ensenada,mx
+Ensenada - Southeast,Baja California,31.7414900,-116.3907100,regional_large_offset,27,derived,offset_ring,Ensenada,mx
+Ensenada - Southwest,Baja California,31.7414900,-116.8107100,regional_large_offset,27,derived,offset_ring,Ensenada,mx

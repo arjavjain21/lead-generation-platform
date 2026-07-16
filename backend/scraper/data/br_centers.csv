@@ -1,0 +1,181 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+São Paulo,São Paulo,-23.5475000,-46.6361100,metro,1,geonames_br_2026_12400232,anchor_city,São Paulo,br
+São Paulo - East,São Paulo,-23.5475000,-46.3461100,metro_offset,1,derived,offset_ring,São Paulo,br
+São Paulo - North,São Paulo,-23.3675000,-46.6361100,metro_offset,1,derived,offset_ring,São Paulo,br
+São Paulo - South,São Paulo,-23.7275000,-46.6361100,metro_offset,1,derived,offset_ring,São Paulo,br
+São Paulo - West,São Paulo,-23.5475000,-46.9261100,metro_offset,1,derived,offset_ring,São Paulo,br
+São Paulo - Northeast,São Paulo,-23.4175000,-46.4261100,metro_offset,1,derived,offset_ring,São Paulo,br
+São Paulo - Northwest,São Paulo,-23.4175000,-46.8461100,metro_offset,1,derived,offset_ring,São Paulo,br
+São Paulo - Southeast,São Paulo,-23.6775000,-46.4261100,metro_offset,1,derived,offset_ring,São Paulo,br
+São Paulo - Southwest,São Paulo,-23.6775000,-46.8461100,metro_offset,1,derived,offset_ring,São Paulo,br
+Rio de Janeiro,Rio de Janeiro,-22.9064200,-43.1822300,metro,2,geonames_br_2026_6747815,anchor_city,Rio de Janeiro,br
+Rio de Janeiro - East,Rio de Janeiro,-22.9064200,-42.8922300,metro_offset,2,derived,offset_ring,Rio de Janeiro,br
+Rio de Janeiro - North,Rio de Janeiro,-22.7264200,-43.1822300,metro_offset,2,derived,offset_ring,Rio de Janeiro,br
+Rio de Janeiro - South,Rio de Janeiro,-23.0864200,-43.1822300,metro_offset,2,derived,offset_ring,Rio de Janeiro,br
+Rio de Janeiro - West,Rio de Janeiro,-22.9064200,-43.4722300,metro_offset,2,derived,offset_ring,Rio de Janeiro,br
+Rio de Janeiro - Northeast,Rio de Janeiro,-22.7764200,-42.9722300,metro_offset,2,derived,offset_ring,Rio de Janeiro,br
+Rio de Janeiro - Northwest,Rio de Janeiro,-22.7764200,-43.3922300,metro_offset,2,derived,offset_ring,Rio de Janeiro,br
+Rio de Janeiro - Southeast,Rio de Janeiro,-23.0364200,-42.9722300,metro_offset,2,derived,offset_ring,Rio de Janeiro,br
+Rio de Janeiro - Southwest,Rio de Janeiro,-23.0364200,-43.3922300,metro_offset,2,derived,offset_ring,Rio de Janeiro,br
+Belo Horizonte,Minas Gerais,-19.9208300,-43.9377800,metro,3,geonames_br_2026_2721564,anchor_city,Belo Horizonte,br
+Belo Horizonte - East,Minas Gerais,-19.9208300,-43.6477800,metro_offset,3,derived,offset_ring,Belo Horizonte,br
+Belo Horizonte - North,Minas Gerais,-19.7408300,-43.9377800,metro_offset,3,derived,offset_ring,Belo Horizonte,br
+Belo Horizonte - South,Minas Gerais,-20.1008300,-43.9377800,metro_offset,3,derived,offset_ring,Belo Horizonte,br
+Belo Horizonte - West,Minas Gerais,-19.9208300,-44.2277800,metro_offset,3,derived,offset_ring,Belo Horizonte,br
+Belo Horizonte - Northeast,Minas Gerais,-19.7908300,-43.7277800,metro_offset,3,derived,offset_ring,Belo Horizonte,br
+Belo Horizonte - Northwest,Minas Gerais,-19.7908300,-44.1477800,metro_offset,3,derived,offset_ring,Belo Horizonte,br
+Belo Horizonte - Southeast,Minas Gerais,-20.0508300,-43.7277800,metro_offset,3,derived,offset_ring,Belo Horizonte,br
+Belo Horizonte - Southwest,Minas Gerais,-20.0508300,-44.1477800,metro_offset,3,derived,offset_ring,Belo Horizonte,br
+Salvador,Bahia,-12.9756300,-38.4909600,metro,4,geonames_br_2026_2711840,anchor_city,Salvador,br
+Salvador - East,Bahia,-12.9756300,-38.2009600,metro_offset,4,derived,offset_ring,Salvador,br
+Salvador - North,Bahia,-12.7956300,-38.4909600,metro_offset,4,derived,offset_ring,Salvador,br
+Salvador - South,Bahia,-13.1556300,-38.4909600,metro_offset,4,derived,offset_ring,Salvador,br
+Salvador - West,Bahia,-12.9756300,-38.7809600,metro_offset,4,derived,offset_ring,Salvador,br
+Salvador - Northeast,Bahia,-12.8456300,-38.2809600,metro_offset,4,derived,offset_ring,Salvador,br
+Salvador - Northwest,Bahia,-12.8456300,-38.7009600,metro_offset,4,derived,offset_ring,Salvador,br
+Salvador - Southeast,Bahia,-13.1056300,-38.2809600,metro_offset,4,derived,offset_ring,Salvador,br
+Salvador - Southwest,Bahia,-13.1056300,-38.7009600,metro_offset,4,derived,offset_ring,Salvador,br
+Fortaleza,Ceará,-3.7172200,-38.5430600,metro,5,geonames_br_2026_2400000,anchor_city,Fortaleza,br
+Fortaleza - East,Ceará,-3.7172200,-38.2530600,metro_offset,5,derived,offset_ring,Fortaleza,br
+Fortaleza - North,Ceará,-3.5372200,-38.5430600,metro_offset,5,derived,offset_ring,Fortaleza,br
+Fortaleza - South,Ceará,-3.8972200,-38.5430600,metro_offset,5,derived,offset_ring,Fortaleza,br
+Fortaleza - West,Ceará,-3.7172200,-38.8330600,metro_offset,5,derived,offset_ring,Fortaleza,br
+Fortaleza - Northeast,Ceará,-3.5872200,-38.3330600,metro_offset,5,derived,offset_ring,Fortaleza,br
+Fortaleza - Northwest,Ceará,-3.5872200,-38.7530600,metro_offset,5,derived,offset_ring,Fortaleza,br
+Fortaleza - Southeast,Ceará,-3.8472200,-38.3330600,metro_offset,5,derived,offset_ring,Fortaleza,br
+Fortaleza - Southwest,Ceará,-3.8472200,-38.7530600,metro_offset,5,derived,offset_ring,Fortaleza,br
+Manaus,Amazonas,-3.1019400,-60.0250000,metro,6,geonames_br_2026_2219580,anchor_city,Manaus,br
+Manaus - East,Amazonas,-3.1019400,-59.7350000,metro_offset,6,derived,offset_ring,Manaus,br
+Manaus - North,Amazonas,-2.9219400,-60.0250000,metro_offset,6,derived,offset_ring,Manaus,br
+Manaus - South,Amazonas,-3.2819400,-60.0250000,metro_offset,6,derived,offset_ring,Manaus,br
+Manaus - West,Amazonas,-3.1019400,-60.3150000,metro_offset,6,derived,offset_ring,Manaus,br
+Manaus - Northeast,Amazonas,-2.9719400,-59.8150000,metro_offset,6,derived,offset_ring,Manaus,br
+Manaus - Northwest,Amazonas,-2.9719400,-60.2350000,metro_offset,6,derived,offset_ring,Manaus,br
+Manaus - Southeast,Amazonas,-3.2319400,-59.8150000,metro_offset,6,derived,offset_ring,Manaus,br
+Manaus - Southwest,Amazonas,-3.2319400,-60.2350000,metro_offset,6,derived,offset_ring,Manaus,br
+Brasília,Federal District,-15.7797200,-47.9297200,metro,7,geonames_br_2026_2207718,anchor_city,Brasília,br
+Brasília - East,Federal District,-15.7797200,-47.6397200,metro_offset,7,derived,offset_ring,Brasília,br
+Brasília - North,Federal District,-15.5997200,-47.9297200,metro_offset,7,derived,offset_ring,Brasília,br
+Brasília - South,Federal District,-15.9597200,-47.9297200,metro_offset,7,derived,offset_ring,Brasília,br
+Brasília - West,Federal District,-15.7797200,-48.2197200,metro_offset,7,derived,offset_ring,Brasília,br
+Brasília - Northeast,Federal District,-15.6497200,-47.7197200,metro_offset,7,derived,offset_ring,Brasília,br
+Brasília - Northwest,Federal District,-15.6497200,-48.1397200,metro_offset,7,derived,offset_ring,Brasília,br
+Brasília - Southeast,Federal District,-15.9097200,-47.7197200,metro_offset,7,derived,offset_ring,Brasília,br
+Brasília - Southwest,Federal District,-15.9097200,-48.1397200,metro_offset,7,derived,offset_ring,Brasília,br
+Curitiba,Paraná,-25.4277800,-49.2730600,metro,8,geonames_br_2026_1948626,anchor_city,Curitiba,br
+Curitiba - East,Paraná,-25.4277800,-48.9830600,metro_offset,8,derived,offset_ring,Curitiba,br
+Curitiba - North,Paraná,-25.2477800,-49.2730600,metro_offset,8,derived,offset_ring,Curitiba,br
+Curitiba - South,Paraná,-25.6077800,-49.2730600,metro_offset,8,derived,offset_ring,Curitiba,br
+Curitiba - West,Paraná,-25.4277800,-49.5630600,metro_offset,8,derived,offset_ring,Curitiba,br
+Curitiba - Northeast,Paraná,-25.2977800,-49.0630600,metro_offset,8,derived,offset_ring,Curitiba,br
+Curitiba - Northwest,Paraná,-25.2977800,-49.4830600,metro_offset,8,derived,offset_ring,Curitiba,br
+Curitiba - Southeast,Paraná,-25.5577800,-49.0630600,metro_offset,8,derived,offset_ring,Curitiba,br
+Curitiba - Southwest,Paraná,-25.5577800,-49.4830600,metro_offset,8,derived,offset_ring,Curitiba,br
+Recife,Pernambuco,-8.0538900,-34.8811100,metro,9,geonames_br_2026_1653461,anchor_city,Recife,br
+Recife - East,Pernambuco,-8.0538900,-34.5911100,metro_offset,9,derived,offset_ring,Recife,br
+Recife - North,Pernambuco,-7.8738900,-34.8811100,metro_offset,9,derived,offset_ring,Recife,br
+Recife - South,Pernambuco,-8.2338900,-34.8811100,metro_offset,9,derived,offset_ring,Recife,br
+Recife - West,Pernambuco,-8.0538900,-35.1711100,metro_offset,9,derived,offset_ring,Recife,br
+Recife - Northeast,Pernambuco,-7.9238900,-34.6711100,metro_offset,9,derived,offset_ring,Recife,br
+Recife - Northwest,Pernambuco,-7.9238900,-35.0911100,metro_offset,9,derived,offset_ring,Recife,br
+Recife - Southeast,Pernambuco,-8.1838900,-34.6711100,metro_offset,9,derived,offset_ring,Recife,br
+Recife - Southwest,Pernambuco,-8.1838900,-35.0911100,metro_offset,9,derived,offset_ring,Recife,br
+Goiânia,Goiás,-16.6786100,-49.2538900,metro,10,geonames_br_2026_1536097,anchor_city,Goiânia,br
+Goiânia - East,Goiás,-16.6786100,-48.9638900,metro_offset,10,derived,offset_ring,Goiânia,br
+Goiânia - North,Goiás,-16.4986100,-49.2538900,metro_offset,10,derived,offset_ring,Goiânia,br
+Goiânia - South,Goiás,-16.8586100,-49.2538900,metro_offset,10,derived,offset_ring,Goiânia,br
+Goiânia - West,Goiás,-16.6786100,-49.5438900,metro_offset,10,derived,offset_ring,Goiânia,br
+Goiânia - Northeast,Goiás,-16.5486100,-49.0438900,metro_offset,10,derived,offset_ring,Goiânia,br
+Goiânia - Northwest,Goiás,-16.5486100,-49.4638900,metro_offset,10,derived,offset_ring,Goiânia,br
+Goiânia - Southeast,Goiás,-16.8086100,-49.0438900,metro_offset,10,derived,offset_ring,Goiânia,br
+Goiânia - Southwest,Goiás,-16.8086100,-49.4638900,metro_offset,10,derived,offset_ring,Goiânia,br
+Belém,Pará,-1.4558300,-48.5044400,metro,11,geonames_br_2026_1499641,anchor_city,Belém,br
+Belém - East,Pará,-1.4558300,-48.2144400,metro_offset,11,derived,offset_ring,Belém,br
+Belém - North,Pará,-1.2758300,-48.5044400,metro_offset,11,derived,offset_ring,Belém,br
+Belém - South,Pará,-1.6358300,-48.5044400,metro_offset,11,derived,offset_ring,Belém,br
+Belém - West,Pará,-1.4558300,-48.7944400,metro_offset,11,derived,offset_ring,Belém,br
+Belém - Northeast,Pará,-1.3258300,-48.2944400,metro_offset,11,derived,offset_ring,Belém,br
+Belém - Northwest,Pará,-1.3258300,-48.7144400,metro_offset,11,derived,offset_ring,Belém,br
+Belém - Southeast,Pará,-1.5858300,-48.2944400,metro_offset,11,derived,offset_ring,Belém,br
+Belém - Southwest,Pará,-1.5858300,-48.7144400,metro_offset,11,derived,offset_ring,Belém,br
+Porto Alegre,Rio Grande do Sul,-30.0328300,-51.2301900,metro,12,geonames_br_2026_1488252,anchor_city,Porto Alegre,br
+Porto Alegre - East,Rio Grande do Sul,-30.0328300,-50.9401900,metro_offset,12,derived,offset_ring,Porto Alegre,br
+Porto Alegre - North,Rio Grande do Sul,-29.8528300,-51.2301900,metro_offset,12,derived,offset_ring,Porto Alegre,br
+Porto Alegre - South,Rio Grande do Sul,-30.2128300,-51.2301900,metro_offset,12,derived,offset_ring,Porto Alegre,br
+Porto Alegre - West,Rio Grande do Sul,-30.0328300,-51.5201900,metro_offset,12,derived,offset_ring,Porto Alegre,br
+Porto Alegre - Northeast,Rio Grande do Sul,-29.9028300,-51.0201900,metro_offset,12,derived,offset_ring,Porto Alegre,br
+Porto Alegre - Northwest,Rio Grande do Sul,-29.9028300,-51.4401900,metro_offset,12,derived,offset_ring,Porto Alegre,br
+Porto Alegre - Southeast,Rio Grande do Sul,-30.1628300,-51.0201900,metro_offset,12,derived,offset_ring,Porto Alegre,br
+Porto Alegre - Southwest,Rio Grande do Sul,-30.1628300,-51.4401900,metro_offset,12,derived,offset_ring,Porto Alegre,br
+Maceió,Alagoas,-9.6658300,-35.7352800,metro,13,geonames_br_2026_1031597,anchor_city,Maceió,br
+Maceió - East,Alagoas,-9.6658300,-35.4452800,metro_offset,13,derived,offset_ring,Maceió,br
+Maceió - North,Alagoas,-9.4858300,-35.7352800,metro_offset,13,derived,offset_ring,Maceió,br
+Maceió - South,Alagoas,-9.8458300,-35.7352800,metro_offset,13,derived,offset_ring,Maceió,br
+Maceió - West,Alagoas,-9.6658300,-36.0252800,metro_offset,13,derived,offset_ring,Maceió,br
+Maceió - Northeast,Alagoas,-9.5358300,-35.5252800,metro_offset,13,derived,offset_ring,Maceió,br
+Maceió - Northwest,Alagoas,-9.5358300,-35.9452800,metro_offset,13,derived,offset_ring,Maceió,br
+Maceió - Southeast,Alagoas,-9.7958300,-35.5252800,metro_offset,13,derived,offset_ring,Maceió,br
+Maceió - Southwest,Alagoas,-9.7958300,-35.9452800,metro_offset,13,derived,offset_ring,Maceió,br
+Campinas,São Paulo,-22.9055600,-47.0608300,metro,14,geonames_br_2026_1031554,anchor_city,Campinas,br
+Campinas - East,São Paulo,-22.9055600,-46.7708300,metro_offset,14,derived,offset_ring,Campinas,br
+Campinas - North,São Paulo,-22.7255600,-47.0608300,metro_offset,14,derived,offset_ring,Campinas,br
+Campinas - South,São Paulo,-23.0855600,-47.0608300,metro_offset,14,derived,offset_ring,Campinas,br
+Campinas - West,São Paulo,-22.9055600,-47.3508300,metro_offset,14,derived,offset_ring,Campinas,br
+Campinas - Northeast,São Paulo,-22.7755600,-46.8508300,metro_offset,14,derived,offset_ring,Campinas,br
+Campinas - Northwest,São Paulo,-22.7755600,-47.2708300,metro_offset,14,derived,offset_ring,Campinas,br
+Campinas - Southeast,São Paulo,-23.0355600,-46.8508300,metro_offset,14,derived,offset_ring,Campinas,br
+Campinas - Southwest,São Paulo,-23.0355600,-47.2708300,metro_offset,14,derived,offset_ring,Campinas,br
+São Luís,Maranhão,-2.5297200,-44.3027800,metro,15,geonames_br_2026_917237,anchor_city,São Luís,br
+São Luís - East,Maranhão,-2.5297200,-44.0127800,metro_offset,15,derived,offset_ring,São Luís,br
+São Luís - North,Maranhão,-2.3497200,-44.3027800,metro_offset,15,derived,offset_ring,São Luís,br
+São Luís - South,Maranhão,-2.7097200,-44.3027800,metro_offset,15,derived,offset_ring,São Luís,br
+São Luís - West,Maranhão,-2.5297200,-44.5927800,metro_offset,15,derived,offset_ring,São Luís,br
+São Luís - Northeast,Maranhão,-2.3997200,-44.0927800,metro_offset,15,derived,offset_ring,São Luís,br
+São Luís - Northwest,Maranhão,-2.3997200,-44.5127800,metro_offset,15,derived,offset_ring,São Luís,br
+São Luís - Southeast,Maranhão,-2.6597200,-44.0927800,metro_offset,15,derived,offset_ring,São Luís,br
+São Luís - Southwest,Maranhão,-2.6597200,-44.5127800,metro_offset,15,derived,offset_ring,São Luís,br
+Campo Grande,Mato Grosso do Sul,-20.4427800,-54.6463900,metro,16,geonames_br_2026_906092,anchor_city,Campo Grande,br
+Campo Grande - East,Mato Grosso do Sul,-20.4427800,-54.3563900,metro_offset,16,derived,offset_ring,Campo Grande,br
+Campo Grande - North,Mato Grosso do Sul,-20.2627800,-54.6463900,metro_offset,16,derived,offset_ring,Campo Grande,br
+Campo Grande - South,Mato Grosso do Sul,-20.6227800,-54.6463900,metro_offset,16,derived,offset_ring,Campo Grande,br
+Campo Grande - West,Mato Grosso do Sul,-20.4427800,-54.9363900,metro_offset,16,derived,offset_ring,Campo Grande,br
+Campo Grande - Northeast,Mato Grosso do Sul,-20.3127800,-54.4363900,metro_offset,16,derived,offset_ring,Campo Grande,br
+Campo Grande - Northwest,Mato Grosso do Sul,-20.3127800,-54.8563900,metro_offset,16,derived,offset_ring,Campo Grande,br
+Campo Grande - Southeast,Mato Grosso do Sul,-20.5727800,-54.4363900,metro_offset,16,derived,offset_ring,Campo Grande,br
+Campo Grande - Southwest,Mato Grosso do Sul,-20.5727800,-54.8563900,metro_offset,16,derived,offset_ring,Campo Grande,br
+Natal,Rio Grande do Norte,-5.7950000,-35.2094400,metro,17,geonames_br_2026_896708,anchor_city,Natal,br
+Natal - East,Rio Grande do Norte,-5.7950000,-34.9194400,metro_offset,17,derived,offset_ring,Natal,br
+Natal - North,Rio Grande do Norte,-5.6150000,-35.2094400,metro_offset,17,derived,offset_ring,Natal,br
+Natal - South,Rio Grande do Norte,-5.9750000,-35.2094400,metro_offset,17,derived,offset_ring,Natal,br
+Natal - West,Rio Grande do Norte,-5.7950000,-35.4994400,metro_offset,17,derived,offset_ring,Natal,br
+Natal - Northeast,Rio Grande do Norte,-5.6650000,-34.9994400,metro_offset,17,derived,offset_ring,Natal,br
+Natal - Northwest,Rio Grande do Norte,-5.6650000,-35.4194400,metro_offset,17,derived,offset_ring,Natal,br
+Natal - Southeast,Rio Grande do Norte,-5.9250000,-34.9994400,metro_offset,17,derived,offset_ring,Natal,br
+Natal - Southwest,Rio Grande do Norte,-5.9250000,-35.4194400,metro_offset,17,derived,offset_ring,Natal,br
+Teresina,Piauí,-5.0891700,-42.8019400,metro,18,geonames_br_2026_871126,anchor_city,Teresina,br
+Teresina - East,Piauí,-5.0891700,-42.5119400,metro_offset,18,derived,offset_ring,Teresina,br
+Teresina - North,Piauí,-4.9091700,-42.8019400,metro_offset,18,derived,offset_ring,Teresina,br
+Teresina - South,Piauí,-5.2691700,-42.8019400,metro_offset,18,derived,offset_ring,Teresina,br
+Teresina - West,Piauí,-5.0891700,-43.0919400,metro_offset,18,derived,offset_ring,Teresina,br
+Teresina - Northeast,Piauí,-4.9591700,-42.5919400,metro_offset,18,derived,offset_ring,Teresina,br
+Teresina - Northwest,Piauí,-4.9591700,-43.0119400,metro_offset,18,derived,offset_ring,Teresina,br
+Teresina - Southeast,Piauí,-5.2191700,-42.5919400,metro_offset,18,derived,offset_ring,Teresina,br
+Teresina - Southwest,Piauí,-5.2191700,-43.0119400,metro_offset,18,derived,offset_ring,Teresina,br
+Nova Iguaçu,Rio de Janeiro,-22.7591700,-43.4511100,metro,19,geonames_br_2026_843046,anchor_city,Nova Iguaçu,br
+Nova Iguaçu - East,Rio de Janeiro,-22.7591700,-43.1611100,metro_offset,19,derived,offset_ring,Nova Iguaçu,br
+Nova Iguaçu - North,Rio de Janeiro,-22.5791700,-43.4511100,metro_offset,19,derived,offset_ring,Nova Iguaçu,br
+Nova Iguaçu - South,Rio de Janeiro,-22.9391700,-43.4511100,metro_offset,19,derived,offset_ring,Nova Iguaçu,br
+Nova Iguaçu - West,Rio de Janeiro,-22.7591700,-43.7411100,metro_offset,19,derived,offset_ring,Nova Iguaçu,br
+Nova Iguaçu - Northeast,Rio de Janeiro,-22.6291700,-43.2411100,metro_offset,19,derived,offset_ring,Nova Iguaçu,br
+Nova Iguaçu - Northwest,Rio de Janeiro,-22.6291700,-43.6611100,metro_offset,19,derived,offset_ring,Nova Iguaçu,br
+Nova Iguaçu - Southeast,Rio de Janeiro,-22.8891700,-43.2411100,metro_offset,19,derived,offset_ring,Nova Iguaçu,br
+Nova Iguaçu - Southwest,Rio de Janeiro,-22.8891700,-43.6611100,metro_offset,19,derived,offset_ring,Nova Iguaçu,br
+João Pessoa,Paraíba,-7.1150000,-34.8630600,metro,20,geonames_br_2026_817511,anchor_city,João Pessoa,br
+João Pessoa - East,Paraíba,-7.1150000,-34.5730600,metro_offset,20,derived,offset_ring,João Pessoa,br
+João Pessoa - North,Paraíba,-6.9350000,-34.8630600,metro_offset,20,derived,offset_ring,João Pessoa,br
+João Pessoa - South,Paraíba,-7.2950000,-34.8630600,metro_offset,20,derived,offset_ring,João Pessoa,br
+João Pessoa - West,Paraíba,-7.1150000,-35.1530600,metro_offset,20,derived,offset_ring,João Pessoa,br
+João Pessoa - Northeast,Paraíba,-6.9850000,-34.6530600,metro_offset,20,derived,offset_ring,João Pessoa,br
+João Pessoa - Northwest,Paraíba,-6.9850000,-35.0730600,metro_offset,20,derived,offset_ring,João Pessoa,br
+João Pessoa - Southeast,Paraíba,-7.2450000,-34.6530600,metro_offset,20,derived,offset_ring,João Pessoa,br
+João Pessoa - Southwest,Paraíba,-7.2450000,-35.0730600,metro_offset,20,derived,offset_ring,João Pessoa,br

@@ -282,6 +282,17 @@ The Google Maps scraper supports multiple countries with geographic center data:
 | at | Austria | 7 | Major cities only |
 | ch | Switzerland | 7 | Major cities only |
 | pt | Portugal | 5 | Major cities only |
+| mx | Mexico | 243 | Anchor + offset rings (27 metros) |
+| br | Brazil | 180 | Anchor + offset rings (20 metros) |
+| ar | Argentina | 63 | Hybrid: rings on BA/Córdoba/Rosario core |
+| co | Colombia | 153 | Anchor + offset rings (17 metros) |
+| cl | Chile | 29 | Hybrid: rings on Santiago + Antofagasta |
+| pe | Peru | 15 | Major cities only |
+| ve | Venezuela | 15 | Major cities only |
+| ec | Ecuador | 15 | Major cities only |
+| bo | Bolivia | 12 | Major cities only |
+| py | Paraguay | 6 | Major cities only |
+| uy | Uruguay | 13 | Major cities only |
 
 ### Adding New Countries
 
@@ -307,6 +318,10 @@ European countries use a simplified approach:
 - Each city = 1 center, 3 zoom levels (10, 11, 12)
 - Good B2B coverage since most businesses are in major cities
 - Faster to implement and maintain
+
+### Latin American Countries
+
+Latin American countries (mx, br, ar, co, cl, pe, ve, ec, bo, py, uy) are generated from the GeoNames `cities15000` dataset by `backend/scraper/data/generate_country_centers.py`, which mirrors the AU/CA generator: it ranks cities by population, dedups metros within ~20 km, and emits anchor + offset rings for the large countries. Per-country config (top-N, ring threshold, bbox, force-include) lives in `COUNTRY_CONFIGS` in that script. Re-generate all with `python backend/scraper/data/generate_country_centers.py --all` (requires `geonames_cities15000.txt` + `admin1CodesASCII.txt` in the data dir). Source: GeoNames (CC BY 4.0 — credit geonames.org).
 
 ---
 
