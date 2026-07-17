@@ -156,6 +156,7 @@ async def _run_parent_startup():
 
     scraper_routes.cleanup_stale_jobs()
     enrichment_routes.cleanup_stale_jobs()
+    phone_enrichment_routes.cleanup_stale_phone_jobs()
     enrichment_routes.cleanup_old_files()
 
     try:

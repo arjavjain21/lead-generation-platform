@@ -2,6 +2,7 @@
 
 import json
 import logging
+import sqlite3
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +15,47 @@ logger = logging.getLogger(__name__)
 DATA_DIR = Path(__file__).parent.parent / "data"
 OUTPUT_DIR = DATA_DIR / "outputs"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _ensure_phone_schema() -> None:
+    """Idempotent schema migration for phone-enrichment job lifecycle.
+
+    Mirrors the ALTER-TABLE-if-missing pattern in ``shared/db.py::init_db``.
+    Phone jobs live in the shared ``jobs`` table (``job_type='phone_enrichment'``)
+    and rely on two columns for robust lifecycle management:
+
+      * ``last_heartbeat``  - bumped every 30s by the background runner so the
+        startup reaper (``cleanup_stale_phone_jobs``) can detect crashed/recycled
+        jobs instead of leaving them 'running' forever.
+      * ``cancelled_at``    - records when a user cancelled, mirroring the
+        enrichment store's ``set_cancelled``.
+
+    On a fully-migrated database these statements are no-ops (the columns already
+    exist). They exist only to be defensive on fresh/minimal installs that import
+    this module. Safe to run repeatedly. If the ``jobs`` table has not been
+    created yet (init_db pending), the function exits without doing anything.
+    """
+    db = get_db()
+    needed = {
+        "last_heartbeat": "TEXT",
+        "cancelled_at": "TEXT",
+    }
+    try:
+        existing = {
+            row["name"]
+            for row in db.execute("PRAGMA table_info(jobs)").fetchall()
+        }
+    except sqlite3.OperationalError:
+        # jobs table not created yet — init_db() owns creation; nothing to migrate
+        return
+    for col, coltype in needed.items():
+        if col not in existing:
+            db.execute(f"ALTER TABLE jobs ADD COLUMN {col} {coltype}")
+            db.commit()
+
+
+# Run at import so cleanup_stale_phone_jobs() can rely on the columns at startup
+_ensure_phone_schema()
 
 
 def create_phone_enrichment_job(
@@ -141,6 +183,95 @@ def set_job_error(job_id: str, error: str) -> None:
         (error, now, job_id),
     )
     db.commit()
+
+
+# -----------------------------------------------------------------------------
+# Lifecycle: heartbeat, stale detection, abandonment, cancellation
+# (mirrors shared/job_store_base.JobStoreBase — phone jobs reuse the ``jobs``
+#  table with job_type='phone_enrichment', so these operate on that table.)
+# -----------------------------------------------------------------------------
+
+def heartbeat(job_id: str) -> None:
+    """Update last_heartbeat for a running phone job.
+
+    Called every 30s by the background runner's heartbeat task so the startup
+    reaper can distinguish a live job from a crashed/recycled one. Mirrors
+    ``JobStoreBase.heartbeat``.
+    """
+    db = get_db()
+    now = datetime.now(timezone.utc).isoformat()
+    db.execute(
+        "UPDATE jobs SET last_heartbeat = ? WHERE job_id = ?",
+        (now, job_id),
+    )
+    db.commit()
+
+
+def get_stale_running_phone_jobs() -> list[str]:
+    """Return phone job_ids whose heartbeat is older than 2 minutes.
+
+    Mirrors ``JobStoreBase.get_stale_running_jobs_by_heartbeat``, scoped to
+    ``job_type='phone_enrichment'``. A job is only considered stale if it has
+    been alive for more than 3 minutes (so newly-started jobs whose heartbeat
+    isn't yet established are not falsely reaped). Used by
+    ``cleanup_stale_phone_jobs`` at startup.
+    """
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT job_id FROM jobs
+        WHERE job_type = 'phone_enrichment'
+          AND status IN ('running', 'queued')
+          AND (datetime(last_heartbeat) IS NULL
+               OR datetime(last_heartbeat) < datetime('now', '-2 minutes'))
+          AND datetime(created_at) < datetime('now', '-3 minutes')
+        """
+    ).fetchall()
+    return [row["job_id"] for row in rows]
+
+
+def set_abandoned(job_id: str, error: str) -> None:
+    """Mark a phone job abandoned (server crashed/restarted while processing).
+
+    Mirrors ``JobStoreBase.set_abandoned``.
+    """
+    db = get_db()
+    now = datetime.now(timezone.utc).isoformat()
+    db.execute(
+        "UPDATE jobs SET status = 'abandoned', error = ?, updated_at = ? WHERE job_id = ?",
+        (error, now, job_id),
+    )
+    db.commit()
+
+
+def set_cancelled(job_id: str) -> None:
+    """Mark a phone job cancelled by the user.
+
+    Mirrors ``JobStoreBase.set_cancelled``. Requires the ``cancelled_at`` column
+    (added idempotently by ``_ensure_phone_schema``).
+    """
+    db = get_db()
+    now = datetime.now(timezone.utc).isoformat()
+    db.execute(
+        "UPDATE jobs SET status = 'cancelled', cancelled_at = ?, updated_at = ? WHERE job_id = ?",
+        (now, now, job_id),
+    )
+    db.commit()
+
+
+def is_job_cancelled(job_id: str) -> bool:
+    """Check if a phone job has been cancelled (DB check, cross-worker safe).
+
+    Mirrors ``JobStoreBase.is_job_cancelled``.
+    """
+    db = get_db()
+    row = db.execute(
+        "SELECT status FROM jobs WHERE job_id = ?",
+        (job_id,),
+    ).fetchone()
+    if row:
+        return row["status"] == "cancelled"
+    return False
 
 
 # -----------------------------------------------------------------------------

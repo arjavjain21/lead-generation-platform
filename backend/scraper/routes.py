@@ -49,6 +49,21 @@ _active_jobs: set[str] = set()
 _cancelled_jobs: set[str] = set()
 
 
+def _regions_for_cache(regions: dict) -> dict:
+    """Return a copy of ``regions`` with the ``expected_types`` key removed.
+
+    ``expected_types`` is persisted inside the job's regions blob (see
+    ``start_job``) so that restart/resume can recover the original type filter.
+    It must NOT, however, participate in ``generate_region_signature`` — it has
+    its own dedicated signature via ``generate_expected_types_signature``. If it
+    were left in, the region signature (and therefore cache_id) of every job
+    would change, invalidating existing cache entries and breaking the
+    fresh-job happy path. Stripping it here keeps the region signature
+    byte-identical to a fresh job's signature.
+    """
+    return {k: v for k, v in regions.items() if k != "expected_types"}
+
+
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
@@ -665,6 +680,7 @@ async def start_job(
         country=req.country,
         states=req.states,
         cities=req.cities,
+        zips=req.zips,
         center_ids=req.center_ids,
     )
 
@@ -699,6 +715,11 @@ async def start_job(
         "cities": req.cities,
         "zips": req.zips,
         "center_ids": req.center_ids,
+        # Persist expected_types inside the regions blob so restart/resume can
+        # recover the original type filter. It is stripped back out before any
+        # cache signature is computed (see _regions_for_cache), so it does NOT
+        # alter generate_region_signature for a fresh job.
+        "expected_types": req.expected_types or [],
     }
 
     store = job_store.get_store()
@@ -1025,8 +1046,16 @@ async def resume_scraper_job(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse regions: {str(e)}")
 
+    # Recover the original expected_types filter (persisted in regions at
+    # creation time). get_centers_for_job does not accept expected_types, so we
+    # pull it out before unpacking the rest of the region kwargs.
+    resume_expected_types = original_regions.get("expected_types", []) or []
+    centers_kwargs = {
+        k: v for k, v in original_regions.items() if k != "expected_types"
+    }
+
     # Get filtered centers
-    filtered_centers, errors = centers_module.get_centers_for_job(**original_regions)
+    filtered_centers, errors = centers_module.get_centers_for_job(**centers_kwargs)
 
     if errors and not filtered_centers:
         raise HTTPException(status_code=400, detail="; ".join(errors))
@@ -1171,7 +1200,7 @@ async def resume_scraper_job(
         tasks=pending_tasks,
         api_key=api_key,
         output_path=output_path,
-        expected_types=None,
+        expected_types=resume_expected_types,
         cancelled_jobs=_cancelled_jobs
     )
 
@@ -1246,13 +1275,23 @@ async def restart_scraper_job(
 
     # Create new job
     new_job_id = str(uuid.uuid4())
+    # Carry forward zips AND expected_types from the original job config.
+    # zips is part of generate_region_signature, so omitting it here would give
+    # the restarted job a different cache_id than the original (cache never hits).
+    # expected_types is persisted in the regions blob (see start_job) and drives
+    # both the type filter and generate_expected_types_signature.
     regions_payload = {
         "mode": regions.get("mode", "all"),
         "country": regions.get("country", "us"),
         "states": regions.get("states", []),
         "cities": regions.get("cities", []),
+        "zips": regions.get("zips", []),
         "center_ids": regions.get("center_ids", []),
+        "expected_types": regions.get("expected_types", []),
     }
+
+    # Recover the original expected_types filter (stored in regions at creation)
+    restart_expected_types = regions.get("expected_types", []) or []
 
     store.create_scraper_job(
         job_id=new_job_id,
@@ -1283,7 +1322,7 @@ async def restart_scraper_job(
         filtered_centers=filtered_centers,
         api_key=api_key,
         output_path=output_path,
-        expected_types=None,  # Could be stored in job if needed
+        expected_types=restart_expected_types,
         cancelled_jobs=_cancelled_jobs,  # Pass cancel tracking
     )
 
@@ -1314,6 +1353,11 @@ async def _run_job(
     store.set_running(job_id)
     seq = [0]
     requests_made = [0]  # Track actual API requests made
+    # Initialize result_count up-front so the cancelled-job partial-cache path
+    # (which runs in the `except RuntimeError` branch below) can safely reference
+    # it even when run_crawl raised before returning. Without this, a cancelled
+    # job with partial output hits UnboundLocalError and never caches its results.
+    result_count = 0
 
     async def on_progress(event: dict[str, Any]) -> None:
         # Get FRESH store instance for this thread
@@ -1398,7 +1442,7 @@ async def _run_job(
                 job_id=job_id,
                 user_id=user_id,
                 query=query,
-                regions=regions_dict,
+                regions=_regions_for_cache(regions_dict),
                 zooms=[10, 11, 12],
                 expected_types=expected_types,
                 result_file_path=output_path,
@@ -1452,7 +1496,7 @@ async def _run_job(
                             job_id=job_id,
                             user_id=user_id,
                             query=query,
-                            regions=regions_dict,
+                            regions=_regions_for_cache(regions_dict),
                             zooms=[10, 11, 12],
                             expected_types=expected_types,
                             result_file_path=output_path,
@@ -1527,35 +1571,57 @@ async def _run_job_with_tasks(
                 db.record_api_requests(user_id, 10)
 
     try:
-        # Initialize result_count from existing job data (for resume scenarios)
-        job_data = store.get_job(job_id)
-        result_count = job_data.get("result_count", 0) if job_data else 0
+        # Group pending (center, zoom) tasks by the exact set of zooms each
+        # center still needs. run_crawl() takes a single `zooms` list applied
+        # to every center (it computes centers × zooms internally), so we cannot
+        # express "center A needs zoom 10 only while center B needs all three"
+        # in one call. Instead we bucket centers that share the same pending-
+        # zoom set and make one run_crawl call per bucket. With zooms in
+        # {10,11,12} there are at most 7 non-empty buckets, and the common
+        # resume case (a few partially-done centers + many untouched ones that
+        # need all three) collapses to just 1-2 calls.
+        #
+        # This fixes "resume re-runs already-completed zoom levels": the prior
+        # code collapsed pending tasks to unique centers and re-applied ALL of
+        # [10,11,12] to each, so a center whose zoom-10 was already checkpointed
+        # complete got zoom-10 re-executed (a wasted paid scraper.tech call).
+        # By passing only the still-pending zooms per center, completed
+        # (center, zoom) pairs are never re-run.
+        #
+        # Dedupe across buckets: run_crawl re-loads the output file's dedupe
+        # keys at the start of every call (append mode) and flushes after each
+        # write, so a place written by bucket N is seen as duplicate by bucket
+        # N+1. Sequential calls preserve global uniqueness.
+        from collections import defaultdict
 
-        # CRITICAL: Call run_crawl ONCE with all unique pending centers.
-        # The crawler handles parallel execution internally with proper concurrency.
-        # Calling run_crawl once per (center, zoom) pair would re-open the CSV,
-        # re-load all dedupe keys, and process a single task each time.
-        # Instead, dedupe centers here and let the crawler manage zooms.
-        unique_centers = []
-        seen_center_keys = set()
-        for center, _ in tasks:
-            key = (center.get("name", ""), center.get("state", ""))
-            if key not in seen_center_keys:
-                seen_center_keys.add(key)
-                unique_centers.append(center)
+        zooms_by_center: dict[tuple[str, str], set[int]] = defaultdict(set)
+        first_center_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+        for center, zoom in tasks:
+            center_key = (center.get("name", ""), center.get("state", ""))
+            zooms_by_center[center_key].add(zoom)
+            if center_key not in first_center_by_key:
+                first_center_by_key[center_key] = center
 
-        result_count = await crawler_module.run_crawl(
-            job_id=job_id,
-            query=query,
-            centers=unique_centers,
-            api_key=api_key,
-            output_path=output_path,
-            on_progress=on_progress,
-            expected_types=expected_types,
-            cancelled_jobs=cancelled_jobs,
-            zooms=[10, 11, 12],
-            check_cancelled=store.is_job_cancelled,
-        )
+        # Bucket centers by their pending-zoom set, preserving first-seen order.
+        buckets: dict[tuple[int, ...], list[dict[str, Any]]] = {}
+        for center_key, zoom_set in zooms_by_center.items():
+            bucket_key = tuple(sorted(zoom_set))
+            buckets.setdefault(bucket_key, []).append(first_center_by_key[center_key])
+
+        result_count = 0
+        for bucket_zooms, bucket_centers in buckets.items():
+            result_count += await crawler_module.run_crawl(
+                job_id=job_id,
+                query=query,
+                centers=bucket_centers,
+                api_key=api_key,
+                output_path=output_path,
+                on_progress=on_progress,
+                expected_types=expected_types,
+                cancelled_jobs=cancelled_jobs,
+                zooms=list(bucket_zooms),
+                check_cancelled=store.is_job_cancelled,
+            )
 
         # Record remaining requests
         if not is_admin and requests_made[0] % 10 != 0:
@@ -1591,7 +1657,7 @@ async def _run_job_with_tasks(
                 job_id=job_id,
                 user_id=user_id,
                 query=query,
-                regions=regions_dict,
+                regions=_regions_for_cache(regions_dict),
                 zooms=[10, 11, 12],
                 expected_types=expected_types,
                 result_file_path=output_path,

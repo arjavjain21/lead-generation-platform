@@ -3725,29 +3725,45 @@ example.org,Jane Doe</pre>
 
             setButtonLoading(btn, true, 'Starting Enrichment...');
 
-            const res = await fetch('/api/enrichment/by-linkedin-v2', {
-                method: 'POST',
-                headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    upload_id: linkedinUploadId,
-                    personal_linkedin_col: personalCol || null,
-                    company_linkedin_col: companyCol || null,
-                    max_dms: parseInt(maxDms),
-                    include_company: includeCompany
-                })
-            });
-            if (res.ok) {
-                const data = await res.json();
-                currentJobId = data.job_id;
-                document.getElementById('linkedinTotal').textContent = data.total;
-                document.getElementById('linkedinProgress').style.display = 'block';
-                startProgressStream(currentJobId, 'linkedin');
-                setButtonLoading(btn, false, 'Start Enrichment');
-            } else {
-                const err = await res.json().catch(() => ({}));
-                errorContainer.textContent = 'Failed to start enrichment: ' + (err.detail || 'Unknown error');
+            let started = false;
+            try {
+                const res = await fetch('/api/enrichment/by-linkedin-v2', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        upload_id: linkedinUploadId,
+                        personal_linkedin_col: personalCol || null,
+                        company_linkedin_col: companyCol || null,
+                        max_dms: parseInt(maxDms),
+                        include_company: includeCompany
+                    })
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    currentJobId = data.job_id;
+                    document.getElementById('linkedinTotal').textContent = data.total;
+                    document.getElementById('linkedinProgress').style.display = 'block';
+                    setButtonLoading(btn, false, 'Job Started!');
+                    btn.classList.remove('btn-primary');
+                    btn.classList.add('btn-success');
+                    // Navigate to the Jobs page so the user sees the running
+                    // job (mirrors the Domain Enrich tab's post-start behavior).
+                    navigateToPage('jobs');
+                    // Start SSE stream
+                    startProgressStream(currentJobId, 'linkedin');
+                    started = true;
+                } else {
+                    const err = await res.json().catch(() => ({}));
+                    errorContainer.textContent = 'Failed to start enrichment: ' + (err.detail || 'Unknown error');
+                    errorContainer.style.display = 'block';
+                }
+            } catch (e) {
+                // Transient network/abort errors — surface them instead of
+                // leaving the button stuck on "Starting Enrichment...".
+                errorContainer.textContent = 'Failed to start enrichment: ' + e.message;
                 errorContainer.style.display = 'block';
-                setButtonLoading(btn, false, 'Start Enrichment');
+            } finally {
+                if (!started) setButtonLoading(btn, false, 'Start Enrichment');
             }
         });
 
@@ -4003,6 +4019,23 @@ example.org,Jane Doe</pre>
             btn.textContent = 'Download CSV';
         });
 
+        // Lazily create (or reuse) a non-blocking zero-email warning banner
+        // inside a progress panel. Reuses the .zero-email-warning style that
+        // the Jobs list already uses, so the live panel and the Jobs page stay
+        // visually consistent.
+        function ensureZeroEmailWarning(type) {
+            let el = document.getElementById(type + 'ZeroEmailWarning');
+            if (!el) {
+                el = document.createElement('div');
+                el.id = type + 'ZeroEmailWarning';
+                el.className = 'zero-email-warning';
+                el.style.display = 'none';
+                const card = document.getElementById(type + 'Progress');
+                if (card) card.appendChild(el);
+            }
+            return el;
+        }
+
         // Progress Stream
         function startProgressStream(jobId, type) {
             if (eventSource) eventSource.close();
@@ -4021,13 +4054,51 @@ example.org,Jane Doe</pre>
                 document.getElementById('rowProgress').style.display = 'block';
             }
 
+            // Clear any stale zero-email warning left over from a previous run
+            // that reused this progress panel.
+            const staleWarn = document.getElementById(type + 'ZeroEmailWarning');
+            if (staleWarn) staleWarn.style.display = 'none';
+
+            // Closure accumulators for the live counters. Per-row SSE events
+            // carry an `emails_found` value for THAT row only and omit a
+            // `processed` field, so we accumulate client-side (one event = one
+            // processed row). The final `done` event carries the authoritative
+            // cumulative totals and overrides whatever we tracked — see below.
+            let cumProcessed = 0;
+            let cumEmails = 0;
+
             eventSource.onmessage = (e) => {
                 const data = JSON.parse(e.data);
 
                 if (data.done) {
                     eventSource.close();
+                    // Apply the authoritative cumulative totals from the done
+                    // event BEFORE updating the UI, so the completed job shows
+                    // the real numbers instead of the last per-row value.
+                    if (typeof data.processed === 'number') cumProcessed = data.processed;
+                    if (typeof data.emails_found === 'number') cumEmails = data.emails_found;
+                    const doneTotal = (typeof data.total === 'number' && data.total > 0)
+                        ? data.total
+                        : (parseInt(document.getElementById(type + 'Total').textContent) || 1);
+                    const donePct = Math.min(100, Math.round((cumProcessed / doneTotal) * 100));
+                    document.getElementById(type + 'Processed').textContent = cumProcessed;
+                    document.getElementById(type + 'Emails').textContent = cumEmails;
+                    document.getElementById(type + 'ProgressBar').style.width = donePct + '%';
+                    document.getElementById(type + 'ProgressText').textContent = donePct + '%';
+
                     document.getElementById(type + 'Status').textContent = 'Completed';
                     document.getElementById('download' + type.charAt(0).toUpperCase() + type.slice(1) + 'Results').disabled = false;
+
+                    // Surface a visible, non-blocking warning when the job
+                    // produced 0 emails on a non-empty input. Reuses the same
+                    // .zero-email-warning banner the Jobs list uses.
+                    const warnEl = ensureZeroEmailWarning(type);
+                    if (doneTotal > 0 && cumEmails === 0) {
+                        warnEl.innerHTML = '<strong>⚠ Completed with 0 emails</strong> — the providers had no verified emails for any of the ' + doneTotal + ' rows in this list. Try other providers or a different list.';
+                        warnEl.style.display = 'flex';
+                    } else {
+                        warnEl.style.display = 'none';
+                    }
 
                     // Update activity to complete
                     const activityEl = document.getElementById('enrichmentActivity');
@@ -4042,9 +4113,23 @@ example.org,Jane Doe</pre>
                     return;
                 }
 
-                const processed = data.processed || 0, total = data.total || 1, percent = Math.round((processed/total)*100);
-                document.getElementById(type + 'Processed').textContent = processed;
-                document.getElementById(type + 'Emails').textContent = data.emails_found || 0;
+                // Accumulate live counters. Prefer an authoritative cumulative
+                // `processed` if the backend sends one; otherwise treat each
+                // event as one processed row. `emails_found` on these events is
+                // a per-row delta (verified against the backend runners), so we
+                // sum it into the running total. The `done` event overrides
+                // both with authoritative cumulative totals at the end.
+                if (typeof data.processed === 'number' && data.processed > cumProcessed) {
+                    cumProcessed = data.processed;
+                } else if (typeof data.processed !== 'number') {
+                    cumProcessed += 1;
+                }
+                const rowEmails = (typeof data.emails_found === 'number') ? data.emails_found : 0;
+                cumEmails += rowEmails;
+                const streamTotal = data.total || parseInt(document.getElementById(type + 'Total').textContent) || 1;
+                const percent = Math.min(100, Math.round((cumProcessed / streamTotal) * 100));
+                document.getElementById(type + 'Processed').textContent = cumProcessed;
+                document.getElementById(type + 'Emails').textContent = cumEmails;
                 document.getElementById(type + 'ProgressBar').style.width = percent + '%';
                 document.getElementById(type + 'ProgressText').textContent = percent + '%';
 
@@ -4062,8 +4147,8 @@ example.org,Jane Doe</pre>
                 }
 
                 // Update row progress for large jobs
-                if (total > 50) {
-                    document.getElementById('rowProgressText').textContent = `Processing ${processed.toLocaleString()} of ${total.toLocaleString()} rows...`;
+                if (streamTotal > 50) {
+                    document.getElementById('rowProgressText').textContent = `Processing ${cumProcessed.toLocaleString()} of ${streamTotal.toLocaleString()} rows...`;
                     document.getElementById('rowProgressPercent').textContent = percent + '%';
                     document.getElementById('rowProgressFill').style.width = percent + '%';
                 }
