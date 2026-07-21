@@ -1156,6 +1156,74 @@ async def get_default_cascade():
     return {"cascade": blitz_client.DEFAULT_CASCADE}
 
 
+async def _merge_by_company_into_contacts(
+    contacts: list[dict[str, Any]],
+    domain: str,
+    force_provider: Optional[str],
+) -> list[dict[str, Any]]:
+    """Phase 1c (2026-07-21): augment a response contacts list with every
+    Contacts DB person filed under the company, emails preserved as stored
+    (no mailtester). Shared by the single-row endpoints (POST /enrich, GET
+    /enrich, GET /enrich/{domain}). Gated by ENABLE_COMPANY_LOOKUP; skipped
+    when force_provider is set. Additive + deduped by email/name; a cascade
+    contact is replaced only if its email was stripped/empty (validated
+    emails are never overwritten -> no data loss).
+    """
+    if force_provider:
+        return contacts
+    if os.getenv("ENABLE_COMPANY_LOOKUP", "").strip().lower() not in ("1", "true", "yes"):
+        return contacts
+    try:
+        async with httpx.AsyncClient() as bc_http:
+            by_company = await contacts_client.company_persons_by_domain(
+                bc_http, domain, limit=500
+            )
+    except Exception as bc_err:
+        logger.warning("by-company lookup failed for %s: %s", domain, bc_err)
+        return contacts
+    if not by_company:
+        return contacts
+    logger.info("by-company %s: fetched=%d cascade=%d", domain, len(by_company), len(contacts))
+    seen_emails = {(c.get("email") or "").strip().lower() for c in contacts if c.get("email")}
+    seen_names = {(c.get("full_name") or "").strip().lower() for c in contacts if c.get("full_name")}
+    merged = list(contacts)
+    for bc in by_company:
+        em = (bc.get("email") or "").strip()
+        nm = (bc.get("full_name") or "").strip()
+        if not em and not nm:
+            continue
+        key_em = em.lower() if em else ""
+        key_nm = nm.lower() if nm else ""
+        if key_em and key_em in seen_emails:
+            continue
+        if key_nm and key_nm in seen_names:
+            existing = next((c for c in merged if (c.get("full_name") or "").strip().lower() == key_nm), None)
+            if existing and (existing.get("email") or "").strip():
+                continue
+            merged = [c for c in merged if (c.get("full_name") or "").strip().lower() != key_nm]
+        if key_em:
+            seen_emails.add(key_em)
+        if key_nm:
+            seen_names.add(key_nm)
+        merged.append({
+            "full_name": nm,
+            "first_name": bc.get("first_name", "") or "",
+            "last_name": bc.get("last_name", "") or "",
+            "title": bc.get("title", "") or "",
+            "email": em,
+            "linkedin_url": bc.get("linkedin_url", "") or "",
+            "headline": bc.get("headline", "") or "",
+            "location_city": bc.get("city", "") or "",
+            "location_country": bc.get("country", "") or "",
+            "icp_tier": 0,
+            "email_source": "contacts_db",
+            "validation_status": "preserved",
+            "email_verified": "unverified",
+            "verification_message": "",
+        })
+    return merged
+
+
 @router.get(
     "/enrich/{domain}",
     summary="Enrich a single domain with decision-maker contacts",
@@ -2316,6 +2384,9 @@ async def unified_enrich(
             sync_status = "success"
         else:
             sync_status = "no_contacts_to_sync"
+
+    # Phase 1c (2026-07-21): by-company augment (flag-gated, additive).
+    contacts = await _merge_by_company_into_contacts(contacts, domain, req.force_provider)
 
     return _strip_internal_fields_from_response({
         "domain": domain,
