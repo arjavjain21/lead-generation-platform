@@ -1376,6 +1376,82 @@ async def enrich_single_domain(
     except Exception as stats_err:
         logger.warning("Failed to record source stats for enrich_single_domain: %s", stats_err)
 
+    # Phase 1 (2026-07-21): by-company lookup — augment the RESPONSE with ALL
+    # persons filed under this company in the Contacts DB, with emails preserved
+    # AS-STORED (no mailtester re-validation; mailtester strips valid .mil/.gov
+    # emails as "No MX"). Runs AFTER the write-back sync on purpose: by-company
+    # rows already live in the Contacts DB, so re-syncing them is redundant and
+    # slow. Non-disruptive: the cascade + sync above ran unchanged. Same-name
+    # cascade contacts (emails possibly stripped) are replaced by the preserved
+    # by-company version. Gated by ENABLE_COMPANY_LOOKUP (default off). Skipped
+    # when force_provider is set, so a user forcing one provider gets only that.
+    if os.getenv("ENABLE_COMPANY_LOOKUP", "").strip().lower() in ("1", "true", "yes") and not force_provider:
+        try:
+            async with httpx.AsyncClient() as bc_http:
+                by_company = await contacts_client.company_persons_by_domain(
+                    bc_http, domain, limit=500
+                )
+            if by_company:
+                logger.info("by-company %s: fetched=%d cascade=%d", domain, len(by_company), len(contacts))
+                # Include every by-company row with an email and/or name (the
+                # loaded data includes nameless role/group emails — still "data
+                # in the table"). Dedup by email (primary) and name (secondary).
+                seen_emails: set[str] = set()
+                seen_names: set[str] = set()
+                merged: list[dict[str, Any]] = []
+                for c in contacts:
+                    em = (c.get("email") or "").strip().lower()
+                    nm = (c.get("full_name") or "").strip().lower()
+                    if em:
+                        seen_emails.add(em)
+                    if nm:
+                        seen_names.add(nm)
+                    merged.append(c)
+                for bc in by_company:
+                    em = (bc.get("email") or "").strip()
+                    nm = (bc.get("full_name") or "").strip()
+                    if not em and not nm:
+                        continue
+                    key_em = em.lower() if em else ""
+                    key_nm = nm.lower() if nm else ""
+                    if key_em and key_em in seen_emails:
+                        continue
+                    if key_nm and key_nm in seen_names:
+                        # Only replace a cascade contact if its email was
+                        # stripped/empty; if it carries a validated email, keep
+                        # it and skip this by-company duplicate (no data loss).
+                        existing = next((c for c in merged
+                                         if (c.get("full_name") or "").strip().lower() == key_nm), None)
+                        if existing and (existing.get("email") or "").strip():
+                            continue
+                        merged = [c for c in merged
+                                  if (c.get("full_name") or "").strip().lower() != key_nm]
+                    if key_em:
+                        seen_emails.add(key_em)
+                    if key_nm:
+                        seen_names.add(key_nm)
+                    merged.append({
+                        "full_name": nm,
+                        "first_name": bc.get("first_name", "") or "",
+                        "last_name": bc.get("last_name", "") or "",
+                        "title": bc.get("title", "") or "",
+                        "email": em,
+                        "linkedin_url": bc.get("linkedin_url", "") or "",
+                        "headline": bc.get("headline", "") or "",
+                        "location_city": bc.get("city", "") or "",
+                        "location_country": bc.get("country", "") or "",
+                        "icp_tier": 0,
+                        "email_source": "contacts_db",
+                        "validation_status": "preserved",
+                        "email_verified": "unverified",
+                        "verification_message": "",
+                    })
+                contacts = merged
+                if not sources.get("contacts"):
+                    sources["contacts"] = "contacts_db"
+        except Exception as bc_err:
+            logger.warning("by-company lookup failed for %s: %s", domain, bc_err)
+
     return _strip_internal_fields_from_response({
         "domain": domain,
         "company_linkedin_url": company_linkedin_url,

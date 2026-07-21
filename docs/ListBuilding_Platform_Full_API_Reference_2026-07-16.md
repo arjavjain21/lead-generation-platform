@@ -228,6 +228,16 @@ For `selected_providers` on GET, pass it as a comma-separated string:
 
 Older path-style single-domain lookup. Accepts `max_results`, `cascade_json`, `force_provider` as query params. Prefer the POST/GET form above for new integrations.
 
+**By-company Contacts DB lookup (added 2026-07-21).** When the `ENABLE_COMPANY_LOOKUP` env flag is `true` (set via the `lead-generation-platform.service` systemd drop-in), this endpoint additionally returns **every person filed under the company in the Contacts DB** — not only those whose email matches the lookup domain — with emails **preserved as stored** (no mailtester re-validation, so `.mil`/`.gov` emails are no longer dropped as "No MX"). These rows carry `email_source: "contacts_db"`, `validation_status: "preserved"`.
+
+- **Additive only** — the normal provider cascade (Contacts DB → Blitz → SmartProspect → WizLeads → BetterEnrich) runs unchanged; by-company rows are merged in afterward, so the contact count never drops below the cascade-only result.
+- **Skipped when `force_provider` is set** — forcing one provider returns only that provider's path.
+- A same-name cascade contact is replaced by the by-company version **only if its email was stripped/empty**; a validated cascade email is never overwritten.
+- Backed by a new Contacts API endpoint: `GET /v1/company/persons/by-domain?domain=&limit=&source=` (optional `source`, e.g. `outscraper`, filters by provenance).
+- **Disable:** remove (or set `=false` in) `/etc/systemd/system/lead-generation-platform.service.d/enable-company-lookup.conf` and restart the service.
+
+> The bulk list-building flow (`POST /api/enrichment/flows/domain-enrich`) **also** uses this by-company path (Phase 1B, 2026-07-21): when the flag is on, the output CSV additionally includes every Contacts DB person filed under each input company, tagged `dm_email_source="contacts_db_by_company"` (emails preserved, additive to the normal cascade results).
+
 ### A.4 Provider cascade order
 
 When resolving emails, the system queries providers in this order, stopping at the first one that returns a valid email:

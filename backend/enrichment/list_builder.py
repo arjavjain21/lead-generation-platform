@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import logging
+import os
 import urllib.parse
 import uuid
 from pathlib import Path
@@ -801,6 +802,77 @@ async def _enrich_single_domain(
     return output_rows
 
 
+async def _merge_by_company_contacts(
+    contacts_http: httpx.AsyncClient,
+    output_rows: list[dict[str, Any]],
+    domain: str,
+    base_row: dict[str, Any],
+    force_provider: Optional[str],
+) -> list[dict[str, Any]]:
+    """Phase 1B (2026-07-21): append EVERY Contacts DB person filed under the
+    company to ``output_rows``, emails preserved as stored (no mailtester).
+    Backs the bulk list-building flow so loaded/outscraper data is retrievable
+    by domain. Gated by ENABLE_COMPANY_LOOKUP; skipped when ``force_provider``
+    is set. Additive + deduped by email/name; a cascade row is replaced only
+    if its email was stripped/empty (validated emails are never overwritten →
+    no data loss). Tagged dm_email_source="contacts_db_by_company" so they're
+    distinguishable in the CSV.
+    """
+    if force_provider:
+        return output_rows
+    if os.getenv("ENABLE_COMPANY_LOOKUP", "").strip().lower() not in ("1", "true", "yes"):
+        return output_rows
+    try:
+        by_company = await contacts_client.company_persons_by_domain(
+            contacts_http, domain, limit=500
+        )
+    except Exception as e:
+        logger.debug("by-company lookup failed for %s: %s", domain, e)
+        return output_rows
+    if not by_company:
+        return output_rows
+    logger.info("by-company %s: fetched=%d cascade=%d", domain, len(by_company), len(output_rows))
+    seen_emails = {(r.get("dm_email") or "").strip().lower()
+                   for r in output_rows if r.get("dm_email")}
+    seen_names = {(r.get("dm_full_name") or "").strip().lower()
+                  for r in output_rows if r.get("dm_full_name")}
+    for bc in by_company:
+        em = (bc.get("email") or "").strip()
+        nm = (bc.get("full_name") or "").strip()
+        if not em and not nm:
+            continue
+        key_em = em.lower() if em else ""
+        key_nm = nm.lower() if nm else ""
+        if key_em and key_em in seen_emails:
+            continue
+        if key_nm and key_nm in seen_names:
+            existing = next((r for r in output_rows
+                             if (r.get("dm_full_name") or "").strip().lower() == key_nm), None)
+            if existing and (existing.get("dm_email") or "").strip():
+                continue  # keep validated cascade email; don't duplicate
+            output_rows = [r for r in output_rows
+                           if (r.get("dm_full_name") or "").strip().lower() != key_nm]
+        if key_em:
+            seen_emails.add(key_em)
+        if key_nm:
+            seen_names.add(key_nm)
+        row = {**base_row, **_empty_enriched()}
+        row["company_name"] = domain
+        row["dm_full_name"] = nm
+        row["dm_first_name"] = bc.get("first_name", "") or ""
+        row["dm_last_name"] = bc.get("last_name", "") or ""
+        row["dm_title"] = bc.get("title", "") or ""
+        row["dm_email"] = em
+        row["dm_email_source"] = "contacts_db_by_company"
+        row["dm_email_verified"] = "unverified"
+        row["dm_headline"] = bc.get("headline", "") or ""
+        row["dm_location_city"] = bc.get("city", "") or ""
+        row["dm_location_country"] = bc.get("country", "") or ""
+        row["row_status"] = STATUS_ENRICHED if em else STATUS_NO_CONTACTS
+        output_rows.append(row)
+    return output_rows
+
+
 async def _apply_company_fallback_to_output_rows(
     blitz_http: httpx.AsyncClient,
     output_rows: list[dict[str, Any]],
@@ -991,6 +1063,11 @@ async def run_domain_enrichment(
                 record_provider_use=record_provider_use,
                 cascade_config=cascade_config,
                 collector=collector,
+            )
+            # Phase 1B (2026-07-21): by-company Contacts DB augment (flag-gated,
+            # additive, emails preserved). See _merge_by_company_contacts.
+            result = await _merge_by_company_contacts(
+                contacts_http, result, domain, row, force_provider
             )
 
         # Call progress callback with exception handling

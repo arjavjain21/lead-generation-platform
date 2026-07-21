@@ -339,6 +339,41 @@ async def company_contacts_enriched(
         return []
 
 
+async def company_persons_by_domain(
+    client: httpx.AsyncClient, domain: str, limit: int = 100,
+    source: Optional[str] = None,
+) -> Optional[list[dict[str, Any]]]:
+    """
+    GET /v1/company/persons/by-domain?domain=<domain>&limit=<limit>[&source=<source>]
+    Returns ALL persons linked to the company whose website = domain
+    (company -> person_company_link -> person -> email). Emails are returned
+    AS-STORED (no verification) — used for the by-company lookup path (Phase 1)
+    so contacts loaded into the Contacts DB are retrievable by domain even when
+    their emails are not on the lookup domain. Returns None on 404/not found,
+    empty list if no persons. Includes retry/circuit-breaker via _get_with_retry.
+    """
+    params: dict[str, Any] = {"domain": domain, "limit": limit}
+    if source:
+        params["source"] = source
+    result = await _get_with_retry(
+        client,
+        f"{_base_url()}/v1/company/persons/by-domain",
+        params,
+        timeout=30.0,
+    )
+    if result is None:
+        return None
+    if isinstance(result, list):
+        return result
+    elif isinstance(result, dict) and "contacts" in result:
+        return result["contacts"]
+    elif isinstance(result, dict) and "data" in result:
+        return result["data"]
+    else:
+        logger.warning("Unexpected response format from company_persons_by_domain: %s", type(result))
+        return []
+
+
 def extract_email_from_contacts_response(data: Optional[dict[str, Any]]) -> Optional[str]:
     """Extract the best email from a Contacts DB person response."""
     return _extract_email(data)
