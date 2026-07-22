@@ -102,7 +102,7 @@
         .upload-zone.upload-success .upload-icon { color: var(--success); }
         .upload-zone.upload-error .upload-icon { color: var(--danger); }
         .upload-text { color: var(--gray-600); margin-bottom: 0.25rem; }
-        .upload-hint { color: var(--gray-400); font-size: 0.8rem; }
+        .upload-hint { color: var(--gray-600); font-size: 0.8rem; }
         .upload-progress { margin-top: 1rem; }
         .upload-progress-bar { width: 100%; height: 6px; background: var(--gray-200); border-radius: 3px; overflow: hidden; margin-top: 0.5rem; }
         .upload-progress-fill { height: 100%; background: var(--primary); border-radius: 3px; transition: width 0.3s; }
@@ -234,7 +234,7 @@
         .progress-step { display: flex; align-items: center; gap: 0.25rem; padding: 0.25rem 0.5rem; background: var(--gray-100); border-radius: 4px; font-size: 0.7rem; color: var(--gray-600); }
         .progress-step.active { background: #dbeafe; color: #1d4ed8; }
         .progress-step.complete { background: #d1fae5; color: #059669; }
-        .progress-step-pending { background: var(--gray-100); color: var(--gray-400); }
+        .progress-step-pending { background: var(--gray-100); color: var(--gray-600); }
         .progress-rate { display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--gray-500); margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--gray-200); }
         .progress-rate-value { font-weight: 600; color: var(--primary); }
         
@@ -262,6 +262,9 @@
         .status-cancelled { background: #ffedd5; color: #ea580c; }
         .status-abandoned { background: #f3e8ff; color: #7c3aed; }
         .status-partial { background: #e0f2fe; color: #0284c7; }
+        .status-stopped { background: #f1f5f9; color: #475569; }
+        .status-starting { background: #e0e7ff; color: #4338ca; }
+        .status-pending { background: #fef9c3; color: #a16207; }
 
         /* Warning banner for jobs that completed with 0 emails on a non-empty
            input. Almost always indicates a silent cascade bug — see
