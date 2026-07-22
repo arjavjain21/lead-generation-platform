@@ -39,7 +39,7 @@
         .user-avatar { width: 28px; height: 28px; background: var(--primary); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: 600; flex-shrink: 0; }
         .user-details { flex: 1; min-width: 0; }
         .user-email { font-size: 0.75rem; color: white; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .logout-btn { font-size: 0.65rem; color: var(--gray-400); cursor: pointer; }
+        .logout-btn { font-size: 0.65rem; color: var(--gray-400); cursor: pointer; padding: 0.4rem 0.8rem; border: none; background: inherit; }
         .logout-btn:hover { color: white; }
 
         /* Main Content */
@@ -625,18 +625,18 @@
         <nav class="sidebar-nav">
             <div class="nav-section">
                 <div class="nav-section-title">Main</div>
-                <a class="nav-item active" data-page="home"><span class="nav-icon" aria-label="Home"><i data-lucide="house"></i></span>Home</a>
-                <a class="nav-item" data-page="scraper"><span class="nav-icon" aria-label="Google Maps Scraper"><i data-lucide="map-pin"></i></span>Google Maps Scraper</a>
-                <a class="nav-item" data-page="domains"><span class="nav-icon" aria-label="Upload Domains"><i data-lucide="upload"></i></span>Upload Domains</a>
-                <a class="nav-item" data-page="search"><span class="nav-icon" aria-label="Company Search"><i data-lucide="search"></i></span>Company Search</a>
-                <a class="nav-item" data-page="linkedin"><span class="nav-icon" aria-label="LinkedIn Enrich"><i data-lucide="link"></i></span>LinkedIn Enrich</a>
-                <a class="nav-item" data-page="phones"><span class="nav-icon" aria-label="Phone Enrichment"><i data-lucide="phone"></i></span>Phone Enrichment</a>
-                <a class="nav-item" data-page="jobs"><span class="nav-icon" aria-label="Enrichment Jobs"><i data-lucide="zap"></i></span>Enrichment Jobs</a>
+                <a class="nav-item active" href="#" data-page="home"><span class="nav-icon" aria-label="Home"><i data-lucide="house"></i></span>Home</a>
+                <a class="nav-item" href="#" data-page="scraper"><span class="nav-icon" aria-label="Google Maps Scraper"><i data-lucide="map-pin"></i></span>Google Maps Scraper</a>
+                <a class="nav-item" href="#" data-page="domains"><span class="nav-icon" aria-label="Upload Domains"><i data-lucide="upload"></i></span>Upload Domains</a>
+                <a class="nav-item" href="#" data-page="search"><span class="nav-icon" aria-label="Company Search"><i data-lucide="search"></i></span>Company Search</a>
+                <a class="nav-item" href="#" data-page="linkedin"><span class="nav-icon" aria-label="LinkedIn Enrich"><i data-lucide="link"></i></span>LinkedIn Enrich</a>
+                <a class="nav-item" href="#" data-page="phones"><span class="nav-icon" aria-label="Phone Enrichment"><i data-lucide="phone"></i></span>Phone Enrichment</a>
+                <a class="nav-item" href="#" data-page="jobs"><span class="nav-icon" aria-label="Enrichment Jobs"><i data-lucide="zap"></i></span>Enrichment Jobs</a>
             </div>
             <div class="nav-section">
                 <div class="nav-section-title">Resources</div>
-                <a class="nav-item" data-page="apikeys"><span class="nav-icon" aria-label="API Keys"><i data-lucide="key"></i></span>API Keys</a>
-                <a class="nav-item" data-page="help"><span class="nav-icon" aria-label="Help & Guide"><i data-lucide="help-circle"></i></span>Help & Guide</a>
+                <a class="nav-item" href="#" data-page="apikeys"><span class="nav-icon" aria-label="API Keys"><i data-lucide="key"></i></span>API Keys</a>
+                <a class="nav-item" href="#" data-page="help"><span class="nav-icon" aria-label="Help & Guide"><i data-lucide="help-circle"></i></span>Help & Guide</a>
             </div>
         </nav>
         <div class="sidebar-footer">
@@ -644,7 +644,7 @@
                 <div class="user-avatar" id="userAvatar">?</div>
                 <div class="user-details">
                     <div class="user-email" id="userEmail">Loading...</div>
-                    <div class="logout-btn" id="logoutBtn">Sign out</div>
+                    <button type="button" class="logout-btn" id="logoutBtn">Sign out</button>
                 </div>
             </div>
         </div>
@@ -732,22 +732,22 @@
             
             <h3 style="margin-bottom:1rem; font-size:1.1rem;">Choose a Flow</h3>
             <div class="flow-grid">
-                <div class="flow-card" data-page="scraper">
+                <div class="flow-card" role="button" tabindex="0" data-page="scraper">
                     <div class="flow-icon"><i data-lucide="map-pin" class="icon-lg"></i></div>
                     <h4>Google Maps Scraper</h4>
                     <p>Scrape businesses from Google Maps by location and category. Find emails and phone numbers.</p>
                 </div>
-                <div class="flow-card" data-page="domains">
+                <div class="flow-card" role="button" tabindex="0" data-page="domains">
                     <div class="flow-icon"><i data-lucide="upload" class="icon-lg"></i></div>
                     <h4>Upload Domains</h4>
                     <p>Upload a CSV with company domains. We'll find generic emails and decision makers.</p>
                 </div>
-                <div class="flow-card" data-page="search">
+                <div class="flow-card" role="button" tabindex="0" data-page="search">
                     <div class="flow-icon"><i data-lucide="search" class="icon-lg"></i></div>
                     <h4>Search Companies</h4>
                     <p>Search by industry, size, location. Then enrich the results with contact data.</p>
                 </div>
-                <div class="flow-card" data-page="linkedin">
+                <div class="flow-card" role="button" tabindex="0" data-page="linkedin">
                     <div class="flow-icon"><i data-lucide="link" class="icon-lg"></i></div>
                     <h4>LinkedIn Enrichment</h4>
                     <p>Upload LinkedIn URLs. We'll find work emails and company details.</p>
@@ -838,7 +838,7 @@
                     </div>
                     <div class="filter-group" style="grid-column: span 2;">
                         <label id="scraperZipsUploadLabel">Or upload a CSV file with zip codes</label>
-                        <div class="upload-zone" id="scraperZipsUploadZone" style="padding:1rem;min-height:80px;">
+                        <div class="upload-zone" id="scraperZipsUploadZone" role="button" tabindex="0" aria-label="Upload CSV file" style="padding:1rem;min-height:80px;">
                             <input type="file" id="scraperZipsFile" accept=".csv" style="display:none;">
                             <div class="upload-icon"><i data-lucide="folder" class="icon-lg"></i></div>
                             <div class="upload-text" id="scraperZipsUploadText">Drop ZIP CSV or click to browse</div>
@@ -1022,7 +1022,7 @@
                 <div style="background:#f0f9ff;border-left:4px solid #1a315d;padding:12px;margin-bottom:1rem;border-radius:4px;font-size:0.85rem;color:#374151;">
                     <strong>How to use:</strong> Upload a CSV file with company domains (e.g., "acme.com"). The system will find LinkedIn company pages, then search for decision makers (CEO, VP, Directors) at each company and retrieve their work emails. Required column: <code>domain</code> (company website without https://)
                 </div>
-                <div class="upload-zone" id="domainUploadZone">
+                <div class="upload-zone" id="domainUploadZone" role="button" tabindex="0" aria-label="Upload CSV file">
                     <input type="file" id="domainFile" accept=".csv">
                     <div class="upload-icon"><i data-lucide="folder" class="icon-lg"></i></div>
                     <div class="upload-text">Drop CSV file or click to browse</div>
@@ -1316,7 +1316,7 @@
                 <div style="background:#f0f9ff;border-left:4px solid #1a315d;padding:12px;margin-bottom:1rem;border-radius:4px;font-size:0.85rem;color:#374151;">
                     <strong>How to use:</strong> Upload a CSV file with LinkedIn profile URLs. We'll find work emails, phone numbers, and company details for each person. Required column: <code>linkedin_url</code> (e.g., https://linkedin.com/in/johndoe)
                 </div>
-                <div class="upload-zone" id="linkedinUploadZone">
+                <div class="upload-zone" id="linkedinUploadZone" role="button" tabindex="0" aria-label="Upload CSV file">
                     <input type="file" id="linkedinFile" accept=".csv">
                     <div class="upload-icon"><i data-lucide="link" class="icon-lg"></i></div>
                     <div class="upload-text">Drop CSV file or click to browse</div>
@@ -1393,7 +1393,7 @@
                     <strong>Important:</strong> This feature looks up US phone numbers only using LinkedIn profile URLs.<br>
                     <strong>How it works:</strong> Upload a CSV with LinkedIn URLs. We'll look up phone numbers for each profile.
                 </div>
-                <div class="upload-zone" id="phoneUploadZone">
+                <div class="upload-zone" id="phoneUploadZone" role="button" tabindex="0" aria-label="Upload CSV file">
                     <input type="file" id="phoneFile" accept=".csv">
                     <div class="upload-icon"><i data-lucide="phone" class="icon-lg"></i></div>
                     <div class="upload-text">Drop CSV file or click to browse</div>
@@ -2090,6 +2090,16 @@ example.org,Jane Doe</pre>
             handleHashChange();
         });
 
+        // Keyboard accessibility for div-based clickables (upload zones + flow cards).
+        // One global delegated handler: Enter/Space triggers the existing click handler.
+        document.addEventListener('keydown', (e) => {
+            if ((e.key === 'Enter' || e.key === ' ') && e.target && e.target.classList &&
+                (e.target.classList.contains('upload-zone') || e.target.classList.contains('flow-card'))) {
+                e.preventDefault();
+                e.target.click();
+            }
+        });
+
         // Navigation - use router for all nav items
         document.querySelectorAll('.nav-item, .flow-card').forEach(el => {
             el.addEventListener('click', (e) => {
@@ -2329,6 +2339,10 @@ example.org,Jane Doe</pre>
         domainFile.addEventListener('change', (e) => { if (e.target.files.length) handleDomainFile(e.target.files[0]); });
         
         async function handleDomainFile(file) {
+            if (!file.name.endsWith('.csv')) {
+                alert('Please upload a CSV file.');
+                return;
+            }
             const uploadZone = document.getElementById('domainUploadZone');
             const originalContent = uploadZone.innerHTML;
             const fileSize = (file.size / 1024).toFixed(1) + ' KB';
@@ -3586,6 +3600,10 @@ example.org,Jane Doe</pre>
         linkedinFile.addEventListener('change', (e) => { if (e.target.files.length) handleLinkedinFile(e.target.files[0]); });
         
         async function handleLinkedinFile(file) {
+            if (!file.name.endsWith('.csv')) {
+                alert('Please upload a CSV file.');
+                return;
+            }
             const uploadZone = document.getElementById('linkedinUploadZone');
             const originalContent = uploadZone.innerHTML;
             const fileSize = (file.size / 1024).toFixed(1) + ' KB';
@@ -3798,6 +3816,10 @@ example.org,Jane Doe</pre>
         phoneFileInput.addEventListener('change', () => { if (phoneFileInput.files.length) handlePhoneFile(phoneFileInput.files[0]); });
 
         function handlePhoneFile(file) {
+            if (!file.name.endsWith('.csv')) {
+                alert('Please upload a CSV file.');
+                return;
+            }
             const originalContent = phoneUploadZone.innerHTML;
             const fileSize = (file.size / 1024).toFixed(1) + ' KB';
 
@@ -4590,7 +4612,7 @@ example.org,Jane Doe</pre>
                             actions += ' <button class="btn btn-warning btn-sm" data-action="resume" data-job-id="'+job.job_id+'" onclick="resumeEnrichmentJob(\''+job.job_id+'\', this)">↻ Resume</button>';
                             actions += ' <button class="btn btn-secondary btn-sm" data-action="retry" data-job-id="'+job.job_id+'" onclick="retryEnrichmentJob(\''+job.job_id+'\', this)">Retry Full</button>';
                         } else if (job.status === 'running' || job.status === 'queued' || job.status === 'starting') {
-                            actions += ' <button class="btn btn-danger btn-sm" onclick="cancelEnrichmentJob(\''+job.job_id+'\')">Cancel</button>';
+                            actions += ' <button class="btn btn-danger btn-sm" onclick="cancelEnrichmentJob(\''+job.job_id+'\', this)">Cancel</button>';
                         }
                         // Show error message for failed/abandoned/cancelled jobs with hover tooltip
                         let errorInfo = '';
@@ -4665,21 +4687,39 @@ example.org,Jane Doe</pre>
         }
 
         // Cancel an enrichment job
-        async function cancelEnrichmentJob(jobId) {
+        async function cancelEnrichmentJob(jobId, btn) {
             if (!confirm('Cancel this enrichment job?')) return;
+
+            // Show immediate feedback - disable button and show loading state (mirrors cancelScraperJob)
+            if (btn) {
+                btn.disabled = true;
+                btn.dataset.originalText = btn.textContent;
+                btn.innerHTML = '<span class="spinner" style="width:12px;height:12px;display:inline-block;"></span> Cancelling...';
+            }
+
             try {
                 const res = await fetch('/api/enrichment/jobs/' + jobId + '/cancel', {
                     method: 'POST',
                     headers: { 'Authorization': 'Bearer ' + token }
                 });
                 if (res.ok) {
-                    loadJobs(); // Refresh the list
+                    loadJobs(); // Refresh the list (button will be removed/re-rendered)
                 } else {
                     const err = await res.json();
                     alert('Failed to cancel: ' + (err.detail || 'Unknown error'));
+                    // Re-enable button on error
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.innerHTML = btn.dataset.originalText || 'Cancel';
+                    }
                 }
             } catch (e) {
                 alert('Error: ' + e.message);
+                // Re-enable button on error
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = btn.dataset.originalText || 'Cancel';
+                }
             }
         }
 
