@@ -346,6 +346,7 @@ async def company_contacts_enriched(
 async def company_persons_by_domain(
     client: httpx.AsyncClient, domain: str, limit: int = 100,
     source: Optional[str] = None,
+    exclude_source: Optional[str] = None,
 ) -> Optional[list[dict[str, Any]]]:
     """
     GET /v1/company/persons/by-domain?domain=<domain>&limit=<limit>[&source=<source>]
@@ -359,6 +360,8 @@ async def company_persons_by_domain(
     params: dict[str, Any] = {"domain": domain, "limit": limit}
     if source:
         params["source"] = source
+    if exclude_source:
+        params["exclude_source"] = exclude_source
     result = await _get_with_retry(
         client,
         f"{_base_url()}/v1/company/persons/by-domain",

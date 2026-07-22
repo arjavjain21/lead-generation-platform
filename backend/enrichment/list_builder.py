@@ -809,6 +809,7 @@ async def _merge_by_company_contacts(
     base_row: dict[str, Any],
     force_provider: Optional[str],
     source: Optional[str] = None,
+    limit: int = 25,
 ) -> list[dict[str, Any]]:
     """Phase 1B (2026-07-21): append EVERY Contacts DB person filed under the
     company to ``output_rows``, emails preserved as stored (no mailtester).
@@ -829,7 +830,7 @@ async def _merge_by_company_contacts(
         return output_rows
     try:
         by_company = await contacts_client.company_persons_by_domain(
-            contacts_http, domain, limit=500, source=source
+            contacts_http, domain, limit=limit, exclude_source=source
         )
     except Exception as e:
         logger.debug("by-company lookup failed for %s: %s", domain, e)
@@ -1073,7 +1074,7 @@ async def run_domain_enrichment(
             # Phase 1B (2026-07-21): by-company Contacts DB augment (flag-gated,
             # additive, emails preserved). See _merge_by_company_contacts.
             result = await _merge_by_company_contacts(
-                contacts_http, result, domain, row, force_provider, source=source
+                contacts_http, result, domain, row, force_provider, source=source, limit=max_decision_makers
             )
 
         # Call progress callback with exception handling

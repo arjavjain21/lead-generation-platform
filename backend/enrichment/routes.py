@@ -1161,6 +1161,7 @@ async def _merge_by_company_into_contacts(
     domain: str,
     force_provider: Optional[str],
     source: Optional[str] = None,
+    limit: int = 25,
 ) -> list[dict[str, Any]]:
     """Phase 1c (2026-07-21): augment a response contacts list with every
     Contacts DB person filed under the company, emails preserved as stored
@@ -1181,7 +1182,7 @@ async def _merge_by_company_into_contacts(
     try:
         async with httpx.AsyncClient() as bc_http:
             by_company = await contacts_client.company_persons_by_domain(
-                bc_http, domain, limit=500, source=source
+                bc_http, domain, limit=limit, exclude_source=source
             )
     except Exception as bc_err:
         logger.warning("by-company lookup failed for %s: %s", domain, bc_err)
@@ -1463,7 +1464,7 @@ async def enrich_single_domain(
         try:
             async with httpx.AsyncClient() as bc_http:
                 by_company = await contacts_client.company_persons_by_domain(
-                    bc_http, domain, limit=500, source=source
+                    bc_http, domain, limit=max_results, exclude_source=source
                 )
             if by_company:
                 logger.info("by-company %s: fetched=%d cascade=%d", domain, len(by_company), len(contacts))
@@ -2397,7 +2398,7 @@ async def unified_enrich(
             sync_status = "no_contacts_to_sync"
 
     # Phase 1c (2026-07-21): by-company augment (flag-gated, additive).
-    contacts = await _merge_by_company_into_contacts(contacts, domain, req.force_provider, req.source)
+    contacts = await _merge_by_company_into_contacts(contacts, domain, req.force_provider, req.source, limit=req.max_results)
 
     return _strip_internal_fields_from_response({
         "domain": domain,
