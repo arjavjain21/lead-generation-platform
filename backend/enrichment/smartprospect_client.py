@@ -287,7 +287,10 @@ async def _post_find_emails(
 
             # Retryable status (429 / 5xx).
             if _should_retry(resp.status_code):
-                await _smartprospect_circuit.record_failure()
+                # 429 = rate-limit, NOT a failure — don't trip the breaker
+                # (mirrors blitz fix). Retry/backoff self-limits.
+                if resp.status_code != 429:
+                    await _smartprospect_circuit.record_failure()
                 retry_after_raw = resp.headers.get("Retry-After")
                 retry_after = float(retry_after_raw) if retry_after_raw else None
                 delay = _backoff_delay(attempt, retry_after)
@@ -326,8 +329,10 @@ async def _post_find_emails(
             return [_normalize_response_contact(item) for item in items]
 
         except httpx.HTTPStatusError as exc:
-            await _smartprospect_circuit.record_failure()
             status = exc.response.status_code if exc.response is not None else 0
+            # 429 = rate-limit, NOT a failure — don't trip the breaker.
+            if status != 429:
+                await _smartprospect_circuit.record_failure()
             if status == 402:
                 logger.warning("SmartProspect: Insufficient credits (402)")
                 return _insufficient_credits_error("find_emails_batch")

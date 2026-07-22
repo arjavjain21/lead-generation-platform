@@ -165,8 +165,11 @@ async def _get_with_retry(
 
             # Check if we should retry this error
             if _should_retry(resp.status_code):
-                # Record circuit breaker failure
-                await _contacts_db_breaker.record_failure()
+                # 429 = rate-limit, NOT a service failure — don't trip the
+                # breaker (tripping degrades the cascade onto slower paid
+                # providers). Retry/backoff self-limits. Mirrors blitz fix.
+                if resp.status_code != 429:
+                    await _contacts_db_breaker.record_failure()
 
                 retry_after_raw = resp.headers.get("Retry-After")
                 retry_after = float(retry_after_raw) if retry_after_raw else None
@@ -199,8 +202,9 @@ async def _get_with_retry(
             if e.response.status_code == 422:
                 logger.debug("Contacts DB validation error (422) - skipping: %s", e.request.url)
                 return None
-            # Record circuit breaker failure
-            await _contacts_db_breaker.record_failure()
+            # Record circuit breaker failure — but NOT for 429 (rate-limit).
+            if e.response.status_code != 429:
+                await _contacts_db_breaker.record_failure()
 
             # For other errors, retry if appropriate
             last_exc = e

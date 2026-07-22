@@ -1160,6 +1160,7 @@ async def _merge_by_company_into_contacts(
     contacts: list[dict[str, Any]],
     domain: str,
     force_provider: Optional[str],
+    source: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Phase 1c (2026-07-21): augment a response contacts list with every
     Contacts DB person filed under the company, emails preserved as stored
@@ -1168,6 +1169,10 @@ async def _merge_by_company_into_contacts(
     when force_provider is set. Additive + deduped by email/name; a cascade
     contact is replaced only if its email was stripped/empty (validated
     emails are never overwritten -> no data loss).
+
+    Phase 2 (2026-07-22): optional ``source`` (e.g. "outscraper") narrows the
+    internal-DB lookup to contacts tagged with that source only. ``None`` →
+    all sources (today's behavior — no regression).
     """
     if force_provider:
         return contacts
@@ -1176,7 +1181,7 @@ async def _merge_by_company_into_contacts(
     try:
         async with httpx.AsyncClient() as bc_http:
             by_company = await contacts_client.company_persons_by_domain(
-                bc_http, domain, limit=500
+                bc_http, domain, limit=500, source=source
             )
     except Exception as bc_err:
         logger.warning("by-company lookup failed for %s: %s", domain, bc_err)
@@ -1257,6 +1262,7 @@ async def enrich_single_domain(
     max_results: int = 5,
     cascade_json: Optional[str] = None,
     force_provider: Optional[str] = None,
+    source: Optional[str] = None,
     current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """Enrich a single domain with decision-maker contacts."""
@@ -1457,7 +1463,7 @@ async def enrich_single_domain(
         try:
             async with httpx.AsyncClient() as bc_http:
                 by_company = await contacts_client.company_persons_by_domain(
-                    bc_http, domain, limit=500
+                    bc_http, domain, limit=500, source=source
                 )
             if by_company:
                 logger.info("by-company %s: fetched=%d cascade=%d", domain, len(by_company), len(contacts))
@@ -1591,6 +1597,11 @@ class UnifiedEnrichRequest(BaseModel):
     # Restrict cascade to a subset of providers (e.g., ["contacts_db", "smartprospect"]).
     # Mutually exclusive with force_provider. contacts_db always allowed.
     selected_providers: Optional[list[str]] = None
+    # Phase 2 (2026-07-22): optional Contacts DB source filter (e.g.
+    # "outscraper"). When set, narrows the by-company internal-DB lookup to
+    # contacts tagged with that source only. ``None`` → all sources (today's
+    # behavior — no regression). NOT a cascade provider.
+    source: Optional[str] = None
 
     class Config:
         schema_extra = {
@@ -2386,7 +2397,7 @@ async def unified_enrich(
             sync_status = "no_contacts_to_sync"
 
     # Phase 1c (2026-07-21): by-company augment (flag-gated, additive).
-    contacts = await _merge_by_company_into_contacts(contacts, domain, req.force_provider)
+    contacts = await _merge_by_company_into_contacts(contacts, domain, req.force_provider, req.source)
 
     return _strip_internal_fields_from_response({
         "domain": domain,
@@ -2456,6 +2467,15 @@ async def unified_enrich_get(
             "contacts_db is always allowed. Mutually exclusive with force_provider."
         ),
     ),
+    source: str = Query(
+        None,
+        description=(
+            "Optional Contacts DB source filter (e.g., 'outscraper'). When "
+            "set, narrows the internal-DB by-company lookup to contacts "
+            "tagged with that source only. NOT a cascade provider; ignored "
+            "by the paid waterfall."
+        ),
+    ),
     debug: bool = Query(
         False,
         description=(
@@ -2508,6 +2528,7 @@ async def unified_enrich_get(
         titles=titles,
         force_provider=force_provider,
         selected_providers=selected_providers_list,
+        source=source,
     )
 
     # Call the POST handler logic (reuse by calling unified_enrich internally)
@@ -4349,6 +4370,12 @@ class ProviderToggleRequest(BaseModel):
     # Pre-processing flags. Both default ON to preserve existing behavior.
     normalize_domains: bool = True
     dedupe_by_domain: bool = True
+    # Phase 2 (2026-07-22): optional Contacts DB source filter (e.g.
+    # "outscraper"). When set, narrows the by-company internal-DB lookup to
+    # contacts tagged with that source only. ``None`` → all sources (today's
+    # behavior — no regression). NOT a cascade provider; ignored by the paid
+    # waterfall.
+    source: Optional[str] = None
 
 
 @router.post("/flows/domain-enrich")
@@ -4479,6 +4506,7 @@ async def domain_enrich_with_providers(
         max_results=req.max_results,
         selected_providers=req.providers,
         normalize_domains=req.normalize_domains,
+        source=req.source,
     )
 
     return {
@@ -4504,6 +4532,7 @@ async def _run_domain_enrich_job(
     max_results: int = 5,
     selected_providers: Optional[list[str]] = None,
     normalize_domains: bool = True,
+    source: Optional[str] = None,
 ):
     """Background task to run domain enrichment using list_builder."""
     store = job_store.get_store()
@@ -4582,6 +4611,7 @@ async def _run_domain_enrich_job(
             collector=collector,
             company_linkedin_col=company_linkedin_col,
             linkedin_url_col=linkedin_url_col,
+            source=source,
         )
 
         # Attach input_* columns for visibility/debug.
@@ -4625,6 +4655,28 @@ async def _run_domain_enrich_job(
             out_df[ordered].to_csv(str(output_path), index=False)
         else:
             output_path.write_text("")
+
+        # Phase 3 (2026-07-22): if the job was cancelled mid-run (flag on),
+        # run_domain_enrichment RETURNED the partial output instead of raising.
+        # Persist what we have — CSV already written above; drain the collector
+        # to the contacts DB and mark the job 'partial' (or 'failed' if nothing
+        # was captured yet). Fixes the "cancel loses everything" data-loss bug.
+        # Default off = legacy behavior.
+        if os.getenv("ENABLE_INCREMENTAL_PERSISTENCE", "").strip().lower() in ("1", "true", "yes"):
+            _cancelled_mid_run = (job_id in _cancelled_jobs) or check_job_cancelled(job_id)
+            if _cancelled_mid_run:
+                _cancelled_jobs.discard(job_id)
+                if output_rows:
+                    store.set_status(job_id, "partial")
+                    logger.info("Domain enrich job %s cancelled mid-run: %d partial rows saved to %s + collector drained", job_id, len(output_rows), output_path)
+                else:
+                    store.set_failed(job_id, "Job was cancelled by user.")
+                    logger.info("Domain enrich job %s cancelled before any rows completed", job_id)
+                try:
+                    await _run_background_sync(job_id, output_path, collector=collector)
+                except Exception as drain_err:
+                    logger.error("Partial-job collector drain failed for %s: %s", job_id, drain_err)
+                return
 
         # Defensive guard: 0 output rows on a non-empty input is always a bug.
         # Phase 1a in list_builder raises when every row fails, but a silent

@@ -1165,6 +1165,11 @@
                             <label style="font-weight:600;cursor:pointer;">Better Enrich</label>
                             <span style="font-size:0.75rem;color:#64748b;">Runs if WizLeads has no data</span>
                         </div>
+                        <div style="display:flex;align-items:center;gap:8px; margin-top:10px; padding-top:10px; border-top:1px dashed #e2e8f0;">
+                            <input type="checkbox" id="provider_outscraper" style="width:16px;height:16px;cursor:pointer;">
+                            <label style="font-weight:600;cursor:pointer;">Outscraper (Google Maps)</label>
+                            <span style="font-size:0.75rem;color:#64748b;">Narrow the internal-DB lookup to Google-Maps/outscraper-sourced contacts</span>
+                        </div>
                     </div>
                 </div>
 
@@ -2478,6 +2483,11 @@ example.org,Jane Doe</pre>
             if (document.getElementById('provider_wizleads').checked) providers.push('wizleads');
             if (document.getElementById('provider_better_enrich').checked) providers.push('better_enrich');
 
+            // Phase 2: Outscraper is a SOURCE filter on the internal-DB
+            // (by-company) lookup, NOT a cascade provider. Unchecked (default)
+            // = all sources (today's behavior); checked = outscraper-tagged only.
+            const outscraperSource = document.getElementById('provider_outscraper').checked ? 'outscraper' : null;
+
             // Read pre-processing flags (default ON via the HTML checked attr)
             const normalizeDomains = document.getElementById('domain_normalize_domains').checked;
             const dedupeByDomain = document.getElementById('domain_dedupe_by_domain').checked;
@@ -2500,7 +2510,8 @@ example.org,Jane Doe</pre>
                         providers: providers.length > 0 ? providers : null,
                         normalize_domains: normalizeDomains,
                         dedupe_by_domain: dedupeByDomain,
-                        titles: customTitles
+                        titles: customTitles,
+                        source: outscraperSource
                     })
                 });
 

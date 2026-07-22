@@ -808,6 +808,7 @@ async def _merge_by_company_contacts(
     domain: str,
     base_row: dict[str, Any],
     force_provider: Optional[str],
+    source: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Phase 1B (2026-07-21): append EVERY Contacts DB person filed under the
     company to ``output_rows``, emails preserved as stored (no mailtester).
@@ -817,6 +818,10 @@ async def _merge_by_company_contacts(
     if its email was stripped/empty (validated emails are never overwritten →
     no data loss). Tagged dm_email_source="contacts_db_by_company" so they're
     distinguishable in the CSV.
+
+    Phase 2 (2026-07-22): optional ``source`` (e.g. "outscraper") narrows the
+    internal-DB lookup to contacts tagged with that source only. ``None`` →
+    all sources (today's behavior — no regression).
     """
     if force_provider:
         return output_rows
@@ -824,7 +829,7 @@ async def _merge_by_company_contacts(
         return output_rows
     try:
         by_company = await contacts_client.company_persons_by_domain(
-            contacts_http, domain, limit=500
+            contacts_http, domain, limit=500, source=source
         )
     except Exception as e:
         logger.debug("by-company lookup failed for %s: %s", domain, e)
@@ -947,6 +952,7 @@ async def run_domain_enrichment(
     normalize_domains: bool = True,  # Pre-processing flag: gate the per-row normalize_domain() call
     cascade_config: Optional[str] = None,  # NEW: JSON cascade config from job store
     collector: Optional[Any] = None,  # RawContactCollector; Phase 1 capture
+    source: Optional[str] = None,  # Phase 2: filter by-company Contacts DB lookup by source ("outscraper")
 ) -> list[OutputRow]:
     """
     Main entry point for Flow 1: Domain → Generic Emails + Decision Makers
@@ -1067,7 +1073,7 @@ async def run_domain_enrichment(
             # Phase 1B (2026-07-21): by-company Contacts DB augment (flag-gated,
             # additive, emails preserved). See _merge_by_company_contacts.
             result = await _merge_by_company_contacts(
-                contacts_http, result, domain, row, force_provider
+                contacts_http, result, domain, row, force_provider, source=source
             )
 
         # Call progress callback with exception handling
@@ -1077,9 +1083,9 @@ async def run_domain_enrichment(
                 # Collect source counts from results
                 source_counts: dict[str, int] = {}
                 for r in result:
-                    source = r.get("dm_email_source", "")
-                    if source:
-                        provider = _normalize_source(source)
+                    src = r.get("dm_email_source", "")
+                    if src:
+                        provider = _normalize_source(src)
                         source_counts[provider] = source_counts.get(provider, 0) + 1
                 emails_found = sum(1 for r in result if r.get("dm_email"))
                 progress_event = {
@@ -1152,9 +1158,25 @@ async def run_domain_enrichment(
     first_row_exception: Optional[Exception] = None
     row_exception_count = 0
 
+    # Phase 3 (2026-07-22): when the incremental-persistence flag is on, a
+    # mid-run cancellation RETURNS the partial output instead of raising — so
+    # the caller (_run_domain_enrich_job) can persist it (CSV + collector
+    # drain) rather than losing every row found so far. Default off = the
+    # legacy raise-and-lose behavior, so no regression until enabled.
+    _persist_flag_on = os.getenv("ENABLE_INCREMENTAL_PERSISTENCE", "").strip().lower() in ("1", "true", "yes")
+    _stopped_mid_run = False
+
     for batch_start in range(0, total, BATCH_SIZE):
         # Check cancellation at start of each batch
-        await check_cancelled_and_raise()
+        if _persist_flag_on:
+            try:
+                await check_cancelled_and_raise()
+            except RuntimeError:
+                logger.info("Job %s cancelled before batch %d — returning %d partial rows", job_id, batch_start, len(all_output))
+                _stopped_mid_run = True
+                break
+        else:
+            await check_cancelled_and_raise()
 
         batch_end = min(batch_start + BATCH_SIZE, total)
         batch_rows = rows[batch_start:batch_end]
@@ -1169,6 +1191,9 @@ async def run_domain_enrichment(
                 # Check if it's a cancellation error - if so, stop immediately
                 if "was cancelled" in str(result):
                     logger.info("Job %s cancellation raised, stopping batch processing", job_id)
+                    if _persist_flag_on:
+                        _stopped_mid_run = True
+                        break
                     raise result
                 logger.error("Row processing failed: %s", result)
                 row_exception_count += 1
@@ -1176,9 +1201,16 @@ async def run_domain_enrichment(
                     first_row_exception = result
             else:
                 all_output.extend(result)
+        if _stopped_mid_run:
+            break
 
     await blitz_http.aclose()
     await contacts_http.aclose()
+
+    # Phase 3: cancelled mid-run -> return partial output so the caller persists it.
+    if _stopped_mid_run:
+        logger.info("Job %s stopped mid-run — returning %d partial output rows", job_id, len(all_output))
+        return all_output
 
     # If every single row failed, surface the exception so the caller marks
     # the job as failed rather than "done with 0 rows". This is the safety
