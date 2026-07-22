@@ -1695,6 +1695,9 @@ example.org,Jane Doe</pre>
             let currentStatusFilter = 'all'; // Current status filter
             let allEnrichmentJobs = []; // Store all enrichment jobs for filtering
             let currentEnrichmentStatusFilter = 'all'; // Current enrichment status filter
+            let enrichmentCurrentPage = 1;
+            let enrichmentTotalJobs = 0;
+            const ENRICHMENT_PAGE_SIZE = 25;
 
             // =============================================================================
             // MODAL DIALOG SYSTEM - Global Modal Manager
@@ -4440,13 +4443,27 @@ example.org,Jane Doe</pre>
         }
 
         // Load enrichment jobs with improved status handling
-        async function loadJobs() {
+        async function loadJobs(page) {
+            // `page` is optional — when omitted, keep the current page.
+            // This preserves the existing behavior of the many `loadJobs()` no-arg call sites
+            // (cancel/retry/resume handlers just refresh the current page).
+            if (page !== undefined) {
+                enrichmentCurrentPage = page;
+            }
             const jobsList = document.getElementById('enrichmentJobsList');
             try {
-                const res = await fetch('/api/enrichment/jobs', { headers: { 'Authorization': 'Bearer ' + token } });
+                const params = new URLSearchParams({
+                    limit: ENRICHMENT_PAGE_SIZE,
+                    offset: (enrichmentCurrentPage - 1) * ENRICHMENT_PAGE_SIZE
+                });
+                if (currentEnrichmentStatusFilter !== 'all') {
+                    params.set('status', currentEnrichmentStatusFilter);
+                }
+                const res = await fetch('/api/enrichment/jobs?' + params, { headers: { 'Authorization': 'Bearer ' + token } });
                 if (res.ok) {
                     const data = await res.json();
                     allEnrichmentJobs = data.jobs || [];
+                    enrichmentTotalJobs = data.total || 0;
                     renderEnrichmentJobs();
                 } else {
                     jobsList.innerHTML = '<div class="empty-state">Failed to load</div>';
@@ -4464,7 +4481,10 @@ example.org,Jane Doe</pre>
                     if (tab.dataset.status === statusFilter) tab.classList.add('active');
                 });
             }
-            renderEnrichmentJobs();
+            // Server now filters via the `status` query param on /api/enrichment/jobs,
+            // so reset to page 1 and re-fetch.
+            enrichmentCurrentPage = 1;
+            loadJobs();
         }
 
         function renderEnrichmentJobs() {
@@ -4474,14 +4494,8 @@ example.org,Jane Doe</pre>
                 jobsList.innerHTML = '<div class="empty-state">No enrichment jobs yet</div>';
                 return;
             }
-            // Apply status filter
-            if (currentEnrichmentStatusFilter !== 'all') {
-                jobs = jobs.filter(job => job.status === currentEnrichmentStatusFilter);
-            }
-            if (jobs.length === 0) {
-                jobsList.innerHTML = '<div class="empty-state">No jobs match the current filter</div>';
-                return;
-            }
+            // Status filtering is now done server-side via the `status` query param
+            // (see loadJobs). Only the "no jobs yet" empty state remains here.
             jobsList.innerHTML = jobs.map(job => {
                         // Status display with human-readable labels
                         let statusLabel = job.status;
@@ -4630,7 +4644,24 @@ example.org,Jane Doe</pre>
                         }
 
                         return '<div class="job-card' + zeroEmailCardClass + '"><div class="job-info"><h4>' + (job.display_filename || job.filename || 'Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.processed||0) + '/' + (job.total||0) + ' | ' + (job.emails_found||0) + ' emails</div><div class="job-providers" style="font-size: 0.75rem; margin-top: 4px;"><div style="color: #1e40af;"><strong>Selected:</strong> ' + selectedDisplay + '</div><div style="color: #059669;"><strong>Used:</strong> ' + usedDisplay + '</div></div>' + errorInfo + providerErrorsDisplay + zeroEmailWarning + '</div><div class="actions">' + actions + '</div></div>';
-                    }).join('');
+                    }).join('') + renderEnrichmentPagination();
+        }
+
+        // Render the prev/next pagination row for the enrichment jobs list.
+        // Returns '' (no row) when everything fits on a single page.
+        function renderEnrichmentPagination() {
+            if (enrichmentTotalJobs <= ENRICHMENT_PAGE_SIZE) return '';
+            const totalPages = Math.ceil(enrichmentTotalJobs / ENRICHMENT_PAGE_SIZE);
+            const prevDisabled = enrichmentCurrentPage <= 1;
+            const nextDisabled = enrichmentCurrentPage >= totalPages;
+            return '<div style="display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 16px;">' +
+                '<button class="btn btn-secondary btn-sm" ' + (prevDisabled ? 'disabled' : '') +
+                    ' onclick="loadJobs(' + (enrichmentCurrentPage - 1) + ')">← Prev</button>' +
+                '<span style="font-size: 0.85rem; color: #475569;">Page ' + enrichmentCurrentPage + ' of ' + totalPages +
+                    ' (' + enrichmentTotalJobs + ' jobs)</span>' +
+                '<button class="btn btn-secondary btn-sm" ' + (nextDisabled ? 'disabled' : '') +
+                    ' onclick="loadJobs(' + (enrichmentCurrentPage + 1) + ')">Next →</button>' +
+            '</div>';
         }
 
         // Cancel an enrichment job
