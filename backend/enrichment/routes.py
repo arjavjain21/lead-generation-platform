@@ -3228,13 +3228,17 @@ def _owns_job(job: dict[str, Any], current_user: dict[str, Any]) -> bool:
 
 
 @router.get("/jobs")
-async def list_enrichment_jobs(current_user: dict = Depends(auth.get_current_user)):
-    """List enrichment jobs for current user (or all for admin)."""
+async def list_enrichment_jobs(
+    current_user: dict = Depends(auth.get_current_user),
+    limit: int = Query(25, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    status: Optional[str] = Query(None),
+):
+    """List enrichment jobs (paginated, optional status filter)."""
     store = job_store.get_store()
-    if current_user.get("is_admin"):
-        jobs = store.list_jobs(job_type="enrichment", limit=200)
-    else:
-        jobs = store.list_jobs(user_id=current_user["user_id"], job_type="enrichment", limit=200)
+    user_id = None if current_user.get("is_admin") else current_user["user_id"]
+    jobs = store.list_jobs(user_id=user_id, job_type="enrichment", limit=limit, offset=offset, status=status)
+    total = store.count_jobs(user_id=user_id, job_type="enrichment", status=status)
 
     # Enhance job display with user-friendly filenames
     for job in jobs:
@@ -3258,7 +3262,7 @@ async def list_enrichment_jobs(current_user: dict = Depends(auth.get_current_use
                 job["filename"] = "Unknown.csv"
                 job["display_filename"] = "Unknown.csv"
 
-    return {"jobs": jobs}
+    return {"jobs": jobs, "total": total, "limit": limit, "offset": offset}
 
 
 @router.post("/jobs")
