@@ -1449,6 +1449,8 @@
                     <button class="filter-tab" data-status="abandoned" onclick="filterEnrichmentJobs('abandoned')">Abandoned</button>
                     <button class="filter-tab" data-status="cancelled" onclick="filterEnrichmentJobs('cancelled')">Cancelled</button>
                 </div>
+                <input type="text" id="enrichmentSearchInput" placeholder="Search by filename, job ID, or status..."
+                       style="width:100%;padding:0.5rem 0.75rem;border:1px solid var(--gray-300);border-radius:6px;margin-bottom:0.75rem;font-size:0.85rem;">
                 <div class="jobs-list" id="enrichmentJobsList">
                     <div class="loading"><div class="spinner"></div>Loading...</div>
                 </div>
@@ -1698,6 +1700,20 @@ example.org,Jane Doe</pre>
             let enrichmentCurrentPage = 1;
             let enrichmentTotalJobs = 0;
             const ENRICHMENT_PAGE_SIZE = 25;
+            let enrichmentSearchQuery = '';
+            (function() {
+                var timer;
+                var si = document.getElementById('enrichmentSearchInput');
+                if (si) si.addEventListener('input', function() {
+                    clearTimeout(timer);
+                    var val = this.value;
+                    timer = setTimeout(function() {
+                        enrichmentSearchQuery = val.trim();
+                        enrichmentCurrentPage = 1;
+                        loadJobs();
+                    }, 300);
+                });
+            })();
 
             // =============================================================================
             // MODAL DIALOG SYSTEM - Global Modal Manager
@@ -4480,6 +4496,9 @@ example.org,Jane Doe</pre>
                 });
                 if (currentEnrichmentStatusFilter !== 'all') {
                     params.set('status', currentEnrichmentStatusFilter);
+                }
+                if (enrichmentSearchQuery) {
+                    params.set('search', enrichmentSearchQuery);
                 }
                 const res = await fetch('/api/enrichment/jobs?' + params, { headers: { 'Authorization': 'Bearer ' + token } });
                 if (res.ok) {

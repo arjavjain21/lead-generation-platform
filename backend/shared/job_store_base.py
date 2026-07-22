@@ -259,6 +259,7 @@ class JobStoreBase:
         limit: int = 100,
         offset: int = 0,
         status: Optional[str] = None,
+        search: Optional[str] = None,
         include_hidden: bool = False,
     ) -> list[dict[str, Any]]:
         """List jobs with optional filtering by user, job type, and status.
@@ -286,6 +287,10 @@ class JobStoreBase:
             conditions.append("status = ?")
             params.append(status)
 
+        if search:
+            conditions.append("(original_filename LIKE ? OR filename LIKE ? OR job_id LIKE ? OR status LIKE ?)")
+            params.extend([f"%{search}%", f"%{search}%", f"%{search}%", f"%{search}%"])
+
         # Always exclude hidden jobs unless explicitly requested
         if not include_hidden:
             conditions.append("(hidden_from_ui IS NULL OR hidden_from_ui = 0)")
@@ -305,6 +310,7 @@ class JobStoreBase:
         user_id: Optional[str] = None,
         job_type: Optional[str] = None,
         status: Optional[str] = None,
+        search: Optional[str] = None,
         include_hidden: bool = False,
     ) -> int:
         """Count jobs matching the same filters as list_jobs (for pagination)."""
@@ -322,6 +328,10 @@ class JobStoreBase:
         if status is not None:
             conditions.append("status = ?")
             params.append(status)
+
+        if search:
+            conditions.append("(original_filename LIKE ? OR filename LIKE ? OR job_id LIKE ? OR status LIKE ?)")
+            params.extend([f"%{search}%", f"%{search}%", f"%{search}%", f"%{search}%"])
 
         if not include_hidden:
             conditions.append("(hidden_from_ui IS NULL OR hidden_from_ui = 0)")
