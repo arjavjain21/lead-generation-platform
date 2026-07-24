@@ -26,6 +26,10 @@ def _mocked_linkedin_runner(tmp_path):
     for m in ("set_running", "heartbeat", "set_done", "set_failed",
               "append_event", "write_checkpoint", "update_used_providers"):
         setattr(store, m, mock.MagicMock())
+    # The runner's post-call cancel check calls is_job_cancelled_or_abandoned.
+    # An unconfigured MagicMock returns a truthy value which would falsely trip
+    # the partial/cancel path — so explicitly model a normal, non-cancelled job.
+    store.is_job_cancelled_or_abandoned.return_value = False
 
     async def fake_enrich(*args, **kwargs):
         # Yield a few times so the heartbeat background task can fire.

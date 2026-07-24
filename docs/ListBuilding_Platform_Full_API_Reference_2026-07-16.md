@@ -238,6 +238,10 @@ Older path-style single-domain lookup. Accepts `max_results`, `cascade_json`, `f
 
 > The bulk list-building flow (`POST /api/enrichment/flows/domain-enrich`) **also** uses this by-company path (Phase 1B, 2026-07-21): when the flag is on, the output CSV additionally includes every Contacts DB person filed under each input company, tagged `dm_email_source="contacts_db_by_company"` (emails preserved, additive to the normal cascade results).
 
+**Phase 2 (2026-07-22) — `source` filter:** all enrichment entry points (`POST /enrich`, `GET /enrich/{domain}`, `POST /flows/domain-enrich`) accept an optional `source` param. Set `source="outscraper"` to narrow the by-company lookup to outscraper-sourced (Google Maps) contacts only; omit/`null` = all sources (default, no change). Backed by `company_persons_by_domain?source=...`. The UI exposes this as the "Outscraper (Google Maps)" checkbox in the Data Sources block. (Known gap: `GET /enrich` query form accepts `source` but has no by-company merge, so it's a no-op there — Phase 1c.)
+
+**Phase 3 (2026-07-22) — crash-safe jobs (`ENABLE_INCREMENTAL_PERSISTENCE`):** when this flag is on, a cancelled or crashed enrichment job persists its partial results — a partial CSV at `data/outputs/<job_id>.csv` plus a collector drain to the Contacts DB — and ends with `status="partial"` instead of losing all in-memory data. The partial CSV is downloadable via the usual `/jobs/{id}/download`. Default off; enabled in production via the `enable-incremental-persistence.conf` systemd drop-in.
+
 ### A.4 Provider cascade order
 
 When resolving emails, the system queries providers in this order, stopping at the first one that returns a valid email:
@@ -325,6 +329,8 @@ Fetch the current default via `GET /api/enrichment/default-cascade` (no auth).
 ## Section B: Bulk / CSV Enrichment
 
 All endpoints in this section require **JWT Bearer authentication** (API keys are not accepted).
+
+> **Crash-safety model (2026-07-22+).** Enrichment jobs now write their output CSV **incrementally** (batch-by-batch as each row group finishes) and push contacts to the Contacts DB incrementally via the outbox. A cancel or worker crash mid-run therefore never loses already-completed rows — the partial CSV on disk and the drained Contacts DB rows both survive. Such jobs end with `status="partial"` (instead of `failed` with total data loss) and are fully resumable: `POST /jobs/{job_id}/restart` reads per-row checkpoints, skips completed rows, and carries the prior partial CSV forward so the resumed job produces one complete file (see B.11, B.13). Controlled by the `ENABLE_INCREMENTAL_PERSISTENCE` flag (on in production via the `enable-incremental-persistence.conf` systemd drop-in).
 
 ### B.1 Upload a CSV: `POST /api/enrichment/upload`
 
@@ -460,21 +466,153 @@ Server-sent events stream of progress updates. Use to render live progress bars.
 
 ### B.9 Download final CSV: `GET /api/enrichment/jobs/{job_id}/download`
 
-Returns the final enriched CSV once the job is `done`. Returns HTTP 202 with `"Job not finished yet."` if the job is still queued or running.
+Returns the enriched CSV for a finished job. Works for `done`, `partial`, and `failed` jobs (for `failed`, only if a non-empty partial output exists on disk — otherwise returns HTTP 500 with the failure message). Returns HTTP 202 with `"Job not finished yet."` only when the job is still `queued` or `running`.
+
+| Job status | Behavior |
+| --- | --- |
+| `done` | Full CSV, filename `enriched_<job_id>.csv` |
+| `partial` | Partial CSV written before the cancel/crash, filename `partial_<name>_<job_id>.csv` |
+| `failed` (with partial output on disk) | Partial CSV, served with a log warning |
+| `failed` (no partial output) | HTTP 500 with the original failure message |
+| `queued` / `running` | HTTP 202 `"Job not finished yet."` |
+
+For live in-progress previews see **B.14 `/recover-partial`**; for chunked downloads of very large jobs see **B.16 `/shards`**.
 
 ### B.10 Download partial CSV: `GET /api/enrichment/jobs/{job_id}/partial-download`
 
-Returns whatever rows have been written so far while the job is still running. Useful for early inspection on long jobs.
+Returns whatever rows have been written so far while the job is still running. Useful for early inspection on long jobs. (For a status-guard-free variant that also works after cancel/failure, prefer **B.14 `/recover-partial`**.)
 
-### B.11 Restart job: `POST /api/enrichment/jobs/{job_id}/restart`
+### B.11 Restart job (true resume): `POST /api/enrichment/jobs/{job_id}/restart`
 
-Restart a `failed` or `abandoned` job from scratch. Returns a new `job_id`.
+Restarts a `failed`, `abandoned`, `cancelled`, **or** `partial` enrichment job. This is a **true resume**, not a from-scratch retry:
+
+1. Reads the original CSV and the prior job's per-row checkpoints.
+2. Skips rows whose checkpoints are already complete.
+3. **Carries the previous partial CSV into the new job** as `prepend_rows`, so the resumed job's output is one complete file (prior completed rows + newly processed rows).
+4. **Preserves the prior partial** on disk, renamed to `<original_job_id>_partial.csv` and registered as the original job's `partial_output_path` (the UI's "Download Partial" button reads this), so the pre-resume snapshot stays downloadable.
+5. Re-applies the original `selected_providers`, cascade config, normalize/dedupe flags, and column mapping — no body required.
+
+Returns a new `job_id` and the resume bookkeeping:
+
+```json
+{
+  "job_id": "<new job_id>",
+  "total": 4619,
+  "restarted_from": "<original job_id>",
+  "deduped_count": 4619
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `job_id` | New job carrying the resume forward (original is preserved) |
+| `total` | Row count in the **new** job (after dedupe of remaining unprocessed rows) |
+| `restarted_from` | The original `job_id` you POSTed to |
+| `deduped_count` | Rows dropped by domain dedupe on the re-read CSV |
+
+The UI's "Resume" button calls **B.13 `/resume-info`** first to show checkpoint counts, then POSTs here. Returns HTTP 409 if a restart for the same job is already active.
 
 ### B.12 Cancel job: `POST /api/enrichment/jobs/{job_id}/cancel`
 
-Cancel a `queued` or `running` job.
+Cancel a `queued` or `running` job. Already-completed rows remain on disk and the job ends in `partial` status (under the crash-safety model), so it is immediately resumable via B.11.
 
-### B.13 Source stats: `GET /api/enrichment/stats/sources`
+### B.13 Resume info: `GET /api/enrichment/jobs/{job_id}/resume-info`
+
+Auth required (JWT). Returns resume eligibility + partial-CSV status — exactly the shape the UI "Resume" button reads before deciding to POST to `/restart`.
+
+```bash
+curl https://listbuilding.eagleinfoservice.com/api/enrichment/jobs/$JOB_ID/resume-info \
+  -H "Authorization: Bearer YOUR_JWT"
+```
+
+**Response:**
+```json
+{
+  "filename": "domains.csv",
+  "status": "partial",
+  "total": 4619,
+  "checkpoint_count": 3120,
+  "partial_csv_exists": true,
+  "partial_csv_rows": 3118,
+  "emails_found": 2847,
+  "unprocessed": 1499,
+  "can_resume": true
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `filename` | Original uploaded filename (or internal name) |
+| `status` | Current job status |
+| `total` | Total rows in the original job |
+| `checkpoint_count` | Rows with a completed checkpoint on disk |
+| `partial_csv_exists` | True if a non-empty `<job_id>.csv` is on disk |
+| `partial_csv_rows` | Data rows in that partial CSV (header excluded) |
+| `emails_found` | Counter from the job record |
+| `unprocessed` | `max(0, total - checkpoint_count)` — rows a resume would still process |
+| `can_resume` | True if there are checkpoints **or** a partial CSV (i.e. a resume has something to carry forward) |
+
+### B.14 Recover partial CSV: `GET /api/enrichment/jobs/{job_id}/recover-partial`
+
+Auth required (JWT). **No status guard** — works for `running`, `partial`, `failed`, `cancelled`, and `abandoned` jobs. Streams whatever partial CSV exists as a `text/csv` attachment. The UI's "Download Partial" button calls this. Returns HTTP 404 `"No partial file available yet."` if no non-empty partial file exists.
+
+```bash
+curl https://listbuilding.eagleinfoservice.com/api/enrichment/jobs/$JOB_ID/recover-partial \
+  -H "Authorization: Bearer YOUR_JWT" \
+  -o partial.csv
+```
+
+Candidate paths checked in order: recorded `partial_output_path` → recorded `output_path` → live `data/outputs/<job_id>.csv` → renamed `data/outputs/<job_id>_partial.csv`. The first non-empty match is served; downloaded filename is `partial_<original_filename>_<job_id>.csv`. This endpoint complements `/download` (B.9), which is the right choice for finished jobs.
+
+### B.15 List download shards: `GET /api/enrichment/jobs/{job_id}/shards`
+
+Auth required (JWT). Lists virtual 10,000-row download shards for a job's live CSV. **Works while the job is still running** — each shard reports how many of its rows are already on disk and becomes downloadable (via B.16) as rows land.
+
+```bash
+curl https://listbuilding.eagleinfoservice.com/api/enrichment/jobs/$JOB_ID/shards \
+  -H "Authorization: Bearer YOUR_JWT"
+```
+
+**Response:**
+```json
+{
+  "job_id": "114e9ec3-51b8-445e-8fbc-417cba1fc516",
+  "shard_size": 10000,
+  "rows_on_disk": 23107,
+  "total": 46190,
+  "shards": [
+    { "shard": 0, "start_row": 0,     "end_row": 10000, "rows_available": 10000, "complete": true  },
+    { "shard": 1, "start_row": 10000, "end_row": 20000, "rows_available": 10000, "complete": true  },
+    { "shard": 2, "start_row": 20000, "end_row": 30000, "rows_available": 3107,  "complete": false },
+    { "shard": 3, "start_row": 30000, "end_row": 40000, "rows_available": 0,     "complete": false },
+    { "shard": 4, "start_row": 40000, "end_row": 46190, "rows_available": 0,     "complete": false }
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `shard_size` | Fixed at 10,000 rows |
+| `rows_on_disk` | Live count of data rows in the CSV right now |
+| `total` | Job's declared total row count (used to size the shard list when larger than `rows_on_disk`) |
+| `shards[].shard` | 0-based shard index (use as the `{shard}` path param in B.16) |
+| `shards[].start_row` / `end_row` | Inclusive row range this shard covers |
+| `shards[].rows_available` | How many of this shard's rows are already on disk |
+| `shards[].complete` | True once `rows_available` covers the full shard range |
+
+### B.16 Download one shard: `GET /api/enrichment/jobs/{job_id}/shard/{shard}`
+
+Auth required (JWT). **No status guard** — works for `running`, `done`, `partial`, `failed`, `cancelled`, and `abandoned`. Streams one 10,000-row shard of the live CSV as a `text/csv` attachment. Reads the file sequentially and never loads the whole thing into memory, so it is safe for 100K+ row jobs. Returns HTTP 400 on a negative shard index and HTTP 404 `"No data written yet."` if the CSV does not exist or is empty.
+
+```bash
+curl https://listbuilding.eagleinfoservice.com/api/enrichment/jobs/$JOB_ID/shard/2 \
+  -H "Authorization: Bearer YOUR_JWT" \
+  -o shard_2.csv
+```
+
+Use B.15 first to discover available shard indices and how many rows each contains. Downloaded filename pattern: `shard_<index>_<original_filename>_<job_id>.csv`. Each shard is self-contained (includes the CSV header), so shards can be downloaded independently and in any order.
+
+### B.17 Source stats: `GET /api/enrichment/stats/sources`
 
 ```bash
 curl -G https://listbuilding.eagleinfoservice.com/api/enrichment/stats/sources \
@@ -485,7 +623,7 @@ curl -G https://listbuilding.eagleinfoservice.com/api/enrichment/stats/sources \
 
 Returns per-provider email-extraction counts for the date range. Non-admins see only their own stats; admins see global.
 
-### B.14 Legacy endpoints
+### B.18 Legacy endpoints
 
 These endpoints still work but are deprecated. Prefer the modern equivalents above.
 
@@ -873,6 +1011,7 @@ Plain-text message about daily quota. No `Retry-After` header.
 
 | Date | Change |
 | --- | --- |
+| 2026-07-24 | Documented crash-safety model + resume/recovery endpoints: `/resume-info` (B.13), `/recover-partial` (B.14), `/shards` (B.15), `/shard/{shard}` (B.16). Updated `/download` (B.9) and `/restart` (B.11) to reflect partial/failed support and true-resume behavior. |
 | 2026-07-16 | Full API reference published. Added: phone enrichment, scraper, helper endpoints, auth matrix, rate limits, UI features, error reference. |
 | 2026-07-13 | `selected_providers` parameter added to `/api/enrichment/enrich`. Fail-loud guards prevent silent 0-email jobs. UI warning banner added. |
 | 2026-07-08 | SmartProspect (SmartLead Find Emails) added as 3rd provider. |

@@ -539,6 +539,22 @@ class JobStoreBase:
         )
         self.conn.commit()
 
+    def write_checkpoints_batch(self, job_id: str, indices: list[int]) -> None:
+        """Write checkpoints for many processed row indices in one transaction.
+
+        Idempotent (INSERT OR REPLACE on PRIMARY KEY (job_id, row_index)).
+        Used by the incremental enrichment writer to checkpoint a whole batch
+        (BATCH_SIZE rows) with a single commit instead of N.
+        """
+        if not indices:
+            return
+        now = _now()
+        self.conn.executemany(
+            "INSERT OR REPLACE INTO job_checkpoints (job_id, row_index, processed_at) VALUES (?, ?, ?)",
+            [(job_id, i, now) for i in indices],
+        )
+        self.conn.commit()
+
     def get_processed_indices(self, job_id: str) -> set[int]:
         """
         Get all processed row indices for a job.

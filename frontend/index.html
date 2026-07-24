@@ -4480,6 +4480,91 @@ example.org,Jane Doe</pre>
             }
         }
 
+        // Download a single 10K-row shard. Mirrors downloadEnrichmentPartial's
+        // blob logic but hits the per-shard endpoint. The server streams the
+        // shard's CSV slice (404 when the shard has no rows on disk yet).
+        async function downloadEnrichmentShard(jobId, shardIdx, btn) {
+            if (btn) { btn.disabled = true; btn.textContent = 'Downloading...'; }
+            try {
+                const res = await fetch('/api/enrichment/jobs/' + jobId + '/shard/' + shardIdx, {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (!res.ok) {
+                    let msg = 'Download failed';
+                    try { const err = await res.json(); msg = 'Download failed: ' + (err.detail || 'No shard file'); } catch (_) {}
+                    alert(msg);
+                    return;
+                }
+                const blob = await res.blob();
+                const cd = res.headers.get('content-disposition') || '';
+                const match = cd.match(/filename="?([^"]+)"?/);
+                const filename = match ? match[1] : `shard_${shardIdx}_${jobId.substr(0, 8)}.csv`;
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = filename;
+                document.body.appendChild(a); a.click();
+                document.body.removeChild(a); URL.revokeObjectURL(url);
+            } catch (e) {
+                alert('Error: ' + e.message);
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = 'Download'; }
+            }
+        }
+
+        // Toggle the per-shard download list under a job card. Fetches
+        // /shards ON DEMAND (only when the user clicks the chunks button —
+        // never auto-polled during renderEnrichmentJobs, to avoid extra load).
+        // Clicking again collapses an already-expanded list.
+        async function toggleEnrichmentShards(jobId, btn) {
+            const container = document.getElementById('shard-list-' + jobId);
+            if (!container) {
+                alert('Could not find shard list container');
+                return;
+            }
+            // Collapse if already loaded and visible
+            if (container.dataset.loaded === '1' && container.style.display !== 'none') {
+                container.style.display = 'none';
+                return;
+            }
+            const originalLabel = btn ? btn.textContent : '▦ Download in 10K chunks';
+            if (btn) { btn.disabled = true; btn.textContent = 'Loading...'; }
+            try {
+                const res = await fetch('/api/enrichment/jobs/' + jobId + '/shards', {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (!res.ok) {
+                    let msg = 'Could not load shards';
+                    try { const err = await res.json(); msg = 'Could not load shards: ' + (err.detail || 'Unknown error'); } catch (_) {}
+                    alert(msg);
+                    return;
+                }
+                const data = await res.json();
+                const shards = data.shards || [];
+                const shardSize = data.shard_size || 10000;
+                if (shards.length === 0) {
+                    container.innerHTML = '<div style="font-size:0.72rem;color:#6b7280;margin-top:6px;">No shards available for this job.</div>';
+                } else {
+                    const rows = shards.map(s => {
+                        const k = s.shard;
+                        const ready = s.rows_available || 0;
+                        const disabled = ready === 0 ? ' disabled' : '';
+                        const check = s.complete ? ' <span style="color:#059669;">✓</span>' : '';
+                        const dlBtn = '<button class="btn btn-secondary btn-sm"' + disabled + ' onclick="downloadEnrichmentShard(\'' + jobId + '\',' + k + ', this)">Download</button>';
+                        return '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">' +
+                            '<span>Shard ' + k + ': rows ' + s.start_row + '-' + s.end_row + ' · ' + ready + '/' + shardSize + ' ready' + check + '</span>' +
+                            dlBtn + '</div>';
+                    }).join('');
+                    container.innerHTML = '<div style="font-size:0.7rem;color:#374151;margin-top:6px;display:flex;flex-direction:column;gap:3px;">' + rows + '</div>';
+                }
+                container.dataset.loaded = '1';
+                container.style.display = 'block';
+            } catch (e) {
+                alert('Error: ' + e.message);
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = originalLabel; }
+            }
+        }
+
         // Load enrichment jobs with improved status handling
         async function loadJobs(page) {
             // `page` is optional — when omitted, keep the current page.
@@ -4632,6 +4717,16 @@ example.org,Jane Doe</pre>
                             actions += ' <button class="btn btn-secondary btn-sm" data-action="retry" data-job-id="'+job.job_id+'" onclick="retryEnrichmentJob(\''+job.job_id+'\', this)">Retry Full</button>';
                         } else if (job.status === 'running' || job.status === 'queued' || job.status === 'starting') {
                             actions += ' <button class="btn btn-danger btn-sm" onclick="cancelEnrichmentJob(\''+job.job_id+'\', this)">Cancel</button>';
+                            // Let the user pull the leads found so far WITHOUT cancelling.
+                            // /recover-partial has no status guard, so this works mid-run.
+                            actions += ' <button class="btn btn-secondary btn-sm" onclick="downloadEnrichmentPartial(\''+job.job_id+'\', this)">↓ Download progress</button>';
+                        }
+                        // Chunked shard download — reveals a per-shard download list
+                        // under the job card on click (toggle). The shard endpoint
+                        // serves any job on demand, so surface it on rows that have
+                        // (or will have) rows on disk: done/partial/running.
+                        if (job.status === 'done' || job.status === 'partial' || job.status === 'running') {
+                            actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleEnrichmentShards(\''+job.job_id+'\', this)">▦ Download in 10K chunks</button>';
                         }
                         // Show error message for failed/abandoned/cancelled jobs with hover tooltip
                         let errorInfo = '';
@@ -4684,7 +4779,7 @@ example.org,Jane Doe</pre>
                                 '</div>';
                         }
 
-                        return '<div class="job-card' + zeroEmailCardClass + '"><div class="job-info"><h4>' + (job.display_filename || job.filename || 'Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.processed||0) + '/' + (job.total||0) + ' | ' + (job.emails_found||0) + ' emails</div><div class="job-providers" style="font-size: 0.75rem; margin-top: 4px;"><div style="color: #1e40af;"><strong>Selected:</strong> ' + selectedDisplay + '</div><div style="color: #059669;"><strong>Used:</strong> ' + usedDisplay + '</div></div>' + errorInfo + providerErrorsDisplay + zeroEmailWarning + '</div><div class="actions">' + actions + '</div></div>';
+                        return '<div class="job-card' + zeroEmailCardClass + '"><div class="job-info"><h4>' + (job.display_filename || job.filename || 'Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.processed||0) + '/' + (job.total||0) + ' | ' + (job.emails_found||0) + ' emails</div><div class="job-providers" style="font-size: 0.75rem; margin-top: 4px;"><div style="color: #1e40af;"><strong>Selected:</strong> ' + selectedDisplay + '</div><div style="color: #059669;"><strong>Used:</strong> ' + usedDisplay + '</div></div>' + errorInfo + providerErrorsDisplay + zeroEmailWarning + '</div><div class="actions">' + actions + '</div><div id="shard-list-' + job.job_id + '"></div></div>';
                     }).join('') + renderEnrichmentPagination();
         }
 
