@@ -3575,14 +3575,34 @@ def _db_busy() -> HTTPException:
     )
 
 
+# Cache for _count_csv_data_rows keyed by (path, size, mtime_ns). While a job is
+# actively writing, size/mtime change every batch so the cache naturally
+# invalidates (re-scan is correct); for a stable/completed file, repeated
+# /shards + /resume-info calls hit the cache instead of re-scanning the CSV.
+_CSV_ROW_COUNT_CACHE: dict[tuple[str, int, int], int] = {}
+
+
 def _count_csv_data_rows(path: Path) -> int:
     """Count data RECORDS in a CSV without loading it (minus the header).
-    Uses csv.reader so quoted embedded newlines don't inflate the count."""
+    Uses csv.reader so quoted embedded newlines don't inflate the count.
+    Cached by (path, size, mtime_ns) to avoid re-scanning on repeat calls."""
     try:
-        with open(path, newline="", encoding="utf-8") as f:
-            return max(0, sum(1 for _ in csv.reader(f)) - 1)
+        st = path.stat()
     except Exception:
         return 0
+    key = (str(path), st.st_size, st.st_mtime_ns)
+    cached = _CSV_ROW_COUNT_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        with open(path, newline="", encoding="utf-8") as f:
+            n = max(0, sum(1 for _ in csv.reader(f)) - 1)
+    except Exception:
+        return 0
+    _CSV_ROW_COUNT_CACHE[key] = n
+    if len(_CSV_ROW_COUNT_CACHE) > 1000:  # bound growth across many jobs
+        _CSV_ROW_COUNT_CACHE.clear()
+    return n
 
 
 @router.get("/jobs/{job_id}/resume-info")

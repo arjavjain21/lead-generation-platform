@@ -1266,60 +1266,61 @@ async def run_domain_enrichment(
     _persist_flag_on = return_partial_on_cancel or os.getenv("ENABLE_INCREMENTAL_PERSISTENCE", "").strip().lower() in ("1", "true", "yes")
     _stopped_mid_run = False
 
-    for batch_start in range(0, total, BATCH_SIZE):
-        # Check cancellation at start of each batch
-        if _persist_flag_on:
-            try:
-                await check_cancelled_and_raise()
-            except RuntimeError:
-                logger.info("Job %s cancelled before batch %d — returning %d partial rows", job_id, batch_start, len(all_output))
-                _stopped_mid_run = True
-                break
-        else:
-            await check_cancelled_and_raise()
-
-        batch_end = min(batch_start + BATCH_SIZE, total)
-        batch_rows = rows[batch_start:batch_end]
-
-        # Process batch concurrently
-        tasks = [process_row(batch_start + i, row) for i, row in enumerate(batch_rows)]
-        batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # Collect batch results + track which input indices succeeded (for checkpointing)
-        batch_new: list[OutputRow] = []
-        done_indices: list[int] = []
-        for i, result in enumerate(batch_results):
-            if isinstance(result, Exception):
-                # Check if it's a cancellation error - if so, stop immediately
-                if "was cancelled" in str(result):
-                    logger.info("Job %s cancellation raised, stopping batch processing", job_id)
-                    if _persist_flag_on:
-                        _stopped_mid_run = True
-                        break
-                    raise result
-                logger.error("Row processing failed: %s", result)
-                row_exception_count += 1
-                if first_row_exception is None:
-                    first_row_exception = result
+    try:
+        for batch_start in range(0, total, BATCH_SIZE):
+            # Check cancellation at start of each batch
+            if _persist_flag_on:
+                try:
+                    await check_cancelled_and_raise()
+                except RuntimeError:
+                    logger.info("Job %s cancelled before batch %d — returning %d partial rows", job_id, batch_start, len(all_output))
+                    _stopped_mid_run = True
+                    break
             else:
-                all_output.extend(result)
-                batch_new.extend(result)
-                done_indices.append(batch_start + i)
+                await check_cancelled_and_raise()
 
-        # Durable snapshot for this batch (incremental persistence). Gated by
-        # write_incremental so legacy callers (write_incremental=False) are unchanged.
-        if write_incremental and batch_new:
-            await _flush_incremental_batch(batch_new, done_indices)
+            batch_end = min(batch_start + BATCH_SIZE, total)
+            batch_rows = rows[batch_start:batch_end]
 
-        if _stopped_mid_run:
-            break
+            # Process batch concurrently
+            tasks = [process_row(batch_start + i, row) for i, row in enumerate(batch_rows)]
+            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Close the incremental CSV writer if open (both normal + cancel paths reach here).
-    if csv_file:
-        try:
-            csv_file.close()
-        except Exception:
-            pass
+            # Collect batch results + track which input indices succeeded (for checkpointing)
+            batch_new: list[OutputRow] = []
+            done_indices: list[int] = []
+            for i, result in enumerate(batch_results):
+                if isinstance(result, Exception):
+                    # Check if it's a cancellation error - if so, stop immediately
+                    if "was cancelled" in str(result):
+                        logger.info("Job %s cancellation raised, stopping batch processing", job_id)
+                        if _persist_flag_on:
+                            _stopped_mid_run = True
+                            break
+                        raise result
+                    logger.error("Row processing failed: %s", result)
+                    row_exception_count += 1
+                    if first_row_exception is None:
+                        first_row_exception = result
+                else:
+                    all_output.extend(result)
+                    batch_new.extend(result)
+                    done_indices.append(batch_start + i)
+
+            # Durable snapshot for this batch (incremental persistence). Gated by
+            # write_incremental so legacy callers (write_incremental=False) are unchanged.
+            if write_incremental and batch_new:
+                await _flush_incremental_batch(batch_new, done_indices)
+
+            if _stopped_mid_run:
+                break
+    finally:
+        # Close the incremental CSV writer if open (both normal + cancel paths reach here).
+        if csv_file:
+            try:
+                csv_file.close()
+            except Exception:
+                pass
 
     await blitz_http.aclose()
     await contacts_http.aclose()
@@ -1713,54 +1714,55 @@ async def run_linkedin_enrichment(
     _persist_flag_on = return_partial_on_cancel or os.getenv("ENABLE_INCREMENTAL_PERSISTENCE", "").strip().lower() in ("1", "true", "yes")
     _stopped_mid_run = False
 
-    for batch_start in range(0, total, BATCH_SIZE):
-        # Check cancellation at start of each batch
-        if _persist_flag_on:
-            try:
-                await check_cancelled_and_raise()
-            except RuntimeError:
-                logger.info("Job %s cancelled before batch %d — returning %d partial rows", job_id, batch_start, len(all_output))
-                _stopped_mid_run = True
-                break
-        else:
-            await check_cancelled_and_raise()
-
-        batch_end = min(batch_start + BATCH_SIZE, total)
-        batch_rows = rows[batch_start:batch_end]
-
-        tasks = [process_row(batch_start + i, row) for i, row in enumerate(batch_rows)]
-        batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        batch_new: list[OutputRow] = []
-        done_indices: list[int] = []
-        for i, result in enumerate(batch_results):
-            if isinstance(result, Exception):
-                if "was cancelled" in str(result):
-                    logger.info("Job %s cancellation raised, stopping batch processing", job_id)
-                    if _persist_flag_on:
-                        _stopped_mid_run = True
-                        break
-                    raise result
-                logger.error("Row processing failed: %s", result)
+    try:
+        for batch_start in range(0, total, BATCH_SIZE):
+            # Check cancellation at start of each batch
+            if _persist_flag_on:
+                try:
+                    await check_cancelled_and_raise()
+                except RuntimeError:
+                    logger.info("Job %s cancelled before batch %d — returning %d partial rows", job_id, batch_start, len(all_output))
+                    _stopped_mid_run = True
+                    break
             else:
-                all_output.append(result)
-                batch_new.append(result)
-                done_indices.append(batch_start + i)
+                await check_cancelled_and_raise()
 
-        # Durable snapshot for this batch (incremental persistence). Gated by
-        # write_incremental so legacy callers (write_incremental=False) are unchanged.
-        if write_incremental and batch_new:
-            await _flush_incremental_batch(batch_new, done_indices)
+            batch_end = min(batch_start + BATCH_SIZE, total)
+            batch_rows = rows[batch_start:batch_end]
 
-        if _stopped_mid_run:
-            break
+            tasks = [process_row(batch_start + i, row) for i, row in enumerate(batch_rows)]
+            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Close the incremental CSV writer if open (both normal + cancel paths reach here).
-    if csv_file:
-        try:
-            csv_file.close()
-        except Exception:
-            pass
+            batch_new: list[OutputRow] = []
+            done_indices: list[int] = []
+            for i, result in enumerate(batch_results):
+                if isinstance(result, Exception):
+                    if "was cancelled" in str(result):
+                        logger.info("Job %s cancellation raised, stopping batch processing", job_id)
+                        if _persist_flag_on:
+                            _stopped_mid_run = True
+                            break
+                        raise result
+                    logger.error("Row processing failed: %s", result)
+                else:
+                    all_output.append(result)
+                    batch_new.append(result)
+                    done_indices.append(batch_start + i)
+
+            # Durable snapshot for this batch (incremental persistence). Gated by
+            # write_incremental so legacy callers (write_incremental=False) are unchanged.
+            if write_incremental and batch_new:
+                await _flush_incremental_batch(batch_new, done_indices)
+
+            if _stopped_mid_run:
+                break
+    finally:
+        # Close the incremental CSV writer if open (both normal + cancel paths reach here).
+        if csv_file:
+            try:
+                csv_file.close()
+            except Exception:
+                pass
 
     await blitz_http.aclose()
     await contacts_http.aclose()
@@ -2293,52 +2295,53 @@ async def run_unified_linkedin_enrichment(
     _stopped_mid_run = False
 
     all_output: list[OutputRow] = []
-    for batch_start in range(0, total, BATCH_SIZE):
-        # Check cancellation at start of each batch
-        if _persist_flag_on:
-            try:
-                await check_cancelled_and_raise()
-            except RuntimeError:
-                logger.info("Job %s cancelled before batch %d — returning %d partial rows", job_id, batch_start, len(all_output))
-                _stopped_mid_run = True
-                break
-        else:
-            await check_cancelled_and_raise()
-
-        batch_rows = rows[batch_start:batch_start + BATCH_SIZE]
-        tasks = [process_row(batch_start + i, row) for i, row in enumerate(batch_rows)]
-        batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        batch_new: list[OutputRow] = []
-        done_indices: list[int] = []
-        for i, result in enumerate(batch_results):
-            if isinstance(result, Exception):
-                if "was cancelled" in str(result):
-                    logger.info("Job %s cancellation raised, stopping batch processing", job_id)
-                    if _persist_flag_on:
-                        _stopped_mid_run = True
-                        break
-                    raise result
-                logger.error("LinkedIn row processing failed: %s", result)
+    try:
+        for batch_start in range(0, total, BATCH_SIZE):
+            # Check cancellation at start of each batch
+            if _persist_flag_on:
+                try:
+                    await check_cancelled_and_raise()
+                except RuntimeError:
+                    logger.info("Job %s cancelled before batch %d — returning %d partial rows", job_id, batch_start, len(all_output))
+                    _stopped_mid_run = True
+                    break
             else:
-                all_output.extend(result)
-                batch_new.extend(result)
-                done_indices.append(batch_start + i)
+                await check_cancelled_and_raise()
 
-        # Durable snapshot for this batch (incremental persistence). Gated by
-        # write_incremental so legacy callers (write_incremental=False) are unchanged.
-        if write_incremental and batch_new:
-            await _flush_incremental_batch(batch_new, done_indices)
+            batch_rows = rows[batch_start:batch_start + BATCH_SIZE]
+            tasks = [process_row(batch_start + i, row) for i, row in enumerate(batch_rows)]
+            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        if _stopped_mid_run:
-            break
+            batch_new: list[OutputRow] = []
+            done_indices: list[int] = []
+            for i, result in enumerate(batch_results):
+                if isinstance(result, Exception):
+                    if "was cancelled" in str(result):
+                        logger.info("Job %s cancellation raised, stopping batch processing", job_id)
+                        if _persist_flag_on:
+                            _stopped_mid_run = True
+                            break
+                        raise result
+                    logger.error("LinkedIn row processing failed: %s", result)
+                else:
+                    all_output.extend(result)
+                    batch_new.extend(result)
+                    done_indices.append(batch_start + i)
 
-    # Close the incremental CSV writer if open (both normal + cancel paths reach here).
-    if csv_file:
-        try:
-            csv_file.close()
-        except Exception:
-            pass
+            # Durable snapshot for this batch (incremental persistence). Gated by
+            # write_incremental so legacy callers (write_incremental=False) are unchanged.
+            if write_incremental and batch_new:
+                await _flush_incremental_batch(batch_new, done_indices)
+
+            if _stopped_mid_run:
+                break
+    finally:
+        # Close the incremental CSV writer if open (both normal + cancel paths reach here).
+        if csv_file:
+            try:
+                csv_file.close()
+            except Exception:
+                pass
 
     await blitz_http.aclose()
     await contacts_http.aclose()
