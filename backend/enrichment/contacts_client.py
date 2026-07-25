@@ -165,8 +165,11 @@ async def _get_with_retry(
 
             # Check if we should retry this error
             if _should_retry(resp.status_code):
-                # Record circuit breaker failure
-                await _contacts_db_breaker.record_failure()
+                # 429 = rate-limit, NOT a service failure — don't trip the
+                # breaker (tripping degrades the cascade onto slower paid
+                # providers). Retry/backoff self-limits. Mirrors blitz fix.
+                if resp.status_code != 429:
+                    await _contacts_db_breaker.record_failure()
 
                 retry_after_raw = resp.headers.get("Retry-After")
                 retry_after = float(retry_after_raw) if retry_after_raw else None
@@ -199,8 +202,9 @@ async def _get_with_retry(
             if e.response.status_code == 422:
                 logger.debug("Contacts DB validation error (422) - skipping: %s", e.request.url)
                 return None
-            # Record circuit breaker failure
-            await _contacts_db_breaker.record_failure()
+            # Record circuit breaker failure — but NOT for 429 (rate-limit).
+            if e.response.status_code != 429:
+                await _contacts_db_breaker.record_failure()
 
             # For other errors, retry if appropriate
             last_exc = e
@@ -336,6 +340,44 @@ async def company_contacts_enriched(
         return result["data"]
     else:
         logger.warning("Unexpected response format from company_contacts_enriched: %s", type(result))
+        return []
+
+
+async def company_persons_by_domain(
+    client: httpx.AsyncClient, domain: str, limit: int = 100,
+    source: Optional[str] = None,
+    exclude_source: Optional[str] = None,
+) -> Optional[list[dict[str, Any]]]:
+    """
+    GET /v1/company/persons/by-domain?domain=<domain>&limit=<limit>[&source=<source>]
+    Returns ALL persons linked to the company whose website = domain
+    (company -> person_company_link -> person -> email). Emails are returned
+    AS-STORED (no verification) — used for the by-company lookup path (Phase 1)
+    so contacts loaded into the Contacts DB are retrievable by domain even when
+    their emails are not on the lookup domain. Returns None on 404/not found,
+    empty list if no persons. Includes retry/circuit-breaker via _get_with_retry.
+    """
+    params: dict[str, Any] = {"domain": domain, "limit": limit}
+    if source:
+        params["source"] = source
+    if exclude_source:
+        params["exclude_source"] = exclude_source
+    result = await _get_with_retry(
+        client,
+        f"{_base_url()}/v1/company/persons/by-domain",
+        params,
+        timeout=30.0,
+    )
+    if result is None:
+        return None
+    if isinstance(result, list):
+        return result
+    elif isinstance(result, dict) and "contacts" in result:
+        return result["contacts"]
+    elif isinstance(result, dict) and "data" in result:
+        return result["data"]
+    else:
+        logger.warning("Unexpected response format from company_persons_by_domain: %s", type(result))
         return []
 
 

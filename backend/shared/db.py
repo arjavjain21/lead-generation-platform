@@ -173,6 +173,21 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_job_state_type
             ON job_state (state);
 
+        -- Per-row enrichment checkpoints (incremental resume support)
+        -- Tracks processed row indices per enrichment job so a resumed run
+        -- can skip already-completed rows. Idempotent — the live DB already
+        -- has this table (created by migrations/add_checkpoint_support.py),
+        -- so this is a no-op there; fresh DBs need it.
+        CREATE TABLE IF NOT EXISTS job_checkpoints (
+            job_id      TEXT NOT NULL,
+            row_index   INTEGER NOT NULL,
+            processed_at TEXT NOT NULL,
+            PRIMARY KEY (job_id, row_index)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_checkpoints_job
+            ON job_checkpoints (job_id);
+
         CREATE INDEX IF NOT EXISTS idx_phone_enrichments_url
             ON phone_enrichments (linkedin_url);
 

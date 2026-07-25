@@ -257,14 +257,19 @@ class JobStoreBase:
         user_id: Optional[str] = None,
         job_type: Optional[str] = None,
         limit: int = 100,
+        offset: int = 0,
+        status: Optional[str] = None,
+        search: Optional[str] = None,
         include_hidden: bool = False,
     ) -> list[dict[str, Any]]:
-        """List jobs with optional filtering by user and job type.
+        """List jobs with optional filtering by user, job type, and status.
 
         Args:
             user_id: Filter by user ID
             job_type: Filter by job type ('scraper' or 'enrichment')
             limit: Maximum number of jobs to return
+            offset: Number of jobs to skip (for pagination)
+            status: Filter by job status (e.g. 'done', 'running', 'failed')
             include_hidden: If False, excludes jobs marked with hidden_from_ui=1
         """
         conditions = []
@@ -278,18 +283,64 @@ class JobStoreBase:
             conditions.append("job_type = ?")
             params.append(job_type)
 
+        if status is not None:
+            conditions.append("status = ?")
+            params.append(status)
+
+        if search:
+            conditions.append("(original_filename LIKE ? OR filename LIKE ? OR job_id LIKE ? OR status LIKE ?)")
+            params.extend([f"%{search}%", f"%{search}%", f"%{search}%", f"%{search}%"])
+
         # Always exclude hidden jobs unless explicitly requested
         if not include_hidden:
             conditions.append("(hidden_from_ui IS NULL OR hidden_from_ui = 0)")
 
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         params.append(limit)
+        params.append(offset)
 
         rows = self.conn.execute(
-            f"SELECT * FROM jobs {where_clause} ORDER BY created_at DESC LIMIT ?",
+            f"SELECT * FROM jobs {where_clause} ORDER BY created_at DESC LIMIT ? OFFSET ?",
             params,
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def count_jobs(
+        self,
+        user_id: Optional[str] = None,
+        job_type: Optional[str] = None,
+        status: Optional[str] = None,
+        search: Optional[str] = None,
+        include_hidden: bool = False,
+    ) -> int:
+        """Count jobs matching the same filters as list_jobs (for pagination)."""
+        conditions = []
+        params = []
+
+        if user_id is not None:
+            conditions.append("user_id = ?")
+            params.append(user_id)
+
+        if job_type is not None:
+            conditions.append("job_type = ?")
+            params.append(job_type)
+
+        if status is not None:
+            conditions.append("status = ?")
+            params.append(status)
+
+        if search:
+            conditions.append("(original_filename LIKE ? OR filename LIKE ? OR job_id LIKE ? OR status LIKE ?)")
+            params.extend([f"%{search}%", f"%{search}%", f"%{search}%", f"%{search}%"])
+
+        if not include_hidden:
+            conditions.append("(hidden_from_ui IS NULL OR hidden_from_ui = 0)")
+
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        row = self.conn.execute(
+            f"SELECT COUNT(*) FROM jobs {where_clause}", params
+        ).fetchone()
+        return row[0] if row else 0
 
     def list_all_jobs_with_user(
         self, limit: int = 200, offset: int = 0
@@ -485,6 +536,22 @@ class JobStoreBase:
         self.conn.execute(
             "INSERT OR REPLACE INTO job_checkpoints (job_id, row_index, processed_at) VALUES (?, ?, ?)",
             (job_id, row_index, now),
+        )
+        self.conn.commit()
+
+    def write_checkpoints_batch(self, job_id: str, indices: list[int]) -> None:
+        """Write checkpoints for many processed row indices in one transaction.
+
+        Idempotent (INSERT OR REPLACE on PRIMARY KEY (job_id, row_index)).
+        Used by the incremental enrichment writer to checkpoint a whole batch
+        (BATCH_SIZE rows) with a single commit instead of N.
+        """
+        if not indices:
+            return
+        now = _now()
+        self.conn.executemany(
+            "INSERT OR REPLACE INTO job_checkpoints (job_id, row_index, processed_at) VALUES (?, ?, ?)",
+            [(job_id, i, now) for i in indices],
         )
         self.conn.commit()
 

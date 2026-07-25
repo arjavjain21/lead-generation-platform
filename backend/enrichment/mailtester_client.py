@@ -139,7 +139,7 @@ async def verify_email(
                 # FAIL OPEN on client errors
                 raise RuntimeError(f"Mailtester client error: {resp.status_code}")
 
-        except httpx.TimeoutError as e:
+        except httpx.TimeoutException as e:
             last_error = e
             if attempt < _MAX_RETRIES:
                 delay = _backoff_delay(attempt)

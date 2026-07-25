@@ -8,6 +8,7 @@ with a shared authentication system and unified job management.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import json
 import logging
@@ -28,6 +29,7 @@ from pydantic import BaseModel
 
 from shared import auth, db
 from shared.job_store_base import JobStoreBase
+from shared.mcp_auth import MCPAuthMiddleware
 from scraper import routes as scraper_routes
 from enrichment import routes as enrichment_routes
 from enrichment import blitz_client
@@ -52,17 +54,12 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 _raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000")
 ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 
-# Create FastAPI app
-app = FastAPI(title="Lead Generation Platform")
+# ---------------------------------------------------------------------------
+# Exception handlers (plain functions so they can be reused on the MCP sub-app)
+# ---------------------------------------------------------------------------
 
-
-@app.exception_handler(sqlite3.OperationalError)
 async def sqlite_locked_handler(_request: Request, exc: sqlite3.OperationalError):
-    """Return a clean 503 (with Retry-After) when the SQLite database is locked.
-
-    The download UI surfaces this as a recoverable, retryable error rather
-    than the cryptic 500 the user was previously seeing.
-    """
+    """Return a clean 503 (with Retry-After) when the SQLite database is locked."""
     msg = str(exc).lower()
     if "locked" in msg or "busy" in msg:
         logger.warning("SQLite lock contention, returning 503: %s", exc)
@@ -81,7 +78,6 @@ async def sqlite_locked_handler(_request: Request, exc: sqlite3.OperationalError
     )
 
 
-@app.exception_handler(Exception)
 async def global_exception_handler(_request: Request, exc: Exception):
     """Ensure all unhandled exceptions return JSON, not plain text 'Internal Server Error'."""
     if isinstance(exc, HTTPException):
@@ -93,6 +89,130 @@ async def global_exception_handler(_request: Request, exc: Exception):
     )
 
 
+# ---------------------------------------------------------------------------
+# MCP documentation oracle — atomic setup (Phase 1C)
+# ---------------------------------------------------------------------------
+# All-or-nothing pattern: if ANY step fails, _MCP_ENABLED stays False and
+# /mcp is NOT mounted. This prevents the partial-failure vulnerability
+# identified by the Phase 1C red-team review (mounted but unprotected).
+# ---------------------------------------------------------------------------
+
+_MCP_ENABLED = False
+_mcp_app = None  # type: ignore
+
+if os.environ.get("ENABLE_MCP_ORACLE", "true").lower() == "true":
+    try:
+        from mcp_oracle import mcp as _mcp_instance
+
+        _mcp_app = _mcp_instance.streamable_http_app()
+
+        # Defense in depth: register the same exception handlers on the
+        # sub-app so MCP errors render as JSON (not plaintext 500).
+        _mcp_app.add_exception_handler(Exception, global_exception_handler)
+        _mcp_app.add_exception_handler(sqlite3.OperationalError, sqlite_locked_handler)
+
+        # Auth middleware on the sub-app itself (stays protected even if
+        # the mount path ever changes).
+        _mcp_app.add_middleware(MCPAuthMiddleware)
+
+        _MCP_ENABLED = True
+        logger.info("MCP oracle configured successfully")
+    except Exception as _mcp_exc:
+        logger.warning("MCP oracle setup failed, will NOT mount: %s", _mcp_exc)
+        _MCP_ENABLED = False
+        _mcp_app = None
+
+
+# ---------------------------------------------------------------------------
+# Combined lifespan (Phase 1C): parent startup + MCP session manager
+# ---------------------------------------------------------------------------
+
+async def _run_parent_startup():
+    """Existing startup logic — extracted verbatim from the old @app.on_event.
+
+    Order matters: auth DB → main DB → call tracker → job state → cleanup → outbox.
+    Hard failures (auth/db init, stale cleanup) propagate; soft failures
+    (call tracker, job state, outbox) are caught and logged.
+    """
+    auth.init_auth_db()
+    db.init_db()
+
+    try:
+        call_tracker.init()
+        asyncio.create_task(_call_tracker_purge_loop())
+        asyncio.create_task(_call_tracker_health_loop())
+        logger.info("Started provider call tracker")
+    except Exception as e:
+        logger.warning("Failed to start call tracker: %s", e)
+
+    try:
+        state = enrichment_routes.job_store.get_store().restore_job_state()
+        enrichment_routes._cancelled_jobs.update(state.get("cancelled", set()))
+        enrichment_routes._active_jobs.update(state.get("active", set()))
+        logger.info("Restored job state: %d cancelled, %d active",
+                    len(state.get("cancelled", set())), len(state.get("active", set())))
+    except Exception as e:
+        logger.warning("Failed to restore job state: %s", e)
+
+    scraper_routes.cleanup_stale_jobs()
+    enrichment_routes.cleanup_stale_jobs()
+    phone_enrichment_routes.cleanup_stale_phone_jobs()
+    enrichment_routes.cleanup_old_files()
+
+    try:
+        from enrichment.contacts_writer import retry_outbox_loop
+        asyncio.create_task(retry_outbox_loop(interval_seconds=60))
+        logger.info("Started contacts_write_outbox retry loop")
+    except Exception as e:
+        logger.warning("Failed to start outbox retry loop: %s", e)
+
+
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Combined parent + MCP sub-app lifespan.
+
+    Flow:
+      1. Run parent startup (DB init, call tracker, job state, cleanup, outbox).
+         If this fails, the worker fails to start — matching pre-MCP behavior.
+      2. If parent startup succeeded AND _MCP_ENABLED, enter the MCP sub-app's
+         lifespan via AsyncExitStack. This starts the StreamableHTTPSessionManager
+         task group that MCP requests need.
+      3. Yield control to the app.
+      4. On shutdown (SIGTERM, SIGINT, exception): AsyncExitStack unwinds in
+         reverse order — MCP session manager shuts down first, then we exit.
+    """
+    # Step 1: parent startup (may raise — propagated to gunicorn, worker restarts)
+    await _run_parent_startup()
+    logger.info("Parent startup complete")
+
+    # Step 2: MCP lifespan (only if fully configured)
+    if _MCP_ENABLED and _mcp_app is not None:
+        try:
+            async with contextlib.AsyncExitStack() as stack:
+                await stack.enter_async_context(
+                    _mcp_app.router.lifespan_context(_mcp_app)
+                )
+                logger.info("MCP session manager started")
+                yield
+        finally:
+            logger.info("Lifespan shutdown complete (MCP session manager stopped)")
+    else:
+        # MCP not enabled — just yield
+        logger.info("MCP not enabled, lifespan yields without MCP")
+        yield
+        logger.info("Lifespan shutdown complete")
+
+
+# ---------------------------------------------------------------------------
+# Create FastAPI app (with combined lifespan)
+# ---------------------------------------------------------------------------
+
+app = FastAPI(title="Lead Generation Platform", lifespan=lifespan)
+
+# Register exception handlers on the parent app
+app.add_exception_handler(sqlite3.OperationalError, sqlite_locked_handler)
+app.add_exception_handler(Exception, global_exception_handler)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -100,6 +220,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Defense in depth: MCPAuthMiddleware on the parent self-scopes to /mcp/*
+# (it passes through /api/* untouched). The sub-app ALSO has its own
+# instance, so /mcp stays protected even if the mount path changes.
+if _MCP_ENABLED:
+    app.add_middleware(MCPAuthMiddleware)
 
 # Include module routers
 app.include_router(scraper_routes.router, tags=["scraper"])
@@ -138,53 +264,8 @@ class ChainJobRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
-
-@app.on_event("startup")
-async def startup():
-    """Initialize database and clean up stale jobs. users must exist before jobs (FK)."""
-    auth.init_auth_db()
-    db.init_db()
-
-    # Provider HTTP call tracker: creates schema + installs a global hook on
-    # httpx.AsyncClient so every outbound enrichment call is recorded.
-    # Best-effort, defensive — never blocks the underlying HTTP request.
-    # The purge loop keeps storage bounded; the health loop self-monitors the
-    # tracker itself so we detect any silent outage within ~1 hour.
-    try:
-        call_tracker.init()
-        asyncio.create_task(_call_tracker_purge_loop())
-        asyncio.create_task(_call_tracker_health_loop())
-        logger.info("Started provider call tracker")
-    except Exception as e:
-        logger.warning("Failed to start call tracker: %s", e)
-
-    # Restore in-memory job state from database (survives worker restarts)
-    try:
-        state = enrichment_routes.job_store.get_store().restore_job_state()
-        enrichment_routes._cancelled_jobs.update(state.get("cancelled", set()))
-        enrichment_routes._active_jobs.update(state.get("active", set()))
-        logger.info("Restored job state: %d cancelled, %d active",
-                    len(state.get("cancelled", set())), len(state.get("active", set())))
-    except Exception as e:
-        logger.warning("Failed to restore job state: %s", e)
-
-    # Clean up stale scraper jobs
-    scraper_routes.cleanup_stale_jobs()
-    # Clean up stale enrichment jobs
-    enrichment_routes.cleanup_stale_jobs()
-    # Clean up old uploads (7 days) and outputs (30 days)
-    enrichment_routes.cleanup_old_files()
-
-    # Start the Contacts DB outbox retry background task. Drains any
-    # contacts_write_outbox entries that hit transient failures (network,
-    # rate limits, 5xx) and re-attempts the upsert. Permanent errors
-    # (400, 404, 422) are marked failed and excluded from future retries.
-    try:
-        from enrichment.contacts_writer import retry_outbox_loop
-        asyncio.create_task(retry_outbox_loop(interval_seconds=60))
-        logger.info("Started contacts_write_outbox retry loop")
-    except Exception as e:
-        logger.warning("Failed to start outbox retry loop: %s", e)
+# Background task loops (used by lifespan via _run_parent_startup)
+# ---------------------------------------------------------------------------
 
 
 async def _call_tracker_purge_loop() -> None:
@@ -248,7 +329,7 @@ async def _call_tracker_health_loop() -> None:
 
 @shared_router.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "mcp_enabled": _MCP_ENABLED}
 
 
 @shared_router.post("/auth/login")
@@ -582,3 +663,19 @@ async def admin_list_users(_admin: dict = Depends(auth.require_admin)):
 # Include shared and admin routers
 app.include_router(shared_router)
 app.include_router(admin_router)
+
+# ---------------------------------------------------------------------------
+# Mount MCP documentation oracle (Phase 1C)
+# ---------------------------------------------------------------------------
+# Mounted AFTER all routers so it doesn't shadow any existing routes.
+# The MCPAuthMiddleware on the parent self-scopes to /mcp — it does NOT
+# enforce on /api/*. _mcp_app already has MCPAuthMiddleware registered
+# directly on it (defense in depth).
+# ---------------------------------------------------------------------------
+if _MCP_ENABLED and _mcp_app is not None:
+    try:
+        app.mount("/mcp", _mcp_app)
+        logger.info("MCP oracle mounted at /mcp")
+    except Exception as e:
+        logger.error("MCP mount failed, disabling: %s", e)
+        _MCP_ENABLED = False

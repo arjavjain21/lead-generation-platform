@@ -18,8 +18,36 @@ CACHE_DIR = db.CACHE_DIR
 CACHE_EXPIRY_DAYS = db.CACHE_EXPIRY_DAYS
 
 
+def _normalize_regions(regions) -> dict:
+    """Coerce ``regions`` into a dict, accepting either a dict or a JSON string.
+
+    Callers throughout the codebase read ``regions`` back from the jobs DB,
+    where it is stored via ``json.dumps(...)`` and therefore arrives as a
+    JSON *string* (not a dict). Letting a string reach ``.copy()`` /
+    ``json.dumps(...)`` raised ``AttributeError`` and double-encoded the
+    value respectively, which silently killed all cache writes. Returning
+    ``{}`` for ``None`` / ``""`` / ``"{}"`` keeps signature generation
+    stable and crash-free.
+    """
+    if isinstance(regions, dict):
+        return regions
+    if isinstance(regions, str):
+        stripped = regions.strip()
+        if stripped in ("", "{}"):
+            return {}
+        try:
+            parsed = json.loads(stripped)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
 def generate_region_signature(regions: dict) -> str:
     """Generate deterministic hash for region configuration."""
+    # Tolerate regions arriving as a JSON string (stored/read back from DB);
+    # also gracefully handles None / "" / "{}".
+    regions = _normalize_regions(regions)
     # Normalize: sort arrays for consistency
     normalized = regions.copy()
     if "states" in normalized:
@@ -135,6 +163,11 @@ def store_cache(
     """
     conn = db.get_db()
     now = datetime.now(timezone.utc)
+
+    # Normalize regions once: callers pass a JSON string (read back from the
+    # jobs DB) OR a dict. Use the dict form for both signature + storage so we
+    # never double-encode and stay byte-compatible with dict callers.
+    regions = _normalize_regions(regions)
 
     # Generate signatures
     region_sig = generate_region_signature(regions)

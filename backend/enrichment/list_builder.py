@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import logging
+import os
 import urllib.parse
 import uuid
 from pathlib import Path
@@ -801,6 +802,83 @@ async def _enrich_single_domain(
     return output_rows
 
 
+async def _merge_by_company_contacts(
+    contacts_http: httpx.AsyncClient,
+    output_rows: list[dict[str, Any]],
+    domain: str,
+    base_row: dict[str, Any],
+    force_provider: Optional[str],
+    source: Optional[str] = None,
+    limit: int = 25,
+) -> list[dict[str, Any]]:
+    """Phase 1B (2026-07-21): append EVERY Contacts DB person filed under the
+    company to ``output_rows``, emails preserved as stored (no mailtester).
+    Backs the bulk list-building flow so loaded/outscraper data is retrievable
+    by domain. Gated by ENABLE_COMPANY_LOOKUP; skipped when ``force_provider``
+    is set. Additive + deduped by email/name; a cascade row is replaced only
+    if its email was stripped/empty (validated emails are never overwritten →
+    no data loss). Tagged dm_email_source="contacts_db_by_company" so they're
+    distinguishable in the CSV.
+
+    Phase 2 (2026-07-22): optional ``source`` (e.g. "outscraper") narrows the
+    internal-DB lookup to contacts tagged with that source only. ``None`` →
+    all sources (today's behavior — no regression).
+    """
+    if force_provider:
+        return output_rows
+    if os.getenv("ENABLE_COMPANY_LOOKUP", "").strip().lower() not in ("1", "true", "yes"):
+        return output_rows
+    try:
+        by_company = await contacts_client.company_persons_by_domain(
+            contacts_http, domain, limit=limit, exclude_source=source
+        )
+    except Exception as e:
+        logger.debug("by-company lookup failed for %s: %s", domain, e)
+        return output_rows
+    if not by_company:
+        return output_rows
+    logger.info("by-company %s: fetched=%d cascade=%d", domain, len(by_company), len(output_rows))
+    seen_emails = {(r.get("dm_email") or "").strip().lower()
+                   for r in output_rows if r.get("dm_email")}
+    seen_names = {(r.get("dm_full_name") or "").strip().lower()
+                  for r in output_rows if r.get("dm_full_name")}
+    for bc in by_company:
+        em = (bc.get("email") or "").strip()
+        nm = (bc.get("full_name") or "").strip()
+        if not em and not nm:
+            continue
+        key_em = em.lower() if em else ""
+        key_nm = nm.lower() if nm else ""
+        if key_em and key_em in seen_emails:
+            continue
+        if key_nm and key_nm in seen_names:
+            existing = next((r for r in output_rows
+                             if (r.get("dm_full_name") or "").strip().lower() == key_nm), None)
+            if existing and (existing.get("dm_email") or "").strip():
+                continue  # keep validated cascade email; don't duplicate
+            output_rows = [r for r in output_rows
+                           if (r.get("dm_full_name") or "").strip().lower() != key_nm]
+        if key_em:
+            seen_emails.add(key_em)
+        if key_nm:
+            seen_names.add(key_nm)
+        row = {**base_row, **_empty_enriched()}
+        row["company_name"] = domain
+        row["dm_full_name"] = nm
+        row["dm_first_name"] = bc.get("first_name", "") or ""
+        row["dm_last_name"] = bc.get("last_name", "") or ""
+        row["dm_title"] = bc.get("title", "") or ""
+        row["dm_email"] = em
+        row["dm_email_source"] = "contacts_db_by_company"
+        row["dm_email_verified"] = "unverified"
+        row["dm_headline"] = bc.get("headline", "") or ""
+        row["dm_location_city"] = bc.get("city", "") or ""
+        row["dm_location_country"] = bc.get("country", "") or ""
+        row["row_status"] = STATUS_ENRICHED if em else STATUS_NO_CONTACTS
+        output_rows.append(row)
+    return output_rows
+
+
 async def _apply_company_fallback_to_output_rows(
     blitz_http: httpx.AsyncClient,
     output_rows: list[dict[str, Any]],
@@ -875,6 +953,15 @@ async def run_domain_enrichment(
     normalize_domains: bool = True,  # Pre-processing flag: gate the per-row normalize_domain() call
     cascade_config: Optional[str] = None,  # NEW: JSON cascade config from job store
     collector: Optional[Any] = None,  # RawContactCollector; Phase 1 capture
+    source: Optional[str] = None,  # Phase 2: filter by-company Contacts DB lookup by source ("outscraper")
+    # --- Incremental persistence (partial-download + resume) ---
+    output_path: Optional[Path] = None,
+    write_incremental: bool = False,
+    phone_col: Optional[str] = None,
+    company_name_col: Optional[str] = None,
+    existing_email_col: Optional[str] = None,
+    prepend_rows: Optional[list[dict]] = None,  # resume: carried-over partial rows (written first, NOT checkpointed)
+    return_partial_on_cancel: bool = False,  # Flow 1 runner: cancel returns partial (no raise) so the writer closes cleanly
 ) -> list[OutputRow]:
     """
     Main entry point for Flow 1: Domain → Generic Emails + Decision Makers
@@ -923,6 +1010,41 @@ async def run_domain_enrichment(
                     logger.info("Using cascade_config from job %s", job_id)
         except Exception as e:
             logger.warning("Failed to fetch cascade_config from job %s: %s", job_id, e)
+
+    # --- Incremental CSV writer (mirrors pipeline.run_pipeline's proven pattern) ---
+    # When write_incremental is on, the output CSV is flushed batch-by-batch so a
+    # running job is live-downloadable and a crash/cancel never loses completed rows.
+    write_lock = asyncio.Lock()
+    csv_file = None
+    csv_writer = None
+    if write_incremental and output_path and rows:
+        try:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            _first_keys = list(rows[0].keys())
+            all_columns = _first_keys + [c for c in ENRICHED_COLUMNS if c not in _first_keys]
+            # Always a fresh file for this job_id (resume creates a NEW job_id, so
+            # the file is new). Carried-over partial rows (resume) are written right
+            # after the header, before the first batch.
+            csv_file = open(output_path, "w", newline="", encoding="utf-8")
+            csv_writer = csv.DictWriter(csv_file, fieldnames=all_columns, extrasaction="ignore")
+            csv_writer.writeheader()
+            csv_file.flush()
+            if prepend_rows:
+                async with write_lock:
+                    for _r in prepend_rows:
+                        csv_writer.writerow(_r)
+                    csv_file.flush()
+                    await asyncio.to_thread(os.fsync, csv_file.fileno())
+                logger.info("Job %s: incremental writer seeded with %d carried-over partial rows (resume)", job_id, len(prepend_rows))
+        except Exception as inc_err:
+            logger.error("Job %s: incremental writer init failed (%s); falling back to end-only write", job_id, inc_err)
+            if csv_file:
+                try:
+                    csv_file.close()
+                except Exception:
+                    pass
+            csv_file = None
+            csv_writer = None
 
     async def process_row(idx: int, row: dict[str, Any]) -> list[OutputRow]:
         # Note: Cancellation is now checked at batch level, not per-row
@@ -992,6 +1114,11 @@ async def run_domain_enrichment(
                 cascade_config=cascade_config,
                 collector=collector,
             )
+            # Phase 1B (2026-07-21): by-company Contacts DB augment (flag-gated,
+            # additive, emails preserved). See _merge_by_company_contacts.
+            result = await _merge_by_company_contacts(
+                contacts_http, result, domain, row, force_provider, source=source, limit=max_decision_makers
+            )
 
         # Call progress callback with exception handling
         # This prevents progress callback errors from crashing the entire batch
@@ -1000,9 +1127,9 @@ async def run_domain_enrichment(
                 # Collect source counts from results
                 source_counts: dict[str, int] = {}
                 for r in result:
-                    source = r.get("dm_email_source", "")
-                    if source:
-                        provider = _normalize_source(source)
+                    src = r.get("dm_email_source", "")
+                    if src:
+                        provider = _normalize_source(src)
                         source_counts[provider] = source_counts.get(provider, 0) + 1
                 emails_found = sum(1 for r in result if r.get("dm_email"))
                 progress_event = {
@@ -1064,6 +1191,62 @@ async def run_domain_enrichment(
                         logger.info("Job %s cancelled (DB status=%s), stopping", job_id, status)
                         raise RuntimeError(f"Job {job_id} was cancelled (status: {status})")
 
+    async def _flush_incremental_batch(batch_rows: list[OutputRow], done_indices: list[int]) -> None:
+        """Persist one completed batch durably: attach input cols -> flush CSV ->
+        checkpoint succeeded indices -> drain contacts to the DB/outbox.
+
+        Ordering is load-bearing: the CSV is flushed+fsync'd BEFORE the checkpoint
+        is written, so the checkpoint set is always a subset of rows on disk
+        (resume never skips a row that isn't already in the partial CSV). Contacts
+        are drained last; any transient failure parks in the durable outbox.
+        No-op when incremental writing is off (csv_writer is None).
+        """
+        if not batch_rows or csv_writer is None or csv_file is None:
+            return
+        # (1) attach input_* visibility columns (previously done post-run in the runner)
+        try:
+            for _r in batch_rows:
+                _payload = identifier_utils.build_row_identifier_payload(
+                    _r,
+                    domain_col=domain_col, name_col=name_col,
+                    first_name_col=first_name_col, last_name_col=last_name_col,
+                    linkedin_url_col=linkedin_url_col, phone_col=phone_col,
+                    company_name_col=company_name_col, existing_email_col=existing_email_col,
+                )
+                identifier_utils.attach_input_columns(_r, _payload)
+        except Exception as id_err:
+            logger.warning("Job %s: attach_input_columns failed for a batch: %s", job_id, id_err)
+        # (2) flush rows to the incremental CSV under the write lock, then fsync
+        try:
+            async with write_lock:
+                for _r in batch_rows:
+                    csv_writer.writerow(_r)
+                csv_file.flush()
+                await asyncio.to_thread(os.fsync, csv_file.fileno())
+        except Exception as werr:
+            logger.error("Job %s: incremental CSV flush failed: %s", job_id, werr)
+            return  # do not checkpoint rows that did not land on disk
+        # (3) checkpoint the succeeded input indices (after the file is durable)
+        if done_indices and job_id:
+            try:
+                _ck_store = (get_store_fn or job_store.get_store)()
+                _ck_store.write_checkpoints_batch(job_id, done_indices)
+            except Exception as ck_err:
+                logger.warning("Job %s: checkpoint write failed: %s", job_id, ck_err)
+        # (4) drain this batch's captured contacts to the Contacts DB (incremental
+        # write-back). Idempotent (email-keyed upsert); transient failures park in
+        # contacts_write_outbox, drained every 60s by retry_outbox_loop.
+        try:
+            if collector is not None:
+                from . import contacts_writer
+                if contacts_writer.is_v2_enabled():
+                    _payloads = collector.to_payloads()
+                    if _payloads:
+                        await contacts_writer.write_enrichment_result_batch(_payloads, job_id=job_id)
+                    collector._payloads.clear()
+        except Exception as drain_err:
+            logger.warning("Job %s: per-batch contacts drain failed (rows remain safe in CSV + outbox): %s", job_id, drain_err)
+
     # Process in batches to allow cancellation between batches
     BATCH_SIZE = 50  # Process 50 rows at a time
     all_output = []
@@ -1075,33 +1258,77 @@ async def run_domain_enrichment(
     first_row_exception: Optional[Exception] = None
     row_exception_count = 0
 
-    for batch_start in range(0, total, BATCH_SIZE):
-        # Check cancellation at start of each batch
-        await check_cancelled_and_raise()
+    # Phase 3 (2026-07-22): when the incremental-persistence flag is on, a
+    # mid-run cancellation RETURNS the partial output instead of raising — so
+    # the caller (_run_domain_enrich_job) can persist it (CSV + collector
+    # drain) rather than losing every row found so far. Default off = the
+    # legacy raise-and-lose behavior, so no regression until enabled.
+    _persist_flag_on = return_partial_on_cancel or os.getenv("ENABLE_INCREMENTAL_PERSISTENCE", "").strip().lower() in ("1", "true", "yes")
+    _stopped_mid_run = False
 
-        batch_end = min(batch_start + BATCH_SIZE, total)
-        batch_rows = rows[batch_start:batch_end]
-
-        # Process batch concurrently
-        tasks = [process_row(batch_start + i, row) for i, row in enumerate(batch_rows)]
-        batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # Collect batch results
-        for result in batch_results:
-            if isinstance(result, Exception):
-                # Check if it's a cancellation error - if so, stop immediately
-                if "was cancelled" in str(result):
-                    logger.info("Job %s cancellation raised, stopping batch processing", job_id)
-                    raise result
-                logger.error("Row processing failed: %s", result)
-                row_exception_count += 1
-                if first_row_exception is None:
-                    first_row_exception = result
+    try:
+        for batch_start in range(0, total, BATCH_SIZE):
+            # Check cancellation at start of each batch
+            if _persist_flag_on:
+                try:
+                    await check_cancelled_and_raise()
+                except RuntimeError:
+                    logger.info("Job %s cancelled before batch %d — returning %d partial rows", job_id, batch_start, len(all_output))
+                    _stopped_mid_run = True
+                    break
             else:
-                all_output.extend(result)
+                await check_cancelled_and_raise()
+
+            batch_end = min(batch_start + BATCH_SIZE, total)
+            batch_rows = rows[batch_start:batch_end]
+
+            # Process batch concurrently
+            tasks = [process_row(batch_start + i, row) for i, row in enumerate(batch_rows)]
+            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Collect batch results + track which input indices succeeded (for checkpointing)
+            batch_new: list[OutputRow] = []
+            done_indices: list[int] = []
+            for i, result in enumerate(batch_results):
+                if isinstance(result, Exception):
+                    # Check if it's a cancellation error - if so, stop immediately
+                    if "was cancelled" in str(result):
+                        logger.info("Job %s cancellation raised, stopping batch processing", job_id)
+                        if _persist_flag_on:
+                            _stopped_mid_run = True
+                            break
+                        raise result
+                    logger.error("Row processing failed: %s", result)
+                    row_exception_count += 1
+                    if first_row_exception is None:
+                        first_row_exception = result
+                else:
+                    all_output.extend(result)
+                    batch_new.extend(result)
+                    done_indices.append(batch_start + i)
+
+            # Durable snapshot for this batch (incremental persistence). Gated by
+            # write_incremental so legacy callers (write_incremental=False) are unchanged.
+            if write_incremental and batch_new:
+                await _flush_incremental_batch(batch_new, done_indices)
+
+            if _stopped_mid_run:
+                break
+    finally:
+        # Close the incremental CSV writer if open (both normal + cancel paths reach here).
+        if csv_file:
+            try:
+                csv_file.close()
+            except Exception:
+                pass
 
     await blitz_http.aclose()
     await contacts_http.aclose()
+
+    # Phase 3: cancelled mid-run -> return partial output so the caller persists it.
+    if _stopped_mid_run:
+        logger.info("Job %s stopped mid-run — returning %d partial output rows", job_id, len(all_output))
+        return all_output
 
     # If every single row failed, surface the exception so the caller marks
     # the job as failed rather than "done with 0 rows". This is the safety
@@ -1189,9 +1416,15 @@ async def _enrich_single_linkedin(
     linkedin_url: str,
     include_company: bool = True,
     semaphore: asyncio.Semaphore = None,
+    record_provider_use: Optional[Callable[[str], None]] = None,
 ) -> OutputRow:
     """
     Enrich a single LinkedIn URL with person + company details.
+
+    Args:
+        record_provider_use: Optional callback invoked with each provider that is
+            actually queried (``"contacts_db"``, ``"blitz"``) so the job's
+            ``used_providers`` tally stays accurate.
 
     Returns single output row.
     """
@@ -1203,6 +1436,8 @@ async def _enrich_single_linkedin(
     async with semaphore:
         # Step 1: Try Contacts DB first (FREE)
         contacts_data = None
+        if record_provider_use:
+            record_provider_use("contacts_db")
         try:
             contacts_data = await contacts_client.person_by_linkedin(contacts_http, linkedin_url)
         except Exception as e:
@@ -1229,33 +1464,23 @@ async def _enrich_single_linkedin(
             return row
 
         # Step 2: Fallback to Blitz API (PAID)
+        # /v2/enrichment/email returns a FLAT shape {found, email, all_emails}
+        # (no "person" object) — same endpoint as blitz_client.find_work_email.
+        # The old code read result["person"], which never exists, so every Blitz
+        # email was silently dropped (2026-07-15 zero-email bug).
+        if record_provider_use:
+            record_provider_use("blitz")
         try:
             result = await blitz_client.person_enrich_by_linkedin(blitz_http, linkedin_url, include_phone=True)
-            if result.get("found") and result.get("person"):
-                person = result.get("person", {})
-                row["dm_full_name"] = person.get("full_name", "")
-                row["dm_first_name"] = person.get("first_name", "")
-                row["dm_last_name"] = person.get("last_name", "")
-                row["dm_title"] = person.get("title", "")
-                row["dm_headline"] = person.get("headline", "")
+            if result.get("found") and result.get("email"):
+                all_emails = result.get("all_emails") or []
+                verified = "yes" if (all_emails and all_emails[0].get("verified")) else "unknown"
                 row["dm_linkedin_url"] = linkedin_url
-                # Check for verified_email - if present, email is verified
-                verified_email = person.get("verified_email", "")
-                if verified_email:
-                    row["dm_email"] = verified_email
-                    row["dm_email_verified"] = "yes"
-                else:
-                    row["dm_email"] = person.get("emails", [{}])[0].get("email", "") if person.get("emails") else ""
-                    row["dm_email_verified"] = "no"
-                row["dm_phone"] = person.get("phone", "")
+                row["dm_email"] = result.get("email", "")
+                row["dm_email_verified"] = verified
                 row["dm_email_source"] = SOURCE_BLITZ_LINKEDIN
-
-                if include_company and person.get("company"):
-                    company = person.get("company", {})
-                    row["company_name"] = company.get("name", "")
-                    row["company_linkedin_url"] = company.get("linkedin_url", "")
-
-                row["row_status"] = STATUS_ENRICHED if row["dm_email"] else STATUS_NO_CONTACTS
+                # email-only endpoint: name/title/company are not returned here
+                row["row_status"] = STATUS_ENRICHED
                 return row
         except Exception as e:
             logger.debug("Blitz person enrich failed: %s", e)
@@ -1272,6 +1497,18 @@ async def run_linkedin_enrichment(
     on_progress: Callable[[dict[str, Any]], None] = None,
     validate_email: bool = True,
     record_provider_use: Optional[Callable[[str], None]] = None,
+    # --- Cancellation (mirrors run_domain_enrichment) ---
+    cancelled_jobs: Optional[set[str]] = None,
+    check_cancelled: Optional[Callable[[str], bool]] = None,
+    job_id: Optional[str] = None,
+    # --- Incremental persistence (mirrors run_domain_enrichment; Flow 3) ---
+    output_path: Optional[Path] = None,
+    write_incremental: bool = False,
+    phone_col: Optional[str] = None,
+    company_name_col: Optional[str] = None,
+    existing_email_col: Optional[str] = None,
+    prepend_rows: Optional[list[dict]] = None,  # resume: carried-over partial rows (written first, NOT checkpointed)
+    return_partial_on_cancel: bool = False,  # Flow 3 runner: cancel returns partial (no raise) so the writer closes cleanly
 ) -> list[OutputRow]:
     """
     Main entry point for Flow 3: LinkedIn URLs → Full Enrichment
@@ -1285,6 +1522,18 @@ async def run_linkedin_enrichment(
             other entry points).
         record_provider_use: Optional callback invoked with a provider name
             when that provider is queried. Used for usage telemetry.
+        cancelled_jobs: Optional set of cancelled job IDs (in-memory fast check).
+        check_cancelled: Optional DB-backed cancellation probe.
+        job_id: Job ID for cancellation tracking + checkpointing.
+        output_path: When ``write_incremental`` is set, destination Path for the
+            live-flushed CSV.
+        write_incremental: Flush each completed batch to ``output_path`` so a
+            running job is live-downloadable and crash/cancel-safe.
+        phone_col/company_name_col/existing_email_col: Optional identifier
+            columns forwarded to ``attach_input_columns`` for visibility.
+        prepend_rows: Resume seed — written after the header, not checkpointed.
+        return_partial_on_cancel: When True, a mid-run cancel returns whatever
+            completed (no raise) so the caller can mark the job 'partial'.
 
     Returns:
         List of enriched output rows
@@ -1296,6 +1545,41 @@ async def run_linkedin_enrichment(
 
     all_output: list[OutputRow] = []
     total = len(rows)
+
+    # --- Incremental CSV writer (mirrors run_domain_enrichment's proven pattern) ---
+    # When write_incremental is on, the output CSV is flushed batch-by-batch so a
+    # running job is live-downloadable and a crash/cancel never loses completed rows.
+    write_lock = asyncio.Lock()
+    csv_file = None
+    csv_writer = None
+    if write_incremental and output_path and rows:
+        try:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            _first_keys = list(rows[0].keys())
+            all_columns = _first_keys + [c for c in ENRICHED_COLUMNS if c not in _first_keys]
+            # Always a fresh file for this job_id (resume creates a NEW job_id, so
+            # the file is new). Carried-over partial rows (resume) are written right
+            # after the header, before the first batch.
+            csv_file = open(output_path, "w", newline="", encoding="utf-8")
+            csv_writer = csv.DictWriter(csv_file, fieldnames=all_columns, extrasaction="ignore")
+            csv_writer.writeheader()
+            csv_file.flush()
+            if prepend_rows:
+                async with write_lock:
+                    for _r in prepend_rows:
+                        csv_writer.writerow(_r)
+                    csv_file.flush()
+                    await asyncio.to_thread(os.fsync, csv_file.fileno())
+                logger.info("Job %s: incremental writer seeded with %d carried-over partial rows (resume)", job_id, len(prepend_rows))
+        except Exception as inc_err:
+            logger.error("Job %s: incremental writer init failed (%s); falling back to end-only write", job_id, inc_err)
+            if csv_file:
+                try:
+                    csv_file.close()
+                except Exception:
+                    pass
+            csv_file = None
+            csv_writer = None
 
     async def process_row(idx: int, row: dict[str, Any]) -> OutputRow:
         linkedin_url = str(row.get(linkedin_col, "")).strip()
@@ -1352,19 +1636,141 @@ async def run_linkedin_enrichment(
 
         return result
 
-    # Process all rows
-    tasks = [process_row(i, row) for i, row in enumerate(rows)]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    async def check_cancelled_and_raise():
+        """Check if job was cancelled and raise exception if so (mirrors run_domain_enrichment)."""
+        if job_id:
+            if cancelled_jobs and job_id in cancelled_jobs:
+                logger.info("Job %s cancelled (in-memory set), stopping", job_id)
+                raise RuntimeError(f"Job {job_id} was cancelled by user")
+            if check_cancelled and check_cancelled(job_id):
+                check_store = job_store.get_store()
+                job = check_store.get_job(job_id)
+                if job:
+                    status = job.get("status", "unknown")
+                    if status == "abandoned":
+                        logger.info("Job %s found abandoned (server restart), stopping", job_id)
+                        raise RuntimeError(f"Job {job_id} was abandoned due to server restart. Please retry.")
+                    elif status == "cancelled":
+                        logger.info("Job %s found cancelled (by user), stopping", job_id)
+                        raise RuntimeError(f"Job {job_id} was cancelled by user")
+                    else:
+                        logger.info("Job %s cancelled (DB status=%s), stopping", job_id, status)
+                        raise RuntimeError(f"Job {job_id} was cancelled (status: {status})")
+
+    async def _flush_incremental_batch(batch_rows: list[OutputRow], done_indices: list[int]) -> None:
+        """Persist one completed batch durably: attach input cols -> flush CSV ->
+        checkpoint succeeded indices.
+
+        No-op when incremental writing is off (csv_writer is None). Mirrors
+        run_domain_enrichment._flush_incremental_batch, minus the collector
+        drain (this entry point has no ``collector`` param — contacts write-back
+        for the legacy LinkedIn flow happens end-of-run via _run_background_sync
+        in the caller, unchanged).
+        """
+        if not batch_rows or csv_writer is None or csv_file is None:
+            return
+        # (1) attach input_* visibility columns
+        try:
+            for _r in batch_rows:
+                _payload = identifier_utils.build_row_identifier_payload(
+                    _r,
+                    linkedin_url_col=linkedin_col,
+                    phone_col=phone_col,
+                    company_name_col=company_name_col,
+                    existing_email_col=existing_email_col,
+                )
+                identifier_utils.attach_input_columns(_r, _payload)
+        except Exception as id_err:
+            logger.warning("Job %s: attach_input_columns failed for a batch: %s", job_id, id_err)
+        # (2) flush rows to the incremental CSV under the write lock, then fsync
+        try:
+            async with write_lock:
+                for _r in batch_rows:
+                    csv_writer.writerow(_r)
+                csv_file.flush()
+                await asyncio.to_thread(os.fsync, csv_file.fileno())
+        except Exception as werr:
+            logger.error("Job %s: incremental CSV flush failed: %s", job_id, werr)
+            return  # do not checkpoint rows that did not land on disk
+        # (3) checkpoint the succeeded input indices (after the file is durable)
+        if done_indices and job_id:
+            try:
+                _ck_store = job_store.get_store()
+                _ck_store.write_checkpoints_batch(job_id, done_indices)
+            except Exception as ck_err:
+                logger.warning("Job %s: checkpoint write failed: %s", job_id, ck_err)
+
+    # Process in batches (mirrors run_domain_enrichment) so cancellation +
+    # incremental persistence can happen between batches. Legacy callers
+    # (no write_incremental / job_id) get the same all-at-once semantics; the
+    # gather is simply split into BATCH_SIZE chunks whose results are
+    # concatenated identically.
+    BATCH_SIZE = 50
+    # Phase 3 (2026-07-24): when the incremental-persistence flag is on, a
+    # mid-run cancellation RETURNS the partial output instead of raising — so
+    # the caller (_run_linkedin_job) can persist it (CSV already flushed)
+    # rather than losing every row found so far. Default off = the legacy
+    # raise-and-lose behavior, so no regression until enabled.
+    _persist_flag_on = return_partial_on_cancel or os.getenv("ENABLE_INCREMENTAL_PERSISTENCE", "").strip().lower() in ("1", "true", "yes")
+    _stopped_mid_run = False
+
+    try:
+        for batch_start in range(0, total, BATCH_SIZE):
+            # Check cancellation at start of each batch
+            if _persist_flag_on:
+                try:
+                    await check_cancelled_and_raise()
+                except RuntimeError:
+                    logger.info("Job %s cancelled before batch %d — returning %d partial rows", job_id, batch_start, len(all_output))
+                    _stopped_mid_run = True
+                    break
+            else:
+                await check_cancelled_and_raise()
+
+            batch_end = min(batch_start + BATCH_SIZE, total)
+            batch_rows = rows[batch_start:batch_end]
+
+            tasks = [process_row(batch_start + i, row) for i, row in enumerate(batch_rows)]
+            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            batch_new: list[OutputRow] = []
+            done_indices: list[int] = []
+            for i, result in enumerate(batch_results):
+                if isinstance(result, Exception):
+                    if "was cancelled" in str(result):
+                        logger.info("Job %s cancellation raised, stopping batch processing", job_id)
+                        if _persist_flag_on:
+                            _stopped_mid_run = True
+                            break
+                        raise result
+                    logger.error("Row processing failed: %s", result)
+                else:
+                    all_output.append(result)
+                    batch_new.append(result)
+                    done_indices.append(batch_start + i)
+
+            # Durable snapshot for this batch (incremental persistence). Gated by
+            # write_incremental so legacy callers (write_incremental=False) are unchanged.
+            if write_incremental and batch_new:
+                await _flush_incremental_batch(batch_new, done_indices)
+
+            if _stopped_mid_run:
+                break
+    finally:
+        # Close the incremental CSV writer if open (both normal + cancel paths reach here).
+        if csv_file:
+            try:
+                csv_file.close()
+            except Exception:
+                pass
 
     await blitz_http.aclose()
     await contacts_http.aclose()
 
-    # Collect results
-    for result in results:
-        if isinstance(result, Exception):
-            logger.error("Row processing failed: %s", result)
-        else:
-            all_output.append(result)
+    # Cancelled mid-run -> return partial output so the caller persists it.
+    if _stopped_mid_run:
+        logger.info("Job %s stopped mid-run — returning %d partial output rows", job_id, len(all_output))
+        return all_output
 
     return all_output
 
@@ -1613,6 +2019,19 @@ async def run_unified_linkedin_enrichment(
     include_company: bool = True,
     on_progress: Optional[Callable[[dict[str, Any]], None]] = None,
     collector: Optional[Any] = None,  # RawContactCollector; Phase 1 capture
+    record_provider_use: Optional[Callable[[str], None]] = None,
+    # --- Cancellation (mirrors run_domain_enrichment) ---
+    cancelled_jobs: Optional[set[str]] = None,
+    check_cancelled: Optional[Callable[[str], bool]] = None,
+    job_id: Optional[str] = None,
+    # --- Incremental persistence (mirrors run_domain_enrichment; Flow 3) ---
+    output_path: Optional[Path] = None,
+    write_incremental: bool = False,
+    phone_col: Optional[str] = None,
+    company_name_col: Optional[str] = None,
+    existing_email_col: Optional[str] = None,
+    prepend_rows: Optional[list[dict]] = None,  # resume: carried-over partial rows (written first, NOT checkpointed)
+    return_partial_on_cancel: bool = False,  # Flow 3 v2 runner: cancel returns partial (no raise) so the writer closes cleanly
 ) -> list[OutputRow]:
     """
     Unified enrichment for CSV with personal and/or company LinkedIn URLs.
@@ -1626,6 +2045,20 @@ async def run_unified_linkedin_enrichment(
         on_progress: Callback for progress updates
         collector: Optional ``RawContactCollector``. When provided, every
             Blitz response from the company waterfall is captured.
+        record_provider_use: Optional callback invoked with a provider name
+            when that provider is queried. Used for usage telemetry.
+        cancelled_jobs: Optional set of cancelled job IDs (in-memory fast check).
+        check_cancelled: Optional DB-backed cancellation probe.
+        job_id: Job ID for cancellation tracking + checkpointing.
+        output_path: When ``write_incremental`` is set, destination Path for the
+            live-flushed CSV.
+        write_incremental: Flush each completed batch to ``output_path`` so a
+            running job is live-downloadable and crash/cancel-safe.
+        phone_col/company_name_col/existing_email_col: Optional identifier
+            columns forwarded to ``attach_input_columns`` for visibility.
+        prepend_rows: Resume seed — written after the header, not checkpointed.
+        return_partial_on_cancel: When True, a mid-run cancel returns whatever
+            completed (no raise) so the caller can mark the job 'partial'.
 
     Returns:
         List of enriched output rows (can be > len(rows) due to waterfall expansion)
@@ -1634,66 +2067,99 @@ async def run_unified_linkedin_enrichment(
     blitz_http = httpx.AsyncClient()
     contacts_http = httpx.AsyncClient()
 
-    all_output: list[OutputRow] = []
     total = len(rows)
 
-    for idx, row in enumerate(rows):
+    # --- Incremental CSV writer (mirrors run_domain_enrichment's proven pattern) ---
+    write_lock = asyncio.Lock()
+    csv_file = None
+    csv_writer = None
+    if write_incremental and output_path and rows:
+        try:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            _first_keys = list(rows[0].keys())
+            all_columns = _first_keys + [c for c in ENRICHED_COLUMNS if c not in _first_keys]
+            csv_file = open(output_path, "w", newline="", encoding="utf-8")
+            csv_writer = csv.DictWriter(csv_file, fieldnames=all_columns, extrasaction="ignore")
+            csv_writer.writeheader()
+            csv_file.flush()
+            if prepend_rows:
+                async with write_lock:
+                    for _r in prepend_rows:
+                        csv_writer.writerow(_r)
+                    csv_file.flush()
+                    await asyncio.to_thread(os.fsync, csv_file.fileno())
+                logger.info("Job %s: incremental writer seeded with %d carried-over partial rows (resume)", job_id, len(prepend_rows))
+        except Exception as inc_err:
+            logger.error("Job %s: incremental writer init failed (%s); falling back to end-only write", job_id, inc_err)
+            if csv_file:
+                try:
+                    csv_file.close()
+                except Exception:
+                    pass
+            csv_file = None
+            csv_writer = None
+
+    async def _emit(idx: int, status: str, emails_count: int, source_counts: dict[str, int]) -> None:
+        """Fire on_progress with the keys append_event expects (emails_found count)."""
+        if not on_progress:
+            return
+        event = {
+            "index": idx,
+            "total": total,
+            "status": status,
+            "emails_found": emails_count,
+            "source_counts": source_counts,
+        }
+        try:
+            if asyncio.iscoroutinefunction(on_progress):
+                await on_progress(event)
+            else:
+                on_progress(event)
+        except Exception as prog_err:
+            logger.warning("LinkedIn progress callback failed for row %s: %s", idx, prog_err)
+
+    async def process_row(idx: int, row: dict[str, Any]) -> list[OutputRow]:
         personal_url = str(row.get(personal_col, "")).strip() if personal_col else ""
         company_url = str(row.get(company_col, "")).strip() if company_col else ""
 
-        # Skip if neither URL is present
+        # No usable URL at all → genuinely skipped
         if not personal_url and not company_url:
-            output_row = {**row, **_empty_enriched(), "row_status": STATUS_SKIPPED}
-            all_output.append(output_row)
-            if on_progress:
-                on_progress({
-                    "index": idx,
-                    "total": total,
-                    "status": STATUS_SKIPPED,
-                    "email_found": False,
-                    "source_counts": {},
-                })
-            continue
+            await _emit(idx, STATUS_SKIPPED, 0, {})
+            return [{**row, **_empty_enriched(), "row_status": STATUS_SKIPPED}]
 
-        # Track if we found any data
-        found_data = False
+        results: list[OutputRow] = []
+        found = False
+        person_result: Optional[OutputRow] = None
 
-        # Step 1: Try personal URL enrichment
+        # Step 1: personal LinkedIn URL
         if personal_url and "linkedin.com" in personal_url:
             person_result = await _enrich_single_linkedin(
                 blitz_http, contacts_http, row, personal_url,
-                include_company=include_company, semaphore=semaphore
+                include_company=include_company, semaphore=semaphore,
+                record_provider_use=record_provider_use,
             )
-
-            # If we got email from personal URL, use it
             if person_result.get("dm_email") or person_result.get("row_status") == STATUS_ENRICHED:
-                all_output.append(person_result)
-                found_data = True
+                results.append(person_result)
+                found = True
+                has_email = bool(person_result.get("dm_email"))
+                source = person_result.get("dm_email_source", "")
+                provider = _normalize_source(source) if source else "unknown"
+                await _emit(
+                    idx, STATUS_ENRICHED, 1 if has_email else 0,
+                    {provider: 1} if has_email else {},
+                )
+            # else: NO_CONTACTS or NOT_FOUND — keep person_result for Step 3
 
-                if on_progress:
-                    source = person_result.get("dm_email_source", "")
-                    provider = _normalize_source(source) if source else "unknown"
-                    on_progress({
-                        "index": idx,
-                        "total": total,
-                        "status": person_result.get("row_status", STATUS_ENRICHED),
-                        "email_found": bool(person_result.get("dm_email")),
-                        "source_counts": {provider: 1},
-                    })
-            elif person_result.get("row_status") == STATUS_NO_CONTACTS:
-                # Personal URL found but no contacts - continue to company fallback
-                pass
-
-        # Step 2: If personal failed or not provided, try company waterfall
-        if not found_data and company_url and "linkedin.com" in company_url:
-            # Try company waterfall to get decision makers
+        # Step 2: company LinkedIn waterfall fallback
+        if not found and company_url and "linkedin.com" in company_url:
+            # Blitz title-waterfall
+            if record_provider_use:
+                record_provider_use("blitz")
             company_dms = await _enrich_by_company_waterfall(
                 blitz_http, company_url, DEFAULT_CASCADE, max_dms, semaphore,
                 collector=collector,
             )
-
             if company_dms:
-                # Create one output row per decision maker
                 for dm in company_dms:
                     output_row = {
                         **row,
@@ -1715,43 +2181,175 @@ async def run_unified_linkedin_enrichment(
                     }
                     if include_company:
                         output_row["company_name"] = _extract_company_name_from_url(company_url)
-
-                    all_output.append(output_row)
-                    found_data = True
-
-                # Send ONE progress event for the company row (not one per DM)
-                if on_progress:
-                    emails_found = sum(1 for dm in company_dms if dm.get("email"))
-                    on_progress({
-                        "index": idx,
-                        "total": total,
-                        "status": STATUS_ENRICHED,
-                        "email_found": emails_found,
-                        "source_counts": {"blitz_company": emails_found} if emails_found else {},
-                    })
+                    results.append(output_row)
+                found = True
+                emails_count = sum(1 for dm in company_dms if dm.get("email"))
+                await _emit(
+                    idx, STATUS_ENRICHED, emails_count,
+                    {"blitz": emails_count} if emails_count else {},
+                )
             else:
-                # Company waterfall also failed
-                output_row = {**row, **_empty_enriched(), "row_status": STATUS_NOT_FOUND}
-                output_row["company_linkedin_url"] = company_url if company_url else ""
-                all_output.append(output_row)
-                found_data = True
+                nr = {**row, **_empty_enriched(), "row_status": STATUS_NOT_FOUND}
+                nr["company_linkedin_url"] = company_url
+                results.append(nr)
+                found = True
+                await _emit(idx, STATUS_NOT_FOUND, 0, {})
 
-                if on_progress:
-                    on_progress({
-                        "index": idx,
-                        "total": total,
-                        "status": STATUS_NOT_FOUND,
-                        "email_found": False,
-                        "source_counts": {},
-                    })
+        # Step 3: URL present but no data found
+        if not found:
+            if person_result is not None:
+                # Preserve provider detail; status is already NOT_FOUND/NO_CONTACTS.
+                results.append(person_result)
+                await _emit(idx, person_result.get("row_status", STATUS_NOT_FOUND), 0, {})
+            else:
+                # Personal URL wasn't a linkedin.com URL and no company URL
+                results.append({**row, **_empty_enriched(), "row_status": STATUS_SKIPPED})
+                await _emit(idx, STATUS_SKIPPED, 0, {})
 
-        # Step 3: If no URLs at all, mark as skipped
-        if not found_data:
-            output_row = {**row, **_empty_enriched(), "row_status": STATUS_SKIPPED}
-            all_output.append(output_row)
+        return results
+
+    async def check_cancelled_and_raise():
+        """Check if job was cancelled and raise exception if so (mirrors run_domain_enrichment)."""
+        if job_id:
+            if cancelled_jobs and job_id in cancelled_jobs:
+                logger.info("Job %s cancelled (in-memory set), stopping", job_id)
+                raise RuntimeError(f"Job {job_id} was cancelled by user")
+            if check_cancelled and check_cancelled(job_id):
+                check_store = job_store.get_store()
+                job = check_store.get_job(job_id)
+                if job:
+                    status = job.get("status", "unknown")
+                    if status == "abandoned":
+                        logger.info("Job %s found abandoned (server restart), stopping", job_id)
+                        raise RuntimeError(f"Job {job_id} was abandoned due to server restart. Please retry.")
+                    elif status == "cancelled":
+                        logger.info("Job %s found cancelled (by user), stopping", job_id)
+                        raise RuntimeError(f"Job {job_id} was cancelled by user")
+                    else:
+                        logger.info("Job %s cancelled (DB status=%s), stopping", job_id, status)
+                        raise RuntimeError(f"Job {job_id} was cancelled (status: {status})")
+
+    async def _flush_incremental_batch(batch_rows: list[OutputRow], done_indices: list[int]) -> None:
+        """Persist one completed batch durably: attach input cols -> flush CSV ->
+        checkpoint succeeded indices -> drain contacts to the DB/outbox.
+
+        Mirrors run_domain_enrichment._flush_incremental_batch. No-op when
+        incremental writing is off (csv_writer is None).
+        """
+        if not batch_rows or csv_writer is None or csv_file is None:
+            return
+        # (1) attach input_* visibility columns
+        try:
+            for _r in batch_rows:
+                _payload = identifier_utils.build_row_identifier_payload(
+                    _r,
+                    linkedin_url_col=personal_col,
+                    phone_col=phone_col,
+                    company_name_col=company_name_col,
+                    existing_email_col=existing_email_col,
+                )
+                identifier_utils.attach_input_columns(_r, _payload)
+        except Exception as id_err:
+            logger.warning("Job %s: attach_input_columns failed for a batch: %s", job_id, id_err)
+        # (2) flush rows to the incremental CSV under the write lock, then fsync
+        try:
+            async with write_lock:
+                for _r in batch_rows:
+                    csv_writer.writerow(_r)
+                csv_file.flush()
+                await asyncio.to_thread(os.fsync, csv_file.fileno())
+        except Exception as werr:
+            logger.error("Job %s: incremental CSV flush failed: %s", job_id, werr)
+            return  # do not checkpoint rows that did not land on disk
+        # (3) checkpoint the succeeded input indices (after the file is durable)
+        if done_indices and job_id:
+            try:
+                _ck_store = job_store.get_store()
+                _ck_store.write_checkpoints_batch(job_id, done_indices)
+            except Exception as ck_err:
+                logger.warning("Job %s: checkpoint write failed: %s", job_id, ck_err)
+        # (4) drain this batch's captured contacts to the Contacts DB (incremental
+        # write-back). Idempotent (email-keyed upsert); transient failures park in
+        # contacts_write_outbox, drained every 60s by retry_outbox_loop.
+        try:
+            if collector is not None:
+                from . import contacts_writer
+                if contacts_writer.is_v2_enabled():
+                    _payloads = collector.to_payloads()
+                    if _payloads:
+                        await contacts_writer.write_enrichment_result_batch(_payloads, job_id=job_id)
+                    collector._payloads.clear()
+        except Exception as drain_err:
+            logger.warning("Job %s: per-batch contacts drain failed (rows remain safe in CSV + outbox): %s", job_id, drain_err)
+
+    # Process in batches for real concurrency (mirrors run_domain_enrichment).
+    # Previously this was a sequential for…await loop (effective concurrency 1),
+    # making LinkedIn enrichment ~15–25x slower than domain enrichment.
+    BATCH_SIZE = 50
+    # Phase 3 (2026-07-24): when the incremental-persistence flag is on, a
+    # mid-run cancellation RETURNS the partial output instead of raising — so
+    # the caller (_run_linkedin_v2_job) can persist it (CSV already flushed)
+    # rather than losing every row found so far. Default off = the legacy
+    # raise-and-lose behavior, so no regression until enabled.
+    _persist_flag_on = return_partial_on_cancel or os.getenv("ENABLE_INCREMENTAL_PERSISTENCE", "").strip().lower() in ("1", "true", "yes")
+    _stopped_mid_run = False
+
+    all_output: list[OutputRow] = []
+    try:
+        for batch_start in range(0, total, BATCH_SIZE):
+            # Check cancellation at start of each batch
+            if _persist_flag_on:
+                try:
+                    await check_cancelled_and_raise()
+                except RuntimeError:
+                    logger.info("Job %s cancelled before batch %d — returning %d partial rows", job_id, batch_start, len(all_output))
+                    _stopped_mid_run = True
+                    break
+            else:
+                await check_cancelled_and_raise()
+
+            batch_rows = rows[batch_start:batch_start + BATCH_SIZE]
+            tasks = [process_row(batch_start + i, row) for i, row in enumerate(batch_rows)]
+            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            batch_new: list[OutputRow] = []
+            done_indices: list[int] = []
+            for i, result in enumerate(batch_results):
+                if isinstance(result, Exception):
+                    if "was cancelled" in str(result):
+                        logger.info("Job %s cancellation raised, stopping batch processing", job_id)
+                        if _persist_flag_on:
+                            _stopped_mid_run = True
+                            break
+                        raise result
+                    logger.error("LinkedIn row processing failed: %s", result)
+                else:
+                    all_output.extend(result)
+                    batch_new.extend(result)
+                    done_indices.append(batch_start + i)
+
+            # Durable snapshot for this batch (incremental persistence). Gated by
+            # write_incremental so legacy callers (write_incremental=False) are unchanged.
+            if write_incremental and batch_new:
+                await _flush_incremental_batch(batch_new, done_indices)
+
+            if _stopped_mid_run:
+                break
+    finally:
+        # Close the incremental CSV writer if open (both normal + cancel paths reach here).
+        if csv_file:
+            try:
+                csv_file.close()
+            except Exception:
+                pass
 
     await blitz_http.aclose()
     await contacts_http.aclose()
+
+    # Cancelled mid-run -> return partial output so the caller persists it.
+    if _stopped_mid_run:
+        logger.info("Job %s stopped mid-run — returning %d partial output rows", job_id, len(all_output))
+        return all_output
 
     return all_output
 

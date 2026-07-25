@@ -39,7 +39,7 @@
         .user-avatar { width: 28px; height: 28px; background: var(--primary); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: 600; flex-shrink: 0; }
         .user-details { flex: 1; min-width: 0; }
         .user-email { font-size: 0.75rem; color: white; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .logout-btn { font-size: 0.65rem; color: var(--gray-400); cursor: pointer; }
+        .logout-btn { font-size: 0.65rem; color: var(--gray-400); cursor: pointer; padding: 0.4rem 0.8rem; border: none; background: inherit; }
         .logout-btn:hover { color: white; }
 
         /* Main Content */
@@ -102,7 +102,7 @@
         .upload-zone.upload-success .upload-icon { color: var(--success); }
         .upload-zone.upload-error .upload-icon { color: var(--danger); }
         .upload-text { color: var(--gray-600); margin-bottom: 0.25rem; }
-        .upload-hint { color: var(--gray-400); font-size: 0.8rem; }
+        .upload-hint { color: var(--gray-600); font-size: 0.8rem; }
         .upload-progress { margin-top: 1rem; }
         .upload-progress-bar { width: 100%; height: 6px; background: var(--gray-200); border-radius: 3px; overflow: hidden; margin-top: 0.5rem; }
         .upload-progress-fill { height: 100%; background: var(--primary); border-radius: 3px; transition: width 0.3s; }
@@ -234,7 +234,7 @@
         .progress-step { display: flex; align-items: center; gap: 0.25rem; padding: 0.25rem 0.5rem; background: var(--gray-100); border-radius: 4px; font-size: 0.7rem; color: var(--gray-600); }
         .progress-step.active { background: #dbeafe; color: #1d4ed8; }
         .progress-step.complete { background: #d1fae5; color: #059669; }
-        .progress-step-pending { background: var(--gray-100); color: var(--gray-400); }
+        .progress-step-pending { background: var(--gray-100); color: var(--gray-600); }
         .progress-rate { display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--gray-500); margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--gray-200); }
         .progress-rate-value { font-weight: 600; color: var(--primary); }
         
@@ -262,6 +262,9 @@
         .status-cancelled { background: #ffedd5; color: #ea580c; }
         .status-abandoned { background: #f3e8ff; color: #7c3aed; }
         .status-partial { background: #e0f2fe; color: #0284c7; }
+        .status-stopped { background: #f1f5f9; color: #475569; }
+        .status-starting { background: #e0e7ff; color: #4338ca; }
+        .status-pending { background: #fef9c3; color: #a16207; }
 
         /* Warning banner for jobs that completed with 0 emails on a non-empty
            input. Almost always indicates a silent cascade bug — see
@@ -622,18 +625,18 @@
         <nav class="sidebar-nav">
             <div class="nav-section">
                 <div class="nav-section-title">Main</div>
-                <a class="nav-item active" data-page="home"><span class="nav-icon" aria-label="Home"><i data-lucide="house"></i></span>Home</a>
-                <a class="nav-item" data-page="scraper"><span class="nav-icon" aria-label="Google Maps Scraper"><i data-lucide="map-pin"></i></span>Google Maps Scraper</a>
-                <a class="nav-item" data-page="domains"><span class="nav-icon" aria-label="Upload Domains"><i data-lucide="upload"></i></span>Upload Domains</a>
-                <a class="nav-item" data-page="search"><span class="nav-icon" aria-label="Company Search"><i data-lucide="search"></i></span>Company Search</a>
-                <a class="nav-item" data-page="linkedin"><span class="nav-icon" aria-label="LinkedIn Enrich"><i data-lucide="link"></i></span>LinkedIn Enrich</a>
-                <a class="nav-item" data-page="phones"><span class="nav-icon" aria-label="Phone Enrichment"><i data-lucide="phone"></i></span>Phone Enrichment</a>
-                <a class="nav-item" data-page="jobs"><span class="nav-icon" aria-label="Enrichment Jobs"><i data-lucide="zap"></i></span>Enrichment Jobs</a>
+                <a class="nav-item active" href="#" data-page="home"><span class="nav-icon" aria-label="Home"><i data-lucide="house"></i></span>Home</a>
+                <a class="nav-item" href="#" data-page="scraper"><span class="nav-icon" aria-label="Google Maps Scraper"><i data-lucide="map-pin"></i></span>Google Maps Scraper</a>
+                <a class="nav-item" href="#" data-page="domains"><span class="nav-icon" aria-label="Upload Domains"><i data-lucide="upload"></i></span>Upload Domains</a>
+                <a class="nav-item" href="#" data-page="search"><span class="nav-icon" aria-label="Company Search"><i data-lucide="search"></i></span>Company Search</a>
+                <a class="nav-item" href="#" data-page="linkedin"><span class="nav-icon" aria-label="LinkedIn Enrich"><i data-lucide="link"></i></span>LinkedIn Enrich</a>
+                <a class="nav-item" href="#" data-page="phones"><span class="nav-icon" aria-label="Phone Enrichment"><i data-lucide="phone"></i></span>Phone Enrichment</a>
+                <a class="nav-item" href="#" data-page="jobs"><span class="nav-icon" aria-label="Enrichment Jobs"><i data-lucide="zap"></i></span>Enrichment Jobs</a>
             </div>
             <div class="nav-section">
                 <div class="nav-section-title">Resources</div>
-                <a class="nav-item" data-page="apikeys"><span class="nav-icon" aria-label="API Keys"><i data-lucide="key"></i></span>API Keys</a>
-                <a class="nav-item" data-page="help"><span class="nav-icon" aria-label="Help & Guide"><i data-lucide="help-circle"></i></span>Help & Guide</a>
+                <a class="nav-item" href="#" data-page="apikeys"><span class="nav-icon" aria-label="API Keys"><i data-lucide="key"></i></span>API Keys</a>
+                <a class="nav-item" href="#" data-page="help"><span class="nav-icon" aria-label="Help & Guide"><i data-lucide="help-circle"></i></span>Help & Guide</a>
             </div>
         </nav>
         <div class="sidebar-footer">
@@ -641,7 +644,7 @@
                 <div class="user-avatar" id="userAvatar">?</div>
                 <div class="user-details">
                     <div class="user-email" id="userEmail">Loading...</div>
-                    <div class="logout-btn" id="logoutBtn">Sign out</div>
+                    <button type="button" class="logout-btn" id="logoutBtn">Sign out</button>
                 </div>
             </div>
         </div>
@@ -729,22 +732,22 @@
             
             <h3 style="margin-bottom:1rem; font-size:1.1rem;">Choose a Flow</h3>
             <div class="flow-grid">
-                <div class="flow-card" data-page="scraper">
+                <div class="flow-card" role="button" tabindex="0" data-page="scraper">
                     <div class="flow-icon"><i data-lucide="map-pin" class="icon-lg"></i></div>
                     <h4>Google Maps Scraper</h4>
                     <p>Scrape businesses from Google Maps by location and category. Find emails and phone numbers.</p>
                 </div>
-                <div class="flow-card" data-page="domains">
+                <div class="flow-card" role="button" tabindex="0" data-page="domains">
                     <div class="flow-icon"><i data-lucide="upload" class="icon-lg"></i></div>
                     <h4>Upload Domains</h4>
                     <p>Upload a CSV with company domains. We'll find generic emails and decision makers.</p>
                 </div>
-                <div class="flow-card" data-page="search">
+                <div class="flow-card" role="button" tabindex="0" data-page="search">
                     <div class="flow-icon"><i data-lucide="search" class="icon-lg"></i></div>
                     <h4>Search Companies</h4>
                     <p>Search by industry, size, location. Then enrich the results with contact data.</p>
                 </div>
-                <div class="flow-card" data-page="linkedin">
+                <div class="flow-card" role="button" tabindex="0" data-page="linkedin">
                     <div class="flow-icon"><i data-lucide="link" class="icon-lg"></i></div>
                     <h4>LinkedIn Enrichment</h4>
                     <p>Upload LinkedIn URLs. We'll find work emails and company details.</p>
@@ -846,7 +849,7 @@
                     </div>
                     <div class="filter-group" style="grid-column: span 2;">
                         <label id="scraperZipsUploadLabel">Or upload a CSV file with zip codes</label>
-                        <div class="upload-zone" id="scraperZipsUploadZone" style="padding:1rem;min-height:80px;">
+                        <div class="upload-zone" id="scraperZipsUploadZone" role="button" tabindex="0" aria-label="Upload CSV file" style="padding:1rem;min-height:80px;">
                             <input type="file" id="scraperZipsFile" accept=".csv" style="display:none;">
                             <div class="upload-icon"><i data-lucide="folder" class="icon-lg"></i></div>
                             <div class="upload-text" id="scraperZipsUploadText">Drop ZIP CSV or click to browse</div>
@@ -1030,7 +1033,7 @@
                 <div style="background:#f0f9ff;border-left:4px solid #1a315d;padding:12px;margin-bottom:1rem;border-radius:4px;font-size:0.85rem;color:#374151;">
                     <strong>How to use:</strong> Upload a CSV file with company domains (e.g., "acme.com"). The system will find LinkedIn company pages, then search for decision makers (CEO, VP, Directors) at each company and retrieve their work emails. Required column: <code>domain</code> (company website without https://)
                 </div>
-                <div class="upload-zone" id="domainUploadZone">
+                <div class="upload-zone" id="domainUploadZone" role="button" tabindex="0" aria-label="Upload CSV file">
                     <input type="file" id="domainFile" accept=".csv">
                     <div class="upload-icon"><i data-lucide="folder" class="icon-lg"></i></div>
                     <div class="upload-text">Drop CSV file or click to browse</div>
@@ -1176,6 +1179,11 @@
                             <label style="font-weight:600;cursor:pointer;">Better Enrich</label>
                             <span style="font-size:0.75rem;color:#64748b;">Runs if WizLeads has no data</span>
                         </div>
+                        <div style="display:flex;align-items:center;gap:8px; margin-top:10px; padding-top:10px; border-top:1px dashed #e2e8f0;">
+                            <input type="checkbox" id="provider_outscraper" checked style="width:16px;height:16px;cursor:pointer;">
+                            <label style="font-weight:600;cursor:pointer;">Outscraper (Google Maps)</label>
+                            <span style="font-size:0.75rem;color:#64748b;">Include Google-Maps/outscraper-sourced contacts (uncheck to exclude)</span>
+                        </div>
                     </div>
                 </div>
 
@@ -1319,7 +1327,7 @@
                 <div style="background:#f0f9ff;border-left:4px solid #1a315d;padding:12px;margin-bottom:1rem;border-radius:4px;font-size:0.85rem;color:#374151;">
                     <strong>How to use:</strong> Upload a CSV file with LinkedIn profile URLs. We'll find work emails, phone numbers, and company details for each person. Required column: <code>linkedin_url</code> (e.g., https://linkedin.com/in/johndoe)
                 </div>
-                <div class="upload-zone" id="linkedinUploadZone">
+                <div class="upload-zone" id="linkedinUploadZone" role="button" tabindex="0" aria-label="Upload CSV file">
                     <input type="file" id="linkedinFile" accept=".csv">
                     <div class="upload-icon"><i data-lucide="link" class="icon-lg"></i></div>
                     <div class="upload-text">Drop CSV file or click to browse</div>
@@ -1396,7 +1404,7 @@
                     <strong>Important:</strong> This feature looks up US phone numbers only using LinkedIn profile URLs.<br>
                     <strong>How it works:</strong> Upload a CSV with LinkedIn URLs. We'll look up phone numbers for each profile.
                 </div>
-                <div class="upload-zone" id="phoneUploadZone">
+                <div class="upload-zone" id="phoneUploadZone" role="button" tabindex="0" aria-label="Upload CSV file">
                     <input type="file" id="phoneFile" accept=".csv">
                     <div class="upload-icon"><i data-lucide="phone" class="icon-lg"></i></div>
                     <div class="upload-text">Drop CSV file or click to browse</div>
@@ -1452,6 +1460,8 @@
                     <button class="filter-tab" data-status="abandoned" onclick="filterEnrichmentJobs('abandoned')">Abandoned</button>
                     <button class="filter-tab" data-status="cancelled" onclick="filterEnrichmentJobs('cancelled')">Cancelled</button>
                 </div>
+                <input type="text" id="enrichmentSearchInput" placeholder="Search by filename, job ID, or status..."
+                       style="width:100%;padding:0.5rem 0.75rem;border:1px solid var(--gray-300);border-radius:6px;margin-bottom:0.75rem;font-size:0.85rem;">
                 <div class="jobs-list" id="enrichmentJobsList">
                     <div class="loading"><div class="spinner"></div>Loading...</div>
                 </div>
@@ -1698,6 +1708,23 @@ example.org,Jane Doe</pre>
             let currentStatusFilter = 'all'; // Current status filter
             let allEnrichmentJobs = []; // Store all enrichment jobs for filtering
             let currentEnrichmentStatusFilter = 'all'; // Current enrichment status filter
+            let enrichmentCurrentPage = 1;
+            let enrichmentTotalJobs = 0;
+            const ENRICHMENT_PAGE_SIZE = 25;
+            let enrichmentSearchQuery = '';
+            (function() {
+                var timer;
+                var si = document.getElementById('enrichmentSearchInput');
+                if (si) si.addEventListener('input', function() {
+                    clearTimeout(timer);
+                    var val = this.value;
+                    timer = setTimeout(function() {
+                        enrichmentSearchQuery = val.trim();
+                        enrichmentCurrentPage = 1;
+                        loadJobs();
+                    }, 300);
+                });
+            })();
 
             // =============================================================================
             // MODAL DIALOG SYSTEM - Global Modal Manager
@@ -2090,6 +2117,16 @@ example.org,Jane Doe</pre>
             handleHashChange();
         });
 
+        // Keyboard accessibility for div-based clickables (upload zones + flow cards).
+        // One global delegated handler: Enter/Space triggers the existing click handler.
+        document.addEventListener('keydown', (e) => {
+            if ((e.key === 'Enter' || e.key === ' ') && e.target && e.target.classList &&
+                (e.target.classList.contains('upload-zone') || e.target.classList.contains('flow-card'))) {
+                e.preventDefault();
+                e.target.click();
+            }
+        });
+
         // Navigation - use router for all nav items
         document.querySelectorAll('.nav-item, .flow-card').forEach(el => {
             el.addEventListener('click', (e) => {
@@ -2329,6 +2366,10 @@ example.org,Jane Doe</pre>
         domainFile.addEventListener('change', (e) => { if (e.target.files.length) handleDomainFile(e.target.files[0]); });
         
         async function handleDomainFile(file) {
+            if (!file.name.endsWith('.csv')) {
+                alert('Please upload a CSV file.');
+                return;
+            }
             const uploadZone = document.getElementById('domainUploadZone');
             const originalContent = uploadZone.innerHTML;
             const fileSize = (file.size / 1024).toFixed(1) + ' KB';
@@ -2489,6 +2530,11 @@ example.org,Jane Doe</pre>
             if (document.getElementById('provider_wizleads').checked) providers.push('wizleads');
             if (document.getElementById('provider_better_enrich').checked) providers.push('better_enrich');
 
+            // Phase 2: Outscraper is a SOURCE filter on the internal-DB
+            // (by-company) lookup, NOT a cascade provider. Unchecked (default)
+            // = all sources (today's behavior); checked (default) = include outscraper; unchecked = exclude.
+            const outscraperSource = document.getElementById('provider_outscraper').checked ? null : 'outscraper';
+
             // Read pre-processing flags (default ON via the HTML checked attr)
             const normalizeDomains = document.getElementById('domain_normalize_domains').checked;
             const dedupeByDomain = document.getElementById('domain_dedupe_by_domain').checked;
@@ -2511,7 +2557,8 @@ example.org,Jane Doe</pre>
                         providers: providers.length > 0 ? providers : null,
                         normalize_domains: normalizeDomains,
                         dedupe_by_domain: dedupeByDomain,
-                        titles: customTitles
+                        titles: customTitles,
+                        source: outscraperSource
                     })
                 });
 
@@ -3580,6 +3627,10 @@ example.org,Jane Doe</pre>
         linkedinFile.addEventListener('change', (e) => { if (e.target.files.length) handleLinkedinFile(e.target.files[0]); });
         
         async function handleLinkedinFile(file) {
+            if (!file.name.endsWith('.csv')) {
+                alert('Please upload a CSV file.');
+                return;
+            }
             const uploadZone = document.getElementById('linkedinUploadZone');
             const originalContent = uploadZone.innerHTML;
             const fileSize = (file.size / 1024).toFixed(1) + ' KB';
@@ -3736,29 +3787,45 @@ example.org,Jane Doe</pre>
 
             setButtonLoading(btn, true, 'Starting Enrichment...');
 
-            const res = await fetch('/api/enrichment/by-linkedin-v2', {
-                method: 'POST',
-                headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    upload_id: linkedinUploadId,
-                    personal_linkedin_col: personalCol || null,
-                    company_linkedin_col: companyCol || null,
-                    max_dms: parseInt(maxDms),
-                    include_company: includeCompany
-                })
-            });
-            if (res.ok) {
-                const data = await res.json();
-                currentJobId = data.job_id;
-                document.getElementById('linkedinTotal').textContent = data.total;
-                document.getElementById('linkedinProgress').style.display = 'block';
-                startProgressStream(currentJobId, 'linkedin');
-                setButtonLoading(btn, false, 'Start Enrichment');
-            } else {
-                const err = await res.json().catch(() => ({}));
-                errorContainer.textContent = 'Failed to start enrichment: ' + (err.detail || 'Unknown error');
+            let started = false;
+            try {
+                const res = await fetch('/api/enrichment/by-linkedin-v2', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        upload_id: linkedinUploadId,
+                        personal_linkedin_col: personalCol || null,
+                        company_linkedin_col: companyCol || null,
+                        max_dms: parseInt(maxDms),
+                        include_company: includeCompany
+                    })
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    currentJobId = data.job_id;
+                    document.getElementById('linkedinTotal').textContent = data.total;
+                    document.getElementById('linkedinProgress').style.display = 'block';
+                    setButtonLoading(btn, false, 'Job Started!');
+                    btn.classList.remove('btn-primary');
+                    btn.classList.add('btn-success');
+                    // Navigate to the Jobs page so the user sees the running
+                    // job (mirrors the Domain Enrich tab's post-start behavior).
+                    navigateToPage('jobs');
+                    // Start SSE stream
+                    startProgressStream(currentJobId, 'linkedin');
+                    started = true;
+                } else {
+                    const err = await res.json().catch(() => ({}));
+                    errorContainer.textContent = 'Failed to start enrichment: ' + (err.detail || 'Unknown error');
+                    errorContainer.style.display = 'block';
+                }
+            } catch (e) {
+                // Transient network/abort errors — surface them instead of
+                // leaving the button stuck on "Starting Enrichment...".
+                errorContainer.textContent = 'Failed to start enrichment: ' + e.message;
                 errorContainer.style.display = 'block';
-                setButtonLoading(btn, false, 'Start Enrichment');
+            } finally {
+                if (!started) setButtonLoading(btn, false, 'Start Enrichment');
             }
         });
 
@@ -3776,6 +3843,10 @@ example.org,Jane Doe</pre>
         phoneFileInput.addEventListener('change', () => { if (phoneFileInput.files.length) handlePhoneFile(phoneFileInput.files[0]); });
 
         function handlePhoneFile(file) {
+            if (!file.name.endsWith('.csv')) {
+                alert('Please upload a CSV file.');
+                return;
+            }
             const originalContent = phoneUploadZone.innerHTML;
             const fileSize = (file.size / 1024).toFixed(1) + ' KB';
 
@@ -4014,10 +4085,30 @@ example.org,Jane Doe</pre>
             btn.textContent = 'Download CSV';
         });
 
+        // Lazily create (or reuse) a non-blocking zero-email warning banner
+        // inside a progress panel. Reuses the .zero-email-warning style that
+        // the Jobs list already uses, so the live panel and the Jobs page stay
+        // visually consistent.
+        function ensureZeroEmailWarning(type) {
+            let el = document.getElementById(type + 'ZeroEmailWarning');
+            if (!el) {
+                el = document.createElement('div');
+                el.id = type + 'ZeroEmailWarning';
+                el.className = 'zero-email-warning';
+                el.style.display = 'none';
+                const card = document.getElementById(type + 'Progress');
+                if (card) card.appendChild(el);
+            }
+            return el;
+        }
+
         // Progress Stream
         function startProgressStream(jobId, type) {
             if (eventSource) eventSource.close();
-            eventSource = new EventSource('/api/enrichment/jobs/' + jobId + '/stream', { headers: { 'Authorization': 'Bearer ' + token } });
+            // Native EventSource silently ignores the `headers` option (only `withCredentials` is honored),
+            // so the Authorization header never gets sent and the backend returns 401. Pass the token as a
+            // query param instead — same workaround the scraper stream uses.
+            eventSource = new EventSource('/api/enrichment/jobs/' + jobId + '/stream?token=' + encodeURIComponent(token));
             // Store provider errors per job
             if (!window.jobProviderErrors) window.jobProviderErrors = {};
             window.jobProviderErrors[jobId] = [];
@@ -4029,13 +4120,51 @@ example.org,Jane Doe</pre>
                 document.getElementById('rowProgress').style.display = 'block';
             }
 
+            // Clear any stale zero-email warning left over from a previous run
+            // that reused this progress panel.
+            const staleWarn = document.getElementById(type + 'ZeroEmailWarning');
+            if (staleWarn) staleWarn.style.display = 'none';
+
+            // Closure accumulators for the live counters. Per-row SSE events
+            // carry an `emails_found` value for THAT row only and omit a
+            // `processed` field, so we accumulate client-side (one event = one
+            // processed row). The final `done` event carries the authoritative
+            // cumulative totals and overrides whatever we tracked — see below.
+            let cumProcessed = 0;
+            let cumEmails = 0;
+
             eventSource.onmessage = (e) => {
                 const data = JSON.parse(e.data);
 
                 if (data.done) {
                     eventSource.close();
+                    // Apply the authoritative cumulative totals from the done
+                    // event BEFORE updating the UI, so the completed job shows
+                    // the real numbers instead of the last per-row value.
+                    if (typeof data.processed === 'number') cumProcessed = data.processed;
+                    if (typeof data.emails_found === 'number') cumEmails = data.emails_found;
+                    const doneTotal = (typeof data.total === 'number' && data.total > 0)
+                        ? data.total
+                        : (parseInt(document.getElementById(type + 'Total').textContent) || 1);
+                    const donePct = Math.min(100, Math.round((cumProcessed / doneTotal) * 100));
+                    document.getElementById(type + 'Processed').textContent = cumProcessed;
+                    document.getElementById(type + 'Emails').textContent = cumEmails;
+                    document.getElementById(type + 'ProgressBar').style.width = donePct + '%';
+                    document.getElementById(type + 'ProgressText').textContent = donePct + '%';
+
                     document.getElementById(type + 'Status').textContent = 'Completed';
                     document.getElementById('download' + type.charAt(0).toUpperCase() + type.slice(1) + 'Results').disabled = false;
+
+                    // Surface a visible, non-blocking warning when the job
+                    // produced 0 emails on a non-empty input. Reuses the same
+                    // .zero-email-warning banner the Jobs list uses.
+                    const warnEl = ensureZeroEmailWarning(type);
+                    if (doneTotal > 0 && cumEmails === 0) {
+                        warnEl.innerHTML = '<strong>⚠ Completed with 0 emails</strong> — the providers had no verified emails for any of the ' + doneTotal + ' rows in this list. Try other providers or a different list.';
+                        warnEl.style.display = 'flex';
+                    } else {
+                        warnEl.style.display = 'none';
+                    }
 
                     // Update activity to complete
                     const activityEl = document.getElementById('enrichmentActivity');
@@ -4050,9 +4179,23 @@ example.org,Jane Doe</pre>
                     return;
                 }
 
-                const processed = data.processed || 0, total = data.total || 1, percent = Math.round((processed/total)*100);
-                document.getElementById(type + 'Processed').textContent = processed;
-                document.getElementById(type + 'Emails').textContent = data.emails_found || 0;
+                // Accumulate live counters. Prefer an authoritative cumulative
+                // `processed` if the backend sends one; otherwise treat each
+                // event as one processed row. `emails_found` on these events is
+                // a per-row delta (verified against the backend runners), so we
+                // sum it into the running total. The `done` event overrides
+                // both with authoritative cumulative totals at the end.
+                if (typeof data.processed === 'number' && data.processed > cumProcessed) {
+                    cumProcessed = data.processed;
+                } else if (typeof data.processed !== 'number') {
+                    cumProcessed += 1;
+                }
+                const rowEmails = (typeof data.emails_found === 'number') ? data.emails_found : 0;
+                cumEmails += rowEmails;
+                const streamTotal = data.total || parseInt(document.getElementById(type + 'Total').textContent) || 1;
+                const percent = Math.min(100, Math.round((cumProcessed / streamTotal) * 100));
+                document.getElementById(type + 'Processed').textContent = cumProcessed;
+                document.getElementById(type + 'Emails').textContent = cumEmails;
                 document.getElementById(type + 'ProgressBar').style.width = percent + '%';
                 document.getElementById(type + 'ProgressText').textContent = percent + '%';
 
@@ -4070,8 +4213,8 @@ example.org,Jane Doe</pre>
                 }
 
                 // Update row progress for large jobs
-                if (total > 50) {
-                    document.getElementById('rowProgressText').textContent = `Processing ${processed.toLocaleString()} of ${total.toLocaleString()} rows...`;
+                if (streamTotal > 50) {
+                    document.getElementById('rowProgressText').textContent = `Processing ${cumProcessed.toLocaleString()} of ${streamTotal.toLocaleString()} rows...`;
                     document.getElementById('rowProgressPercent').textContent = percent + '%';
                     document.getElementById('rowProgressFill').style.width = percent + '%';
                 }
@@ -4080,6 +4223,23 @@ example.org,Jane Doe</pre>
                 if (data.provider_errors && data.provider_errors.length > 0) {
                     window.jobProviderErrors[jobId].push(...data.provider_errors);
                     updateErrorDisplay(type, window.jobProviderErrors[jobId]);
+                }
+            };
+
+            // If the live stream drops (401/auth hiccup, network blip, etc.), close it and surface a
+            // non-fatal message. The job keeps running server-side — the user can refresh the Jobs page.
+            // Conservative: close on first error so this fires once; never throws or rejects.
+            eventSource.onerror = () => {
+                eventSource.close();
+                const statusEl = document.getElementById(type + 'Status');
+                // Don't clobber a cleanly-completed status if a stray error fires after completion.
+                if (statusEl && statusEl.textContent.trim() === 'Completed') return;
+                const msg = 'Live progress connection lost — the job is still running server-side. Refresh the Jobs page to see latest status.';
+                if (statusEl) statusEl.textContent = msg;
+                const errContainer = document.getElementById(type + 'Errors');
+                if (errContainer) {
+                    errContainer.style.display = 'block';
+                    errContainer.innerHTML = '<div class="error-tag">' + msg + '</div>';
                 }
             };
         }
@@ -4331,14 +4491,116 @@ example.org,Jane Doe</pre>
             }
         }
 
+        // Download a single 10K-row shard. Mirrors downloadEnrichmentPartial's
+        // blob logic but hits the per-shard endpoint. The server streams the
+        // shard's CSV slice (404 when the shard has no rows on disk yet).
+        async function downloadEnrichmentShard(jobId, shardIdx, btn) {
+            if (btn) { btn.disabled = true; btn.textContent = 'Downloading...'; }
+            try {
+                const res = await fetch('/api/enrichment/jobs/' + jobId + '/shard/' + shardIdx, {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (!res.ok) {
+                    let msg = 'Download failed';
+                    try { const err = await res.json(); msg = 'Download failed: ' + (err.detail || 'No shard file'); } catch (_) {}
+                    alert(msg);
+                    return;
+                }
+                const blob = await res.blob();
+                const cd = res.headers.get('content-disposition') || '';
+                const match = cd.match(/filename="?([^"]+)"?/);
+                const filename = match ? match[1] : `shard_${shardIdx}_${jobId.substr(0, 8)}.csv`;
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = filename;
+                document.body.appendChild(a); a.click();
+                document.body.removeChild(a); URL.revokeObjectURL(url);
+            } catch (e) {
+                alert('Error: ' + e.message);
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = 'Download'; }
+            }
+        }
+
+        // Toggle the per-shard download list under a job card. Fetches
+        // /shards ON DEMAND (only when the user clicks the chunks button —
+        // never auto-polled during renderEnrichmentJobs, to avoid extra load).
+        // Clicking again collapses an already-expanded list.
+        async function toggleEnrichmentShards(jobId, btn) {
+            const container = document.getElementById('shard-list-' + jobId);
+            if (!container) {
+                alert('Could not find shard list container');
+                return;
+            }
+            // Collapse if already loaded and visible
+            if (container.dataset.loaded === '1' && container.style.display !== 'none') {
+                container.style.display = 'none';
+                return;
+            }
+            const originalLabel = btn ? btn.textContent : '▦ Download in 10K chunks';
+            if (btn) { btn.disabled = true; btn.textContent = 'Loading...'; }
+            try {
+                const res = await fetch('/api/enrichment/jobs/' + jobId + '/shards', {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (!res.ok) {
+                    let msg = 'Could not load shards';
+                    try { const err = await res.json(); msg = 'Could not load shards: ' + (err.detail || 'Unknown error'); } catch (_) {}
+                    alert(msg);
+                    return;
+                }
+                const data = await res.json();
+                const shards = data.shards || [];
+                const shardSize = data.shard_size || 10000;
+                if (shards.length === 0) {
+                    container.innerHTML = '<div style="font-size:0.72rem;color:#6b7280;margin-top:6px;">No shards available for this job.</div>';
+                } else {
+                    const rows = shards.map(s => {
+                        const k = s.shard;
+                        const ready = s.rows_available || 0;
+                        const disabled = ready === 0 ? ' disabled' : '';
+                        const check = s.complete ? ' <span style="color:#059669;">✓</span>' : '';
+                        const dlBtn = '<button class="btn btn-secondary btn-sm"' + disabled + ' onclick="downloadEnrichmentShard(\'' + jobId + '\',' + k + ', this)">Download</button>';
+                        return '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">' +
+                            '<span>Shard ' + k + ': rows ' + s.start_row + '-' + s.end_row + ' · ' + ready + '/' + shardSize + ' ready' + check + '</span>' +
+                            dlBtn + '</div>';
+                    }).join('');
+                    container.innerHTML = '<div style="font-size:0.7rem;color:#374151;margin-top:6px;display:flex;flex-direction:column;gap:3px;">' + rows + '</div>';
+                }
+                container.dataset.loaded = '1';
+                container.style.display = 'block';
+            } catch (e) {
+                alert('Error: ' + e.message);
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = originalLabel; }
+            }
+        }
+
         // Load enrichment jobs with improved status handling
-        async function loadJobs() {
+        async function loadJobs(page) {
+            // `page` is optional — when omitted, keep the current page.
+            // This preserves the existing behavior of the many `loadJobs()` no-arg call sites
+            // (cancel/retry/resume handlers just refresh the current page).
+            if (page !== undefined) {
+                enrichmentCurrentPage = page;
+            }
             const jobsList = document.getElementById('enrichmentJobsList');
             try {
-                const res = await fetch('/api/enrichment/jobs', { headers: { 'Authorization': 'Bearer ' + token } });
+                const params = new URLSearchParams({
+                    limit: ENRICHMENT_PAGE_SIZE,
+                    offset: (enrichmentCurrentPage - 1) * ENRICHMENT_PAGE_SIZE
+                });
+                if (currentEnrichmentStatusFilter !== 'all') {
+                    params.set('status', currentEnrichmentStatusFilter);
+                }
+                if (enrichmentSearchQuery) {
+                    params.set('search', enrichmentSearchQuery);
+                }
+                const res = await fetch('/api/enrichment/jobs?' + params, { headers: { 'Authorization': 'Bearer ' + token } });
                 if (res.ok) {
                     const data = await res.json();
                     allEnrichmentJobs = data.jobs || [];
+                    enrichmentTotalJobs = data.total || 0;
                     renderEnrichmentJobs();
                 } else {
                     jobsList.innerHTML = '<div class="empty-state">Failed to load</div>';
@@ -4356,7 +4618,10 @@ example.org,Jane Doe</pre>
                     if (tab.dataset.status === statusFilter) tab.classList.add('active');
                 });
             }
-            renderEnrichmentJobs();
+            // Server now filters via the `status` query param on /api/enrichment/jobs,
+            // so reset to page 1 and re-fetch.
+            enrichmentCurrentPage = 1;
+            loadJobs();
         }
 
         function renderEnrichmentJobs() {
@@ -4366,14 +4631,8 @@ example.org,Jane Doe</pre>
                 jobsList.innerHTML = '<div class="empty-state">No enrichment jobs yet</div>';
                 return;
             }
-            // Apply status filter
-            if (currentEnrichmentStatusFilter !== 'all') {
-                jobs = jobs.filter(job => job.status === currentEnrichmentStatusFilter);
-            }
-            if (jobs.length === 0) {
-                jobsList.innerHTML = '<div class="empty-state">No jobs match the current filter</div>';
-                return;
-            }
+            // Status filtering is now done server-side via the `status` query param
+            // (see loadJobs). Only the "no jobs yet" empty state remains here.
             jobsList.innerHTML = jobs.map(job => {
                         // Status display with human-readable labels
                         let statusLabel = job.status;
@@ -4468,7 +4727,17 @@ example.org,Jane Doe</pre>
                             actions += ' <button class="btn btn-warning btn-sm" data-action="resume" data-job-id="'+job.job_id+'" onclick="resumeEnrichmentJob(\''+job.job_id+'\', this)">↻ Resume</button>';
                             actions += ' <button class="btn btn-secondary btn-sm" data-action="retry" data-job-id="'+job.job_id+'" onclick="retryEnrichmentJob(\''+job.job_id+'\', this)">Retry Full</button>';
                         } else if (job.status === 'running' || job.status === 'queued' || job.status === 'starting') {
-                            actions += ' <button class="btn btn-danger btn-sm" onclick="cancelEnrichmentJob(\''+job.job_id+'\')">Cancel</button>';
+                            actions += ' <button class="btn btn-danger btn-sm" onclick="cancelEnrichmentJob(\''+job.job_id+'\', this)">Cancel</button>';
+                            // Let the user pull the leads found so far WITHOUT cancelling.
+                            // /recover-partial has no status guard, so this works mid-run.
+                            actions += ' <button class="btn btn-secondary btn-sm" onclick="downloadEnrichmentPartial(\''+job.job_id+'\', this)">↓ Download progress</button>';
+                        }
+                        // Chunked shard download — reveals a per-shard download list
+                        // under the job card on click (toggle). The shard endpoint
+                        // serves any job on demand, so surface it on rows that have
+                        // (or will have) rows on disk: done/partial/running.
+                        if (job.status === 'done' || job.status === 'partial' || job.status === 'running') {
+                            actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleEnrichmentShards(\''+job.job_id+'\', this)">▦ Download in 10K chunks</button>';
                         }
                         // Show error message for failed/abandoned/cancelled jobs with hover tooltip
                         let errorInfo = '';
@@ -4521,26 +4790,61 @@ example.org,Jane Doe</pre>
                                 '</div>';
                         }
 
-                        return '<div class="job-card' + zeroEmailCardClass + '"><div class="job-info"><h4>' + (job.display_filename || job.filename || 'Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.processed||0) + '/' + (job.total||0) + ' | ' + (job.emails_found||0) + ' emails</div><div class="job-providers" style="font-size: 0.75rem; margin-top: 4px;"><div style="color: #1e40af;"><strong>Selected:</strong> ' + selectedDisplay + '</div><div style="color: #059669;"><strong>Used:</strong> ' + usedDisplay + '</div></div>' + errorInfo + providerErrorsDisplay + zeroEmailWarning + '</div><div class="actions">' + actions + '</div></div>';
-                    }).join('');
+                        return '<div class="job-card' + zeroEmailCardClass + '"><div class="job-info"><h4>' + (job.display_filename || job.filename || 'Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.processed||0) + '/' + (job.total||0) + ' | ' + (job.emails_found||0) + ' emails</div><div class="job-providers" style="font-size: 0.75rem; margin-top: 4px;"><div style="color: #1e40af;"><strong>Selected:</strong> ' + selectedDisplay + '</div><div style="color: #059669;"><strong>Used:</strong> ' + usedDisplay + '</div></div>' + errorInfo + providerErrorsDisplay + zeroEmailWarning + '</div><div class="actions">' + actions + '</div><div id="shard-list-' + job.job_id + '"></div></div>';
+                    }).join('') + renderEnrichmentPagination();
+        }
+
+        // Render the prev/next pagination row for the enrichment jobs list.
+        // Returns '' (no row) when everything fits on a single page.
+        function renderEnrichmentPagination() {
+            if (enrichmentTotalJobs <= ENRICHMENT_PAGE_SIZE) return '';
+            const totalPages = Math.ceil(enrichmentTotalJobs / ENRICHMENT_PAGE_SIZE);
+            const prevDisabled = enrichmentCurrentPage <= 1;
+            const nextDisabled = enrichmentCurrentPage >= totalPages;
+            return '<div style="display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 16px;">' +
+                '<button class="btn btn-secondary btn-sm" ' + (prevDisabled ? 'disabled' : '') +
+                    ' onclick="loadJobs(' + (enrichmentCurrentPage - 1) + ')">← Prev</button>' +
+                '<span style="font-size: 0.85rem; color: #475569;">Page ' + enrichmentCurrentPage + ' of ' + totalPages +
+                    ' (' + enrichmentTotalJobs + ' jobs)</span>' +
+                '<button class="btn btn-secondary btn-sm" ' + (nextDisabled ? 'disabled' : '') +
+                    ' onclick="loadJobs(' + (enrichmentCurrentPage + 1) + ')">Next →</button>' +
+            '</div>';
         }
 
         // Cancel an enrichment job
-        async function cancelEnrichmentJob(jobId) {
+        async function cancelEnrichmentJob(jobId, btn) {
             if (!confirm('Cancel this enrichment job?')) return;
+
+            // Show immediate feedback - disable button and show loading state (mirrors cancelScraperJob)
+            if (btn) {
+                btn.disabled = true;
+                btn.dataset.originalText = btn.textContent;
+                btn.innerHTML = '<span class="spinner" style="width:12px;height:12px;display:inline-block;"></span> Cancelling...';
+            }
+
             try {
                 const res = await fetch('/api/enrichment/jobs/' + jobId + '/cancel', {
                     method: 'POST',
                     headers: { 'Authorization': 'Bearer ' + token }
                 });
                 if (res.ok) {
-                    loadJobs(); // Refresh the list
+                    loadJobs(); // Refresh the list (button will be removed/re-rendered)
                 } else {
                     const err = await res.json();
                     alert('Failed to cancel: ' + (err.detail || 'Unknown error'));
+                    // Re-enable button on error
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.innerHTML = btn.dataset.originalText || 'Cancel';
+                    }
                 }
             } catch (e) {
                 alert('Error: ' + e.message);
+                // Re-enable button on error
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = btn.dataset.originalText || 'Cancel';
+                }
             }
         }
 

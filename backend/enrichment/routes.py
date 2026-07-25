@@ -1156,6 +1156,80 @@ async def get_default_cascade():
     return {"cascade": blitz_client.DEFAULT_CASCADE}
 
 
+async def _merge_by_company_into_contacts(
+    contacts: list[dict[str, Any]],
+    domain: str,
+    force_provider: Optional[str],
+    source: Optional[str] = None,
+    limit: int = 25,
+) -> list[dict[str, Any]]:
+    """Phase 1c (2026-07-21): augment a response contacts list with every
+    Contacts DB person filed under the company, emails preserved as stored
+    (no mailtester). Shared by the single-row endpoints (POST /enrich, GET
+    /enrich, GET /enrich/{domain}). Gated by ENABLE_COMPANY_LOOKUP; skipped
+    when force_provider is set. Additive + deduped by email/name; a cascade
+    contact is replaced only if its email was stripped/empty (validated
+    emails are never overwritten -> no data loss).
+
+    Phase 2 (2026-07-22): optional ``source`` (e.g. "outscraper") narrows the
+    internal-DB lookup to contacts tagged with that source only. ``None`` →
+    all sources (today's behavior — no regression).
+    """
+    if force_provider:
+        return contacts
+    if os.getenv("ENABLE_COMPANY_LOOKUP", "").strip().lower() not in ("1", "true", "yes"):
+        return contacts
+    try:
+        async with httpx.AsyncClient() as bc_http:
+            by_company = await contacts_client.company_persons_by_domain(
+                bc_http, domain, limit=limit, exclude_source=source
+            )
+    except Exception as bc_err:
+        logger.warning("by-company lookup failed for %s: %s", domain, bc_err)
+        return contacts
+    if not by_company:
+        return contacts
+    logger.info("by-company %s: fetched=%d cascade=%d", domain, len(by_company), len(contacts))
+    seen_emails = {(c.get("email") or "").strip().lower() for c in contacts if c.get("email")}
+    seen_names = {(c.get("full_name") or "").strip().lower() for c in contacts if c.get("full_name")}
+    merged = list(contacts)
+    for bc in by_company:
+        em = (bc.get("email") or "").strip()
+        nm = (bc.get("full_name") or "").strip()
+        if not em and not nm:
+            continue
+        key_em = em.lower() if em else ""
+        key_nm = nm.lower() if nm else ""
+        if key_em and key_em in seen_emails:
+            continue
+        if key_nm and key_nm in seen_names:
+            existing = next((c for c in merged if (c.get("full_name") or "").strip().lower() == key_nm), None)
+            if existing and (existing.get("email") or "").strip():
+                continue
+            merged = [c for c in merged if (c.get("full_name") or "").strip().lower() != key_nm]
+        if key_em:
+            seen_emails.add(key_em)
+        if key_nm:
+            seen_names.add(key_nm)
+        merged.append({
+            "full_name": nm,
+            "first_name": bc.get("first_name", "") or "",
+            "last_name": bc.get("last_name", "") or "",
+            "title": bc.get("title", "") or "",
+            "email": em,
+            "linkedin_url": bc.get("linkedin_url", "") or "",
+            "headline": bc.get("headline", "") or "",
+            "location_city": bc.get("city", "") or "",
+            "location_country": bc.get("country", "") or "",
+            "icp_tier": 0,
+            "email_source": "contacts_db",
+            "validation_status": "preserved",
+            "email_verified": "unverified",
+            "verification_message": "",
+        })
+    return merged
+
+
 @router.get(
     "/enrich/{domain}",
     summary="Enrich a single domain with decision-maker contacts",
@@ -1189,6 +1263,7 @@ async def enrich_single_domain(
     max_results: int = 5,
     cascade_json: Optional[str] = None,
     force_provider: Optional[str] = None,
+    source: Optional[str] = None,
     current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """Enrich a single domain with decision-maker contacts."""
@@ -1376,6 +1451,82 @@ async def enrich_single_domain(
     except Exception as stats_err:
         logger.warning("Failed to record source stats for enrich_single_domain: %s", stats_err)
 
+    # Phase 1 (2026-07-21): by-company lookup — augment the RESPONSE with ALL
+    # persons filed under this company in the Contacts DB, with emails preserved
+    # AS-STORED (no mailtester re-validation; mailtester strips valid .mil/.gov
+    # emails as "No MX"). Runs AFTER the write-back sync on purpose: by-company
+    # rows already live in the Contacts DB, so re-syncing them is redundant and
+    # slow. Non-disruptive: the cascade + sync above ran unchanged. Same-name
+    # cascade contacts (emails possibly stripped) are replaced by the preserved
+    # by-company version. Gated by ENABLE_COMPANY_LOOKUP (default off). Skipped
+    # when force_provider is set, so a user forcing one provider gets only that.
+    if os.getenv("ENABLE_COMPANY_LOOKUP", "").strip().lower() in ("1", "true", "yes") and not force_provider:
+        try:
+            async with httpx.AsyncClient() as bc_http:
+                by_company = await contacts_client.company_persons_by_domain(
+                    bc_http, domain, limit=max_results, exclude_source=source
+                )
+            if by_company:
+                logger.info("by-company %s: fetched=%d cascade=%d", domain, len(by_company), len(contacts))
+                # Include every by-company row with an email and/or name (the
+                # loaded data includes nameless role/group emails — still "data
+                # in the table"). Dedup by email (primary) and name (secondary).
+                seen_emails: set[str] = set()
+                seen_names: set[str] = set()
+                merged: list[dict[str, Any]] = []
+                for c in contacts:
+                    em = (c.get("email") or "").strip().lower()
+                    nm = (c.get("full_name") or "").strip().lower()
+                    if em:
+                        seen_emails.add(em)
+                    if nm:
+                        seen_names.add(nm)
+                    merged.append(c)
+                for bc in by_company:
+                    em = (bc.get("email") or "").strip()
+                    nm = (bc.get("full_name") or "").strip()
+                    if not em and not nm:
+                        continue
+                    key_em = em.lower() if em else ""
+                    key_nm = nm.lower() if nm else ""
+                    if key_em and key_em in seen_emails:
+                        continue
+                    if key_nm and key_nm in seen_names:
+                        # Only replace a cascade contact if its email was
+                        # stripped/empty; if it carries a validated email, keep
+                        # it and skip this by-company duplicate (no data loss).
+                        existing = next((c for c in merged
+                                         if (c.get("full_name") or "").strip().lower() == key_nm), None)
+                        if existing and (existing.get("email") or "").strip():
+                            continue
+                        merged = [c for c in merged
+                                  if (c.get("full_name") or "").strip().lower() != key_nm]
+                    if key_em:
+                        seen_emails.add(key_em)
+                    if key_nm:
+                        seen_names.add(key_nm)
+                    merged.append({
+                        "full_name": nm,
+                        "first_name": bc.get("first_name", "") or "",
+                        "last_name": bc.get("last_name", "") or "",
+                        "title": bc.get("title", "") or "",
+                        "email": em,
+                        "linkedin_url": bc.get("linkedin_url", "") or "",
+                        "headline": bc.get("headline", "") or "",
+                        "location_city": bc.get("city", "") or "",
+                        "location_country": bc.get("country", "") or "",
+                        "icp_tier": 0,
+                        "email_source": "contacts_db",
+                        "validation_status": "preserved",
+                        "email_verified": "unverified",
+                        "verification_message": "",
+                    })
+                contacts = merged
+                if not sources.get("contacts"):
+                    sources["contacts"] = "contacts_db"
+        except Exception as bc_err:
+            logger.warning("by-company lookup failed for %s: %s", domain, bc_err)
+
     return _strip_internal_fields_from_response({
         "domain": domain,
         "company_linkedin_url": company_linkedin_url,
@@ -1447,6 +1598,11 @@ class UnifiedEnrichRequest(BaseModel):
     # Restrict cascade to a subset of providers (e.g., ["contacts_db", "smartprospect"]).
     # Mutually exclusive with force_provider. contacts_db always allowed.
     selected_providers: Optional[list[str]] = None
+    # Phase 2 (2026-07-22): optional Contacts DB source filter (e.g.
+    # "outscraper"). When set, narrows the by-company internal-DB lookup to
+    # contacts tagged with that source only. ``None`` → all sources (today's
+    # behavior — no regression). NOT a cascade provider.
+    source: Optional[str] = None
 
     class Config:
         schema_extra = {
@@ -2241,6 +2397,9 @@ async def unified_enrich(
         else:
             sync_status = "no_contacts_to_sync"
 
+    # Phase 1c (2026-07-21): by-company augment (flag-gated, additive).
+    contacts = await _merge_by_company_into_contacts(contacts, domain, req.force_provider, req.source, limit=req.max_results)
+
     return _strip_internal_fields_from_response({
         "domain": domain,
         "mode": mode,
@@ -2309,6 +2468,15 @@ async def unified_enrich_get(
             "contacts_db is always allowed. Mutually exclusive with force_provider."
         ),
     ),
+    source: str = Query(
+        None,
+        description=(
+            "Optional Contacts DB source filter (e.g., 'outscraper'). When "
+            "set, narrows the internal-DB by-company lookup to contacts "
+            "tagged with that source only. NOT a cascade provider; ignored "
+            "by the paid waterfall."
+        ),
+    ),
     debug: bool = Query(
         False,
         description=(
@@ -2361,6 +2529,7 @@ async def unified_enrich_get(
         titles=titles,
         force_provider=force_provider,
         selected_providers=selected_providers_list,
+        source=source,
     )
 
     # Call the POST handler logic (reuse by calling unified_enrich internally)
@@ -3060,13 +3229,18 @@ def _owns_job(job: dict[str, Any], current_user: dict[str, Any]) -> bool:
 
 
 @router.get("/jobs")
-async def list_enrichment_jobs(current_user: dict = Depends(auth.get_current_user)):
-    """List enrichment jobs for current user (or all for admin)."""
+async def list_enrichment_jobs(
+    current_user: dict = Depends(auth.get_current_user),
+    limit: int = Query(25, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    status: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+):
+    """List enrichment jobs (paginated, optional status + search filter)."""
     store = job_store.get_store()
-    if current_user.get("is_admin"):
-        jobs = store.list_jobs(job_type="enrichment", limit=200)
-    else:
-        jobs = store.list_jobs(user_id=current_user["user_id"], job_type="enrichment", limit=200)
+    user_id = None if current_user.get("is_admin") else current_user["user_id"]
+    jobs = store.list_jobs(user_id=user_id, job_type="enrichment", limit=limit, offset=offset, status=status, search=search)
+    total = store.count_jobs(user_id=user_id, job_type="enrichment", status=status, search=search)
 
     # Enhance job display with user-friendly filenames
     for job in jobs:
@@ -3090,7 +3264,28 @@ async def list_enrichment_jobs(current_user: dict = Depends(auth.get_current_use
                 job["filename"] = "Unknown.csv"
                 job["display_filename"] = "Unknown.csv"
 
-    return {"jobs": jobs}
+    # Attach checkpoint_count per job so the UI can render the 'Resume' button
+    # for jobs that have resumable progress. One batched GROUP BY, not N queries.
+    try:
+        if jobs:
+            ids = [j["job_id"] for j in jobs if j.get("job_id")]
+            placeholders = ",".join("?" * len(ids))
+            ck_rows = store.conn.execute(
+                f"SELECT job_id, COUNT(*) AS n FROM job_checkpoints "
+                f"WHERE job_id IN ({placeholders}) GROUP BY job_id",
+                ids,
+            ).fetchall()
+            counts = {r["job_id"]: int(r["n"]) for r in ck_rows}
+        else:
+            counts = {}
+        for job in jobs:
+            job["checkpoint_count"] = counts.get(job.get("job_id"), 0)
+    except Exception as cke:
+        logger.warning("checkpoint_count augmentation failed: %s", cke)
+        for job in jobs:
+            job.setdefault("checkpoint_count", 0)
+
+    return {"jobs": jobs, "total": total, "limit": limit, "offset": offset}
 
 
 @router.post("/jobs")
@@ -3208,9 +3403,18 @@ async def get_enrichment_job(
 @router.get("/jobs/{job_id}/stream")
 async def stream_enrichment_job_progress(
     job_id: str,
-    current_user: dict = Depends(auth.get_current_user),
+    token: Optional[str] = Query(default=None),
+    current_user: Optional[dict] = Depends(auth.get_current_user_optional),
 ):
     """SSE stream of enrichment progress events with replay support."""
+    # EventSource cannot send custom headers, so accept the JWT via ?token=
+    # (mirrors the scraper stream endpoint). Header-based auth still works
+    # for non-EventSource clients via get_current_user_optional.
+    if current_user is None:
+        if token:
+            current_user = auth.decode_token(token)
+        else:
+            raise HTTPException(status_code=401, detail="Authentication required.")
     store = job_store.get_store()
     job_data = store.get_job(job_id)
     if not job_data:
@@ -3359,6 +3563,233 @@ async def partial_download_enrichment(
     )
 
 
+# Size of each virtual download shard (rows). Tunable.
+SHARD_SIZE = 10_000
+
+
+def _db_busy() -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail="The platform database is briefly busy. Please retry in a few seconds.",
+        headers={"Retry-After": "3"},
+    )
+
+
+# Cache for _count_csv_data_rows keyed by (path, size, mtime_ns). While a job is
+# actively writing, size/mtime change every batch so the cache naturally
+# invalidates (re-scan is correct); for a stable/completed file, repeated
+# /shards + /resume-info calls hit the cache instead of re-scanning the CSV.
+_CSV_ROW_COUNT_CACHE: dict[tuple[str, int, int], int] = {}
+
+
+def _count_csv_data_rows(path: Path) -> int:
+    """Count data RECORDS in a CSV without loading it (minus the header).
+    Uses csv.reader so quoted embedded newlines don't inflate the count.
+    Cached by (path, size, mtime_ns) to avoid re-scanning on repeat calls."""
+    try:
+        st = path.stat()
+    except Exception:
+        return 0
+    key = (str(path), st.st_size, st.st_mtime_ns)
+    cached = _CSV_ROW_COUNT_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        with open(path, newline="", encoding="utf-8") as f:
+            n = max(0, sum(1 for _ in csv.reader(f)) - 1)
+    except Exception:
+        return 0
+    _CSV_ROW_COUNT_CACHE[key] = n
+    if len(_CSV_ROW_COUNT_CACHE) > 1000:  # bound growth across many jobs
+        _CSV_ROW_COUNT_CACHE.clear()
+    return n
+
+
+@router.get("/jobs/{job_id}/resume-info")
+async def enrichment_resume_info(
+    job_id: str,
+    current_user: dict = Depends(auth.get_current_user),
+):
+    """Resume eligibility + partial-CSV status. The frontend's 'Resume' button
+    calls this before POSTing /restart. Returns exactly the shape the UI reads."""
+    try:
+        store = job_store.get_store()
+        job_data = store.get_job(job_id)
+    except sqlite3.OperationalError:
+        raise _db_busy()
+    if not job_data or job_data.get("job_type") != "enrichment":
+        raise HTTPException(status_code=404, detail="Enrichment job not found.")
+    if not _owns_job(job_data, current_user):
+        raise HTTPException(status_code=403, detail="Access denied.")
+    total = int(job_data.get("total", 0) or 0)
+    try:
+        checkpoint_count = int(store.get_checkpoint_count(job_id))
+    except Exception:
+        checkpoint_count = 0
+    partial_csv = OUTPUT_DIR / f"{job_id}.csv"
+    partial_csv_exists = partial_csv.exists() and partial_csv.stat().st_size > 0
+    partial_csv_rows = _count_csv_data_rows(partial_csv) if partial_csv_exists else 0
+    emails_found = int(job_data.get("emails_found", 0) or 0)
+    unprocessed = max(0, total - checkpoint_count)
+    return {
+        "filename": job_data.get("original_filename") or job_data.get("filename"),
+        "status": job_data["status"],
+        "total": total,
+        "checkpoint_count": checkpoint_count,
+        "partial_csv_exists": partial_csv_exists,
+        "partial_csv_rows": partial_csv_rows,
+        "emails_found": emails_found,
+        "unprocessed": unprocessed,
+        "can_resume": (checkpoint_count > 0) or partial_csv_exists,
+    }
+
+
+@router.get("/jobs/{job_id}/recover-partial")
+async def enrichment_recover_partial(
+    job_id: str,
+    current_user: dict = Depends(auth.get_current_user),
+):
+    """Serve whatever partial CSV exists for a job — works for running/partial/
+    failed/cancelled/abandoned (no status guard). The frontend's 'Download Partial'
+    button calls this. 404 if no non-empty partial file exists yet."""
+    try:
+        store = job_store.get_store()
+        job_data = store.get_job(job_id)
+    except sqlite3.OperationalError:
+        raise _db_busy()
+    if not job_data or job_data.get("job_type") != "enrichment":
+        raise HTTPException(status_code=404, detail="Enrichment job not found.")
+    if not _owns_job(job_data, current_user):
+        raise HTTPException(status_code=403, detail="Access denied.")
+    # Prefer the recorded partial path, then the live output, then a renamed _partial.csv
+    candidates = [
+        job_data.get("partial_output_path") or "",
+        job_data.get("output_path") or "",
+        str(OUTPUT_DIR / f"{job_id}.csv"),
+        str(OUTPUT_DIR / f"{job_id}_partial.csv"),
+    ]
+    path = None
+    for c in candidates:
+        if c and Path(c).exists() and Path(c).stat().st_size > 0:
+            path = c
+            break
+    if not path:
+        raise HTTPException(status_code=404, detail="No partial file available yet.")
+    original_filename = job_data.get("original_filename") or job_data.get("filename", "results")
+    safe_name = (str(original_filename) or "results")[:30].replace(" ", "-").replace("/", "-")
+    return FileResponse(
+        path=path,
+        media_type="text/csv",
+        filename=f"partial_{safe_name}_{job_id[:8]}.csv",
+    )
+
+
+@router.get("/jobs/{job_id}/shards")
+async def enrichment_shards(
+    job_id: str,
+    current_user: dict = Depends(auth.get_current_user),
+):
+    """List virtual 10K-row download shards for a job's live CSV. Works while the
+    job is running — each shard becomes downloadable as its rows land on disk."""
+    try:
+        store = job_store.get_store()
+        job_data = store.get_job(job_id)
+    except sqlite3.OperationalError:
+        raise _db_busy()
+    if not job_data or job_data.get("job_type") != "enrichment":
+        raise HTTPException(status_code=404, detail="Enrichment job not found.")
+    if not _owns_job(job_data, current_user):
+        raise HTTPException(status_code=403, detail="Access denied.")
+    csv_path = OUTPUT_DIR / f"{job_id}.csv"
+    rows_on_disk = _count_csv_data_rows(csv_path) if (csv_path.exists() and csv_path.stat().st_size > 0) else 0
+    total = int(job_data.get("total", 0) or 0)
+    basis = total if total else rows_on_disk
+    num_shards = max(1, (basis + SHARD_SIZE - 1) // SHARD_SIZE) if basis else 0
+    shards = []
+    for i in range(num_shards):
+        start = i * SHARD_SIZE
+        end = min(start + SHARD_SIZE, basis)
+        ready = max(0, min(rows_on_disk, end) - start)
+        shards.append({
+            "shard": i,
+            "start_row": start,
+            "end_row": end,
+            "rows_available": ready,
+            "complete": (end - start) > 0 and ready >= (end - start),
+        })
+    return {
+        "job_id": job_id,
+        "shard_size": SHARD_SIZE,
+        "rows_on_disk": rows_on_disk,
+        "total": total,
+        "shards": shards,
+    }
+
+
+@router.get("/jobs/{job_id}/shard/{shard}")
+async def enrichment_shard_download(
+    job_id: str,
+    shard: int,
+    current_user: dict = Depends(auth.get_current_user),
+):
+    """Stream one 10K-row shard of the live CSV (no status guard — works while
+    the job is still running). Reads the file sequentially so a 100K-row job is
+    never loaded into memory."""
+    try:
+        store = job_store.get_store()
+        job_data = store.get_job(job_id)
+    except sqlite3.OperationalError:
+        raise _db_busy()
+    if not job_data or job_data.get("job_type") != "enrichment":
+        raise HTTPException(status_code=404, detail="Enrichment job not found.")
+    if not _owns_job(job_data, current_user):
+        raise HTTPException(status_code=403, detail="Access denied.")
+    if shard < 0:
+        raise HTTPException(status_code=400, detail="Invalid shard index.")
+    csv_path = OUTPUT_DIR / f"{job_id}.csv"
+    if not csv_path.exists() or csv_path.stat().st_size == 0:
+        raise HTTPException(status_code=404, detail="No data written yet.")
+    start = shard * SHARD_SIZE
+
+    def iter_shard():
+        import csv as _csv
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            reader = _csv.reader(f)
+            try:
+                header = next(reader)
+            except StopIteration:
+                return
+            buf = _csv.StringIO()
+            writer = _csv.writer(buf)
+            writer.writerow(header)
+            # skip to the shard's start row
+            for _ in range(start):
+                try:
+                    next(reader)
+                except StopIteration:
+                    break
+            count = 0
+            for row in reader:
+                if count >= SHARD_SIZE:
+                    break
+                writer.writerow(row)
+                count += 1
+                if count % 1000 == 0:
+                    yield buf.getvalue()
+                    buf.seek(0)
+                    buf.truncate(0)
+            if buf.getvalue():
+                yield buf.getvalue()
+
+    original_filename = job_data.get("original_filename") or job_data.get("filename", "results")
+    safe_name = (str(original_filename) or "results")[:30].replace(" ", "-").replace("/", "-")
+    return StreamingResponse(
+        iter_shard(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="shard_{shard}_{safe_name}_{job_id[:8]}.csv"'},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Background job runner
 # ---------------------------------------------------------------------------
@@ -3430,6 +3861,8 @@ async def _run_job(
 ):
     store = job_store.get_store()
     store.set_running(job_id)
+    # Set initial heartbeat so cleanup_stale_jobs doesn't mark us as abandoned too soon
+    store.heartbeat(job_id)
     seq = [0]
 
     output_path = OUTPUT_DIR / f"{job_id}.csv"
@@ -3437,6 +3870,21 @@ async def _run_job(
     # Phase 1: per-job collector for company-level audit captures.
     # Drained by ``_run_background_sync`` at end of job.
     collector = RawContactCollector(job_id=job_id)
+
+    # Start heartbeat task (updates last_heartbeat every 30s)
+    async def heartbeat_loop():
+        try:
+            while True:
+                await asyncio.sleep(30)
+                try:
+                    heartbeat_store = job_store.get_store()
+                    heartbeat_store.heartbeat(job_id)
+                except Exception as hb_err:
+                    logger.warning("Heartbeat failed for %s: %s", job_id, hb_err)
+        except asyncio.CancelledError:
+            pass
+
+    heartbeat_task = asyncio.create_task(heartbeat_loop())
 
     async def on_progress(e: dict[str, Any]):
         # Get FRESH store instance for this thread
@@ -3662,6 +4110,9 @@ async def _run_job(
                 )
 
     finally:
+        # Cancel heartbeat task
+        if 'heartbeat_task' in locals():
+            heartbeat_task.cancel()
         _active_jobs.discard(job_id)
         sig = _job_signals.pop(job_id, None)
         if sig:
@@ -3697,9 +4148,9 @@ async def restart_enrichment_job(
     if not _owns_job(original_job, current_user):
         raise HTTPException(status_code=403, detail="Access denied")
 
-    if original_job["status"] not in ("failed", "abandoned"):
+    if original_job["status"] not in ("failed", "abandoned", "cancelled", "partial"):
         raise HTTPException(status_code=400,
-            detail="Only failed or abandoned jobs can be restarted")
+            detail="Only failed, abandoned, cancelled, or partial jobs can be restarted")
 
     # Prevent duplicate restarts - check if there's already an active restart
     active_statuses = ("running", "queued", "pending")
@@ -3766,28 +4217,33 @@ async def restart_enrichment_job(
 
     rows = df.fillna("").astype(str).to_dict(orient="records")
 
-    # Handle output file from previous run (rename to partial)
-    output_path = OUTPUT_DIR / f"{original_job['job_id']}.csv"
-    if output_path.exists():
+    # Carry the previous run's partial output into the resumed job so its CSV ends
+    # up complete (prior completed rows + newly processed rows). Safe because the
+    # incremental writer checkpoints only AFTER a row is flushed to disk, so every
+    # row here maps to a checkpointed index — the unprocessed set below is disjoint
+    # from these rows (no duplicates, no dedup needed).
+    prepend_rows: list[dict] = []
+    prev_output = OUTPUT_DIR / f"{original_job['job_id']}.csv"
+    if prev_output.exists() and prev_output.stat().st_size > 0:
+        try:
+            import csv as _csv
+            with open(prev_output, newline="", encoding="utf-8") as _f:
+                prepend_rows = [dict(r) for r in _csv.DictReader(_f)]
+            logger.info("Job %s: carrying %d partial rows from previous run into resume", job_id, len(prepend_rows))
+        except Exception as pre_err:
+            logger.warning("Job %s: could not read previous partial for carry-over: %s", job_id, pre_err)
+            prepend_rows = []
+
+    # Preserve the previous partial on disk (renamed) and register it as the
+    # original job's downloadable partial (UI 'Download Partial' reads partial_output_path).
+    if prev_output.exists():
         partial_path = OUTPUT_DIR / f"{original_job['job_id']}_partial.csv"
-        output_path.rename(partial_path)
+        prev_output.rename(partial_path)
+        try:
+            store.set_partial_output_path(job_id, str(partial_path))
+        except Exception as sper:
+            logger.warning("Job %s: set_partial_output_path failed: %s", job_id, sper)
         logger.info("Renamed previous output to %s", partial_path)
-
-    # Get unprocessed row indices if restarting from abandoned job
-    unprocessed_indices = None
-    if original_job["status"] == "abandoned":
-        store = job_store.get_store()
-        total_rows = len(rows)
-        unprocessed_indices = store.get_unprocessed_indices(total_rows, original_job['job_id'])
-        logger.info("Job %s abandoned at row %d/%d, resuming with %d unprocessed rows",
-                    job_id, total_rows - len(unprocessed_indices), total_rows, len(unprocessed_indices))
-
-        if unprocessed_indices:
-            # Filter rows to only unprocessed
-            rows = [rows[i] for i in unprocessed_indices]
-        else:
-            # No checkpoints means full re-process
-            logger.info("No checkpoints found for job %s, full re-process", job_id)
 
     # Parse cascade configuration from JSON
     cascade = None
@@ -3827,17 +4283,63 @@ async def restart_enrichment_job(
     # rows, no audit list — i.e. behavior identical to today.
     orig_normalize = bool(original_job.get("normalize_domains", 1))
     orig_dedupe = bool(original_job.get("dedupe_by_domain", 1))
-    # orig_deduped_count is the historical record; we'll recompute below.
 
-    # Re-run dedupe on the freshly loaded rows (the CSV is re-read from
-    # disk, so this is necessary and deterministic). The deduped_count and
-    # skipped_domains are persisted on the new job for transparency.
+    # Re-run dedupe deterministically on the freshly loaded CSV rows. This MUST
+    # happen BEFORE the unprocessed-row filter: checkpoints are written in
+    # DEDUPED-row space (the runner processes deduped_rows), so the filter must
+    # also operate in deduped space or resume would duplicate rows.
     if orig_dedupe:
-        deduped_rows, deduped_count, skipped_domains = identifier_utils.dedupe_rows_by_domain(
+        deduped_all, deduped_count, skipped_domains = identifier_utils.dedupe_rows_by_domain(
             rows, domain_col, orig_normalize
         )
     else:
-        deduped_rows, deduped_count, skipped_domains = rows, 0, []
+        deduped_all, deduped_count, skipped_domains = rows, 0, []
+
+    # Filter to unprocessed rows in DEDUPED space (matches checkpoint space).
+    total_deduped = len(deduped_all)
+    processed = store.get_processed_indices(original_job['job_id'])
+
+    if total_deduped > 0 and len(processed) >= total_deduped:
+        # Every row was already processed in the prior run (it crash-landed after
+        # checkpointing everything but before set_done). Carry the prior partial as
+        # the complete result — do NOT re-process, or prepend_rows would duplicate.
+        new_job_id = str(uuid.uuid4())
+        store.increment_restart_count(job_id)
+        store.create_enrichment_job(
+            job_id=new_job_id, user_id=current_user["user_id"], total=total_deduped,
+            filename=original_job['filename'], domain_col=original_job['domain_col'],
+            original_filename=original_job.get('original_filename', ''),
+            parent_job_id=job_id, name_col=original_job.get('name_col'),
+            first_name_col=original_job.get('first_name_col'), last_name_col=original_job.get('last_name_col'),
+            cascade_config=cascade_json, max_results=original_job.get('max_results', 5),
+            selected_providers=selected_providers, linkedin_url_col=original_job.get('linkedin_url_col'),
+            phone_col=original_job.get('phone_col'), company_name_col=original_job.get('company_name_col'),
+            existing_email_col=original_job.get('existing_email_col'),
+            normalize_domains=orig_normalize, dedupe_by_domain=orig_dedupe,
+            deduped_rows=deduped_count, dedupe_skipped_domains=json.dumps(skipped_domains),
+        )
+        prior_partial = OUTPUT_DIR / f"{original_job['job_id']}_partial.csv"
+        new_out = OUTPUT_DIR / f"{new_job_id}.csv"
+        if prior_partial.exists():
+            import shutil as _shutil
+            _shutil.copyfile(prior_partial, new_out)
+            store.set_done(new_job_id, str(new_out))
+            logger.info("Job %s resume: all %d rows already done; carried prior partial to new job %s",
+                        job_id, total_deduped, new_job_id)
+        else:
+            store.set_failed(new_job_id, "Resume: all rows were processed but no partial output was found.")
+            logger.warning("Job %s resume: all rows processed but no prior partial found", job_id)
+        return {"job_id": new_job_id, "total": total_deduped, "restarted_from": job_id, "deduped_count": deduped_count}
+
+    unprocessed_indices = [i for i in range(total_deduped) if i not in processed]
+    if unprocessed_indices:
+        deduped_rows = [deduped_all[i] for i in unprocessed_indices]
+        logger.info("Job %s resuming: %d/%d deduped rows already done, processing %d remaining",
+                    job_id, len(processed), total_deduped, len(deduped_rows))
+    else:
+        # No checkpoints at all (e.g. old job pre-incremental-writer) -> full re-process.
+        deduped_rows = deduped_all
+        logger.info("Job %s: no checkpoints found, full re-process (%d rows)", job_id, total_deduped)
 
     # Update restart count
     store = job_store.get_store()
@@ -3869,10 +4371,9 @@ async def restart_enrichment_job(
         dedupe_skipped_domains=json.dumps(skipped_domains),
     )
 
-    # If we have unprocessed indices, write checkpoints for them so new job can track progress
-    if unprocessed_indices:
-        for idx in unprocessed_indices:
-            store.write_checkpoint(new_job_id, idx)
+    # NOTE: deliberately do NOT pre-seed the new job's checkpoints with original
+    # row indices — that was an index-space bug (the new job's total is the filtered
+    # count, not the original's). The new job checkpoints its own rows per-batch as it runs.
 
     # Set up signals and background task
     _job_signals[new_job_id] = asyncio.Event()
@@ -3894,6 +4395,7 @@ async def restart_enrichment_job(
         max_results=original_job.get('max_results', 5),
         selected_providers=selected_providers,
         normalize_domains=orig_normalize,
+        prepend_rows=prepend_rows,
     )
 
     logger.info("Restarted enrichment job %s as new job %s with providers %s", job_id, new_job_id, selected_providers)
@@ -4173,6 +4675,12 @@ class ProviderToggleRequest(BaseModel):
     # Pre-processing flags. Both default ON to preserve existing behavior.
     normalize_domains: bool = True
     dedupe_by_domain: bool = True
+    # Phase 2 (2026-07-22): optional Contacts DB source filter (e.g.
+    # "outscraper"). When set, narrows the by-company internal-DB lookup to
+    # contacts tagged with that source only. ``None`` → all sources (today's
+    # behavior — no regression). NOT a cascade provider; ignored by the paid
+    # waterfall.
+    source: Optional[str] = None
 
 
 @router.post("/flows/domain-enrich")
@@ -4303,6 +4811,7 @@ async def domain_enrich_with_providers(
         max_results=req.max_results,
         selected_providers=req.providers,
         normalize_domains=req.normalize_domains,
+        source=req.source,
     )
 
     return {
@@ -4328,6 +4837,8 @@ async def _run_domain_enrich_job(
     max_results: int = 5,
     selected_providers: Optional[list[str]] = None,
     normalize_domains: bool = True,
+    source: Optional[str] = None,
+    prepend_rows: Optional[list[dict]] = None,
 ):
     """Background task to run domain enrichment using list_builder."""
     store = job_store.get_store()
@@ -4406,27 +4917,23 @@ async def _run_domain_enrich_job(
             collector=collector,
             company_linkedin_col=company_linkedin_col,
             linkedin_url_col=linkedin_url_col,
+            source=source,
+            output_path=output_path,
+            write_incremental=True,
+            phone_col=phone_col,
+            company_name_col=company_name_col,
+            existing_email_col=existing_email_col,
+            return_partial_on_cancel=True,
+            prepend_rows=prepend_rows,
         )
 
-        # Attach input_* columns for visibility/debug.
-        if output_rows:
-            row_payloads = [
-                identifier_utils.build_row_identifier_payload(
-                    r,
-                    domain_col=domain_col,
-                    name_col=name_col,
-                    first_name_col=first_name_col,
-                    last_name_col=last_name_col,
-                    linkedin_url_col=linkedin_url_col,
-                    phone_col=phone_col,
-                    company_name_col=company_name_col,
-                    existing_email_col=existing_email_col,
-                )
-                for r in rows
-            ]
-            # Group output rows by source row index is non-trivial; instead,
-            # attach payload based on the original row's input columns which
-            # are already preserved in the output row.
+        # The incremental writer (write_incremental=True above) already flushed
+        # every completed batch to output_path WITH input_* columns attached.
+        # This block is now a FALLBACK: it runs only if the incremental writer
+        # could not initialise (csv_writer came back None) and no file exists —
+        # so the job never ends up 'done'/'partial' without a CSV. Dead path on
+        # the normal incremental run (file already exists -> skipped).
+        if output_rows and not output_path.exists():
             for out_row in output_rows:
                 payload = identifier_utils.build_row_identifier_payload(
                     out_row,
@@ -4440,15 +4947,40 @@ async def _run_domain_enrich_job(
                     existing_email_col=existing_email_col,
                 )
                 identifier_utils.attach_input_columns(out_row, payload)
-
-        # Write output
-        if output_rows:
             out_df = pd.DataFrame(output_rows)
             input_cols = [c for c in out_df.columns if c not in list_builder.ENRICHED_COLUMNS]
             ordered = input_cols + [c for c in list_builder.ENRICHED_COLUMNS if c in out_df.columns]
             out_df[ordered].to_csv(str(output_path), index=False)
-        else:
+            logger.warning("Job %s: incremental writer was inactive; wrote %d rows end-of-run as fallback", job_id, len(output_rows))
+        elif not output_rows and not output_path.exists():
             output_path.write_text("")
+
+        # Cancel/abandon handling. With return_partial_on_cancel=True the
+        # pipeline RETURNS whatever completed (it does not raise), and the
+        # incremental writer has already flushed those batches to output_path.
+        # Mark the job 'partial' (downloadable + resumable), register the partial
+        # path so the UI's "Download Partial" button appears, and drain any
+        # remaining contacts to the DB as a safety net (idempotent). For a normal
+        # completed job this check is False and is skipped.
+        _cancelled_mid_run = (job_id in _cancelled_jobs) or check_job_cancelled(job_id)
+        if _cancelled_mid_run:
+            _cancelled_jobs.discard(job_id)
+            _has_partial = output_path.exists() and output_path.stat().st_size > 0
+            if output_rows or _has_partial:
+                store.set_status(job_id, "partial")
+                try:
+                    store.set_partial_output_path(job_id, str(output_path))
+                except Exception as perr:
+                    logger.warning("Job %s: set_partial_output_path failed: %s", job_id, perr)
+                logger.info("Domain enrich job %s stopped mid-run: partial CSV at %s (%d output rows)", job_id, output_path, len(output_rows))
+            else:
+                store.set_failed(job_id, "Job was cancelled by user.")
+                logger.info("Domain enrich job %s cancelled before any rows completed", job_id)
+            try:
+                await _run_background_sync(job_id, output_path, collector=collector)
+            except Exception as drain_err:
+                logger.error("Partial-job contacts drain failed for %s: %s", job_id, drain_err)
+            return
 
         # Defensive guard: 0 output rows on a non-empty input is always a bug.
         # Phase 1a in list_builder raises when every row fails, but a silent
@@ -4499,6 +5031,14 @@ async def _run_domain_enrich_job(
                 partial_size = output_path.stat().st_size
                 if partial_size > 0:
                     store.set_status(job_id, "partial")
+                    try:
+                        store.set_partial_output_path(job_id, str(output_path))
+                    except Exception as perr:
+                        logger.warning("Job %s: set_partial_output_path failed: %s", job_id, perr)
+                    try:
+                        await _run_background_sync(job_id, output_path, collector=collector)
+                    except Exception as drain_err:
+                        logger.error("Partial-job contacts drain failed for %s: %s", job_id, drain_err)
                     logger.info("Job %s has partial output: %d bytes", job_id, partial_size)
                 else:
                     store.set_failed(job_id, final_error)
@@ -4749,6 +5289,8 @@ async def _run_linkedin_job(
     """Background task to run LinkedIn enrichment job."""
     store = job_store.get_store()
     store.set_running(job_id)
+    # Set initial heartbeat so cleanup_stale_jobs doesn't mark us as abandoned too soon
+    store.heartbeat(job_id)
     seq = [0]
 
     output_path = OUTPUT_DIR / f"{job_id}.csv"
@@ -4759,6 +5301,21 @@ async def _run_linkedin_job(
     # uniform with the other job runners and any future captures land
     # automatically.
     collector = RawContactCollector(job_id=job_id)
+
+    # Start heartbeat task (updates last_heartbeat every 30s)
+    async def heartbeat_loop():
+        try:
+            while True:
+                await asyncio.sleep(30)
+                try:
+                    heartbeat_store = job_store.get_store()
+                    heartbeat_store.heartbeat(job_id)
+                except Exception as hb_err:
+                    logger.warning("Heartbeat failed for %s: %s", job_id, hb_err)
+        except asyncio.CancelledError:
+            pass
+
+    heartbeat_task = asyncio.create_task(heartbeat_loop())
 
     async def on_progress(e: dict[str, Any]):
         progress_store = job_store.get_store()
@@ -4776,17 +5333,73 @@ async def _run_linkedin_job(
             sig.clear()
 
     try:
+        # Check job cancellation (mirrors _run_domain_enrich_job)
+        def check_job_cancelled(jid: str) -> bool:
+            check_store = job_store.get_store()
+            return check_store.is_job_cancelled_or_abandoned(jid)
+
         output_rows = await list_builder.run_linkedin_enrichment(
             rows=rows,
             linkedin_col=linkedin_col,
             on_progress=on_progress,
+            record_provider_use=None,
+            cancelled_jobs=_cancelled_jobs,
+            check_cancelled=check_job_cancelled,
+            job_id=job_id,
+            output_path=output_path,
+            write_incremental=True,
+            return_partial_on_cancel=True,
         )
 
-        if output_rows:
+        # The incremental writer (write_incremental=True above) already flushed
+        # every completed batch to output_path WITH input_* columns attached.
+        # This block is now a FALLBACK: it runs only if the incremental writer
+        # could not initialise (csv_writer came back None) and no file exists —
+        # so the job never ends up 'done'/'partial' without a CSV. Dead path on
+        # the normal incremental run (file already exists -> skipped). Mirrors
+        # _run_domain_enrich_job.
+        if output_rows and not output_path.exists():
+            for out_row in output_rows:
+                payload = identifier_utils.build_row_identifier_payload(
+                    out_row,
+                    linkedin_url_col=linkedin_col,
+                )
+                identifier_utils.attach_input_columns(out_row, payload)
             out_df = pd.DataFrame(output_rows)
-            out_df.to_csv(str(output_path), index=False)
-        else:
+            input_cols = [c for c in out_df.columns if c not in list_builder.ENRICHED_COLUMNS]
+            ordered = input_cols + [c for c in list_builder.ENRICHED_COLUMNS if c in out_df.columns]
+            out_df[ordered].to_csv(str(output_path), index=False)
+            logger.warning("Job %s: incremental writer was inactive; wrote %d rows end-of-run as fallback", job_id, len(output_rows))
+        elif not output_rows and not output_path.exists():
             output_path.write_text("")
+
+        # Cancel/abandon handling. With return_partial_on_cancel=True the
+        # pipeline RETURNS whatever completed (it does not raise), and the
+        # incremental writer has already flushed those batches to output_path.
+        # Mark the job 'partial' (downloadable + resumable), register the partial
+        # path so the UI's "Download Partial" button appears, and drain any
+        # remaining contacts to the DB as a safety net (idempotent). For a normal
+        # completed job this check is False and is skipped. Mirrors
+        # _run_domain_enrich_job.
+        _cancelled_mid_run = (job_id in _cancelled_jobs) or check_job_cancelled(job_id)
+        if _cancelled_mid_run:
+            _cancelled_jobs.discard(job_id)
+            _has_partial = output_path.exists() and output_path.stat().st_size > 0
+            if output_rows or _has_partial:
+                store.set_status(job_id, "partial")
+                try:
+                    store.set_partial_output_path(job_id, str(output_path))
+                except Exception as perr:
+                    logger.warning("Job %s: set_partial_output_path failed: %s", job_id, perr)
+                logger.info("LinkedIn enrich job %s stopped mid-run: partial CSV at %s (%d output rows)", job_id, output_path, len(output_rows))
+            else:
+                store.set_failed(job_id, "Job was cancelled by user.")
+                logger.info("LinkedIn enrich job %s cancelled before any rows completed", job_id)
+            try:
+                await _run_background_sync(job_id, output_path, collector=collector)
+            except Exception as drain_err:
+                logger.error("Partial-job contacts drain failed for %s: %s", job_id, drain_err)
+            return
 
         store.set_done(job_id, str(output_path))
         logger.info("LinkedIn enrichment job %s completed, %d output rows", job_id, len(output_rows))
@@ -4795,15 +5408,48 @@ async def _run_linkedin_job(
         asyncio.create_task(_run_background_sync(job_id, output_path, collector=collector))
 
     except Exception as e:
-        logger.exception("LinkedIn enrichment job %s failed: %s", job_id, e)
-        if output_path.exists() and output_path.stat().st_size > 0:
-            store.set_done(job_id, str(output_path))
-            # Even on partial success, attempt a sync of whatever rows landed.
-            asyncio.create_task(_run_background_sync(job_id, output_path, collector=collector))
+        error_msg = str(e)
+        # Cancel/abandon exception path: the incremental writer has already
+        # flushed completed batches to output_path. Mark 'partial' if a
+        # non-empty file exists, drain contacts as a safety net. Mirrors
+        # _run_domain_enrich_job.
+        if "was cancelled" in error_msg or "was abandoned" in error_msg:
+            if "abandoned" in error_msg:
+                final_error = "Job was abandoned due to server restart. Please retry from the jobs page."
+            elif "cancelled by user" in error_msg:
+                final_error = "Job was cancelled by user."
+            else:
+                final_error = error_msg
+
+            logger.info("LinkedIn enrich job %s stopped: %s", job_id, final_error)
+            _cancelled_jobs.discard(job_id)
+
+            if output_path.exists() and output_path.stat().st_size > 0:
+                store.set_status(job_id, "partial")
+                try:
+                    store.set_partial_output_path(job_id, str(output_path))
+                except Exception as perr:
+                    logger.warning("Job %s: set_partial_output_path failed: %s", job_id, perr)
+                try:
+                    await _run_background_sync(job_id, output_path, collector=collector)
+                except Exception as drain_err:
+                    logger.error("Partial-job contacts drain failed for %s: %s", job_id, drain_err)
+                logger.info("Job %s has partial output at %s", job_id, output_path)
+            else:
+                store.set_failed(job_id, final_error)
         else:
-            store.set_failed(job_id, str(e))
+            logger.exception("LinkedIn enrichment job %s failed: %s", job_id, e)
+            if output_path.exists() and output_path.stat().st_size > 0:
+                store.set_done(job_id, str(output_path))
+                # Even on partial success, attempt a sync of whatever rows landed.
+                asyncio.create_task(_run_background_sync(job_id, output_path, collector=collector))
+            else:
+                store.set_failed(job_id, str(e))
 
     finally:
+        # Cancel heartbeat task
+        if 'heartbeat_task' in locals():
+            heartbeat_task.cancel()
         _active_jobs.discard(job_id)
         sig = _job_signals.pop(job_id, None)
         if sig:
@@ -4920,12 +5566,31 @@ async def _run_linkedin_v2_job(
     """Background task to run unified LinkedIn (personal + company) enrichment job."""
     store = job_store.get_store()
     store.set_running(job_id)
+    # Set initial heartbeat so cleanup_stale_jobs doesn't mark us as abandoned too soon
+    store.heartbeat(job_id)
     seq = [0]
 
     output_path = OUTPUT_DIR / f"{job_id}.csv"
 
     # Phase 1: per-job collector; drained by ``_run_background_sync``.
     collector = RawContactCollector(job_id=job_id)
+
+    # Start heartbeat task (updates last_heartbeat every 30s). Mirrors the
+    # domain-enrich path. Without it the stale-job reaper marks LinkedIn jobs
+    # abandoned after ~3 minutes even while healthy (the 2026-07-15 outage).
+    async def heartbeat_loop():
+        try:
+            while True:
+                await asyncio.sleep(30)
+                try:
+                    heartbeat_store = job_store.get_store()
+                    heartbeat_store.heartbeat(job_id)
+                except Exception as hb_err:
+                    logger.warning("Heartbeat failed for %s: %s", job_id, hb_err)
+        except asyncio.CancelledError:
+            pass
+
+    heartbeat_task = asyncio.create_task(heartbeat_loop())
 
     def on_progress(e: dict[str, Any]):
         progress_store = job_store.get_store()
@@ -4941,7 +5606,26 @@ async def _run_linkedin_v2_job(
         if sig:
             sig.set()
 
+    # Track which providers are actually used so the job's ``used_providers``
+    # tally stays accurate (mirrors the domain-enrich path). Without this the
+    # LinkedIn flow always reported only the default ``["contacts_db"]``.
+    used_providers_set: set[str] = set()
+
+    def record_provider_use(provider: str) -> None:
+        if provider not in used_providers_set:
+            used_providers_set.add(provider)
+            try:
+                usage_store = job_store.get_store()
+                usage_store.update_used_providers(job_id, provider)
+            except Exception as e:
+                logger.warning("update_used_providers(%s, %s) failed: %s", job_id, provider, e)
+
     try:
+        # Check job cancellation (mirrors _run_domain_enrich_job)
+        def check_job_cancelled(jid: str) -> bool:
+            check_store = job_store.get_store()
+            return check_store.is_job_cancelled_or_abandoned(jid)
+
         output_rows = await list_builder.run_unified_linkedin_enrichment(
             rows=rows,
             personal_col=personal_linkedin_col,
@@ -4950,13 +5634,64 @@ async def _run_linkedin_v2_job(
             include_company=include_company,
             on_progress=on_progress,
             collector=collector,
+            record_provider_use=record_provider_use,
+            cancelled_jobs=_cancelled_jobs,
+            check_cancelled=check_job_cancelled,
+            job_id=job_id,
+            output_path=output_path,
+            write_incremental=True,
+            return_partial_on_cancel=True,
         )
 
-        if output_rows:
+        # The incremental writer (write_incremental=True above) already flushed
+        # every completed batch to output_path WITH input_* columns attached.
+        # This block is now a FALLBACK: it runs only if the incremental writer
+        # could not initialise (csv_writer came back None) and no file exists —
+        # so the job never ends up 'done'/'partial' without a CSV. Dead path on
+        # the normal incremental run (file already exists -> skipped). Mirrors
+        # _run_domain_enrich_job.
+        if output_rows and not output_path.exists():
+            for out_row in output_rows:
+                payload = identifier_utils.build_row_identifier_payload(
+                    out_row,
+                    linkedin_url_col=personal_linkedin_col,
+                )
+                identifier_utils.attach_input_columns(out_row, payload)
             out_df = pd.DataFrame(output_rows)
-            out_df.to_csv(str(output_path), index=False)
-        else:
+            input_cols = [c for c in out_df.columns if c not in list_builder.ENRICHED_COLUMNS]
+            ordered = input_cols + [c for c in list_builder.ENRICHED_COLUMNS if c in out_df.columns]
+            out_df[ordered].to_csv(str(output_path), index=False)
+            logger.warning("Job %s: incremental writer was inactive; wrote %d rows end-of-run as fallback", job_id, len(output_rows))
+        elif not output_rows and not output_path.exists():
             output_path.write_text("")
+
+        # Cancel/abandon handling. With return_partial_on_cancel=True the
+        # pipeline RETURNS whatever completed (it does not raise), and the
+        # incremental writer has already flushed those batches to output_path.
+        # Mark the job 'partial' (downloadable + resumable), register the partial
+        # path so the UI's "Download Partial" button appears, and drain any
+        # remaining contacts to the DB as a safety net (idempotent). For a normal
+        # completed job this check is False and is skipped. Mirrors
+        # _run_domain_enrich_job.
+        _cancelled_mid_run = (job_id in _cancelled_jobs) or check_job_cancelled(job_id)
+        if _cancelled_mid_run:
+            _cancelled_jobs.discard(job_id)
+            _has_partial = output_path.exists() and output_path.stat().st_size > 0
+            if output_rows or _has_partial:
+                store.set_status(job_id, "partial")
+                try:
+                    store.set_partial_output_path(job_id, str(output_path))
+                except Exception as perr:
+                    logger.warning("Job %s: set_partial_output_path failed: %s", job_id, perr)
+                logger.info("LinkedIn v2 enrich job %s stopped mid-run: partial CSV at %s (%d output rows)", job_id, output_path, len(output_rows))
+            else:
+                store.set_failed(job_id, "Job was cancelled by user.")
+                logger.info("LinkedIn v2 enrich job %s cancelled before any rows completed", job_id)
+            try:
+                await _run_background_sync(job_id, output_path, collector=collector)
+            except Exception as drain_err:
+                logger.error("Partial-job contacts drain failed for %s: %s", job_id, drain_err)
+            return
 
         store.set_done(job_id, str(output_path))
         logger.info(
@@ -4969,15 +5704,48 @@ async def _run_linkedin_v2_job(
         asyncio.create_task(_run_background_sync(job_id, output_path, collector=collector))
 
     except Exception as e:
-        logger.exception("LinkedIn v2 enrichment job %s failed: %s", job_id, e)
-        if output_path.exists() and output_path.stat().st_size > 0:
-            store.set_done(job_id, str(output_path))
-            # Even on partial success, attempt a sync of whatever rows landed.
-            asyncio.create_task(_run_background_sync(job_id, output_path, collector=collector))
+        error_msg = str(e)
+        # Cancel/abandon exception path: the incremental writer has already
+        # flushed completed batches to output_path. Mark 'partial' if a
+        # non-empty file exists, drain contacts as a safety net. Mirrors
+        # _run_domain_enrich_job.
+        if "was cancelled" in error_msg or "was abandoned" in error_msg:
+            if "abandoned" in error_msg:
+                final_error = "Job was abandoned due to server restart. Please retry from the jobs page."
+            elif "cancelled by user" in error_msg:
+                final_error = "Job was cancelled by user."
+            else:
+                final_error = error_msg
+
+            logger.info("LinkedIn v2 enrich job %s stopped: %s", job_id, final_error)
+            _cancelled_jobs.discard(job_id)
+
+            if output_path.exists() and output_path.stat().st_size > 0:
+                store.set_status(job_id, "partial")
+                try:
+                    store.set_partial_output_path(job_id, str(output_path))
+                except Exception as perr:
+                    logger.warning("Job %s: set_partial_output_path failed: %s", job_id, perr)
+                try:
+                    await _run_background_sync(job_id, output_path, collector=collector)
+                except Exception as drain_err:
+                    logger.error("Partial-job contacts drain failed for %s: %s", job_id, drain_err)
+                logger.info("Job %s has partial output at %s", job_id, output_path)
+            else:
+                store.set_failed(job_id, final_error)
         else:
-            store.set_failed(job_id, str(e))
+            logger.exception("LinkedIn v2 enrichment job %s failed: %s", job_id, e)
+            if output_path.exists() and output_path.stat().st_size > 0:
+                store.set_done(job_id, str(output_path))
+                # Even on partial success, attempt a sync of whatever rows landed.
+                asyncio.create_task(_run_background_sync(job_id, output_path, collector=collector))
+            else:
+                store.set_failed(job_id, str(e))
 
     finally:
+        # Cancel heartbeat task
+        if 'heartbeat_task' in locals():
+            heartbeat_task.cancel()
         _active_jobs.discard(job_id)
         sig = _job_signals.pop(job_id, None)
         if sig:

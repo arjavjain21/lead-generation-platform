@@ -153,6 +153,76 @@
         .data-sources { background: var(--gray-50); border-radius: 8px; padding: 1rem; margin-top: 1rem; }
         .data-sources h4 { font-size: 0.9rem; margin-bottom: 0.5rem; color: var(--gray-700); }
         .source-tag { display: inline-block; padding: 0.25rem 0.5rem; background: white; border: 1px solid var(--gray-300); border-radius: 4px; font-size: 0.75rem; margin-right: 0.5rem; margin-bottom: 0.25rem; }
+
+        /* MCP Page */
+        .mcp-hero { background: linear-gradient(135deg, #2a1a5d 0%, #1a315d 100%); border-radius: 16px; padding: 2rem 2.5rem; color: white; margin-bottom: 2rem; position: relative; overflow: hidden; }
+        .mcp-hero::before { content: ""; position: absolute; top: -50%; right: -10%; width: 400px; height: 400px; background: radial-gradient(circle, rgba(16,185,129,0.15) 0%, transparent 70%); border-radius: 50%; }
+        .mcp-hero .badge { display: inline-block; padding: 0.25rem 0.75rem; background: rgba(16,185,129,0.2); color: #6ee7b7; border-radius: 999px; font-size: 0.75rem; font-weight: 600; margin-bottom: 0.75rem; border: 1px solid rgba(16,185,129,0.3); }
+        .mcp-hero h2 { font-size: 1.75rem; margin-bottom: 0.5rem; position: relative; }
+        .mcp-hero p { font-size: 0.95rem; opacity: 0.9; line-height: 1.6; max-width: 720px; position: relative; }
+        .mcp-hero .mcp-url { display: inline-flex; align-items: center; gap: 0.5rem; margin-top: 1rem; padding: 0.5rem 0.875rem; background: rgba(0,0,0,0.25); border-radius: 6px; font-family: 'SF Mono', Monaco, monospace; font-size: 0.8rem; border: 1px solid rgba(255,255,255,0.15); }
+        .mcp-hero .mcp-url code { color: #6ee7b7; }
+
+        .mcp-section { background: white; border-radius: 12px; padding: 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 1.5rem; }
+        .mcp-section h3 { font-size: 1.1rem; margin-bottom: 0.75rem; color: var(--gray-800); display: flex; align-items: center; gap: 0.5rem; }
+        .mcp-section h3 .num { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; background: var(--primary); color: white; border-radius: 50%; font-size: 0.8rem; font-weight: 600; }
+        .mcp-section p { font-size: 0.9rem; color: var(--gray-600); line-height: 1.6; margin-bottom: 0.75rem; }
+        .mcp-section ul, .mcp-section ol { font-size: 0.9rem; color: var(--gray-600); padding-left: 1.25rem; margin-bottom: 0.75rem; }
+        .mcp-section li { margin-bottom: 0.4rem; line-height: 1.5; }
+        .mcp-section code { background: var(--gray-100); padding: 0.125rem 0.375rem; border-radius: 4px; font-family: 'SF Mono', Monaco, monospace; font-size: 0.825rem; color: var(--primary-dark); }
+
+        .code-block { position: relative; background: var(--gray-900); border-radius: 8px; margin: 0.75rem 0; overflow: hidden; }
+        .code-block pre { padding: 1rem 1.25rem; padding-right: 5rem; overflow-x: auto; color: #e5e7eb; font-family: 'SF Mono', Monaco, monospace; font-size: 0.825rem; line-height: 1.5; margin: 0; }
+        .code-block pre .k { color: #f97583; } /* keyword */
+        .code-block pre .s { color: #9ecbff; } /* string */
+        .code-block .copy-btn { position: absolute; top: 0.625rem; right: 0.625rem; padding: 0.375rem 0.75rem; background: rgba(255,255,255,0.1); color: white; border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; font-size: 0.75rem; cursor: pointer; transition: all 0.15s; font-weight: 500; }
+        .code-block .copy-btn:hover { background: rgba(255,255,255,0.2); }
+        .code-block .copy-btn.copied { background: var(--success); border-color: var(--success); }
+        .code-block .lang-label { position: absolute; bottom: 0.5rem; right: 0.75rem; font-size: 0.7rem; color: var(--gray-500); font-family: monospace; pointer-events: none; }
+
+        .mcp-cards-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin-top: 0.75rem; }
+        .mcp-card { background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: 8px; padding: 1rem; transition: all 0.15s; }
+        .mcp-card:hover { border-color: var(--primary); box-shadow: 0 2px 8px rgba(26,49,93,0.08); }
+        .mcp-card .icon { font-size: 1.5rem; margin-bottom: 0.5rem; }
+        .mcp-card h4 { font-size: 0.9rem; margin-bottom: 0.375rem; color: var(--gray-800); font-weight: 600; }
+        .mcp-card p { font-size: 0.8rem; color: var(--gray-600); margin-bottom: 0; line-height: 1.5; }
+
+        .mcp-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin-top: 0.5rem; }
+        .mcp-table th { text-align: left; padding: 0.625rem 0.75rem; background: var(--gray-50); color: var(--gray-700); font-weight: 600; border-bottom: 2px solid var(--gray-200); font-size: 0.8rem; }
+        .mcp-table td { padding: 0.625rem 0.75rem; border-bottom: 1px solid var(--gray-100); color: var(--gray-700); vertical-align: top; }
+        .mcp-table td code { font-size: 0.8rem; }
+        .mcp-table tr:last-child td { border-bottom: none; }
+        .mcp-table tr:hover td { background: rgba(26,49,93,0.02); }
+
+        .mcp-callout { display: flex; gap: 0.75rem; padding: 1rem 1.25rem; border-radius: 8px; margin: 0.75rem 0; font-size: 0.875rem; line-height: 1.5; }
+        .mcp-callout.info { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; }
+        .mcp-callout.success { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; }
+        .mcp-callout.warning { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; }
+        .mcp-callout .callout-icon { flex-shrink: 0; font-size: 1.1rem; line-height: 1.4; }
+
+        .mcp-example { background: var(--gray-50); border-left: 3px solid var(--primary); padding: 0.875rem 1rem; margin: 0.5rem 0 0.75rem; border-radius: 0 6px 6px 0; }
+        .mcp-example .label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--gray-500); font-weight: 600; margin-bottom: 0.25rem; }
+        .mcp-example .query { font-size: 0.9rem; color: var(--gray-800); font-style: italic; }
+        .mcp-example .response { font-size: 0.825rem; color: var(--gray-600); margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px dashed var(--gray-300); }
+
+        .mcp-tabs { display: flex; gap: 0.25rem; border-bottom: 2px solid var(--gray-200); margin-bottom: 1rem; }
+        .mcp-tab { padding: 0.625rem 1rem; font-size: 0.875rem; font-weight: 500; color: var(--gray-500); cursor: pointer; border: none; background: transparent; border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.15s; }
+        .mcp-tab:hover { color: var(--gray-800); }
+        .mcp-tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+        .mcp-tab-content { display: none; }
+        .mcp-tab-content.active { display: block; }
+
+        .mcp-step { display: flex; gap: 1rem; padding: 1rem; background: var(--gray-50); border-radius: 8px; margin-bottom: 0.75rem; }
+        .mcp-step .step-num { flex-shrink: 0; width: 32px; height: 32px; background: var(--primary); color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 0.875rem; }
+        .mcp-step .step-body { flex: 1; }
+        .mcp-step .step-body p { margin-bottom: 0.5rem; font-size: 0.875rem; }
+        .mcp-step .step-body p:last-child { margin-bottom: 0; }
+
+        .mcp-footer-actions { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--gray-200); }
+        .mcp-footer-actions a { display: inline-flex; align-items: center; gap: 0.375rem; padding: 0.5rem 0.875rem; background: var(--gray-100); color: var(--gray-700); border-radius: 6px; text-decoration: none; font-size: 0.825rem; font-weight: 500; transition: all 0.15s; }
+        .mcp-footer-actions a:hover { background: var(--gray-200); color: var(--gray-900); }
+        .mcp-footer-actions a.primary { background: var(--primary); color: white; }
+        .mcp-footer-actions a.primary:hover { background: var(--primary-dark); }
     </style>
 </head>
 <body>
@@ -174,6 +244,7 @@
             </div>
             <div class="nav-section">
                 <div class="nav-section-title">Resources</div>
+                <a class="nav-item" data-page="mcp"><span class="nav-icon">🤖</span>AI Assistant (MCP)</a>
                 <a class="nav-item" data-page="help"><span class="nav-icon">❓</span>Help & Guide</a>
             </div>
         </nav>
@@ -632,6 +703,349 @@ https://linkedin.com/in/johndoe
 https://linkedin.com/in/janesmith</pre>
             </div>
         </div>
+
+        <!-- MCP Page -->
+        <div class="page" id="page-mcp">
+            <div class="mcp-hero">
+                <span class="badge">● Production-ready</span>
+                <h2>🤖 AI Assistant (MCP)</h2>
+                <p>Connect Claude Code (or any MCP-compatible AI tool) directly to the ListBuilding API documentation. The AI can then tell you which endpoint to use, explain response fields, validate payloads, and walk you through workflows — without you digging through docs.</p>
+                <div class="mcp-url">
+                    🔗 <code>https://listbuilding.eagleinfoservice.com/mcp/</code>
+                </div>
+            </div>
+
+            <div class="mcp-section">
+                <h3>What this gives you</h3>
+                <div class="mcp-cards-grid">
+                    <div class="mcp-card">
+                        <div class="icon">🔍</div>
+                        <h4>Discover</h4>
+                        <p>Ask "I want to enrich a domain" → get the right endpoint ranked by relevance, with parameters and examples.</p>
+                    </div>
+                    <div class="mcp-card">
+                        <div class="icon">📖</div>
+                        <h4>Explain</h4>
+                        <p>Ask "What does <code>email_source: smartprospect_email</code> mean?" → plain-English answer with context.</p>
+                    </div>
+                    <div class="mcp-card">
+                        <div class="icon">✅</div>
+                        <h4>Validate</h4>
+                        <p>Paste a JSON payload → get a yes/no on whether it matches the schema, plus what's missing.</p>
+                    </div>
+                    <div class="mcp-card">
+                        <div class="icon">🧭</div>
+                        <h4>Guide</h4>
+                        <p>Step-by-step templates for common tasks: enrich a company, set up Clay, troubleshoot zero emails.</p>
+                    </div>
+                </div>
+                <div class="mcp-callout info">
+                    <span class="callout-icon">ℹ️</span>
+                    <div>
+                        <strong>The MCP is a documentation oracle.</strong> It tells you WHICH endpoint to use and HOW — it does not make API calls itself. You (or your code) execute the actual calls. This is by design, for security and cost control.
+                    </div>
+                </div>
+            </div>
+
+            <div class="mcp-section">
+                <h3><span class="num">1</span>Prerequisites</h3>
+                <ol>
+                    <li><strong>A ListBuilding account</strong> — you already have this if you can see this page.</li>
+                    <li><strong>An API key</strong> — generate one in the app:
+                        <ul>
+                            <li>Click your email (top-right) → <strong>API Keys</strong> → Create New Key</li>
+                            <li>Keys start with <code>lgp_</code> and look like <code>lgp_DK79a_il2RKzmvL_BJdiCXSsNZkhZLQ2dvRlxzn4EIc</code></li>
+                            <li>API keys do not expire</li>
+                        </ul>
+                    </li>
+                    <li><strong>Claude Code</strong> installed on your machine — <a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener">installation guide here</a>.</li>
+                </ol>
+            </div>
+
+            <div class="mcp-section">
+                <h3><span class="num">2</span>Install in Claude Code</h3>
+                <p>Two equivalent methods — pick whichever you prefer.</p>
+
+                <div class="mcp-tabs">
+                    <button class="mcp-tab active" data-mcp-tab="settings">Method A: settings.json (recommended)</button>
+                    <button class="mcp-tab" data-mcp-tab="cli">Method B: CLI command</button>
+                </div>
+
+                <div class="mcp-tab-content active" data-mcp-content="settings">
+                    <div class="mcp-step">
+                        <div class="step-num">1</div>
+                        <div class="step-body">
+                            <p>Open your Claude Code settings file. Create it if it doesn't exist.</p>
+                            <table class="mcp-table">
+                                <thead><tr><th>OS</th><th>Path</th></tr></thead>
+                                <tbody>
+                                    <tr><td>macOS</td><td><code>~/.claude/settings.json</code></td></tr>
+                                    <tr><td>Linux</td><td><code>~/.claude/settings.json</code></td></tr>
+                                    <tr><td>Windows</td><td><code>%USERPROFILE%\.claude\settings.json</code></td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="mcp-step">
+                        <div class="step-num">2</div>
+                        <div class="step-body">
+                            <p>Add the ListBuilding MCP server entry. <strong>Replace <code>lgp_YOUR_API_KEY_HERE</code> with your actual API key.</strong></p>
+                            <div class="code-block">
+                                <button class="copy-btn" data-copy-target="mcp-settings-json">Copy</button>
+                                <pre id="mcp-settings-json">{
+  "mcpServers": {
+    "listbuilding": {
+      "url": "https://listbuilding.eagleinfoservice.com/mcp/",
+      "headers": {
+        "X-API-Key": "lgp_YOUR_API_KEY_HERE"
+      }
+    }
+  }
+}</pre>
+                                <span class="lang-label">settings.json</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mcp-step">
+                        <div class="step-num">3</div>
+                        <div class="step-body">
+                            <p><strong>Restart Claude Code completely</strong> (close the terminal/app and reopen).</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mcp-tab-content" data-mcp-content="cli">
+                    <div class="mcp-step">
+                        <div class="step-num">1</div>
+                        <div class="step-body">
+                            <p>Run this in your terminal. <strong>Replace <code>lgp_YOUR_API_KEY_HERE</code> with your actual API key.</strong></p>
+                            <div class="code-block">
+                                <button class="copy-btn" data-copy-target="mcp-cli-cmd">Copy</button>
+                                <pre id="mcp-cli-cmd">claude mcp add listbuilding \
+  --transport http \
+  --url https://listbuilding.eagleinfoservice.com/mcp/ \
+  --header "X-API-Key: lgp_YOUR_API_KEY_HERE"</pre>
+                                <span class="lang-label">bash</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mcp-step">
+                        <div class="step-num">2</div>
+                        <div class="step-body">
+                            <p><strong>Restart Claude Code completely</strong> after adding.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mcp-section">
+                <h3><span class="num">3</span>Verify it works</h3>
+                <p>After restarting Claude Code, ask it:</p>
+                <div class="mcp-example">
+                    <div class="label">You say</div>
+                    <div class="query">"Read the health://status resource from the listbuilding MCP."</div>
+                    <div class="response">✅ Claude Code should respond with <code>ok</code> — that means the MCP is connected and authenticated.</div>
+                </div>
+                <div class="mcp-callout warning">
+                    <span class="callout-icon">⚠️</span>
+                    <div>
+                        <strong>Didn't work?</strong> See the <a href="#/help" onclick="setTimeout(()=>{document.getElementById('page-mcp').scrollIntoView({block:'start'});}, 100);">Troubleshooting</a> section at the bottom of this page, or verify your API key with the curl command in the troubleshooting section.
+                    </div>
+                </div>
+            </div>
+
+            <div class="mcp-section">
+                <h3>📦 What's available</h3>
+
+                <div class="mcp-tabs">
+                    <button class="mcp-tab active" data-mcp-tab="resources">Resources (7)</button>
+                    <button class="mcp-tab" data-mcp-tab="tools">Tools (8)</button>
+                    <button class="mcp-tab" data-mcp-tab="prompts">Prompts (6)</button>
+                </div>
+
+                <div class="mcp-tab-content active" data-mcp-content="resources">
+                    <p style="font-size:0.875rem;color:var(--gray-600);margin-bottom:0.75rem;">Live, auto-synced data the MCP serves on demand.</p>
+                    <table class="mcp-table">
+                        <thead><tr><th>Resource URI</th><th>What it returns</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>health://status</code></td><td>Server health check — returns <code>"ok"</code></td></tr>
+                            <tr><td><code>openapi://full</code></td><td>Complete OpenAPI 3.1 spec (all 70 endpoints, every parameter)</td></tr>
+                            <tr><td><code>openapi://endpoints</code></td><td>Condensed endpoint index — one line per route</td></tr>
+                            <tr><td><code>docs://clay-guide</code></td><td>Clay enrichment step-by-step guide</td></tr>
+                            <tr><td><code>docs://api-reference</code></td><td>Full platform API reference (enrichment + phone + scraper + auth)</td></tr>
+                            <tr><td><code>docs://changelog</code></td><td>What changed and when</td></tr>
+                            <tr><td><code>providers://status</code></td><td>Live provider cascade — which providers are enabled right now</td></tr>
+                            <tr><td><code>schemas://{model_name}</code></td><td>JSON schema for any request model (e.g., <code>schemas://UnifiedEnrichRequest</code>)</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="mcp-tab-content" data-mcp-content="tools">
+                    <p style="font-size:0.875rem;color:var(--gray-600);margin-bottom:0.75rem;">Functions Claude Code can call to answer your questions.</p>
+                    <table class="mcp-table">
+                        <thead><tr><th>Tool</th><th>What it answers</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>find_endpoint_for_intent</code></td><td>"I want to enrich a domain" → best endpoints ranked by relevance</td></tr>
+                            <tr><td><code>get_endpoint_details</code></td><td>Full parameters, response shape, error codes for one endpoint</td></tr>
+                            <tr><td><code>explain_response_field</code></td><td>"What does <code>email_source: smartprospect_email</code> mean?"</td></tr>
+                            <tr><td><code>explain_error_code</code></td><td>"I got a 429 error" → troubleshooting steps</td></tr>
+                            <tr><td><code>list_current_providers</code></td><td>Live cascade table — which providers are enabled, their rate limits</td></tr>
+                            <tr><td><code>get_quota_guide</code></td><td>Quota limits, reset schedule, cost-reduction tips</td></tr>
+                            <tr><td><code>compare_enrichment_modes</code></td><td>Difference between <code>domain_only</code>, <code>linkedin_only</code>, <code>enhanced</code></td></tr>
+                            <tr><td><code>validate_request</code></td><td>"Is this JSON payload valid for <code>/api/enrichment/enrich</code>?"</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="mcp-tab-content" data-mcp-content="prompts">
+                    <p style="font-size:0.875rem;color:var(--gray-600);margin-bottom:0.75rem;">Pre-built conversation starters. Ask Claude Code to use them.</p>
+                    <table class="mcp-table">
+                        <thead><tr><th>Prompt</th><th>When to use</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>enrich_a_company</code></td><td>"Use the enrich_a_company prompt for google.com"</td></tr>
+                            <tr><td><code>troubleshoot_zero_emails</code></td><td>"Use troubleshoot_zero_emails for job abc123"</td></tr>
+                            <tr><td><code>setup_clay_integration</code></td><td>"Use setup_clay_integration prompt"</td></tr>
+                            <tr><td><code>choose_providers_for_budget</code></td><td>"Use choose_providers_for_budget for free tier only"</td></tr>
+                            <tr><td><code>compare_enrichment_vs_scraper</code></td><td>"Use compare_enrichment_vs_scraper prompt"</td></tr>
+                            <tr><td><code>recover_abandoned_job</code></td><td>"Use recover_abandoned_job for job xyz789"</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="mcp-section">
+                <h3>💬 Example queries</h3>
+                <p>Once connected, just talk to Claude Code naturally. Real examples:</p>
+
+                <div class="mcp-example">
+                    <div class="label">Example 1 — Find an endpoint</div>
+                    <div class="query">"I have a list of company domains and I want to find decision-maker emails for each one. Which API endpoint should I use?"</div>
+                    <div class="response">→ Claude calls <code>find_endpoint_for_intent</code>, then tells you to use <code>POST /api/enrichment/flows/domain-enrich</code> for bulk CSV or <code>POST /api/enrichment/enrich</code> for single lookups, with the exact JSON payload and curl example.</div>
+                </div>
+
+                <div class="mcp-example">
+                    <div class="label">Example 2 — Debug an error</div>
+                    <div class="query">"I got HTTP 429 when starting a scraper job. What happened?"</div>
+                    <div class="response">→ Claude calls <code>explain_error_code</code>, tells you 429 = daily quota exceeded (50K for non-admin), how to check remaining quota via <code>GET /api/quota</code>, and tips to reduce usage.</div>
+                </div>
+
+                <div class="mcp-example">
+                    <div class="label">Example 3 — Validate a payload</div>
+                    <div class="query">"Validate this for /api/enrichment/enrich: {\"domain\": \"acme.com\", \"selected_providers\": [\"contacts_db\"]}"</div>
+                    <div class="response">→ Claude calls <code>validate_request</code> and confirms whether the payload matches the schema, or tells you what's missing/wrong.</div>
+                </div>
+
+                <div class="mcp-example">
+                    <div class="label">Example 4 — Read the docs</div>
+                    <div class="query">"Read the API reference from the listbuilding MCP."</div>
+                    <div class="response">→ Claude reads <code>docs://api-reference</code> and summarizes or searches it for you.</div>
+                </div>
+            </div>
+
+            <div class="mcp-section">
+                <h3>🔐 Authentication</h3>
+                <p>Two methods are accepted. <strong>For MCP usage, the API key is all you need.</strong></p>
+                <table class="mcp-table">
+                    <thead><tr><th>Action</th><th>API Key</th><th>JWT (login token)</th></tr></thead>
+                    <tbody>
+                        <tr><td><strong>MCP server access</strong></td><td>✅ Yes</td><td>✅ Yes</td></tr>
+                        <tr><td>Single-row enrichment (<code>/enrich</code>)</td><td>✅ Yes</td><td>✅ Yes</td></tr>
+                        <tr><td>Scraper downloads + resume</td><td>✅ Yes</td><td>✅ Yes</td></tr>
+                        <tr><td>CSV upload + bulk jobs</td><td>❌ No</td><td>✅ <strong>Yes only</strong></td></tr>
+                        <tr><td>API key management</td><td>❌ No</td><td>✅ <strong>Yes only</strong></td></tr>
+                    </tbody>
+                </table>
+                <div class="mcp-callout info">
+                    <span class="callout-icon">💡</span>
+                    <div>
+                        <strong>API key vs JWT:</strong> API keys start with <code>lgp_</code>, never expire, and are perfect for MCP / scripted access. JWTs come from login, expire after 7 days, and are required for CSV upload + bulk jobs.
+                    </div>
+                </div>
+            </div>
+
+            <div class="mcp-section">
+                <h3>🧰 Troubleshooting</h3>
+
+                <h4 style="font-size:0.95rem;color:var(--gray-800);margin-top:1rem;margin-bottom:0.5rem;">MCP not connecting?</h4>
+                <p><strong>1.</strong> Verify your API key is valid (should return <code>{"status":"ok","mcp_enabled":true}</code>):</p>
+                <div class="code-block">
+                    <button class="copy-btn" data-copy-target="mcp-health-curl">Copy</button>
+                    <pre id="mcp-health-curl">curl -s https://listbuilding.eagleinfoservice.com/api/health \
+  -H "X-API-Key: lgp_YOUR_KEY"</pre>
+                    <span class="lang-label">bash</span>
+                </div>
+
+                <p><strong>2.</strong> Check the MCP endpoint directly (should return JSON with <code>"serverInfo":{"name":"listbuilding-docs-oracle"}</code>):</p>
+                <div class="code-block">
+                    <button class="copy-btn" data-copy-target="mcp-init-curl">Copy</button>
+                    <pre id="mcp-init-curl">curl -s -X POST https://listbuilding.eagleinfoservice.com/mcp/ \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "X-API-Key: lgp_YOUR_KEY" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}'</pre>
+                    <span class="lang-label">bash</span>
+                </div>
+
+                <p><strong>3.</strong> Check <code>settings.json</code> syntax — JSON must be valid (no trailing commas, proper quotes).</p>
+                <p><strong>4.</strong> Restart Claude Code completely — not just reload, fully close and reopen.</p>
+
+                <h4 style="font-size:0.95rem;color:var(--gray-800);margin-top:1.25rem;margin-bottom:0.5rem;">"401 Authentication required" error</h4>
+                <ul>
+                    <li>Your API key may be invalid or revoked</li>
+                    <li>Check for extra spaces or newlines in the key</li>
+                    <li>Generate a new key at <strong>Account → API Keys</strong></li>
+                </ul>
+
+                <h4 style="font-size:0.95rem;color:var(--gray-800);margin-top:1.25rem;margin-bottom:0.5rem;">Claude Code doesn't see the MCP tools</h4>
+                <ul>
+                    <li>Ensure the entry is under <code>"mcpServers"</code> (plural, camelCase)</li>
+                    <li>The key name (<code>"listbuilding"</code>) can be anything — it's just an identifier</li>
+                    <li>Check Claude Code logs for MCP connection errors</li>
+                </ul>
+            </div>
+
+            <div class="mcp-section">
+                <h3>❓FAQ</h3>
+                <p><strong>Does the MCP make API calls for me?</strong></p>
+                <p>No. The MCP is a documentation oracle — it tells you WHICH endpoint and HOW, but you (or your code) execute the calls. This is by design, for security and cost control.</p>
+
+                <p><strong>How often does the documentation update?</strong></p>
+                <p>Automatically. The MCP reads the live OpenAPI spec from the running FastAPI app. When a new endpoint is added and the service restarts, the MCP serves the new spec on the next query.</p>
+
+                <p><strong>Is there a daily quota for MCP usage?</strong></p>
+                <p>No. MCP queries are read-only metadata operations — they do not count against the 50K daily API request quota. Only actual API calls (enrichment, scraping, etc.) count.</p>
+
+                <p><strong>Can I use this with Cursor / VS Code / other tools?</strong></p>
+                <p>Yes. Any MCP-compatible client can connect using the same URL and API key. The server uses the standard streamable HTTP transport.</p>
+
+                <p><strong>Can multiple team members use the same MCP server?</strong></p>
+                <p>Yes. Each person uses their own API key. The MCP server handles concurrent connections (4 gunicorn workers, stateless mode).</p>
+            </div>
+
+            <div class="mcp-section">
+                <h3>📚 Reference card</h3>
+                <table class="mcp-table">
+                    <thead><tr><th>If you want to…</th><th>Ask Claude Code…</th></tr></thead>
+                    <tbody>
+                        <tr><td>Find the right endpoint</td><td>"Find the endpoint for [your goal]"</td></tr>
+                        <tr><td>Get endpoint details</td><td>"Get details for POST /api/enrichment/enrich"</td></tr>
+                        <tr><td>Explain a field</td><td>"Explain the email_source field"</td></tr>
+                        <tr><td>Debug an error</td><td>"Explain error 401" or "Explain error 'selected_providers must be non-empty'"</td></tr>
+                        <tr><td>Check providers</td><td>"List current providers"</td></tr>
+                        <tr><td>Check quota</td><td>"Get the quota guide"</td></tr>
+                        <tr><td>Compare modes</td><td>"Compare enrichment modes"</td></tr>
+                        <tr><td>Validate payload</td><td>"Validate this for /api/enrichment/enrich: {your JSON}"</td></tr>
+                        <tr><td>Setup guide</td><td>"Use the setup_clay_integration prompt"</td></tr>
+                        <tr><td>Budget help</td><td>"Use the choose_providers_for_budget prompt for free tier"</td></tr>
+                    </tbody>
+                </table>
+                <div class="mcp-footer-actions">
+                    <a href="/docs/ListBuilding_MCP_Setup_Guide_2026-07-16.md" target="_blank" rel="noopener" class="primary">📄 Download full setup guide (.md)</a>
+                    <a href="/api/health" target="_blank" rel="noopener">Check MCP health endpoint</a>
+                    <a href="mailto:arjav@eagleinfoservice.com">✉️ Contact support</a>
+                </div>
+            </div>
+        </div>
     </main>
 
     <script>
@@ -649,6 +1063,7 @@ https://linkedin.com/in/janesmith</pre>
             'phone-enrich': 'phone',
             'enrichment-jobs': 'jobs',
             'help': 'help',
+            'mcp': 'mcp',
             'api-keys': 'apikeys',
         };
 
@@ -1271,6 +1686,54 @@ https://linkedin.com/in/janesmith</pre>
                 }
             } catch (e) { alert('Error: ' + e.message); }
         }
+
+        // =============================================================================
+        // MCP Page — copy-to-clipboard + tab switching
+        // =============================================================================
+
+        document.querySelectorAll('.copy-btn[data-copy-target]').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const targetId = btn.dataset.copyTarget;
+                const source = document.getElementById(targetId);
+                if (!source) return;
+                const text = source.innerText;
+                try {
+                    await navigator.clipboard.writeText(text);
+                    const original = btn.innerText;
+                    btn.innerText = '✓ Copied';
+                    btn.classList.add('copied');
+                    setTimeout(() => {
+                        btn.innerText = original;
+                        btn.classList.remove('copied');
+                    }, 1800);
+                } catch (err) {
+                    // Fallback for older browsers / insecure contexts
+                    const ta = document.createElement('textarea');
+                    ta.value = text;
+                    ta.style.position = 'fixed';
+                    ta.style.opacity = '0';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    try { document.execCommand('copy'); btn.innerText = '✓ Copied'; btn.classList.add('copied'); setTimeout(() => { btn.innerText = 'Copy'; btn.classList.remove('copied'); }, 1800); }
+                    catch (e) { alert('Copy failed — select the text manually.'); }
+                    document.body.removeChild(ta);
+                }
+            });
+        });
+
+        document.querySelectorAll('.mcp-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                const target = tab.dataset.mcpTab;
+                // Deactivate sibling tabs and contents within the same section
+                const section = tab.closest('.mcp-section');
+                if (!section) return;
+                section.querySelectorAll('.mcp-tab').forEach(t => t.classList.remove('active'));
+                section.querySelectorAll('.mcp-tab-content').forEach(c => c.classList.remove('active'));
+                tab.classList.add('active');
+                const content = section.querySelector(`.mcp-tab-content[data-mcp-content="${target}"]`);
+                if (content) content.classList.add('active');
+            });
+        });
     </script>
 </body>
 </html>
