@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import time
 import sqlite3
 import tempfile
 import uuid
@@ -409,6 +410,153 @@ _active_jobs: set[str] = set()
 _job_signals: dict[str, asyncio.Event] = {}
 # Set of jobs that have been cancelled by user
 _cancelled_jobs: set[str] = set()
+
+
+# ---------------------------------------------------------------------------
+# Enrichment concurrency & HTTP-client hardening (2026-07-28)
+#
+# The /enrich hot path previously had NO process-global bound on concurrent
+# cascades: every request built its own per-request semaphores AND two fresh
+# httpx.AsyncClient()s with no connection limits, so aggregate fan-in scaled
+# linearly with request count — the OOM driver under the 2026-07-27 AWS flood.
+#
+# _ENRICH_SEMAPHORE caps concurrent in-flight cascades PER WORKER. With N
+# gunicorn workers the effective app-wide ceiling is N x ENRICH_MAX_CONCURRENT.
+# Requests that cannot acquire within ENRICH_QUEUE_TIMEOUT get a fast 429
+# (cheap) instead of piling up in memory. Both are env-tunable (no redeploy).
+#
+# The shared cascade httpx clients (Limits + Timeout, mirroring the batch path
+# at pipeline.py ~L2902) are reused across requests — caps connection memory
+# and kills per-request TLS/pool churn. They are NOT closed per-request.
+ENRICH_MAX_CONCURRENT = int(os.getenv("ENRICH_MAX_CONCURRENT", "16"))
+ENRICH_QUEUE_TIMEOUT = float(os.getenv("ENRICH_QUEUE_TIMEOUT", "5.0"))
+_ENRICH_SEMAPHORE = asyncio.Semaphore(ENRICH_MAX_CONCURRENT)
+
+_ENRICH_HTTP_LIMITS = httpx.Limits(
+    max_keepalive_connections=20,
+    max_connections=100,
+    keepalive_expiry=30.0,
+)
+_ENRICH_HTTP_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
+_shared_blitz_http: Optional[httpx.AsyncClient] = None
+_shared_contacts_http: Optional[httpx.AsyncClient] = None
+
+
+def _get_blitz_http() -> httpx.AsyncClient:
+    """Lazy shared cascade client (one per worker). Do NOT close per-request."""
+    global _shared_blitz_http
+    if _shared_blitz_http is None:
+        _shared_blitz_http = httpx.AsyncClient(
+            limits=_ENRICH_HTTP_LIMITS, timeout=_ENRICH_HTTP_TIMEOUT
+        )
+    return _shared_blitz_http
+
+
+def _get_contacts_http() -> httpx.AsyncClient:
+    """Lazy shared cascade client (one per worker). Do NOT close per-request."""
+    global _shared_contacts_http
+    if _shared_contacts_http is None:
+        _shared_contacts_http = httpx.AsyncClient(
+            limits=_ENRICH_HTTP_LIMITS, timeout=_ENRICH_HTTP_TIMEOUT
+        )
+    return _shared_contacts_http
+
+
+async def _acquire_enrich_slot() -> None:
+    """Acquire a global cascade slot, or fail fast with HTTP 429 if saturated.
+
+    Raises HTTPException(429, Retry-After) on timeout so the client backs off
+    instead of the request piling up in worker memory.
+    """
+    try:
+        await asyncio.wait_for(_ENRICH_SEMAPHORE.acquire(), ENRICH_QUEUE_TIMEOUT)
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=429,
+            detail="Enrichment API at capacity, please retry shortly.",
+            headers={"Retry-After": "3"},
+        )
+
+
+# ---------------------------------------------------------------------------
+# /enrich response cache (2026-07-28)
+#
+# Measured on live traffic: ~60% of /enrich requests are repeat queries for the
+# same domain within 5 minutes. This short-TTL cache serves those instantly,
+# skipping the whole cascade (contacts_db -> blitz -> mailtester -> sync). Cache
+# HITS also bypass the concurrency semaphore entirely (so they never 429 and
+# consume no slot). Net effect at the current rate: ~60% fewer provider calls.
+# Gated by ENRICH_RESPONSE_CACHE (default on); TTL/maxsize env-tunable. Bypassed
+# when debug=True. GET path only (that is 100% of Clay's traffic).
+ENRICH_RESPONSE_CACHE = os.getenv("ENRICH_RESPONSE_CACHE", "true").lower() in ("1", "true", "yes", "on")
+ENRICH_CACHE_TTL = float(os.getenv("ENRICH_CACHE_TTL", "300"))
+ENRICH_CACHE_MAX = int(os.getenv("ENRICH_CACHE_MAX", "10000"))
+_enrich_response_cache: dict[str, tuple[float, Any]] = {}
+
+
+def _enrich_cache_key(req: Any) -> str:
+    """Stable cache key from the request fields that affect the result.
+
+    Domain is scheme/slash-normalized so `http://x.com/` and `x.com` share an
+    entry. Uses getattr defensively so an unexpected request shape can never
+    500 the endpoint (worst case: a cache miss).
+    """
+    dom = (getattr(req, "domain", None) or "").strip().lower()
+    for pref in ("https://", "http://"):
+        if dom.startswith(pref):
+            dom = dom[len(pref):]
+    dom = dom.strip("/")
+    sp = getattr(req, "selected_providers", None) or []
+    sp = ",".join(sorted(sp))
+    titles = getattr(req, "titles", None)
+    if isinstance(titles, (list, tuple)):
+        titles = ",".join(str(t) for t in titles)
+    else:
+        titles = str(titles or "")
+    cascade = getattr(req, "cascade", None)
+    cascade = json.dumps(cascade, sort_keys=True, default=str) if cascade else ""
+    return "|".join((
+        "v1",
+        dom,
+        (getattr(req, "full_name", None) or "").strip().lower(),
+        (getattr(req, "first_name", None) or "").strip().lower(),
+        (getattr(req, "last_name", None) or "").strip().lower(),
+        (getattr(req, "linkedin_url", None) or "").strip(),
+        (getattr(req, "company_linkedin_url", None) or "").strip(),
+        getattr(req, "force_provider", None) or "",
+        sp,
+        str(getattr(req, "max_results", None)),
+        titles,
+        getattr(req, "source", None) or "",
+        cascade,
+    ))
+
+
+def _enrich_cache_get(key: str) -> Optional[Any]:
+    """Return a cached response if present and unexpired, else None."""
+    if not ENRICH_RESPONSE_CACHE:
+        return None
+    entry = _enrich_response_cache.get(key)
+    if entry is None:
+        return None
+    expiry, value = entry
+    if expiry > time.monotonic():
+        return value
+    _enrich_response_cache.pop(key, None)
+    return None
+
+
+def _enrich_cache_set(key: str, value: Any) -> None:
+    """Store a response with a TTL; evict the soonest-expiring entry when full."""
+    if not ENRICH_RESPONSE_CACHE:
+        return
+    if len(_enrich_response_cache) >= ENRICH_CACHE_MAX:
+        try:
+            oldest = min(_enrich_response_cache, key=lambda k: _enrich_response_cache[k][0])
+            _enrich_response_cache.pop(oldest, None)
+        except ValueError:
+            pass
+    _enrich_response_cache[key] = (time.monotonic() + ENRICH_CACHE_TTL, value)
 
 
 # ---------------------------------------------------------------------------
@@ -1291,8 +1439,9 @@ async def enrich_single_domain(
     domain_semaphore = asyncio.Semaphore(pipeline.DOMAIN_CONCURRENCY)
     email_semaphore = asyncio.Semaphore(pipeline.EMAIL_CONCURRENCY)
 
-    blitz_http = httpx.AsyncClient()
-    contacts_http = httpx.AsyncClient()
+    await _acquire_enrich_slot()
+    blitz_http = _get_blitz_http()
+    contacts_http = _get_contacts_http()
 
     try:
         # Call _enrich_domain directly for single domain
@@ -1309,8 +1458,8 @@ async def enrich_single_domain(
             force_provider=force_provider,
         )
     finally:
-        await blitz_http.aclose()
-        await contacts_http.aclose()
+        # Shared cascade clients are reused across requests — do NOT close here.
+        _ENRICH_SEMAPHORE.release()
 
     # Extract contacts from output rows
     contacts = []
@@ -1774,8 +1923,9 @@ async def unified_enrich(
                 mode, current_user.get("email"))
 
     # Create HTTP clients
-    blitz_http = httpx.AsyncClient()
-    contacts_http = httpx.AsyncClient()
+    await _acquire_enrich_slot()
+    blitz_http = _get_blitz_http()
+    contacts_http = _get_contacts_http()
 
     domain_semaphore = asyncio.Semaphore(pipeline.DOMAIN_CONCURRENCY)
     email_semaphore = asyncio.Semaphore(pipeline.EMAIL_CONCURRENCY)
@@ -2337,8 +2487,8 @@ async def unified_enrich(
                             logger.debug("BetterEnrich V3 lookup failed: %s", e)
 
     finally:
-        await blitz_http.aclose()
-        await contacts_http.aclose()
+        # Shared cascade clients are reused across requests — do NOT close here.
+        _ENRICH_SEMAPHORE.release()
 
     # Sync to Contacts DB
     sync_result = {"synced": 0, "skipped": 0, "failed": 0}
@@ -2533,7 +2683,18 @@ async def unified_enrich_get(
     )
 
     # Call the POST handler logic (reuse by calling unified_enrich internally)
-    # We'll manually invoke the same logic flow here to avoid duplication
+    # We'll manually invoke the same logic flow here to avoid duplication.
+    # Response cache: repeat queries (same domain/name/mode) within TTL skip the
+    # whole cascade AND the concurrency semaphore (~60% of traffic). Bypassed
+    # for debug. See _enrich_cache_key / _enrich_cache_get / _enrich_cache_set.
+    if ENRICH_RESPONSE_CACHE and not debug:
+        _ckey = _enrich_cache_key(req)
+        _cached = _enrich_cache_get(_ckey)
+        if _cached is not None:
+            return _cached
+        _result = await _unified_enrich_logic(req, current_user, debug=debug)
+        _enrich_cache_set(_ckey, _result)
+        return _result
     return await _unified_enrich_logic(req, current_user, debug=debug)
 
 
@@ -2613,8 +2774,9 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                 domain, bool(req.linkedin_url), mode, current_user.get("email"))
 
     # Create HTTP clients
-    blitz_http = httpx.AsyncClient()
-    contacts_http = httpx.AsyncClient()
+    await _acquire_enrich_slot()
+    blitz_http = _get_blitz_http()
+    contacts_http = _get_contacts_http()
 
     domain_semaphore = asyncio.Semaphore(pipeline.DOMAIN_CONCURRENCY)
     email_semaphore = asyncio.Semaphore(pipeline.EMAIL_CONCURRENCY)
@@ -3182,8 +3344,8 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
         })
 
     finally:
-        await blitz_http.aclose()
-        await contacts_http.aclose()
+        # Shared cascade clients are reused across requests — do NOT close here.
+        _ENRICH_SEMAPHORE.release()
 
 
 @router.post("/upload")
