@@ -559,6 +559,34 @@ def _enrich_cache_set(key: str, value: Any) -> None:
     _enrich_response_cache[key] = (time.monotonic() + ENRICH_CACHE_TTL, value)
 
 
+# Hit/miss counters for the response cache (per-worker). Mutated via helpers so
+# no `global` declaration is needed; increments are single statements with no
+# await -> safe under concurrency within one worker's event loop. Logged every
+# 100 lookups so all 4 workers aggregate in journald for live hit-rate reading.
+_ENRICH_CACHE_STATS: dict[str, int] = {"hits": 0, "misses": 0}
+
+
+def _enrich_cache_record_hit() -> None:
+    _ENRICH_CACHE_STATS["hits"] += 1
+    _enrich_cache_maybe_log()
+
+
+def _enrich_cache_record_miss() -> None:
+    _ENRICH_CACHE_STATS["misses"] += 1
+    _enrich_cache_maybe_log()
+
+
+def _enrich_cache_maybe_log() -> None:
+    s = _ENRICH_CACHE_STATS
+    lookups = s["hits"] + s["misses"]
+    if lookups > 0 and lookups % 100 == 0:
+        logger.info(
+            "enrich_cache: hits=%d misses=%d hit_rate=%.1f%% size=%d",
+            s["hits"], s["misses"], 100.0 * s["hits"] / lookups,
+            len(_enrich_response_cache),
+        )
+
+
 # ---------------------------------------------------------------------------
 # JSON Response Freeze (Option C Phase 3, 2026-07-07)
 #
@@ -2691,7 +2719,9 @@ async def unified_enrich_get(
         _ckey = _enrich_cache_key(req)
         _cached = _enrich_cache_get(_ckey)
         if _cached is not None:
+            _enrich_cache_record_hit()
             return _cached
+        _enrich_cache_record_miss()
         _result = await _unified_enrich_logic(req, current_user, debug=debug)
         _enrich_cache_set(_ckey, _result)
         return _result

@@ -264,3 +264,20 @@ def test_cache_disabled_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(routes, "ENRICH_RESPONSE_CACHE", False)
     routes._enrich_cache_set("k", "v")  # no-op when disabled
     assert routes._enrich_cache_get("k") is None
+
+
+def test_cache_counters_track_hits_and_misses() -> None:
+    routes._ENRICH_CACHE_STATS["hits"] = 0
+    routes._ENRICH_CACHE_STATS["misses"] = 0
+    routes._enrich_cache_record_hit()
+    routes._enrich_cache_record_hit()
+    routes._enrich_cache_record_miss()
+    assert routes._ENRICH_CACHE_STATS == {"hits": 2, "misses": 1}
+
+
+def test_cache_log_at_100_lookup_boundary_does_not_raise() -> None:
+    """Crossing the 100-lookup log boundary must be safe (logging is swallow-safe)."""
+    routes._ENRICH_CACHE_STATS["hits"] = 99
+    routes._ENRICH_CACHE_STATS["misses"] = 0
+    routes._enrich_cache_record_hit()  # lookups hits 100 -> logger.info fires
+    assert routes._ENRICH_CACHE_STATS["hits"] == 100
