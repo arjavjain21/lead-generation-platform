@@ -1100,6 +1100,11 @@ https://linkedin.com/in/janesmith</pre>
             if (pageEl) {
                 pageEl.classList.add('active');
             }
+
+            // Auto-load job lists when entering these pages (moved here from the
+            // removed showPage monkeypatch — the modern router hook).
+            if (pageId === 'scraper') loadScraperJobs();
+            if (pageId === 'jobs') loadJobs();
         }
 
         // Listen for hash changes (browser back/forward, manual URL changes)
@@ -1528,13 +1533,11 @@ https://linkedin.com/in/janesmith</pre>
             } catch (e) { console.error('Failed to load scraper jobs:', e); }
         }
 
-        // Load scraper jobs and enrichment jobs when navigating to respective pages
-        const originalShowPage = showPage;
-        showPage = function(page) {
-            originalShowPage(page);
-            if (page === 'scraper') loadScraperJobs();
-            if (page === 'jobs') loadJobs();
-        };
+        // Auto-loading scraper/enrichment jobs on navigation is handled in
+        // handleHashChange() (the current router). The old showPage monkeypatch
+        // that used to do this was removed: showPage no longer exists (renamed to
+        // navigateToPage), so referencing it threw a top-level ReferenceError that
+        // aborted the script and silently disabled every handler below this point.
 
         // Search
         document.getElementById('searchCompanies').addEventListener('click', async () => {
