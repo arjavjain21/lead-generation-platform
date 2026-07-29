@@ -1359,6 +1359,28 @@ async def _run_job(
     # job with partial output hits UnboundLocalError and never caches its results.
     result_count = 0
 
+    # Start heartbeat task (updates last_heartbeat every 30s).
+    # Without this, any sibling-worker boot (max-requests recycle or a
+    # WORKER TIMEOUT elsewhere) runs cleanup_stale_jobs() and reaps this live
+    # job as 'abandoned' even though it is running fine in another worker. The
+    # heartbeat lets the heartbeat-aware reaper see the job is still alive.
+    # Mirrors enrichment/routes.py and phone_enrichment/routes.py.
+    store.heartbeat(job_id)  # initial heartbeat so last_heartbeat is non-NULL immediately
+
+    async def heartbeat_loop():
+        try:
+            while True:
+                await asyncio.sleep(30)
+                try:
+                    heartbeat_store = job_store.get_store()
+                    heartbeat_store.heartbeat(job_id)
+                except Exception as hb_err:
+                    logger.warning("Heartbeat failed for %s: %s", job_id, hb_err)
+        except asyncio.CancelledError:
+            pass
+
+    heartbeat_task = asyncio.create_task(heartbeat_loop())
+
     async def on_progress(event: dict[str, Any]) -> None:
         # Get FRESH store instance for this thread
         # This fixes the progress counter bug where background tasks couldn't commit
@@ -1516,6 +1538,9 @@ async def _run_job(
         store.set_failed(job_id, str(e))
 
     finally:
+        # Cancel heartbeat task
+        if 'heartbeat_task' in locals():
+            heartbeat_task.cancel()
         _active_jobs.discard(job_id)
         sig = _job_signals.pop(job_id, None)
         if sig:
@@ -1543,6 +1568,24 @@ async def _run_job_with_tasks(
     store.set_running(job_id)
     seq = [0]
     requests_made = [0]
+
+    # Start heartbeat task (updates last_heartbeat every 30s). See _run_job for
+    # the rationale — prevents sibling-worker boots from reaping this live job.
+    store.heartbeat(job_id)  # initial heartbeat so last_heartbeat is non-NULL immediately
+
+    async def heartbeat_loop():
+        try:
+            while True:
+                await asyncio.sleep(30)
+                try:
+                    heartbeat_store = job_store.get_store()
+                    heartbeat_store.heartbeat(job_id)
+                except Exception as hb_err:
+                    logger.warning("Heartbeat failed for %s: %s", job_id, hb_err)
+        except asyncio.CancelledError:
+            pass
+
+    heartbeat_task = asyncio.create_task(heartbeat_loop())
 
     async def on_progress(event: dict) -> None:
         progress_store = job_store.get_store()
@@ -1680,6 +1723,9 @@ async def _run_job_with_tasks(
         store.set_failed(job_id, str(e))
 
     finally:
+        # Cancel heartbeat task
+        if 'heartbeat_task' in locals():
+            heartbeat_task.cancel()
         _active_jobs.discard(job_id)
         sig = _job_signals.pop(job_id, None)
         if sig:
@@ -1692,7 +1738,11 @@ def cleanup_stale_jobs() -> None:
     This status distinguishes from jobs that failed due to errors (user can retry).
     """
     store = job_store.get_store()
-    stale = store.get_stale_running_jobs()
+    # Heartbeat-aware: a job actively heartbeating (running in another worker)
+    # is NOT reaped — only jobs whose heartbeat is stale (>2 min) get abandoned.
+    # This prevents the max-requests/WORKER-TIMEOUT worker churn from abandoning
+    # live scraper jobs. Mirrors enrichment/phone cleanup behavior.
+    stale = store.get_stale_running_jobs_by_heartbeat()
     for job_id in stale:
         store.set_abandoned(
             job_id,
