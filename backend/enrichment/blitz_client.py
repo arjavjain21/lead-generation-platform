@@ -119,13 +119,13 @@ async def _post_with_retry(
             await _blitz_circuit.record_success()
             return resp.json()
         except httpx.HTTPStatusError as e:
-            # 429 (rate-limit) must NOT trip the circuit breaker — it means
-            # we're over the rate limit, not that Blitz is down. Tripping the
-            # breaker degrades the whole cascade onto the much slower
-            # BetterEnrich fallback (10 RPS), which was the root cause of the
-            # 2026-07-21/22 multi-job slowdown. Let the retry/backoff above
-            # self-limit the rate; only real failures (5xx etc.) trip it.
-            if e.response.status_code != 429:
+            # 429 (rate-limit) and 4xx payload errors (400/404/422) must NOT trip
+            # the circuit breaker — they mean the request was bad or over-limit,
+            # not that Blitz is down. Tripping on a bad-payload storm (e.g.
+            # un-normalized deep-URL domains -> 422) blacks out Blitz for valid
+            # rows for 60s, degrading the cascade onto the slower BetterEnrich
+            # fallback. Only real service failures (5xx etc.) trip it.
+            if e.response.status_code not in (400, 404, 422, 429):
                 await _blitz_circuit.record_failure()
             raise
         except Exception as exc:

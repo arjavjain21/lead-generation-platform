@@ -3007,7 +3007,10 @@ async def run_pipeline(
             else:
                 raise RuntimeError(f"Job {job_id} was {cancel_reason}")
 
-        domain = str(row.get(domain_col, "")).strip()
+        # Normalize at the batch edge too (deep URLs / emails -> bare domain or "").
+        # Same normalize_domain() used by the /enrich handlers; prevents raw URLs
+        # from reaching providers (Blitz 422, contacts 404) on CSV batch paths.
+        domain = identifier_utils.normalize_domain(str(row.get(domain_col, "")))
 
         # Resolve full name from available columns
         if name_col and row.get(name_col):

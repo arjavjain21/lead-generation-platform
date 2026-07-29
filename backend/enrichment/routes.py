@@ -1451,9 +1451,10 @@ async def enrich_single_domain(
         except json.JSONDecodeError:
             raise HTTPException(status_code=400, detail="Invalid cascade JSON")
 
-    # Clean domain
-    domain = domain.strip().lower()
-    if not domain or "." not in domain:
+    # Normalize domain: strip protocol/www/path/query, reject emails/non-domains.
+    # Prevents deep URLs and emails from reaching providers (Blitz 422, contacts 404).
+    domain = identifier_utils.normalize_domain(domain)
+    if not domain:
         raise HTTPException(status_code=400, detail="Invalid domain format")
 
     logger.info("Enriching single domain: %s (user: %s)", domain, current_user.get("email"))
@@ -1898,8 +1899,8 @@ async def unified_enrich(
     # Validate domain format if provided
     domain = ""
     if req.domain:
-        domain = req.domain.strip().lower()
-        if "." not in domain:
+        domain = identifier_utils.normalize_domain(req.domain)
+        if not domain:
             raise HTTPException(status_code=400, detail="Invalid domain format")
 
     # Resolve full_name from first_name + last_name if provided
@@ -2780,8 +2781,8 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
     # Validate domain format if provided
     domain = ""
     if req.domain:
-        domain = req.domain.strip().lower()
-        if "." not in domain:
+        domain = identifier_utils.normalize_domain(req.domain)
+        if not domain:
             raise HTTPException(status_code=400, detail="Invalid domain format")
 
     # Resolve full_name from first_name + last_name if provided
