@@ -57,6 +57,10 @@
         .btn-secondary:hover { background: var(--gray-200); }
         .btn-success { background: var(--success); color: white; }
         .btn-success:hover { background: #059669; }
+        .btn-warning { background: var(--warning); color: var(--gray-900); }
+        .btn-warning:hover { background: #d97706; }
+        .btn-danger { background: var(--danger); color: white; }
+        .btn-danger:hover { background: #dc2626; }
         .btn:disabled { opacity: 0.5; cursor: not-allowed; }
         
         /* Page Sections */
@@ -4462,7 +4466,7 @@ example.org,Jane Doe</pre>
                 if (!res.ok) {
                     const err = await res.json();
                     alert('Download failed: ' + (err.detail || 'No partial file'));
-                    if (btn) { btn.disabled = false; btn.textContent = 'Download Partial'; }
+                    if (btn) { btn.disabled = false; btn.textContent = '↓ Download partial'; }
                     return;
                 }
                 const blob = await res.blob();
@@ -4476,7 +4480,7 @@ example.org,Jane Doe</pre>
                 document.body.removeChild(a); URL.revokeObjectURL(url);
             } catch (e) {
                 alert('Error: ' + e.message);
-                if (btn) { btn.disabled = false; btn.textContent = 'Download Partial'; }
+                if (btn) { btn.disabled = false; btn.textContent = '↓ Download partial'; }
             }
         }
 
@@ -4526,7 +4530,7 @@ example.org,Jane Doe</pre>
                 container.style.display = 'none';
                 return;
             }
-            const originalLabel = btn ? btn.textContent : '▦ Download in 10K chunks';
+            const originalLabel = btn ? btn.textContent : '▦ Download in chunks';
             if (btn) { btn.disabled = true; btn.textContent = 'Loading...'; }
             try {
                 const res = await fetch('/api/enrichment/jobs/' + jobId + '/shards', {
@@ -4613,6 +4617,19 @@ example.org,Jane Doe</pre>
             loadJobs();
         }
 
+        // Single source of truth for job-status display labels. Used by both
+        // renderEnrichmentJobs and renderScraperJobs so every job card shows the
+        // same accurate label for a given status. Display text only — the status
+        // value, filters, and endpoints are unchanged.
+        const JOB_STATUS_LABELS = {
+            running: 'Running', queued: 'Queued', starting: 'Starting', pending: 'Pending',
+            done: 'Done', partial: 'Partial', failed: 'Failed',
+            abandoned: 'Abandoned', cancelled: 'Cancelled', stopped: 'Stopped',
+        };
+        function jobStatusLabel(status) {
+            return JOB_STATUS_LABELS[status] || (status ? status.charAt(0).toUpperCase() + status.slice(1) : '');
+        }
+
         function renderEnrichmentJobs() {
             const jobsList = document.getElementById('enrichmentJobsList');
             let jobs = allEnrichmentJobs;
@@ -4623,16 +4640,8 @@ example.org,Jane Doe</pre>
             // Status filtering is now done server-side via the `status` query param
             // (see loadJobs). Only the "no jobs yet" empty state remains here.
             jobsList.innerHTML = jobs.map(job => {
-                        // Status display with human-readable labels
-                        let statusLabel = job.status;
-                        let statusDisplay = statusLabel;
-                        if (job.status === 'running') statusDisplay = 'Running';
-                        if (job.status === 'starting') statusDisplay = 'Starting';
-                        if (job.status === 'done') statusDisplay = 'Done';
-                        if (job.status === 'abandoned') statusDisplay = 'Abandoned';
-                        if (job.status === 'cancelled') statusDisplay = 'Cancelled';
-                        if (job.status === 'partial') statusDisplay = 'Partial';
-                        if (job.status === 'failed') statusDisplay = 'Failed';
+                        // Status display via the shared label map.
+                        let statusDisplay = jobStatusLabel(job.status);
 
                         // Format providers display - show BOTH selected and used side by side
                         // 1. selectedDisplay: what the user selected (from selected_providers)
@@ -4703,30 +4712,30 @@ example.org,Jane Doe</pre>
                             }
                             actions += ' <button class="btn btn-secondary btn-sm" data-action="retry" data-job-id="'+job.job_id+'" onclick="retryEnrichmentJob(\''+job.job_id+'\', this)">Retry</button>';
                             if (job.partial_output_path) {
-                                actions += ' <button class="btn btn-success btn-sm" onclick="downloadEnrichmentPartial(\''+job.job_id+'\', this)">Download Partial</button>';
+                                actions += ' <button class="btn btn-success btn-sm" onclick="downloadEnrichmentPartial(\''+job.job_id+'\', this)">↓ Download partial</button>';
                             }
                         } else if (job.status === 'partial') {
                             // Partial jobs have output available
                             const fname = job.display_filename || job.filename || 'enrichment_job';
                             const safeName = fname.replace(/[^a-z0-9]/gi, '_').substring(0, 30);
-                            actions += ' <button class="btn btn-success btn-sm" onclick="downloadFile(\''+job.job_id+'\',\''+safeName+'_partial_'+job.job_id.substr(0,8)+'.csv\', this)">Download Partial</button>';
+                            actions += ' <button class="btn btn-success btn-sm" onclick="downloadFile(\''+job.job_id+'\',\''+safeName+'_partial_'+job.job_id.substr(0,8)+'.csv\', this)">↓ Download partial</button>';
                             // Resume picks up from the partial's row count; for
                             // pre-fix partials (no checkpoints) the resume-info
                             // modal will warn the user.
                             actions += ' <button class="btn btn-warning btn-sm" data-action="resume" data-job-id="'+job.job_id+'" onclick="resumeEnrichmentJob(\''+job.job_id+'\', this)">↻ Resume</button>';
-                            actions += ' <button class="btn btn-secondary btn-sm" data-action="retry" data-job-id="'+job.job_id+'" onclick="retryEnrichmentJob(\''+job.job_id+'\', this)">Retry Full</button>';
+                            actions += ' <button class="btn btn-secondary btn-sm" data-action="retry" data-job-id="'+job.job_id+'" onclick="retryEnrichmentJob(\''+job.job_id+'\', this)">Retry</button>';
                         } else if (job.status === 'running' || job.status === 'queued' || job.status === 'starting') {
-                            actions += ' <button class="btn btn-danger btn-sm" onclick="cancelEnrichmentJob(\''+job.job_id+'\', this)">Cancel</button>';
+                            actions += ' <button class="btn btn-danger btn-sm" onclick="cancelEnrichmentJob(\''+job.job_id+'\', this)">Stop</button>';
                             // Let the user pull the leads found so far WITHOUT cancelling.
                             // /recover-partial has no status guard, so this works mid-run.
-                            actions += ' <button class="btn btn-secondary btn-sm" onclick="downloadEnrichmentPartial(\''+job.job_id+'\', this)">↓ Download progress</button>';
+                            actions += ' <button class="btn btn-success btn-sm" onclick="downloadEnrichmentPartial(\''+job.job_id+'\', this)">↓ Download partial</button>';
                         }
                         // Chunked shard download — reveals a per-shard download list
                         // under the job card on click (toggle). The shard endpoint
                         // serves any job on demand, so surface it on rows that have
                         // (or will have) rows on disk: done/partial/running.
                         if (job.status === 'done' || job.status === 'partial' || job.status === 'running') {
-                            actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleEnrichmentShards(\''+job.job_id+'\', this)">▦ Download in 10K chunks</button>';
+                            actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleEnrichmentShards(\''+job.job_id+'\', this)">▦ Download in chunks</button>';
                         }
                         // Show error message for failed/abandoned/cancelled jobs with hover tooltip
                         let errorInfo = '';
@@ -4802,13 +4811,13 @@ example.org,Jane Doe</pre>
 
         // Cancel an enrichment job
         async function cancelEnrichmentJob(jobId, btn) {
-            if (!confirm('Cancel this enrichment job?')) return;
+            if (!confirm('Stop this enrichment job? This will stop further processing.')) return;
 
             // Show immediate feedback - disable button and show loading state (mirrors cancelScraperJob)
             if (btn) {
                 btn.disabled = true;
                 btn.dataset.originalText = btn.textContent;
-                btn.innerHTML = '<span class="spinner" style="width:12px;height:12px;display:inline-block;"></span> Cancelling...';
+                btn.innerHTML = '<span class="spinner" style="width:12px;height:12px;display:inline-block;"></span> Stopping...';
             }
 
             try {
@@ -4820,11 +4829,11 @@ example.org,Jane Doe</pre>
                     loadJobs(); // Refresh the list (button will be removed/re-rendered)
                 } else {
                     const err = await res.json();
-                    alert('Failed to cancel: ' + (err.detail || 'Unknown error'));
+                    alert('Failed to stop: ' + (err.detail || 'Unknown error'));
                     // Re-enable button on error
                     if (btn) {
                         btn.disabled = false;
-                        btn.innerHTML = btn.dataset.originalText || 'Cancel';
+                        btn.innerHTML = btn.dataset.originalText || 'Stop';
                     }
                 }
             } catch (e) {
@@ -4832,7 +4841,7 @@ example.org,Jane Doe</pre>
                 // Re-enable button on error
                 if (btn) {
                     btn.disabled = false;
-                    btn.innerHTML = btn.dataset.originalText || 'Cancel';
+                    btn.innerHTML = btn.dataset.originalText || 'Stop';
                 }
             }
         }
@@ -4925,35 +4934,29 @@ example.org,Jane Doe</pre>
             }
 
             jobsList.innerHTML = filteredJobs.map(job => {
-                // Status display with human-readable labels
-                let statusLabel = job.status;
-                let statusDisplay = statusLabel;
-                if (job.status === 'abandoned') statusDisplay = 'Abandoned';
-                if (job.status === 'cancelled') statusDisplay = 'Cancelled';
-                if (job.status === 'partial') statusDisplay = 'Partial';
-                if (job.status === 'failed') statusDisplay = 'Failed';
-                if (job.status === 'stopped') statusDisplay = 'Stopped';
+                // Status display via the shared label map.
+                let statusDisplay = jobStatusLabel(job.status);
 
                 let actions = '<span class="job-status status-' + job.status + '">' + statusDisplay + '</span>';
                 if (job.status === 'done') {
                     actions += ' <button class="btn btn-success btn-sm" id="dl-scraper-'+job.job_id+'" onclick="downloadScraperJob(\''+job.job_id+'\', this)">Download</button>';
                     actions += ' <button class="btn btn-primary btn-sm" onclick="chainScraperToEnrichment(\''+job.job_id+'\')">Chain to Enrichment</button>';
-                    actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleScraperShards(\''+job.job_id+'\', this)">▦ 10K Chunks</button>';
+                    actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleScraperShards(\''+job.job_id+'\', this)">▦ Download in chunks</button>';
                 } else if (job.status === 'failed' || job.status === 'abandoned' || job.status === 'cancelled' || job.status === 'stopped') {
                     // Show resume button if job has checkpoints
                     if (job.checkpoint_count > 0 && job.is_resumable === 1) {
                         actions += ' <button class="btn btn-warning btn-sm" onclick="resumeScraperJob(\''+job.job_id+'\')">↻ Resume ('+job.checkpoint_count+' tasks)</button>';
                     }
-                    actions += ' <button class="btn btn-secondary btn-sm" onclick="retryScraperJob(\''+job.job_id+'\')">Retry Fresh</button>';
+                    actions += ' <button class="btn btn-secondary btn-sm" onclick="retryScraperJob(\''+job.job_id+'\')">Retry</button>';
                     // /partial-download has no status gate and falls back to the on-disk
                     // CSV, so this works for abandoned jobs even though output_path is
                     // null until set_done runs at completion.
-                    actions += ' <button class="btn btn-success btn-sm" onclick="downloadScraperPartial(\''+job.job_id+'\', this)">↓ Download Partial</button>';
-                    actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleScraperShards(\''+job.job_id+'\', this)">▦ 10K Chunks</button>';
+                    actions += ' <button class="btn btn-success btn-sm" onclick="downloadScraperPartial(\''+job.job_id+'\', this)">↓ Download partial</button>';
+                    actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleScraperShards(\''+job.job_id+'\', this)">▦ Download in chunks</button>';
                 } else if (job.status === 'running' || job.status === 'queued' || job.status === 'pending') {
                     actions += ' <button class="btn btn-danger btn-sm" onclick="cancelScraperJob(\''+job.job_id+'\')">Stop</button>';
-                    actions += ' <button class="btn btn-success btn-sm" onclick="downloadScraperPartial(\''+job.job_id+'\', this)">↓ Download Partial</button>';
-                    actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleScraperShards(\''+job.job_id+'\', this)">▦ 10K Chunks</button>';
+                    actions += ' <button class="btn btn-success btn-sm" onclick="downloadScraperPartial(\''+job.job_id+'\', this)">↓ Download partial</button>';
+                    actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleScraperShards(\''+job.job_id+'\', this)">▦ Download in chunks</button>';
                 }
                 // Show error message for failed/abandoned/cancelled jobs with hover tooltip
                 let errorInfo = '';
@@ -5033,7 +5036,7 @@ example.org,Jane Doe</pre>
             } catch (e) {
                 alert('Error: ' + e.message);
             } finally {
-                if (btn) { btn.disabled = false; btn.textContent = 'Download Partial'; }
+                if (btn) { btn.disabled = false; btn.textContent = '↓ Download partial'; }
             }
         }
 
@@ -5074,7 +5077,7 @@ example.org,Jane Doe</pre>
                 container.style.display = 'none';
                 return;
             }
-            const originalLabel = btn ? btn.textContent : '▦ 10K Chunks';
+            const originalLabel = btn ? btn.textContent : '▦ Download in chunks';
             if (btn) { btn.disabled = true; btn.textContent = 'Loading...'; }
             try {
                 const res = await fetch('/api/scraper/jobs/' + jobId + '/shards', {
