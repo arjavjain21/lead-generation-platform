@@ -57,8 +57,8 @@
         .btn-secondary:hover { background: var(--gray-200); }
         .btn-success { background: var(--success); color: white; }
         .btn-success:hover { background: #059669; }
-        .btn-warning { background: #b45309; color: white; }
-        .btn-warning:hover { background: #92400e; }
+        .btn-warning { background: #013220; color: white; }
+        .btn-warning:hover { background: #011d17; }
         .btn-danger { background: var(--danger); color: white; }
         .btn-danger:hover { background: #dc2626; }
         .btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -323,27 +323,27 @@
         .filter-tab { height:30px; padding:0 .75rem; border-radius:9999px;
             font-size:.78rem; font-weight:500; text-transform:capitalize; line-height:1; }
 
-        /* Job row → stable 3-area grid (info | status | actions). Scraper-only
-           (scoped via .scraper-job); no absolute positioning, actions wrap,
+        /* Job row → stable 3-area grid (info | status | actions) for ALL job
+           cards (scraper + enrichment). No absolute positioning, actions wrap,
            stacks on small screens. */
-        .job-card.scraper-job { display:grid;
+        .job-card { display:grid;
             grid-template-columns:minmax(0,1fr) auto auto;
             gap:.5rem 1rem; align-items:center; }
-        .job-card.scraper-job > .job-info { min-width:0; }
-        .job-card.scraper-job .scraper-job-title { font-weight:600; font-size:.92rem;
+        .job-card > .job-info { min-width:0; }
+        .job-card .job-info h4 { font-weight:600; font-size:.92rem;
             margin-bottom:.15rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-        .job-card.scraper-job .job-meta { display:flex; flex-wrap:wrap;
+        .job-card .job-meta { display:flex; flex-wrap:wrap;
             font-size:.75rem; color:var(--gray-500); }
-        .job-card.scraper-job .meta-sep { color:var(--gray-400); margin:0 .4rem; }
-        .job-card.scraper-job .job-error { font-size:.72rem; color:#b45309;
+        .job-card .meta-sep { color:var(--gray-400); margin:0 .4rem; }
+        .job-card .job-error { font-size:.72rem; color:#b45309;
             margin-top:.2rem; white-space:nowrap; overflow:hidden;
             text-overflow:ellipsis; cursor:help; }
-        .job-card.scraper-job > .job-status-wrap { align-self:center; }
-        .job-card.scraper-job > .actions { display:flex; flex-wrap:wrap; gap:.4rem;
+        .job-card > .job-status-wrap { align-self:center; }
+        .job-card > .actions { display:flex; flex-wrap:wrap; gap:.4rem;
             justify-content:flex-end; align-self:center; }
-        .job-card.scraper-job > .shard-list { grid-column:1 / -1; }
-        /* Standardized status badge (scraper): height/padding/radius/typography. */
-        .job-card.scraper-job .job-status { height:22px; padding:0 .6rem;
+        .job-card > .shard-list { grid-column:1 / -1; }
+        /* Standardized status badge: height/padding/radius/typography. */
+        .job-card .job-status { height:22px; padding:0 .6rem;
             border-radius:9999px; font-size:.7rem; font-weight:600;
             display:inline-flex; align-items:center; line-height:1; text-transform:capitalize; }
 
@@ -363,10 +363,10 @@
         }
         /* Responsive: stack the job row + full-width form on small screens. */
         @media (max-width:768px) {
-            .job-card.scraper-job { grid-template-columns:1fr; align-items:start; }
-            .job-card.scraper-job > .job-status-wrap,
-            .job-card.scraper-job > .actions { justify-content:flex-start; align-self:stretch; }
-            .job-card.scraper-job .job-error { white-space:normal; overflow:visible; text-overflow:clip; }
+            .job-card { grid-template-columns:1fr; align-items:start; }
+            .job-card > .job-status-wrap,
+            .job-card > .actions { justify-content:flex-start; align-self:stretch; }
+            .job-card .job-error { white-space:normal; overflow:visible; text-overflow:clip; }
             #page-scraper .form-card .filters { max-width:100%; }
         }
 
@@ -4776,7 +4776,8 @@ example.org,Jane Doe</pre>
                             usedDisplay = usedList.map(labelFor).join(' + ');
                         }
 
-                        let actions = '<span class="job-status status-' + job.status + '">' + statusDisplay + '</span>';
+                        const statusBadge = '<span class="job-status status-' + job.status + '">' + statusDisplay + '</span>';
+                        let actions = '';
                         if (job.status === 'done') {
                             const fname = job.display_filename || job.filename || 'enrichment_job';
                             const safeName = fname.replace(/[^a-z0-9]/gi, '_').substring(0, 30);
@@ -4823,7 +4824,7 @@ example.org,Jane Doe</pre>
                         if (job.error && (job.status === 'failed' || job.status === 'abandoned' || job.status === 'cancelled')) {
                             const fullError = job.error.replace(/'/g, "\\'").replace(/"/g, '\\"');
                             const shortError = job.error.length > 60 ? job.error.substring(0, 60) + '...' : job.error;
-                            errorInfo = '<div class="job-error" style="font-size: 0.7rem; color: #dc2626; margin-top: 4px; cursor: help;" title="' + fullError + '">' + shortError + '</div>';
+                            errorInfo = '<div class="job-error" title="' + fullError + '">' + shortError + '</div>';
                         }
 
                         // Show provider errors if any were tracked during processing
@@ -4869,7 +4870,24 @@ example.org,Jane Doe</pre>
                                 '</div>';
                         }
 
-                        return '<div class="job-card' + zeroEmailCardClass + '"><div class="job-info"><h4>' + (job.display_filename || job.filename || 'Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.processed||0) + '/' + (job.total||0) + ' | ' + (job.emails_found||0) + ' emails</div><div class="job-providers" style="font-size: 0.75rem; margin-top: 4px;"><div style="color: #1e40af;"><strong>Selected:</strong> ' + selectedDisplay + '</div><div style="color: #059669;"><strong>Used:</strong> ' + usedDisplay + '</div></div>' + errorInfo + providerErrorsDisplay + zeroEmailWarning + '</div><div class="actions">' + actions + '</div><div id="shard-list-' + job.job_id + '"></div></div>';
+                        const metaParts = [
+                            new Date(job.created_at).toLocaleString(),
+                            (job.processed||0) + '/' + (job.total||0) + ' rows',
+                            (job.emails_found||0) + ' emails',
+                        ];
+                        const metaHtml = metaParts.map(p => '<span class="meta-item">' + p + '</span>').join('<span class="meta-sep" aria-hidden="true">·</span>');
+
+                        return '<div class="job-card' + zeroEmailCardClass + '">'
+                            + '<div class="job-info">'
+                            + '<h4>' + (job.display_filename || job.filename || 'Job') + '</h4>'
+                            + '<div class="job-meta">' + metaHtml + '</div>'
+                            + '<div class="job-providers" style="font-size: 0.75rem; margin-top: 4px;"><div style="color: #1e40af;"><strong>Selected:</strong> ' + selectedDisplay + '</div><div style="color: #059669;"><strong>Used:</strong> ' + usedDisplay + '</div></div>'
+                            + errorInfo + providerErrorsDisplay + zeroEmailWarning
+                            + '</div>'
+                            + '<div class="job-status-wrap">' + statusBadge + '</div>'
+                            + '<div class="actions">' + actions + '</div>'
+                            + '<div class="shard-list" id="shard-list-' + job.job_id + '"></div>'
+                            + '</div>';
                     }).join('') + renderEnrichmentPagination();
         }
 
