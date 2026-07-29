@@ -291,6 +291,85 @@
         .btn-sm { padding: 0.4rem 0.75rem; font-size: 0.75rem; }
         .actions { display: flex; gap: 0.5rem; }
 
+        /* ── Scraper page UI polish — presentation only, no behavior change ── */
+        /* Consistent form controls (height/radius/border/focus) for the scraper
+           form's selects, textarea, and text inputs. */
+        #page-scraper .filter-group select,
+        #page-scraper textarea,
+        #page-scraper .search-input {
+            height: 38px; padding: 0.4rem 0.6rem; border: 1px solid var(--gray-300);
+            border-radius: 8px; font-size: 0.875rem; background: white;
+            color: var(--gray-800); transition: border-color .15s, box-shadow .15s;
+        }
+        #page-scraper textarea { height: auto; min-height: 120px; resize: vertical; }
+        #page-scraper .filter-group select:focus,
+        #page-scraper textarea:focus,
+        #page-scraper .search-input:focus {
+            outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(26,49,93,.12);
+        }
+        /* Keep the form content from feeling lost inside the wide card. */
+        #page-scraper .form-card .filters { max-width: 880px; }
+
+        /* Instruction notice: readable, visually secondary to the form title. */
+        .scraper-notice { background:#f0f9ff; border-left:4px solid var(--primary);
+            border-radius:8px; padding:.75rem 1rem; margin-bottom:1rem;
+            font-size:.85rem; line-height:1.55; color:var(--gray-700); }
+        .scraper-notice p { margin:0 0 .35rem; }
+        .scraper-notice p:last-child { margin-bottom:0; }
+        .scraper-notice strong { color:var(--gray-800); }
+
+        /* Filter pills: consistent height/padding/radius/casing (color logic
+           unchanged — active stays clear, inactive never looks disabled). */
+        .filter-tab { height:30px; padding:0 .75rem; border-radius:9999px;
+            font-size:.78rem; font-weight:500; text-transform:capitalize; line-height:1; }
+
+        /* Job row → stable 3-area grid (info | status | actions). Scraper-only
+           (scoped via .scraper-job); no absolute positioning, actions wrap,
+           stacks on small screens. */
+        .job-card.scraper-job { display:grid;
+            grid-template-columns:minmax(0,1fr) auto auto;
+            gap:.5rem 1rem; align-items:center; }
+        .job-card.scraper-job > .job-info { min-width:0; }
+        .job-card.scraper-job .scraper-job-title { font-weight:600; font-size:.92rem;
+            margin-bottom:.15rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .job-card.scraper-job .job-meta { display:flex; flex-wrap:wrap;
+            font-size:.75rem; color:var(--gray-500); }
+        .job-card.scraper-job .meta-sep { color:var(--gray-400); margin:0 .4rem; }
+        .job-card.scraper-job .job-error { font-size:.72rem; color:#b45309;
+            margin-top:.2rem; white-space:nowrap; overflow:hidden;
+            text-overflow:ellipsis; cursor:help; }
+        .job-card.scraper-job > .job-status-wrap { align-self:center; }
+        .job-card.scraper-job > .actions { display:flex; flex-wrap:wrap; gap:.4rem;
+            justify-content:flex-end; align-self:center; }
+        .job-card.scraper-job > .shard-list { grid-column:1 / -1; }
+        /* Standardized status badge (scraper): height/padding/radius/typography. */
+        .job-card.scraper-job .job-status { height:22px; padding:0 .6rem;
+            border-radius:9999px; font-size:.7rem; font-weight:600;
+            display:inline-flex; align-items:center; line-height:1; text-transform:capitalize; }
+
+        /* Sidebar account footer: ellipsis, no edge-kissing. */
+        .sidebar-footer .user-email { max-width:160px; overflow:hidden;
+            text-overflow:ellipsis; white-space:nowrap; }
+
+        /* Visible keyboard focus for interactive controls (a11y). */
+        .btn:focus-visible, .filter-tab:focus-visible, .nav-item:focus-visible,
+        .logout-btn:focus-visible, a:focus-visible {
+            outline:2px solid var(--primary); outline-offset:2px; }
+
+        /* Respect reduced-motion preferences. */
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after { transition-duration:.01ms !important;
+                animation-duration:.01ms !important; animation-iteration-count:1 !important; }
+        }
+        /* Responsive: stack the job row + full-width form on small screens. */
+        @media (max-width:768px) {
+            .job-card.scraper-job { grid-template-columns:1fr; align-items:start; }
+            .job-card.scraper-job > .job-status-wrap,
+            .job-card.scraper-job > .actions { justify-content:flex-start; align-self:stretch; }
+            .job-card.scraper-job .job-error { white-space:normal; overflow:visible; text-overflow:clip; }
+            #page-scraper .form-card .filters { max-width:100%; }
+        }
+
         /* Button loading states */
         .btn.btn-loading { position: relative; pointer-events: none; opacity: 0.8; }
         .btn.btn-loading .btn-spinner { display: inline-block; }
@@ -647,7 +726,7 @@
             <div class="user-badge">
                 <div class="user-avatar" id="userAvatar">?</div>
                 <div class="user-details">
-                    <div class="user-email" id="userEmail">Loading...</div>
+                    <div class="user-email" id="userEmail" title="Loading...">Loading...</div>
                     <button type="button" class="logout-btn" id="logoutBtn">Sign out</button>
                 </div>
             </div>
@@ -763,9 +842,9 @@
         <div class="page" id="page-scraper">
             <div class="form-card">
                 <h3><i data-lucide="map-pin" class="icon" style="vertical-align:text-bottom"></i> Google Maps Scraper</h3>
-                <div style="background:#f0f9ff;border-left:4px solid #1a315d;padding:12px;margin-bottom:1rem;border-radius:4px;font-size:0.85rem;color:#374151;">
-                    <strong>What it does:</strong> Scrapes business listings from Google Maps based on category and location.<br>
-                    <strong>How to use:</strong> 1) Enter a category (type to see suggestions from Google's categories), 2) Select country, 3) Choose "All" for entire country or "Specific States/Cities" for targeted areas, 4) Click "Start Scraper Job". Results include business names, addresses, phone numbers, and websites.
+                <div class="scraper-notice">
+                    <p><strong>What it does:</strong> Scrapes business listings from Google Maps based on category and location.</p>
+                    <p><strong>How to use:</strong> 1) Enter a category (type to see suggestions from Google's categories). 2) Select country. 3) Choose "All" for the entire country or "Specific States/Cities" for targeted areas. 4) Click "Start Scraper Job". Results include business names, addresses, phone numbers, and websites.</p>
                 </div>
                 <div class="filters">
                     <div class="filter-group" style="grid-column: span 2;">
@@ -995,7 +1074,7 @@
             </div>
 
             <div class="form-card" id="scraperJobsCard">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+                <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem;margin-bottom:1rem;">
                     <h3 style="margin:0;">📋 Recent Scraper Jobs</h3>
                     <button class="btn btn-secondary btn-sm" onclick="loadScraperJobs()">Refresh</button>
                 </div>
@@ -1011,7 +1090,7 @@
                 <!-- Search Box -->
                 <div style="margin-bottom:1rem;">
                     <div class="search-input-wrapper">
-                        <input type="text" id="jobSearchInput" class="search-input" placeholder="Search jobs by query..." oninput="filterScraperJobs()">
+                        <input type="text" id="jobSearchInput" class="search-input" placeholder="Search jobs by query..." aria-label="Search scraper jobs by query" oninput="filterScraperJobs()">
                         <i data-lucide="search" class="search-icon"></i>
                     </div>
                 </div>
@@ -1941,7 +2020,9 @@ example.org,Jane Doe</pre>
         
         function updateUserUI() {
             const email = user?.email || 'User';
-            document.getElementById('userEmail').textContent = email;
+            const userEmailEl = document.getElementById('userEmail');
+            userEmailEl.textContent = email;
+            userEmailEl.title = email;
             document.getElementById('userAvatar').textContent = email.charAt(0).toUpperCase();
         }
         
@@ -4937,7 +5018,8 @@ example.org,Jane Doe</pre>
                 // Status display via the shared label map.
                 let statusDisplay = jobStatusLabel(job.status);
 
-                let actions = '<span class="job-status status-' + job.status + '">' + statusDisplay + '</span>';
+                const statusBadge = '<span class="job-status status-' + job.status + '">' + statusDisplay + '</span>';
+                let actions = '';
                 if (job.status === 'done') {
                     actions += ' <button class="btn btn-success btn-sm" id="dl-scraper-'+job.job_id+'" onclick="downloadScraperJob(\''+job.job_id+'\', this)">Download</button>';
                     actions += ' <button class="btn btn-primary btn-sm" onclick="chainScraperToEnrichment(\''+job.job_id+'\')">Chain to Enrichment</button>';
@@ -4958,14 +5040,33 @@ example.org,Jane Doe</pre>
                     actions += ' <button class="btn btn-success btn-sm" onclick="downloadScraperPartial(\''+job.job_id+'\', this)">↓ Download partial</button>';
                     actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleScraperShards(\''+job.job_id+'\', this)">▦ Download in chunks</button>';
                 }
-                // Show error message for failed/abandoned/cancelled jobs with hover tooltip
+                // Show error message for failed/abandoned/cancelled jobs with hover
+                // tooltip. Restrained color + truncation; full text via title.
                 let errorInfo = '';
                 if (job.error && (job.status === 'failed' || job.status === 'abandoned' || job.status === 'cancelled')) {
                     const fullError = job.error.replace(/'/g, "\\'").replace(/"/g, '\\"');
                     const shortError = job.error.length > 60 ? job.error.substring(0, 60) + '...' : job.error;
-                    errorInfo = '<div class="job-error" style="font-size: 0.7rem; color: #dc2626; margin-top: 4px; cursor: help;" title="' + fullError + '">' + shortError + '</div>';
+                    errorInfo = '<div class="job-error" title="' + fullError + '">' + shortError + '</div>';
                 }
-                return '<div class="job-card"><div class="job-info"><h4>' + (job.display_name || job.query || 'Scraper Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.done_tasks||0) + '/' + (job.total_tasks||0) + ' | ' + (job.result_count||0) + ' results' + (job.regions ? ' | ' + getLocationDisplay(job.regions) : '') + '</div>' + errorInfo + '</div><div class="actions">' + actions + '</div><div id="shard-list-' + job.job_id + '"></div></div>';
+                // Metadata as separated inline items (wraps, not one dense string).
+                const metaParts = [
+                    new Date(job.created_at).toLocaleString(),
+                    (job.done_tasks||0) + '/' + (job.total_tasks||0) + ' tasks',
+                    (job.result_count||0) + ' results',
+                ];
+                if (job.regions) metaParts.push(getLocationDisplay(job.regions));
+                const metaHtml = metaParts.map(p => '<span class="meta-item">' + p + '</span>').join('<span class="meta-sep" aria-hidden="true">·</span>');
+
+                return '<div class="job-card scraper-job">'
+                    + '<div class="job-info">'
+                    + '<h4 class="scraper-job-title">' + (job.display_name || job.query || 'Scraper Job') + '</h4>'
+                    + '<div class="job-meta">' + metaHtml + '</div>'
+                    + errorInfo
+                    + '</div>'
+                    + '<div class="job-status-wrap">' + statusBadge + '</div>'
+                    + '<div class="actions">' + actions + '</div>'
+                    + '<div class="shard-list" id="shard-list-' + job.job_id + '"></div>'
+                    + '</div>';
             }).join('');
         }
 
