@@ -5494,6 +5494,17 @@ example.org,Jane Doe</pre>
         window.downloadFile = downloadFile;
         window.retryEnrichmentJob = retryEnrichmentJob;
         window.cancelEnrichmentJob = cancelEnrichmentJob;
+        // Inline onclick="fn(...)" handlers resolve via the global (window) scope,
+        // but every function below lives inside the DOMContentLoaded closure - so
+        // each MUST be exported or its button throws "fn is not defined" on click.
+        // Enrichment chunk-download + resume UI:
+        window.downloadEnrichmentPartial = downloadEnrichmentPartial;
+        window.downloadEnrichmentShard = downloadEnrichmentShard;
+        window.toggleEnrichmentShards = toggleEnrichmentShards;
+        window.resumeEnrichmentJob = resumeEnrichmentJob;
+        // Scraper Stop + Retry Fresh (were silently broken on click):
+        window.cancelScraperJob = cancelScraperJob;
+        window.retryScraperJob = retryScraperJob;
         window.filterEnrichmentJobs = filterEnrichmentJobs;
         window.loadJobs = loadJobs;
         // Expose ModalManager to global scope for inline onclick handlers
