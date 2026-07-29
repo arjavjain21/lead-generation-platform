@@ -439,6 +439,10 @@ async def person_enrich(
     POST /v2/enrichment/person
     Enrich a person profile with verified email and additional data.
 
+    NOTE: disabled by default — /v2/enrichment/person is not accessible on our
+    Blitz plan (HTTP 401 "no access to this route"; 24h: 0 successes / 19,616
+    calls). Set env BLITZ_PERSON_ENRICH=1 to re-enable after a plan upgrade.
+
     Args:
         client: Async HTTP client
         linkedin_url: Person's LinkedIn profile URL
@@ -466,10 +470,22 @@ async def person_enrich(
         }
     Cost: 1 credit on success, 0 if not found.
     """
+    # /v2/enrichment/person is NOT accessible on our Blitz plan: every call
+    # returns 401 "You do not have access to this route" (or 422 when the
+    # required `linkedin_profile_url` field is missing). 24h telemetry:
+    # 19,616 calls, 0 successes. Calling it wastes ~5 req/sec for nothing, so
+    # skip it unless explicitly re-enabled via BLITZ_PERSON_ENRICH=1 (e.g. after
+    # a plan upgrade). The cascade still resolves emails via
+    # person_enrich_by_linkedin (/v2/enrichment/email, working) plus the
+    # name+domain providers (smartprospect/wizleads/better_enrich).
+    if os.getenv("BLITZ_PERSON_ENRICH", "0") != "1":
+        logger.debug("person_enrich skipped (/v2/enrichment/person not accessible on this Blitz plan)")
+        return {"found": False, "person": {}}
+
     payload: dict[str, Any] = {}
 
     if linkedin_url:
-        payload["linkedin_url"] = linkedin_url
+        payload["linkedin_profile_url"] = linkedin_url
     else:
         # Name-based lookup requires domain
         if full_name:
