@@ -4938,18 +4938,22 @@ example.org,Jane Doe</pre>
                 if (job.status === 'done') {
                     actions += ' <button class="btn btn-success btn-sm" id="dl-scraper-'+job.job_id+'" onclick="downloadScraperJob(\''+job.job_id+'\', this)">Download</button>';
                     actions += ' <button class="btn btn-primary btn-sm" onclick="chainScraperToEnrichment(\''+job.job_id+'\')">Chain to Enrichment</button>';
+                    actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleScraperShards(\''+job.job_id+'\', this)">▦ 10K Chunks</button>';
                 } else if (job.status === 'failed' || job.status === 'abandoned' || job.status === 'cancelled' || job.status === 'stopped') {
                     // Show resume button if job has checkpoints
                     if (job.checkpoint_count > 0 && job.is_resumable === 1) {
                         actions += ' <button class="btn btn-warning btn-sm" onclick="resumeScraperJob(\''+job.job_id+'\')">↻ Resume ('+job.checkpoint_count+' tasks)</button>';
                     }
                     actions += ' <button class="btn btn-secondary btn-sm" onclick="retryScraperJob(\''+job.job_id+'\')">Retry Fresh</button>';
-                    // Allow download of partial results if output file exists
-                    if (job.output_path) {
-                        actions += ' <button class="btn btn-success btn-sm" onclick="downloadScraperJob(\''+job.job_id+'\', this)">Download Partial</button>';
-                    }
+                    // /partial-download has no status gate and falls back to the on-disk
+                    // CSV, so this works for abandoned jobs even though output_path is
+                    // null until set_done runs at completion.
+                    actions += ' <button class="btn btn-success btn-sm" onclick="downloadScraperPartial(\''+job.job_id+'\', this)">↓ Download Partial</button>';
+                    actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleScraperShards(\''+job.job_id+'\', this)">▦ 10K Chunks</button>';
                 } else if (job.status === 'running' || job.status === 'queued' || job.status === 'pending') {
                     actions += ' <button class="btn btn-danger btn-sm" onclick="cancelScraperJob(\''+job.job_id+'\')">Stop</button>';
+                    actions += ' <button class="btn btn-success btn-sm" onclick="downloadScraperPartial(\''+job.job_id+'\', this)">↓ Download Partial</button>';
+                    actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleScraperShards(\''+job.job_id+'\', this)">▦ 10K Chunks</button>';
                 }
                 // Show error message for failed/abandoned/cancelled jobs with hover tooltip
                 let errorInfo = '';
@@ -4958,7 +4962,7 @@ example.org,Jane Doe</pre>
                     const shortError = job.error.length > 60 ? job.error.substring(0, 60) + '...' : job.error;
                     errorInfo = '<div class="job-error" style="font-size: 0.7rem; color: #dc2626; margin-top: 4px; cursor: help;" title="' + fullError + '">' + shortError + '</div>';
                 }
-                return '<div class="job-card"><div class="job-info"><h4>' + (job.display_name || job.query || 'Scraper Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.done_tasks||0) + '/' + (job.total_tasks||0) + ' | ' + (job.result_count||0) + ' results' + (job.regions ? ' | ' + getLocationDisplay(job.regions) : '') + '</div>' + errorInfo + '</div><div class="actions">' + actions + '</div></div>';
+                return '<div class="job-card"><div class="job-info"><h4>' + (job.display_name || job.query || 'Scraper Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.done_tasks||0) + '/' + (job.total_tasks||0) + ' | ' + (job.result_count||0) + ' results' + (job.regions ? ' | ' + getLocationDisplay(job.regions) : '') + '</div>' + errorInfo + '</div><div class="actions">' + actions + '</div><div id="shard-list-' + job.job_id + '"></div></div>';
             }).join('');
         }
 
@@ -4996,6 +5000,116 @@ example.org,Jane Doe</pre>
                 URL.revokeObjectURL(url);
             } catch (e) { alert('Error: ' + e.message); }
             if (btn) { btn.disabled = false; btn.innerHTML = 'Download'; }
+        }
+
+        // --- Incremental / segmented partial downloads (running + abandoned jobs) ---
+        // Mirrors the enrichment shard pattern but hits /api/scraper/... (which
+        // accept the same Bearer JWT). Lets a user grab partial results and
+        // 10K-row chunks while a long scrape is still running, or recover an
+        // abandoned job's on-disk CSV. /partial-download has no status gate and
+        // falls back to the live output file, so it works even when output_path
+        // is null (abandoned jobs).
+        async function downloadScraperPartial(jobId, btn) {
+            if (btn) { btn.disabled = true; btn.textContent = 'Downloading...'; }
+            try {
+                const res = await fetch('/api/scraper/jobs/' + jobId + '/partial-download', {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (!res.ok) {
+                    let msg = 'Download failed';
+                    try { const err = await res.json(); msg = 'Download failed: ' + (err.detail || 'No data available yet'); } catch (_) {}
+                    alert(msg);
+                    return;
+                }
+                const blob = await res.blob();
+                const cd = res.headers.get('content-disposition') || '';
+                const match = cd.match(/filename="?([^"]+)"?/);
+                const filename = match ? match[1] : `partial_${jobId.substr(0, 8)}.csv`;
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = filename;
+                document.body.appendChild(a); a.click();
+                document.body.removeChild(a); URL.revokeObjectURL(url);
+            } catch (e) {
+                alert('Error: ' + e.message);
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = 'Download Partial'; }
+            }
+        }
+
+        async function downloadScraperShard(jobId, shardIdx, btn) {
+            if (btn) { btn.disabled = true; btn.textContent = 'Downloading...'; }
+            try {
+                const res = await fetch('/api/scraper/jobs/' + jobId + '/shard/' + shardIdx, {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (!res.ok) {
+                    let msg = 'Download failed';
+                    try { const err = await res.json(); msg = 'Download failed: ' + (err.detail || 'No data written yet'); } catch (_) {}
+                    alert(msg);
+                    return;
+                }
+                const blob = await res.blob();
+                const cd = res.headers.get('content-disposition') || '';
+                const match = cd.match(/filename="?([^"]+)"?/);
+                const filename = match ? match[1] : `shard_${shardIdx}_${jobId.substr(0, 8)}.csv`;
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = filename;
+                document.body.appendChild(a); a.click();
+                document.body.removeChild(a); URL.revokeObjectURL(url);
+            } catch (e) {
+                alert('Error: ' + e.message);
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = 'Download'; }
+            }
+        }
+
+        // Toggle the per-shard download list. Fetches /shards ON DEMAND (only on
+        // click) so renderScraperJobs stays free of per-card API calls.
+        async function toggleScraperShards(jobId, btn) {
+            const container = document.getElementById('shard-list-' + jobId);
+            if (!container) { alert('Could not find shard list container'); return; }
+            if (container.dataset.loaded === '1' && container.style.display !== 'none') {
+                container.style.display = 'none';
+                return;
+            }
+            const originalLabel = btn ? btn.textContent : '▦ 10K Chunks';
+            if (btn) { btn.disabled = true; btn.textContent = 'Loading...'; }
+            try {
+                const res = await fetch('/api/scraper/jobs/' + jobId + '/shards', {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (!res.ok) {
+                    let msg = 'Could not load shards';
+                    try { const err = await res.json(); msg = 'Could not load shards: ' + (err.detail || 'Unknown error'); } catch (_) {}
+                    alert(msg);
+                    return;
+                }
+                const data = await res.json();
+                const shards = data.shards || [];
+                const shardSize = data.shard_size || 10000;
+                if (shards.length === 0) {
+                    container.innerHTML = '<div style="font-size:0.72rem;color:#6b7280;margin-top:6px;">No shards available yet (no rows scraped).</div>';
+                } else {
+                    const rowsHtml = shards.map(s => {
+                        const k = s.shard;
+                        const ready = s.rows_available || 0;
+                        const disabled = ready === 0 ? ' disabled' : '';
+                        const dlBtn = '<button class="btn btn-secondary btn-sm"' + disabled + ' onclick="downloadScraperShard(\'' + jobId + '\',' + k + ', this)">Download</button>';
+                        return '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">' +
+                            '<span>Shard ' + k + ': rows ' + s.start_row + '-' + s.end_row + ' · ' + ready + '/' + shardSize + ' ready</span>' +
+                            dlBtn + '</div>';
+                    }).join('');
+                    container.innerHTML = '<div style="font-size:0.7rem;color:#374151;margin-top:6px;display:flex;flex-direction:column;gap:3px;">' + rowsHtml + '</div>';
+                }
+                container.dataset.loaded = '1';
+                container.style.display = 'block';
+            } catch (e) {
+                alert('Error: ' + e.message);
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = originalLabel; }
+            }
         }
 
         // Retry scraper job - now uses resume modal
@@ -5368,6 +5482,9 @@ example.org,Jane Doe</pre>
         window.filterScraperJobs = filterScraperJobs;
         window.loadScraperJobs = loadScraperJobs;
         window.downloadScraperJob = downloadScraperJob;
+        window.downloadScraperPartial = downloadScraperPartial;
+        window.downloadScraperShard = downloadScraperShard;
+        window.toggleScraperShards = toggleScraperShards;
         window.chainScraperToEnrichment = chainScraperToEnrichment;
         window.resumeScraperJob = resumeScraperJob;
         window.copyApiKeyByValue = copyApiKeyByValue;
