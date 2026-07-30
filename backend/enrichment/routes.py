@@ -3448,8 +3448,9 @@ async def list_enrichment_jobs(
     date_from: Optional[str] = Query(None, description="Inclusive lower bound (YYYY-MM-DD) on created_at"),
     date_to: Optional[str] = Query(None, description="Inclusive upper bound (YYYY-MM-DD) on created_at"),
     file_ready: bool = Query(False, description="Only return jobs whose result file is on disk (downloadable)"),
+    source: Optional[str] = Query(None, description="Filter by origin: google_maps_chain | csv_upload | restart"),
 ):
-    """List enrichment jobs (paginated, optional status + search + date + file-ready filter)."""
+    """List enrichment jobs (paginated, optional status + search + date + file-ready + source filter)."""
     store = job_store.get_store()
     user_id = None if current_user.get("is_admin") else current_user["user_id"]
 
@@ -3461,7 +3462,8 @@ async def list_enrichment_jobs(
         # the page and the total stay consistent.
         candidates = store.list_jobs(
             user_id=user_id, job_type="enrichment", status=status, search=search,
-            date_from=date_from, date_to=date_to, limit=FILE_READY_SCAN_CAP, offset=0,
+            date_from=date_from, date_to=date_to, source_type=source,
+            limit=FILE_READY_SCAN_CAP, offset=0,
         )
         if len(candidates) >= FILE_READY_SCAN_CAP:
             logger.info(
@@ -3475,10 +3477,11 @@ async def list_enrichment_jobs(
         jobs = store.list_jobs(
             user_id=user_id, job_type="enrichment", limit=limit, offset=offset,
             status=status, search=search, date_from=date_from, date_to=date_to,
+            source_type=source,
         )
         total = store.count_jobs(
             user_id=user_id, job_type="enrichment", status=status, search=search,
-            date_from=date_from, date_to=date_to,
+            date_from=date_from, date_to=date_to, source_type=source,
         )
 
     # Enhance job display with user-friendly filenames
@@ -3582,6 +3585,7 @@ async def start_enrichment_job(
         last_name_col=req.last_name_col,
         cascade_config=cascade_json,
         max_results=req.max_results,
+        source_type="csv_upload",
     )
 
     _job_signals[job_id] = asyncio.Event()
@@ -4550,6 +4554,7 @@ async def restart_enrichment_job(
         store.increment_restart_count(job_id)
         store.create_enrichment_job(
             job_id=new_job_id, user_id=current_user["user_id"], total=total_deduped,
+            source_type="restart",
             filename=original_job['filename'], domain_col=original_job['domain_col'],
             original_filename=original_job.get('original_filename', ''),
             parent_job_id=job_id, name_col=original_job.get('name_col'),
@@ -4598,6 +4603,7 @@ async def restart_enrichment_job(
         domain_col=original_job['domain_col'],
         original_filename=original_job.get('original_filename', ''),
         parent_job_id=job_id,  # Track original job for restart chain
+        source_type="restart",
         name_col=original_job.get('name_col'),
         first_name_col=original_job.get('first_name_col'),
         last_name_col=original_job.get('last_name_col'),
@@ -4842,6 +4848,7 @@ async def enrich_by_domains(
         phone_col=req.phone_col,
         company_name_col=req.company_name_col,
         existing_email_col=req.existing_email_col,
+        source_type="csv_upload",
     )
 
     _job_signals[job_id] = asyncio.Event()
@@ -5026,6 +5033,7 @@ async def domain_enrich_with_providers(
         max_results=req.max_results,
         selected_providers=req.providers,
         linkedin_url_col=req.linkedin_url_col,
+        source_type="csv_upload",
         phone_col=req.phone_col,
         company_name_col=req.company_name_col,
         existing_email_col=req.existing_email_col,
@@ -5422,6 +5430,7 @@ async def search_and_enrich(
         original_filename=f"search_enrich_{job_id[:8]}.csv",
         cascade_config=cascade_json,
         max_results=req.max_decision_makers,
+        source_type="search",
     )
 
     _job_signals[job_id] = asyncio.Event()
@@ -5501,6 +5510,7 @@ async def enrich_by_linkedin(
         total=len(rows),
         filename=str(req.upload_id),
         domain_col=req.linkedin_col,  # Using domain_col to store linkedin_col reference
+        source_type="linkedin",
         original_filename=original_filename,
         name_col=None,
         first_name_col=None,
@@ -5779,6 +5789,7 @@ async def enrich_by_linkedin_v2(
         last_name_col=None,
         cascade_config=None,
         max_results=req.max_dms,
+        source_type="linkedin",
     )
 
     _job_signals[job_id] = asyncio.Event()

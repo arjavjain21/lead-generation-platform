@@ -1584,6 +1584,15 @@
                     <input type="month" id="enrichmentMonthPicker" class="date-month" aria-label="Filter enrichment jobs by month" onchange="setEnrichmentDateMonth(this.value)">
                     <span class="date-filter-label" style="margin-left:.4rem">File:</span>
                     <button type="button" class="filter-tab file-ready-toggle" id="enrichmentFileReadyToggle" aria-pressed="false" title="Show only jobs whose result file is ready to download" onclick="toggleEnrichmentFileReady()">✓ Ready to download</button>
+                    <span class="date-filter-label" style="margin-left:.4rem">Source:</span>
+                    <select id="enrichmentSourceFilter" class="date-month" aria-label="Filter enrichment jobs by source" onchange="setEnrichmentSource(this.value)">
+                        <option value="">All sources</option>
+                        <option value="google_maps_chain">🌐 Google Maps</option>
+                        <option value="csv_upload">📤 Upload</option>
+                        <option value="linkedin">🔗 LinkedIn</option>
+                        <option value="search">🔎 Search</option>
+                        <option value="restart">↻ Restart</option>
+                    </select>
                 </div>
                 <input type="text" id="enrichmentSearchInput" placeholder="Search by filename, job ID, or status..."
                        style="width:100%;padding:0.5rem 0.75rem;border:1px solid var(--gray-300);border-radius:6px;margin-bottom:0.75rem;font-size:0.85rem;">
@@ -1847,6 +1856,8 @@ example.org,Jane Doe</pre>
             // file_ready=true to the server (the list is paginated).
             let scraperFileReadyOnly = false;
             let enrichmentFileReadyOnly = false;
+            // Enrichment source filter ('' = all). Mirrors the backend source param.
+            let enrichmentSourceFilter = '';
             (function() {
                 var timer;
                 var si = document.getElementById('enrichmentSearchInput');
@@ -4740,6 +4751,9 @@ example.org,Jane Doe</pre>
                 if (enrichmentFileReadyOnly) {
                     params.set('file_ready', 'true');
                 }
+                if (enrichmentSourceFilter) {
+                    params.set('source', enrichmentSourceFilter);
+                }
                 const res = await fetch('/api/enrichment/jobs?' + params, { headers: { 'Authorization': 'Bearer ' + token } });
                 if (res.ok) {
                     const data = await res.json();
@@ -4791,6 +4805,12 @@ example.org,Jane Doe</pre>
             enrichmentFileReadyOnly = !enrichmentFileReadyOnly;
             const btn = document.getElementById('enrichmentFileReadyToggle');
             if (btn) { btn.classList.toggle('active', enrichmentFileReadyOnly); btn.setAttribute('aria-pressed', String(enrichmentFileReadyOnly)); }
+            enrichmentCurrentPage = 1;
+            loadJobs();
+        }
+        // Source filter (server-side; resets to page 1 and re-fetches).
+        function setEnrichmentSource(val) {
+            enrichmentSourceFilter = val || '';
             enrichmentCurrentPage = 1;
             loadJobs();
         }
@@ -4979,11 +4999,23 @@ example.org,Jane Doe</pre>
                             ? '<span class="file-chip file-missing" title="Result file is no longer on disk">⊘ File unavailable</span>'
                             : '<span class="file-chip file-ready" title="Result file is ready">✓ File ready</span>') : '';
 
+                        // Source-provenance chip (origin of the enrichment run).
+                        const _srcMap = {
+                            google_maps_chain: { t: '🌐 Google Maps', c: '#1d4ed8', b: '#dbeafe' },
+                            csv_upload: { t: '📤 Upload', c: '#475569', b: '#f1f5f9' },
+                            linkedin: { t: '🔗 LinkedIn', c: '#075985', b: '#e0f2fe' },
+                            search: { t: '🔎 Search', c: '#6b21a8', b: '#f3e8ff' },
+                            restart: { t: '↻ Restart', c: '#92400e', b: '#fef3c7' },
+                        };
+                        const _src = _srcMap[job.source_type];
+                        const sourceChip = _src ? '<span class="file-chip" style="color:' + _src.c + ';background:' + _src.b + ';" title="Origin: ' + job.source_type + '">' + _src.t + '</span>' : '';
+
                         return '<div class="job-card' + zeroEmailCardClass + '">'
                             + '<div class="job-info">'
                             + '<h4>' + (job.display_filename || job.filename || 'Job') + '</h4>'
                             + '<div class="job-meta">' + metaHtml + '</div>'
                             + fileChip
+                            + sourceChip
                             + '<div class="job-providers" style="font-size: 0.75rem; margin-top: 4px;"><div style="color: #1e40af;"><strong>Selected:</strong> ' + selectedDisplay + '</div><div style="color: #059669;"><strong>Used:</strong> ' + usedDisplay + '</div></div>'
                             + errorInfo + providerErrorsDisplay + zeroEmailWarning
                             + '</div>'
@@ -5808,6 +5840,8 @@ example.org,Jane Doe</pre>
         // File-ready toggles.
         window.toggleScraperFileReady = toggleScraperFileReady;
         window.toggleEnrichmentFileReady = toggleEnrichmentFileReady;
+        // Source filter.
+        window.setEnrichmentSource = setEnrichmentSource;
         window.downloadScraperJob = downloadScraperJob;
         window.downloadScraperPartial = downloadScraperPartial;
         window.downloadScraperShard = downloadScraperShard;

@@ -631,6 +631,7 @@ async def chain_to_enrichment(
         filename=filename,
         domain_col="website",
         parent_job_id=scraper_job_id,
+        source_type="google_maps_chain",
         name_col=None,
         first_name_col=None,
         last_name_col=None,

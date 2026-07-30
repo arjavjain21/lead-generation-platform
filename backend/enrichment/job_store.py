@@ -47,6 +47,7 @@ class EnrichmentJobStore(JobStoreBase):
         dedupe_by_domain: bool = True,
         deduped_rows: int = 0,
         dedupe_skipped_domains: str = "",
+        source_type: str = "",
     ) -> None:
         """Create a new enrichment job.
 
@@ -85,6 +86,7 @@ class EnrichmentJobStore(JobStoreBase):
             dedupe_by_domain=dedupe_by_domain,
             deduped_rows=deduped_rows,
             dedupe_skipped_domains=dedupe_skipped_domains,
+            source_type=source_type,
         )
 
     def list_enrichment_jobs(

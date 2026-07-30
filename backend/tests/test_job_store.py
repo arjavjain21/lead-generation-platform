@@ -214,3 +214,49 @@ def test_list_jobs_date_range(temp_db):
     # Malformed bounds are ignored (no crash, no filtering).
     assert len(store.list_jobs(date_from="not-a-date", **kw)) == 4
     assert store.count_jobs(date_from="2026-13-99", date_to="", **kw) == 4
+
+
+def test_list_jobs_source_type_filter(temp_db):
+    """list_jobs + count_jobs filter by the source_type provenance column."""
+    store = JobStoreBase(sqlite3.connect(temp_db))
+    conn = store.conn
+    conn.row_factory = sqlite3.Row
+    # source_type isn't in the temp_db fixture schema; add it to mirror prod.
+    conn.execute("ALTER TABLE jobs ADD COLUMN source_type TEXT DEFAULT ''")
+
+    def add(jid, created, src):
+        conn.execute(
+            "INSERT INTO jobs (job_id, user_id, job_type, status, created_at, updated_at, source_type) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (jid, "u1", "enrichment", "done", created, created, src),
+        )
+    add("a", "2026-07-01T00:00:00Z", "google_maps_chain")
+    add("b", "2026-07-02T00:00:00Z", "csv_upload")
+    add("c", "2026-07-03T00:00:00Z", "google_maps_chain")
+    add("d", "2026-07-04T00:00:00Z", "restart")
+    add("e", "2026-07-05T00:00:00Z", "")  # legacy / unknown
+    conn.commit()
+
+    kw = {"job_type": "enrichment", "include_hidden": True}
+
+    # No filter → all 5.
+    assert store.count_jobs(**kw) == 5
+
+    # Filter by google_maps_chain → a + c, ordered DESC by created_at.
+    g = store.list_jobs(source_type="google_maps_chain", **kw)
+    assert [j["job_id"] for j in g] == ["c", "a"]
+    assert store.count_jobs(source_type="google_maps_chain", **kw) == 2
+
+    # csv_upload + restart each isolate correctly.
+    assert [j["job_id"] for j in store.list_jobs(source_type="csv_upload", **kw)] == ["b"]
+    assert [j["job_id"] for j in store.list_jobs(source_type="restart", **kw)] == ["d"]
+    # Empty/None source_type means "no filter" (returns all) — backward-compatible.
+    assert len(store.list_jobs(source_type="", **kw)) == 5
+    assert len(store.list_jobs(source_type=None, **kw)) == 5
+
+    # list == count consistency under the filter (pagination).
+    assert store.count_jobs(source_type="google_maps_chain", **kw) == len(g)
+
+    # source_type is orthogonal to the status filter (composes via AND).
+    assert store.count_jobs(source_type="google_maps_chain", status="done", **kw) == 2
+    assert store.count_jobs(source_type="google_maps_chain", status="failed", **kw) == 0

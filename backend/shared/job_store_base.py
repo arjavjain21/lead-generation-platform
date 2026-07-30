@@ -76,7 +76,8 @@ class JobStoreBase:
                            "name_col", "first_name_col", "last_name_col", "cascade_config", "max_results",
                            "selected_providers", "used_providers",
                            "linkedin_url_col", "phone_col", "company_name_col", "existing_email_col",
-                           "normalize_domains", "dedupe_by_domain", "deduped_rows", "dedupe_skipped_domains"])
+                           "normalize_domains", "dedupe_by_domain", "deduped_rows", "dedupe_skipped_domains",
+                           "source_type"])
             values.extend([
                 kwargs.get("total", 0),
                 0,
@@ -99,6 +100,7 @@ class JobStoreBase:
                 1 if kwargs.get("dedupe_by_domain", True) else 0,
                 kwargs.get("deduped_rows", 0),
                 kwargs.get("dedupe_skipped_domains", ""),
+                kwargs.get("source_type", ""),
             ])
 
         placeholders = ",".join(["?" for _ in columns])
@@ -318,6 +320,7 @@ class JobStoreBase:
         search: Optional[str] = None,
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
+        source_type: Optional[str] = None,
         include_hidden: bool = False,
     ) -> list[dict[str, Any]]:
         """List jobs with optional filtering by user, job type, and status.
@@ -356,6 +359,10 @@ class JobStoreBase:
         conditions.extend(dc)
         params.extend(dp)
 
+        if source_type:
+            conditions.append("source_type = ?")
+            params.append(source_type)
+
         # Always exclude hidden jobs unless explicitly requested
         if not include_hidden:
             conditions.append("(hidden_from_ui IS NULL OR hidden_from_ui = 0)")
@@ -378,6 +385,7 @@ class JobStoreBase:
         search: Optional[str] = None,
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
+        source_type: Optional[str] = None,
         include_hidden: bool = False,
     ) -> int:
         """Count jobs matching the same filters as list_jobs (for pagination).
@@ -407,6 +415,10 @@ class JobStoreBase:
         dc, dp = self._date_range_conditions(date_from, date_to)
         conditions.extend(dc)
         params.extend(dp)
+
+        if source_type:
+            conditions.append("source_type = ?")
+            params.append(source_type)
 
         if not include_hidden:
             conditions.append("(hidden_from_ui IS NULL OR hidden_from_ui = 0)")
