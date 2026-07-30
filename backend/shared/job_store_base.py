@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import sqlite3
@@ -271,6 +271,43 @@ class JobStoreBase:
         self.conn.commit()
         return cursor.rowcount > 0
 
+    @staticmethod
+    def _date_range_conditions(date_from: Optional[str], date_to: Optional[str]):
+        """Build WHERE fragments + params for an inclusive [date_from, date_to]
+        range over the ISO `created_at` column.
+
+        Both bounds are day-granularity 'YYYY-MM-DD' (or any leading ISO prefix);
+        ``date_to`` is inclusive of the *entire* day. ``created_at`` is stored as
+        ISO-with-tz (e.g. ``2026-07-29T22:44:02.014001+00:00``), so a plain
+        'YYYY-MM-DD' bound compares correctly as a string — the comparison is
+        decided within the first 10 (date) characters regardless of the T/space
+        separator or trailing time/offset.
+
+        ``date_to`` is converted to an exclusive next-day bound (``created_at < ?``)
+        so the whole last day matches. Malformed bounds are ignored (no condition
+        added) rather than raising — keeps list/count defensive for direct callers.
+
+        Returns (conditions, params); both empty when nothing parses.
+        """
+        conditions: list[str] = []
+        params: list[str] = []
+        if date_from:
+            try:
+                frm = datetime.strptime(str(date_from)[:10], "%Y-%m-%d")
+                conditions.append("created_at >= ?")
+                params.append(frm.strftime("%Y-%m-%d"))
+            except ValueError:
+                logger.debug("ignoring malformed date_from=%r", date_from)
+        if date_to:
+            try:
+                # +1 day → exclusive upper bound captures the whole last day.
+                nxt = datetime.strptime(str(date_to)[:10], "%Y-%m-%d") + timedelta(days=1)
+                conditions.append("created_at < ?")
+                params.append(nxt.strftime("%Y-%m-%d"))
+            except ValueError:
+                logger.debug("ignoring malformed date_to=%r", date_to)
+        return conditions, params
+
     def list_jobs(
         self,
         user_id: Optional[str] = None,
@@ -279,6 +316,8 @@ class JobStoreBase:
         offset: int = 0,
         status: Optional[str] = None,
         search: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
         include_hidden: bool = False,
     ) -> list[dict[str, Any]]:
         """List jobs with optional filtering by user, job type, and status.
@@ -289,6 +328,9 @@ class JobStoreBase:
             limit: Maximum number of jobs to return
             offset: Number of jobs to skip (for pagination)
             status: Filter by job status (e.g. 'done', 'running', 'failed')
+            search: Free-text search across filename/job_id/status
+            date_from: Optional inclusive lower bound (YYYY-MM-DD) on created_at
+            date_to: Optional inclusive upper bound (YYYY-MM-DD) on created_at
             include_hidden: If False, excludes jobs marked with hidden_from_ui=1
         """
         conditions = []
@@ -310,6 +352,10 @@ class JobStoreBase:
             conditions.append("(original_filename LIKE ? OR filename LIKE ? OR job_id LIKE ? OR status LIKE ?)")
             params.extend([f"%{search}%", f"%{search}%", f"%{search}%", f"%{search}%"])
 
+        dc, dp = self._date_range_conditions(date_from, date_to)
+        conditions.extend(dc)
+        params.extend(dp)
+
         # Always exclude hidden jobs unless explicitly requested
         if not include_hidden:
             conditions.append("(hidden_from_ui IS NULL OR hidden_from_ui = 0)")
@@ -330,9 +376,15 @@ class JobStoreBase:
         job_type: Optional[str] = None,
         status: Optional[str] = None,
         search: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
         include_hidden: bool = False,
     ) -> int:
-        """Count jobs matching the same filters as list_jobs (for pagination)."""
+        """Count jobs matching the same filters as list_jobs (for pagination).
+
+        Accepts the same date_from/date_to bounds as list_jobs so the page count
+        and the returned page stay consistent under the date filter.
+        """
         conditions = []
         params = []
 
@@ -351,6 +403,10 @@ class JobStoreBase:
         if search:
             conditions.append("(original_filename LIKE ? OR filename LIKE ? OR job_id LIKE ? OR status LIKE ?)")
             params.extend([f"%{search}%", f"%{search}%", f"%{search}%", f"%{search}%"])
+
+        dc, dp = self._date_range_conditions(date_from, date_to)
+        conditions.extend(dc)
+        params.extend(dp)
 
         if not include_hidden:
             conditions.append("(hidden_from_ui IS NULL OR hidden_from_ui = 0)")

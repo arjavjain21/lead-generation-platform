@@ -3438,12 +3438,14 @@ async def list_enrichment_jobs(
     offset: int = Query(0, ge=0),
     status: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None, description="Inclusive lower bound (YYYY-MM-DD) on created_at"),
+    date_to: Optional[str] = Query(None, description="Inclusive upper bound (YYYY-MM-DD) on created_at"),
 ):
-    """List enrichment jobs (paginated, optional status + search filter)."""
+    """List enrichment jobs (paginated, optional status + search + date filter)."""
     store = job_store.get_store()
     user_id = None if current_user.get("is_admin") else current_user["user_id"]
-    jobs = store.list_jobs(user_id=user_id, job_type="enrichment", limit=limit, offset=offset, status=status, search=search)
-    total = store.count_jobs(user_id=user_id, job_type="enrichment", status=status, search=search)
+    jobs = store.list_jobs(user_id=user_id, job_type="enrichment", limit=limit, offset=offset, status=status, search=search, date_from=date_from, date_to=date_to)
+    total = store.count_jobs(user_id=user_id, job_type="enrichment", status=status, search=search, date_from=date_from, date_to=date_to)
 
     # Enhance job display with user-friendly filenames
     for job in jobs:

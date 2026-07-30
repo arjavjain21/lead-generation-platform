@@ -1572,6 +1572,15 @@
                     <button class="filter-tab" data-status="abandoned" onclick="filterEnrichmentJobs('abandoned')">Abandoned</button>
                     <button class="filter-tab" data-status="cancelled" onclick="filterEnrichmentJobs('cancelled')">Cancelled</button>
                 </div>
+                <!-- Date Filter -->
+                <div class="date-filter-row" id="enrichmentDateFilter">
+                    <span class="date-filter-label">Date:</span>
+                    <button type="button" class="filter-tab date-preset active" data-preset="all" onclick="setEnrichmentDatePreset('all')">All time</button>
+                    <button type="button" class="filter-tab date-preset" data-preset="this_month" onclick="setEnrichmentDatePreset('this_month')">This month</button>
+                    <button type="button" class="filter-tab date-preset" data-preset="last_30" onclick="setEnrichmentDatePreset('last_30')">Last 30 days</button>
+                    <button type="button" class="filter-tab date-preset" data-preset="last_7" onclick="setEnrichmentDatePreset('last_7')">Last 7 days</button>
+                    <input type="month" id="enrichmentMonthPicker" class="date-month" aria-label="Filter enrichment jobs by month" onchange="setEnrichmentDateMonth(this.value)">
+                </div>
                 <input type="text" id="enrichmentSearchInput" placeholder="Search by filename, job ID, or status..."
                        style="width:100%;padding:0.5rem 0.75rem;border:1px solid var(--gray-300);border-radius:6px;margin-bottom:0.75rem;font-size:0.85rem;">
                 <div class="jobs-list" id="enrichmentJobsList">
@@ -4715,6 +4724,10 @@ example.org,Jane Doe</pre>
                 if (enrichmentSearchQuery) {
                     params.set('search', enrichmentSearchQuery);
                 }
+                if (enrichmentDateRange) {
+                    params.set('date_from', enrichmentDateRange.from);
+                    params.set('date_to', enrichmentDateRange.to);
+                }
                 const res = await fetch('/api/enrichment/jobs?' + params, { headers: { 'Authorization': 'Bearer ' + token } });
                 if (res.ok) {
                     const data = await res.json();
@@ -4739,6 +4752,25 @@ example.org,Jane Doe</pre>
             }
             // Server now filters via the `status` query param on /api/enrichment/jobs,
             // so reset to page 1 and re-fetch.
+            enrichmentCurrentPage = 1;
+            loadJobs();
+        }
+
+        // Enrichment date-filter handlers (server-side; the list is paginated,
+        // so each change resets to page 1 and re-fetches via loadJobs).
+        function setEnrichmentDatePreset(preset) {
+            const row = document.getElementById('enrichmentDateFilter');
+            if (row) row.querySelectorAll('.date-preset').forEach(b => b.classList.toggle('active', b.dataset.preset === preset));
+            const mp = document.getElementById('enrichmentMonthPicker');
+            if (mp) mp.value = '';
+            enrichmentDateRange = datePresetRange(preset);
+            enrichmentCurrentPage = 1;
+            loadJobs();
+        }
+        function setEnrichmentDateMonth(monthValue) {
+            const row = document.getElementById('enrichmentDateFilter');
+            if (row) row.querySelectorAll('.date-preset').forEach(b => b.classList.remove('active'));
+            enrichmentDateRange = monthToRange(monthValue);
             enrichmentCurrentPage = 1;
             loadJobs();
         }
@@ -5045,26 +5077,36 @@ example.org,Jane Doe</pre>
         }
 
         // ── Date-range filtering (shared by scraper + enrichment job lists) ──
-        // Bounds are day-granularity 'YYYY-MM-DD' (local). created_at is stored as
-        // ISO-with-tz (e.g. 2026-07-29T22:44:02.014001+00:00); slicing the first
-        // 10 chars yields the date, which compares cleanly as a string.
-        function isoDate(d) {
-            const y = d.getFullYear();
-            const m = String(d.getMonth() + 1).padStart(2, '0');
-            const day = String(d.getDate()).padStart(2, '0');
+        // Bounds are day-granularity 'YYYY-MM-DD' (UTC — created_at is stored in
+        // UTC, so the slice and the bounds share one frame in every timezone).
+        // created_at is ISO-with-tz (e.g. 2026-07-29T22:44:02.014001+00:00);
+        // slicing the first 10 chars yields the date, which compares cleanly
+        // as a string.
+        // 'YYYY-MM-DD' from a Date's UTC components. created_at is stored in UTC,
+        // so filter bounds must be UTC-day values to line up with its UTC date
+        // prefix — local getters would shift the boundary by the viewer's tz
+        // offset and silently drop/shift jobs near UTC midnight.
+        function utcDay(d) {
+            const y = d.getUTCFullYear();
+            const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+            const day = String(d.getUTCDate()).padStart(2, '0');
             return y + '-' + m + '-' + day;
         }
-        // Preset → inclusive {from,to} range, or null for "all time".
+        // Preset → inclusive {from,to} UTC-day range, or null for "all time".
+        // Bounds are built in UTC (Date.UTC) so the client-side slice and the
+        // server-side created_at compare share one frame in every timezone.
         function datePresetRange(preset) {
             const now = new Date();
+            const Y = now.getUTCFullYear(), M = now.getUTCMonth(), D = now.getUTCDate();
+            const to = utcDay(now); // today, UTC
             if (preset === 'this_month') {
-                return { from: isoDate(new Date(now.getFullYear(), now.getMonth(), 1)), to: isoDate(now) };
+                return { from: Y + '-' + String(M + 1).padStart(2, '0') + '-01', to };
             }
             if (preset === 'last_30') {
-                return { from: isoDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29)), to: isoDate(now) };
+                return { from: utcDay(new Date(Date.UTC(Y, M, D - 29))), to };
             }
             if (preset === 'last_7') {
-                return { from: isoDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6)), to: isoDate(now) };
+                return { from: utcDay(new Date(Date.UTC(Y, M, D - 6))), to };
             }
             return null; // 'all' or unknown → no filter
         }
@@ -5753,6 +5795,9 @@ example.org,Jane Doe</pre>
         window.retryScraperJob = retryScraperJob;
         window.filterEnrichmentJobs = filterEnrichmentJobs;
         window.loadJobs = loadJobs;
+        // Enrichment date-filter handlers (inline onclick/onchange need window export).
+        window.setEnrichmentDatePreset = setEnrichmentDatePreset;
+        window.setEnrichmentDateMonth = setEnrichmentDateMonth;
         // Expose ModalManager to global scope for inline onclick handlers
         window.ModalManager = ModalManager;
         console.log('Functions exposed to global scope');
