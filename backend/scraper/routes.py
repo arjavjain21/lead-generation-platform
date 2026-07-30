@@ -651,6 +651,17 @@ def _owns_job(job: dict[str, Any], current_user: dict[str, Any]) -> bool:
     return job.get("user_id") == current_user["user_id"]
 
 
+def _job_output_exists(job: dict) -> bool:
+    """Whether the job's result CSV is still on disk (done jobs' output_path,
+    or the {job_id}.csv fallback for abandoned/partial). Drives the UI
+    file-available indicator."""
+    p = job.get("output_path")
+    if p and Path(p).exists():
+        return True
+    jid = job.get("job_id")
+    return bool(jid) and (OUTPUT_DIR / f"{jid}.csv").exists()
+
+
 @router.get("/jobs")
 async def list_scraper_jobs(current_user: dict = Depends(auth.get_current_user)):
     """List scraper jobs for current user (or all for admin)."""
@@ -659,6 +670,8 @@ async def list_scraper_jobs(current_user: dict = Depends(auth.get_current_user))
         jobs = store.list_jobs(job_type="scraper", limit=200)
     else:
         jobs = store.list_jobs(user_id=current_user["user_id"], job_type="scraper", limit=200)
+    for j in jobs:
+        j["output_exists"] = _job_output_exists(j)
     return {"jobs": jobs}
 
 

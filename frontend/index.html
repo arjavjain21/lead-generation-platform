@@ -335,6 +335,11 @@
         .job-card .job-meta { display:flex; flex-wrap:wrap;
             font-size:.75rem; color:var(--gray-500); }
         .job-card .meta-sep { color:var(--gray-400); margin:0 .4rem; }
+        .file-chip { display:inline-flex; align-items:center; gap:0.2rem;
+            font-size:.7rem; font-weight:500; padding:0.1rem 0.4rem;
+            border-radius:4px; margin-top:0.2rem; }
+        .file-chip.file-ready { color:#047857; background:#ecfdf5; }
+        .file-chip.file-missing { color:var(--gray-400); background:var(--gray-100); }
         .job-card .job-error { font-size:.72rem; color:#b45309;
             margin-top:.2rem; white-space:nowrap; overflow:hidden;
             text-overflow:ellipsis; cursor:help; }
@@ -4877,10 +4882,16 @@ example.org,Jane Doe</pre>
                         ];
                         const metaHtml = metaParts.map(p => '<span class="meta-item">' + p + '</span>').join('<span class="meta-sep" aria-hidden="true">·</span>');
 
+                        const _isTerminal = ['done','failed','abandoned','cancelled','partial'].includes(job.status);
+                        const fileChip = _isTerminal ? (job.output_exists === false
+                            ? '<span class="file-chip file-missing" title="Result file is no longer on disk">⊘ File unavailable</span>'
+                            : '<span class="file-chip file-ready" title="Result file is ready">✓ File ready</span>') : '';
+
                         return '<div class="job-card' + zeroEmailCardClass + '">'
                             + '<div class="job-info">'
                             + '<h4>' + (job.display_filename || job.filename || 'Job') + '</h4>'
                             + '<div class="job-meta">' + metaHtml + '</div>'
+                            + fileChip
                             + '<div class="job-providers" style="font-size: 0.75rem; margin-top: 4px;"><div style="color: #1e40af;"><strong>Selected:</strong> ' + selectedDisplay + '</div><div style="color: #059669;"><strong>Used:</strong> ' + usedDisplay + '</div></div>'
                             + errorInfo + providerErrorsDisplay + zeroEmailWarning
                             + '</div>'
@@ -5075,10 +5086,16 @@ example.org,Jane Doe</pre>
                 if (job.regions) metaParts.push(getLocationDisplay(job.regions));
                 const metaHtml = metaParts.map(p => '<span class="meta-item">' + p + '</span>').join('<span class="meta-sep" aria-hidden="true">·</span>');
 
+                const _isTerminal = ['done','failed','abandoned','cancelled','stopped','partial'].includes(job.status);
+                const fileChip = _isTerminal ? (job.output_exists === false
+                    ? '<span class="file-chip file-missing" title="Result file is no longer on disk">⊘ File unavailable</span>'
+                    : '<span class="file-chip file-ready" title="Result file is ready">✓ File ready</span>') : '';
+
                 return '<div class="job-card scraper-job">'
                     + '<div class="job-info">'
                     + '<h4 class="scraper-job-title">' + (job.display_name || job.query || 'Scraper Job') + '</h4>'
                     + '<div class="job-meta">' + metaHtml + '</div>'
+                    + fileChip
                     + errorInfo
                     + '</div>'
                     + '<div class="job-status-wrap">' + statusBadge + '</div>'

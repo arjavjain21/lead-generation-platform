@@ -3422,6 +3422,16 @@ def _owns_job(job: dict[str, Any], current_user: dict[str, Any]) -> bool:
 
 
 @router.get("/jobs")
+def _job_output_exists(job: dict) -> bool:
+    """Whether the job's result CSV is still on disk. Drives the UI
+    file-available indicator."""
+    p = job.get("output_path") or job.get("partial_output_path")
+    if p and Path(p).exists():
+        return True
+    jid = job.get("job_id")
+    return bool(jid) and (OUTPUT_DIR / f"{jid}.csv").exists()
+
+
 async def list_enrichment_jobs(
     current_user: dict = Depends(auth.get_current_user),
     limit: int = Query(25, ge=1, le=200),
@@ -3477,6 +3487,10 @@ async def list_enrichment_jobs(
         logger.warning("checkpoint_count augmentation failed: %s", cke)
         for job in jobs:
             job.setdefault("checkpoint_count", 0)
+
+    # File-availability flag for the UI (cheap stat per job).
+    for job in jobs:
+        job["output_exists"] = _job_output_exists(job)
 
     return {"jobs": jobs, "total": total, "limit": limit, "offset": offset}
 
