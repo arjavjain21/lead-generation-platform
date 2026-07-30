@@ -4,23 +4,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## IMPORTANT: Safety & Workflow Guidelines
 
-**BEFORE ANY WORK ON THIS PROJECT, ALWAYS:**
+**BEFORE ANY WORK ON THIS PROJECT, load the `lead-generation-platform-workflow` skill**
+(user-level: `~/.claude/skills/lead-generation-platform-workflow/`). It is the operating manual +
+safety guardrail set, and holds per-action runbooks in its `references/` (provider lifecycle,
+contacts write-back, external/MCP integration, testing & deploy, safety invariants, troubleshooting).
+> The legacy paths `.claude/skills/lead-generation-platform-workflow.md` and `.claude/LEAD_GENERATION_SAFETY.md`
+> referenced here in the past **did not exist** — the skill replaces them.
 
-1. Read `.claude/skills/lead-generation-platform-workflow.md` for complete workflow guidelines
-2. Check `Skill` tool for available skills and activate relevant ones:
-   - Bug fixes: `superpowers:systematic-debugging`
-   - New features: `superpowers:brainstorming`
-   - Code changes: `superpowers:requesting-code-review`
-   - Database changes: `everything-claude-code:database-reviewer`
-   - Security-sensitive: `everything-claude-code:security-reviewer`
+Other relevant skills: bug fixes (`superpowers:systematic-debugging`), new features
+(`superpowers:brainstorming`), code review (`superpowers:requesting-code-review`),
+DB changes (`everything-claude-code:database-reviewer`), security (`everything-claude-code:security-reviewer`).
 
-**ABSOLUTE PROHIBITIONS:**
-- NEVER delete or truncate `jobs.db` database
+**ABSOLUTE PROHIBITIONS** (full list in the skill's `references/safety-and-invariants.md`):
+- NEVER delete or truncate `jobs.db` (~4.4 GB live data; the 0-byte top-level `backend/jobs.db` is dead)
 - NEVER modify `.env` or commit secrets
-- NEVER kill running background jobs without cause
-- NEVER modify systemd service files without backup
+- NEVER kill running background jobs without cause — cancel via the endpoint and wait for
+  `status='cancelled'` before any `systemctl restart` (4 gunicorn workers; the DB is the only
+  cross-worker source of truth for job state)
+- NEVER modify systemd service files without a backup
+- NEVER add a contacts-returning endpoint without routing it through `contacts_writer`
 
-**Quick Safety Reference:** See `.claude/LEAD_GENERATION_SAFETY.md`
+**Conventions:** conventional commits `type(scope): desc`; **attribution is DISABLED** — do NOT add a `Co-Authored-By` footer.
 
 ## Project Overview
 
@@ -38,18 +42,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```
 /var/www/lead-generation-platform/
 ├── backend/
-│   ├── main.py                  # FastAPI app, unified routes, job chaining
-│   ├── routes.py                # Scraper API routes
-│   ├── data/                    # SQLite DB (jobs.db), uploads/, outputs/
+│   ├── main.py                  # FastAPI app, router mounts, job chaining, MCP mount, lifespan
+│   ├── routes.py                # DEAD duplicate — NOT imported. Live scraper routes: scraper/routes.py
+│   ├── mcp_oracle/              # ListBuilding MCP server (read-only docs oracle, mounted at /mcp)
+│   ├── data/                    # SQLite DB (jobs.db ~4.4 GB), uploads/, outputs/
 │   ├── enrichment/              # Domain enrichment module
 │   │   ├── routes.py            # All enrichment endpoints (~3K lines)
-│   │   ├── pipeline.py          # Workflow orchestrator
-│   │   ├── list_builder.py      # List Building Tool (Flows 1, 2, 3)
-│   │   ├── blitz_client.py      # Blitz API wrapper (25 RPS, retry logic)
-│   │   ├── smartprospect_client.py  # SmartLead Find Emails wrapper (30 RPS, batch ≤10)
-│   │   ├── contacts_client.py   # Contacts DB wrapper (75 RPS)
-│   │   ├── better_enrich_client.py
-│   │   └── prospeo_client.py    # Disabled fallback (set ENABLE_PROSPEO=true + flip providers.py to re-enable)
+│   │   ├── pipeline.py          # Workflow orchestrator / cascade
+│   │   ├── list_builder.py      # List Building Tool (Flows 1, 2, 3) + unified /enrich
+│   │   ├── providers.py         # ENABLED_PROVIDERS — single source of truth for provider on/off
+│   │   ├── contacts_writer.py   # Contacts DB write-back (single entry point; USE_CONTACTS_WRITER_V2)
+│   │   ├── response_normalizer.py / raw_contact_collector.py  # provider→canonical contact + collector
+│   │   ├── call_tracker.py      # provider_call_log + provider_email_ledger observability
+│   │   ├── blitz_client.py      # Blitz API wrapper (25 RPS)
+│   │   ├── smartprospect_client.py  # SmartLead Find Emails (30 RPS, batch ≤10)
+│   │   ├── contacts_client.py   # Contacts DB wrapper (75 RPS) + business upsert
+│   │   ├── wizleads_client.py   # WizLeads (10 RPS)
+│   │   ├── better_enrich_client.py  # BetterEnrich (10/5 RPS)
+│   │   └── prospeo_client.py    # Disabled end-to-end (imported, never called) — see API Integrations
 │   ├── phone_enrichment/        # Phone enrichment module (Blitz Direct Phone)
 │   │   ├── routes.py            # Phone enrichment API endpoints
 │   │   ├── pipeline.py          # Phone enrichment workflow
@@ -59,10 +69,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 │   │   ├── centers.py           # Region/city center data loader
 │   │   └── data/                # Country CSV files
 │   └── shared/
-│       ├── auth.py              # JWT auth, API keys, user management
-│       ├── db.py                # Thread-local SQLite with WAL mode
-│       ├── job_store_base.py    # Base class for job stores
-│       └── circuit_breaker.py   # Circuit breaker for API resilience
+│       ├── auth.py              # JWT auth (7-day), API keys (lgp_), user mgmt (CLI-only creation)
+│       ├── db.py                # Thread-local SQLite, WAL (30s busy_timeout, 200MB cap), 50K quota fns
+│       ├── job_store_base.py    # Base class for job stores (append_event, heartbeat, checkpoints)
+│       ├── mcp_auth.py          # MCPAuthMiddleware (self-scopes to /mcp*, X-API-Key or Bearer)
+│       └── circuit_breaker.py   # Circuit breaker (Blitz / Contacts DB / SmartProspect only)
 ├── scripts/
 │   ├── migrate_scraped_places_to_pg.py  # One-time SQLite → PG migration (Phase 1)
 │   └── validate_migration.py             # Post-migration validation
@@ -136,7 +147,7 @@ Each enrichment source has different cost/quality tradeoffs:
 | **WizLeads** | 10 RPS | 4th | Catch-all verified email enrichment |
 | **BetterEnrich** | 10 RPS | 5th | Person email, company email |
 
-> **Prospeo** is implemented in `backend/enrichment/prospeo_client.py` but currently **disabled** end-to-end. The frontend no longer exposes it as a selectable provider, and the backend cascade will skip it via both `ENABLED_PROVIDERS["prospeo"]=False` (in `backend/enrichment/providers.py`) and the `ENABLE_PROSPEO=false` env kill-switch in `backend/.env`. To re-enable: set `ENABLE_PROSPEO=true` in `.env` AND flip `prospeo` to `True` in `providers.py`.
+> **Prospeo** is implemented in `backend/enrichment/prospeo_client.py` but **disabled end-to-end via a 4-layer belt-and-suspenders**: (1) `ENABLED_PROVIDERS["prospeo"]=False` in `providers.py`; (2) `ENABLE_PROSPEO=false` in `backend/.env`; (3) a hard guard at `pipeline.py` (~L294) that reads `ENABLE_PROSPEO` and skips *before* the global check; (4) `prospeo_client` is imported but **never called** anywhere in the cascade. **To re-enable requires all of:** `ENABLE_PROSPEO=true` + flip the dict to `True` + wire an actual cascade step (currently absent). Full provider lifecycle in the `lead-generation-platform-workflow` skill → `references/providers.md`.
 
 ### Blitz Cascade (title tiers)
 ```
@@ -148,8 +159,10 @@ Tier 3: Director-level (Director of Marketing, etc.)
 ## Enrichment Endpoints
 
 ### Unified Enrichment
-**POST** `/api/enrichment/enrich` - Returns contacts AND syncs to database
-**GET** `/api/enrichment/enrich` - Quick lookup without sync
+**POST** `/api/enrichment/enrich` - Returns contacts AND syncs to Contacts DB
+**GET** `/api/enrichment/enrich` - **Also returns contacts AND syncs** (NOT a pure lookup — the "no sync" note in older docs is stale; both paths persist to the external Contacts DB at `leadsdatabase.cc`)
+
+Both accept request-time cascade restrictors (mutually exclusive): `force_provider` (single provider) and `selected_providers` (allowlist; `contacts_db` is always allowed even if omitted).
 
 | Input | Mode | Flow |
 |-------|------|------|
@@ -310,15 +323,15 @@ European countries use a simplified approach:
 
 ---
 
-## Caching System (Implemented 2026-06-07)
+## Caching System
 
 ### Overview
 A comprehensive caching system prevents re-scraping identical queries, saving API costs and time.
 
 ### Cache Storage
-- **Location:** `/mnt/disk/lead-generation-platform/cache/`
-- **Expiry:** 90 days
-- **Available Space:** 86GB
+- **Location:** cache rows live in the `scraped_cache` table inside `jobs.db` (the `/mnt/disk/lead-generation-platform/cache/` dir is created but NOT used for storage)
+- **Expiry:** 90 days (`CACHE_EXPIRY_DAYS`, `shared/db.py`)
+- **Available Space:** ~257 GB free on `/mnt/disk`
 
 ### Cache Tables
 - `scraped_cache` - Main cache with metadata, checksums, expiry
@@ -333,10 +346,8 @@ A comprehensive caching system prevents re-scraping identical queries, saving AP
 - `GET /api/scraper/jobs/{id}/resume-info` - Resume eligibility
 - `POST /api/scraper/jobs/{id}/resume` - Resume from checkpoints
 
-### Cached Data (as of 2026-06-07)
-- dental clinic: 93,127 results
-- dentist: 127,012 results
-- elementary school: 50,867 results
+### Cached Data
+Check live counts: `sqlite3 backend/data/jobs.db "SELECT query, result_count FROM scraped_cache ORDER BY created_at DESC LIMIT 10;"`
 
 ### Resume Capability
 Jobs can be resumed from last checkpoint:
@@ -358,49 +369,11 @@ Example: `dental_clinic_2526_centers_46556_results_done.csv`
 
 ---
 
-## Recent Updates (2026-06-07)
+## Recent Changes & Status
 
-### Authentication
-- `/api/auth/me` now accepts both JWT tokens AND API keys
-- Fixed frontend authentication race conditions
-- Added timeout protection (10s) to auth requests
-
-### UI Improvements
-- Filter tabs now functional (All, Done, Running, Failed, etc.)
-- Stopped jobs show download buttons
-- Added cache modal for reusing cached results
-- Added resume modal for stopped jobs
-
-### API Key Authentication
-Updated to support API keys on user-facing endpoints:
-- `/api/auth/me`
-- `/api/scraper/cache/*`
-- `/api/scraper/jobs/{id}/download`
-- `/api/scraper/jobs/{id}/resume-info`
-
-### Bug Fixes
-- Fixed JavaScript syntax error (line 1912)
-- Fixed DOM loading race condition
-- Fixed filter tabs not working
-- Fixed missing download buttons for stopped jobs
-
----
-
-## Current Status (2026-06-07)
-
-### Production Status
-- ✅ Backend: Healthy and running on port 8765
-- ✅ Frontend: Loading correctly at listbuilding.eagleinfoservice.com
-- ✅ Caching: Operational with 3 cached entries
-- ✅ Authentication: Working with JWT and API keys
-- ✅ Downloads: Enhanced format with center counts
-
-### Known Limitations
-- Resume requires new jobs to build checkpoints
-- Cached downloads don't show exact center count
-- Subset queries pending full implementation
-
-### Performance
-- Cache lookup: < 50ms
-- API calls saved per cached query: ~88,620
-- Expected cache hit rate: 30-40% after 60 days
+This project changes often; do not rely on a frozen snapshot here. For current state:
+- **Operating rules, safety guardrails, runbooks:** load the `lead-generation-platform-workflow` skill.
+- **Recent code history:** `git log --oneline -20` and the per-session memory notes in
+  `~/.claude/projects/-var-www-lead-generation-platform/memory/`.
+- **Live health:** `curl -s http://localhost:8765/api/health` and `./monitor.sh`.
+- **Canonical API contract:** `docs/ListBuilding_Platform_Full_API_Reference_2026-07-16.md`.
