@@ -4163,7 +4163,7 @@ async def _run_job(
                 f"This is always a bug — check logs for 'Row processing failed' warnings."
             )
 
-        store.set_done(job_id, str(output_path))
+        store._mark_done_and_cleanup(job_id, output_path)
         logger.info("Enrichment job %s completed, %d output rows", job_id, len(output_rows))
 
         # Run auto-sync in the background without blocking the API
@@ -4269,7 +4269,7 @@ async def _run_job(
             if partial_size > 0:
                 user_msg += " (Partial results are available for download)"
                 # Mark as done instead of failed so user can download partial results
-                store.set_done(job_id, str(output_path))
+                store._mark_done_and_cleanup(job_id, output_path)
                 logger.warning("Enrichment job %s completed with errors, partial output available: %s", job_id, user_msg)
             else:
                 store.set_failed(job_id, user_msg)
@@ -5187,7 +5187,7 @@ async def _run_domain_enrich_job(
                 f"This is always a bug — check logs for 'Row processing failed' warnings."
             )
 
-        store.set_done(job_id, str(output_path))
+        store._mark_done_and_cleanup(job_id, output_path)
         logger.info("Domain enrich job %s completed, %d output rows", job_id, len(output_rows))
 
         # Sync results back to Contacts DB (async, non-blocking)
@@ -5594,7 +5594,7 @@ async def _run_linkedin_job(
                 logger.error("Partial-job contacts drain failed for %s: %s", job_id, drain_err)
             return
 
-        store.set_done(job_id, str(output_path))
+        store._mark_done_and_cleanup(job_id, output_path)
         logger.info("LinkedIn enrichment job %s completed, %d output rows", job_id, len(output_rows))
 
         # Sync results back to Contacts DB (async, non-blocking)
@@ -5633,7 +5633,7 @@ async def _run_linkedin_job(
         else:
             logger.exception("LinkedIn enrichment job %s failed: %s", job_id, e)
             if output_path.exists() and output_path.stat().st_size > 0:
-                store.set_done(job_id, str(output_path))
+                store._mark_done_and_cleanup(job_id, output_path)
                 # Even on partial success, attempt a sync of whatever rows landed.
                 asyncio.create_task(_run_background_sync(job_id, output_path, collector=collector))
             else:
@@ -5886,7 +5886,7 @@ async def _run_linkedin_v2_job(
                 logger.error("Partial-job contacts drain failed for %s: %s", job_id, drain_err)
             return
 
-        store.set_done(job_id, str(output_path))
+        store._mark_done_and_cleanup(job_id, output_path)
         logger.info(
             "LinkedIn v2 enrichment job %s completed, %d output rows",
             job_id,
@@ -5929,7 +5929,7 @@ async def _run_linkedin_v2_job(
         else:
             logger.exception("LinkedIn v2 enrichment job %s failed: %s", job_id, e)
             if output_path.exists() and output_path.stat().st_size > 0:
-                store.set_done(job_id, str(output_path))
+                store._mark_done_and_cleanup(job_id, output_path)
                 # Even on partial success, attempt a sync of whatever rows landed.
                 asyncio.create_task(_run_background_sync(job_id, output_path, collector=collector))
             else:

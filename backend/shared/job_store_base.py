@@ -122,6 +122,25 @@ class JobStoreBase:
         )
         self.conn.commit()
 
+    def _mark_done_and_cleanup(self, job_id: str, output_path) -> None:
+        """Mark a job done and remove its operational residue (checkpoints).
+
+        Done jobs never resume, so their per-row checkpoints (used only for
+        resume) are dead weight — deleting them here prevents the
+        job_checkpoints table from growing without bound. Best-effort: a
+        cleanup failure must not prevent the job from being marked done.
+        (Progress events are bounded separately by the daily prune_old_job_events
+        loop; the SSE 'done' event reads the jobs row, not events.)
+        """
+        self.set_done(job_id, str(output_path))
+        try:
+            self.cleanup_checkpoints(job_id)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Job %s: post-done checkpoint cleanup failed: %s", job_id, e
+            )
+
     def update_result_count(self, job_id: str, count: int) -> None:
         """Update result count for a job."""
         self.conn.execute(
@@ -624,6 +643,41 @@ class JobStoreBase:
         )
         self.conn.commit()
         return cursor.rowcount
+
+    def prune_old_job_events(self, retention_days: int = 7, batch_size: int = 50000) -> int:
+        """Delete job_events for non-running jobs older than retention_days,
+        plus orphaned events (job row gone), in batches.
+
+        job_events has no timestamp column, so we gate on jobs.created_at.
+        Running/queued jobs' events are always kept (they drive the live SSE
+        progress stream). Batched (LIMIT + commit per batch) so a large
+        historical backlog doesn't hold one long write lock — each batch
+        releases the lock between commits, letting other writers through."""
+        cutoff = f"-{int(retention_days)} days"
+        total = 0
+        while True:
+            cursor = self.conn.execute(
+                """
+                DELETE FROM job_events
+                WHERE rowid IN (
+                    SELECT rowid FROM job_events
+                    WHERE job_id IN (
+                        SELECT job_id FROM jobs
+                        WHERE created_at < datetime('now', ?)
+                          AND status NOT IN ('running', 'queued', 'pending', 'starting')
+                    )
+                       OR job_id NOT IN (SELECT job_id FROM jobs)
+                    LIMIT ?
+                )
+                """,
+                (cutoff, batch_size),
+            )
+            self.conn.commit()
+            removed = cursor.rowcount
+            total += removed
+            if removed < batch_size:
+                break
+        return total
 
     def write_task_checkpoint(
         self,

@@ -146,6 +146,12 @@ async def _run_parent_startup():
         logger.warning("Failed to start call tracker: %s", e)
 
     try:
+        asyncio.create_task(_maybe_prune_job_events())
+        logger.info("Started job_events prune (file-gated, retention=%s days)", os.getenv("JOB_EVENTS_RETENTION_DAYS", "7"))
+    except Exception as e:
+        logger.warning("Failed to start job_events prune: %s", e)
+
+    try:
         state = enrichment_routes.job_store.get_store().restore_job_state()
         enrichment_routes._cancelled_jobs.update(state.get("cancelled", set()))
         enrichment_routes._active_jobs.update(state.get("active", set()))
@@ -280,6 +286,40 @@ async def _call_tracker_purge_loop() -> None:
             call_tracker.purge_old(days=30)
         except Exception as e:
             logger.warning("call_tracker purge failed: %s", e)
+
+
+async def _maybe_prune_job_events() -> None:
+    """Prune job_events at most once per JOB_EVENTS_PRUNE_MIN_INTERVAL (default
+    1h), gated by a marker file so the 4 workers don't all prune at once.
+
+    Runs once at startup as a background task — NOT a periodic loop — because
+    gunicorn --max-requests recycles workers far faster than any multi-hour
+    sleep would complete, so a periodic loop effectively never fires. Running
+    at startup (on every boot) is what actually bounds job_events. Batched
+    DELETE keeps each lock short; best-effort (failures logged, never raised)."""
+    import time
+    from pathlib import Path
+    days = int(os.getenv("JOB_EVENTS_RETENTION_DAYS", "7"))
+    min_interval = int(os.getenv("JOB_EVENTS_PRUNE_MIN_INTERVAL", "3600"))
+    marker = Path(__file__).resolve().parent / "data" / ".last_job_events_prune"
+    try:
+        if marker.exists() and (time.time() - marker.stat().st_mtime) < min_interval:
+            return  # another worker pruned recently
+    except Exception:
+        pass
+    try:
+        from shared.job_store_base import JobStoreBase
+        store = JobStoreBase(db.get_db())
+        removed = store.prune_old_job_events(days)
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
+        except Exception:
+            pass
+        if removed:
+            logger.info("job_events prune: removed %d rows (retention=%dd)", removed, days)
+    except Exception as e:
+        logger.warning("job_events prune failed: %s", e)
 
 
 async def _call_tracker_health_loop() -> None:
