@@ -323,6 +323,19 @@
         .filter-tab { height:30px; padding:0 .75rem; border-radius:9999px;
             font-size:.78rem; font-weight:500; text-transform:capitalize; line-height:1; }
 
+        /* Date-range filter row (scraper + enrichment job lists). Preset pills
+           reuse .filter-tab pill styling via the extra .date-preset class; the
+           month picker is a compact native control sized to match the pills. */
+        .date-filter-row { display:flex; align-items:center; gap:.4rem;
+            flex-wrap:wrap; margin-bottom:1rem; }
+        .date-filter-label { color:var(--gray-500); font-size:.75rem;
+            font-weight:500; }
+        .date-month { height:30px; padding:0 .5rem; border:1px solid var(--gray-300);
+            border-radius:9999px; font-size:.78rem; font-family:inherit; background:white;
+            color:var(--gray-800); cursor:pointer; transition:border-color .15s, box-shadow .15s; }
+        .date-month:focus { outline:none; border-color:var(--primary);
+            box-shadow:0 0 0 3px rgba(26,49,93,.12); }
+
         /* Job row → stable 3-area grid (info | status | actions) for ALL job
            cards (scraper + enrichment). No absolute positioning, actions wrap,
            stacks on small screens. */
@@ -1092,6 +1105,15 @@
                     <button class="filter-tab" data-status="abandoned" onclick="filterScraperJobs('abandoned')">Abandoned</button>
                     <button class="filter-tab" data-status="cancelled" onclick="filterScraperJobs('cancelled')">Cancelled</button>
                 </div>
+                <!-- Date Filter -->
+                <div class="date-filter-row" id="scraperDateFilter">
+                    <span class="date-filter-label">Date:</span>
+                    <button type="button" class="filter-tab date-preset active" data-preset="all" onclick="setScraperDatePreset('all')">All time</button>
+                    <button type="button" class="filter-tab date-preset" data-preset="this_month" onclick="setScraperDatePreset('this_month')">This month</button>
+                    <button type="button" class="filter-tab date-preset" data-preset="last_30" onclick="setScraperDatePreset('last_30')">Last 30 days</button>
+                    <button type="button" class="filter-tab date-preset" data-preset="last_7" onclick="setScraperDatePreset('last_7')">Last 7 days</button>
+                    <input type="month" id="scraperMonthPicker" class="date-month" aria-label="Filter scraper jobs by month" onchange="setScraperDateMonth(this.value)">
+                </div>
                 <!-- Search Box -->
                 <div style="margin-bottom:1rem;">
                     <div class="search-input-wrapper">
@@ -1789,6 +1811,11 @@ example.org,Jane Doe</pre>
             let enrichmentTotalJobs = 0;
             const ENRICHMENT_PAGE_SIZE = 25;
             let enrichmentSearchQuery = '';
+            // Date-range filters (null = all time). {from,to} are day-granularity
+            // 'YYYY-MM-DD' strings (local). Scraper filters client-side; enrichment
+            // sends them to the server (loadJobs → /api/enrichment/jobs).
+            let scraperDateRange = null;
+            let enrichmentDateRange = null;
             (function() {
                 var timer;
                 var si = document.getElementById('enrichmentSearchInput');
@@ -5004,12 +5031,71 @@ example.org,Jane Doe</pre>
             } catch (e) { console.error('Failed to load scraper jobs:', e); jobsList.innerHTML = '<div class="empty-state">Error</div>'; }
         }
 
+        // ── Date-range filtering (shared by scraper + enrichment job lists) ──
+        // Bounds are day-granularity 'YYYY-MM-DD' (local). created_at is stored as
+        // ISO-with-tz (e.g. 2026-07-29T22:44:02.014001+00:00); slicing the first
+        // 10 chars yields the date, which compares cleanly as a string.
+        function isoDate(d) {
+            const y = d.getFullYear();
+            const m = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            return y + '-' + m + '-' + day;
+        }
+        // Preset → inclusive {from,to} range, or null for "all time".
+        function datePresetRange(preset) {
+            const now = new Date();
+            if (preset === 'this_month') {
+                return { from: isoDate(new Date(now.getFullYear(), now.getMonth(), 1)), to: isoDate(now) };
+            }
+            if (preset === 'last_30') {
+                return { from: isoDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29)), to: isoDate(now) };
+            }
+            if (preset === 'last_7') {
+                return { from: isoDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6)), to: isoDate(now) };
+            }
+            return null; // 'all' or unknown → no filter
+        }
+        // '<input type="month">' value 'YYYY-MM' → inclusive {from,to} for that month.
+        function monthToRange(monthValue) {
+            if (!monthValue) return null;
+            const parts = monthValue.split('-');
+            const y = Number(parts[0]); const m = Number(parts[1]);
+            if (!y || !m) return null;
+            const mm = String(m).padStart(2, '0');
+            const lastDay = new Date(y, m, 0).getDate(); // day 0 of next month
+            return { from: y + '-' + mm + '-01', to: y + '-' + mm + '-' + String(lastDay).padStart(2, '0') };
+        }
+        // Client-side inclusion check (scraper). ISO created_at vs day-granularity range.
+        function jobInDateRange(iso, range) {
+            if (!range) return true;
+            const day = (iso || '').slice(0, 10);
+            if (!day) return false;
+            return day >= range.from && day <= range.to;
+        }
+
+        // Scraper date-filter handlers (client-side; re-render on change).
+        function setScraperDatePreset(preset) {
+            const row = document.getElementById('scraperDateFilter');
+            if (row) row.querySelectorAll('.date-preset').forEach(b => b.classList.toggle('active', b.dataset.preset === preset));
+            const mp = document.getElementById('scraperMonthPicker');
+            if (mp) mp.value = '';
+            scraperDateRange = datePresetRange(preset);
+            renderScraperJobs();
+        }
+        function setScraperDateMonth(monthValue) {
+            const row = document.getElementById('scraperDateFilter');
+            if (row) row.querySelectorAll('.date-preset').forEach(b => b.classList.remove('active'));
+            scraperDateRange = monthToRange(monthValue);
+            renderScraperJobs();
+        }
+
         // Filter scraper jobs by status and search query
         function filterScraperJobs(statusFilter) {
             if (statusFilter) {
                 currentStatusFilter = statusFilter;
-                // Update active tab
-                document.querySelectorAll('.filter-tab').forEach(tab => {
+                // Update active tab — scope to status pills so we don't deactivate
+                // the date-preset pills (also .filter-tab) on a status change.
+                document.querySelectorAll('.filter-tab:not(.date-preset)').forEach(tab => {
                     tab.classList.remove('active');
                     if (tab.dataset.status === statusFilter) tab.classList.add('active');
                 });
@@ -5026,6 +5112,11 @@ example.org,Jane Doe</pre>
             let filteredJobs = allScraperJobs;
             if (currentStatusFilter !== 'all') {
                 filteredJobs = filteredJobs.filter(job => job.status === currentStatusFilter);
+            }
+
+            // Filter by date range (AND with status + search)
+            if (scraperDateRange) {
+                filteredJobs = filteredJobs.filter(job => jobInDateRange(job.created_at, scraperDateRange));
             }
 
             // Filter by search query
@@ -5620,6 +5711,9 @@ example.org,Jane Doe</pre>
         // Expose functions to global scope for onclick handlers
         window.filterScraperJobs = filterScraperJobs;
         window.loadScraperJobs = loadScraperJobs;
+        // Scraper date-filter handlers (inline onclick/onchange need window export).
+        window.setScraperDatePreset = setScraperDatePreset;
+        window.setScraperDateMonth = setScraperDateMonth;
         window.downloadScraperJob = downloadScraperJob;
         window.downloadScraperPartial = downloadScraperPartial;
         window.downloadScraperShard = downloadScraperShard;
