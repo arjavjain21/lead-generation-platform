@@ -402,6 +402,13 @@ DATA_DIR.mkdir(exist_ok=True)
 UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
 
+# Upper bound on how many jobs the `file_ready` filter scans for on-disk output.
+# output_exists is a per-job filesystem check (not a DB column), so the filter
+# fetches candidates then keeps only those whose file is present; this caps that
+# scan. Enrichment jobs are in the hundreds today — the cap is a backstop, and a
+# log line fires if it's ever reached.
+FILE_READY_SCAN_CAP = 2000
+
 router = APIRouter(prefix="/api/enrichment", tags=["enrichment"])
 
 # In-memory set of job_ids currently being actively processed
@@ -3440,12 +3447,39 @@ async def list_enrichment_jobs(
     search: Optional[str] = Query(None),
     date_from: Optional[str] = Query(None, description="Inclusive lower bound (YYYY-MM-DD) on created_at"),
     date_to: Optional[str] = Query(None, description="Inclusive upper bound (YYYY-MM-DD) on created_at"),
+    file_ready: bool = Query(False, description="Only return jobs whose result file is on disk (downloadable)"),
 ):
-    """List enrichment jobs (paginated, optional status + search + date filter)."""
+    """List enrichment jobs (paginated, optional status + search + date + file-ready filter)."""
     store = job_store.get_store()
     user_id = None if current_user.get("is_admin") else current_user["user_id"]
-    jobs = store.list_jobs(user_id=user_id, job_type="enrichment", limit=limit, offset=offset, status=status, search=search, date_from=date_from, date_to=date_to)
-    total = store.count_jobs(user_id=user_id, job_type="enrichment", status=status, search=search, date_from=date_from, date_to=date_to)
+
+    if file_ready:
+        # output_exists is a per-job filesystem check (_job_output_exists), not a
+        # DB column, so it can't be a SQL WHERE on list_jobs/count_jobs. Fetch the
+        # full filtered candidate set (bounded by FILE_READY_SCAN_CAP), keep only
+        # jobs whose file is on disk, then paginate the ready list in Python so
+        # the page and the total stay consistent.
+        candidates = store.list_jobs(
+            user_id=user_id, job_type="enrichment", status=status, search=search,
+            date_from=date_from, date_to=date_to, limit=FILE_READY_SCAN_CAP, offset=0,
+        )
+        if len(candidates) >= FILE_READY_SCAN_CAP:
+            logger.info(
+                "file_ready filter reached scan cap (%d); some ready jobs may be uncounted",
+                FILE_READY_SCAN_CAP,
+            )
+        ready = [j for j in candidates if _job_output_exists(j)]
+        total = len(ready)
+        jobs = ready[offset:offset + limit]
+    else:
+        jobs = store.list_jobs(
+            user_id=user_id, job_type="enrichment", limit=limit, offset=offset,
+            status=status, search=search, date_from=date_from, date_to=date_to,
+        )
+        total = store.count_jobs(
+            user_id=user_id, job_type="enrichment", status=status, search=search,
+            date_from=date_from, date_to=date_to,
+        )
 
     # Enhance job display with user-friendly filenames
     for job in jobs:

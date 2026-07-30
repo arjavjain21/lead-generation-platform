@@ -1126,6 +1126,8 @@
                     <button type="button" class="filter-tab date-preset" data-preset="last_30" onclick="setScraperDatePreset('last_30')">Last 30 days</button>
                     <button type="button" class="filter-tab date-preset" data-preset="last_7" onclick="setScraperDatePreset('last_7')">Last 7 days</button>
                     <input type="month" id="scraperMonthPicker" class="date-month" aria-label="Filter scraper jobs by month" onchange="setScraperDateMonth(this.value)">
+                    <span class="date-filter-label" style="margin-left:.4rem">File:</span>
+                    <button type="button" class="filter-tab file-ready-toggle" id="scraperFileReadyToggle" aria-pressed="false" title="Show only jobs whose result file is ready to download" onclick="toggleScraperFileReady()">✓ Ready to download</button>
                 </div>
                 <!-- Search Box -->
                 <div style="margin-bottom:1rem;">
@@ -1580,6 +1582,8 @@
                     <button type="button" class="filter-tab date-preset" data-preset="last_30" onclick="setEnrichmentDatePreset('last_30')">Last 30 days</button>
                     <button type="button" class="filter-tab date-preset" data-preset="last_7" onclick="setEnrichmentDatePreset('last_7')">Last 7 days</button>
                     <input type="month" id="enrichmentMonthPicker" class="date-month" aria-label="Filter enrichment jobs by month" onchange="setEnrichmentDateMonth(this.value)">
+                    <span class="date-filter-label" style="margin-left:.4rem">File:</span>
+                    <button type="button" class="filter-tab file-ready-toggle" id="enrichmentFileReadyToggle" aria-pressed="false" title="Show only jobs whose result file is ready to download" onclick="toggleEnrichmentFileReady()">✓ Ready to download</button>
                 </div>
                 <input type="text" id="enrichmentSearchInput" placeholder="Search by filename, job ID, or status..."
                        style="width:100%;padding:0.5rem 0.75rem;border:1px solid var(--gray-300);border-radius:6px;margin-bottom:0.75rem;font-size:0.85rem;">
@@ -1838,6 +1842,11 @@ example.org,Jane Doe</pre>
             // sends them to the server (loadJobs → /api/enrichment/jobs).
             let scraperDateRange = null;
             let enrichmentDateRange = null;
+            // "File ready" toggles — when on, only show jobs whose result file is
+            // on disk (downloadable). Scraper filters client-side; enrichment sends
+            // file_ready=true to the server (the list is paginated).
+            let scraperFileReadyOnly = false;
+            let enrichmentFileReadyOnly = false;
             (function() {
                 var timer;
                 var si = document.getElementById('enrichmentSearchInput');
@@ -4728,6 +4737,9 @@ example.org,Jane Doe</pre>
                     params.set('date_from', enrichmentDateRange.from);
                     params.set('date_to', enrichmentDateRange.to);
                 }
+                if (enrichmentFileReadyOnly) {
+                    params.set('file_ready', 'true');
+                }
                 const res = await fetch('/api/enrichment/jobs?' + params, { headers: { 'Authorization': 'Bearer ' + token } });
                 if (res.ok) {
                     const data = await res.json();
@@ -4743,9 +4755,9 @@ example.org,Jane Doe</pre>
         function filterEnrichmentJobs(statusFilter) {
             if (statusFilter) {
                 currentEnrichmentStatusFilter = statusFilter;
-                // Update active tab — scope to enrichment tabs so we don't
-                // collide with the scraper filter tabs on the same page.
-                document.querySelectorAll('#enrichmentFilterTabs .filter-tab').forEach(tab => {
+                // Update active tab — scope to enrichment STATUS pills (they carry
+                // data-status) so the file-ready toggle keeps its own state.
+                document.querySelectorAll('#enrichmentFilterTabs .filter-tab[data-status]').forEach(tab => {
                     tab.classList.remove('active');
                     if (tab.dataset.status === statusFilter) tab.classList.add('active');
                 });
@@ -4771,6 +4783,14 @@ example.org,Jane Doe</pre>
             const row = document.getElementById('enrichmentDateFilter');
             if (row) row.querySelectorAll('.date-preset').forEach(b => b.classList.remove('active'));
             enrichmentDateRange = monthToRange(monthValue);
+            enrichmentCurrentPage = 1;
+            loadJobs();
+        }
+        // Toggle "file ready only" (server-side; resets to page 1 and re-fetches).
+        function toggleEnrichmentFileReady() {
+            enrichmentFileReadyOnly = !enrichmentFileReadyOnly;
+            const btn = document.getElementById('enrichmentFileReadyToggle');
+            if (btn) { btn.classList.toggle('active', enrichmentFileReadyOnly); btn.setAttribute('aria-pressed', String(enrichmentFileReadyOnly)); }
             enrichmentCurrentPage = 1;
             loadJobs();
         }
@@ -5143,14 +5163,22 @@ example.org,Jane Doe</pre>
             scraperDateRange = monthToRange(monthValue);
             renderScraperJobs();
         }
+        // Toggle "file ready only" (client-side). aria-pressed + .active track state.
+        function toggleScraperFileReady() {
+            scraperFileReadyOnly = !scraperFileReadyOnly;
+            const btn = document.getElementById('scraperFileReadyToggle');
+            if (btn) { btn.classList.toggle('active', scraperFileReadyOnly); btn.setAttribute('aria-pressed', String(scraperFileReadyOnly)); }
+            renderScraperJobs();
+        }
 
         // Filter scraper jobs by status and search query
         function filterScraperJobs(statusFilter) {
             if (statusFilter) {
                 currentStatusFilter = statusFilter;
-                // Update active tab — scope to status pills so we don't deactivate
-                // the date-preset pills (also .filter-tab) on a status change.
-                document.querySelectorAll('.filter-tab:not(.date-preset)').forEach(tab => {
+                // Update active tab — scope to status pills only (they carry
+                // data-status) so the date-preset and file-ready pills (also
+                // .filter-tab) keep their own state across a status change.
+                document.querySelectorAll('.filter-tab[data-status]').forEach(tab => {
                     tab.classList.remove('active');
                     if (tab.dataset.status === statusFilter) tab.classList.add('active');
                 });
@@ -5174,6 +5202,11 @@ example.org,Jane Doe</pre>
                 filteredJobs = filteredJobs.filter(job => jobInDateRange(job.created_at, scraperDateRange));
             }
 
+            // Filter by file-ready (only jobs whose result file is on disk)
+            if (scraperFileReadyOnly) {
+                filteredJobs = filteredJobs.filter(job => job.output_exists === true);
+            }
+
             // Filter by search query
             if (searchQuery) {
                 filteredJobs = filteredJobs.filter(job => {
@@ -5185,7 +5218,10 @@ example.org,Jane Doe</pre>
             }
 
             if (filteredJobs.length === 0) {
-                jobsList.innerHTML = '<div class="empty-state">No jobs found</div>';
+                const msg = scraperFileReadyOnly
+                    ? 'No downloadable files match these filters'
+                    : 'No jobs found';
+                jobsList.innerHTML = '<div class="empty-state">' + msg + '</div>';
                 return;
             }
 
@@ -5769,6 +5805,9 @@ example.org,Jane Doe</pre>
         // Scraper date-filter handlers (inline onclick/onchange need window export).
         window.setScraperDatePreset = setScraperDatePreset;
         window.setScraperDateMonth = setScraperDateMonth;
+        // File-ready toggles.
+        window.toggleScraperFileReady = toggleScraperFileReady;
+        window.toggleEnrichmentFileReady = toggleEnrichmentFileReady;
         window.downloadScraperJob = downloadScraperJob;
         window.downloadScraperPartial = downloadScraperPartial;
         window.downloadScraperShard = downloadScraperShard;
