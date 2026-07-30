@@ -3421,7 +3421,6 @@ def _owns_job(job: dict[str, Any], current_user: dict[str, Any]) -> bool:
     return job.get("user_id") == current_user["user_id"]
 
 
-@router.get("/jobs")
 def _job_output_exists(job: dict) -> bool:
     """Whether the job's result CSV is still on disk. Drives the UI
     file-available indicator."""
@@ -3432,6 +3431,7 @@ def _job_output_exists(job: dict) -> bool:
     return bool(jid) and (OUTPUT_DIR / f"{jid}.csv").exists()
 
 
+@router.get("/jobs")
 async def list_enrichment_jobs(
     current_user: dict = Depends(auth.get_current_user),
     limit: int = Query(25, ge=1, le=200),
