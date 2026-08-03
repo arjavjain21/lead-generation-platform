@@ -743,6 +743,7 @@
                 <a class="nav-item" href="#" data-page="scraper"><span class="nav-icon" aria-label="Google Maps Scraper"><i data-lucide="map-pin"></i></span>Google Maps Scraper</a>
                 <a class="nav-item" href="#" data-page="domains"><span class="nav-icon" aria-label="Upload Domains"><i data-lucide="upload"></i></span>Upload Domains</a>
                 <a class="nav-item" href="#" data-page="search"><span class="nav-icon" aria-label="Company Search"><i data-lucide="search"></i></span>Company Search</a>
+                <a class="nav-item" href="#" data-page="people"><span class="nav-icon" aria-label="Find People"><i data-lucide="users"></i></span>Find People</a>
                 <a class="nav-item" href="#" data-page="linkedin"><span class="nav-icon" aria-label="LinkedIn Enrich"><i data-lucide="link"></i></span>LinkedIn Enrich</a>
                 <a class="nav-item" href="#" data-page="phones"><span class="nav-icon" aria-label="Phone Enrichment"><i data-lucide="phone"></i></span>Phone Enrichment</a>
                 <a class="nav-item" href="#" data-page="jobs"><span class="nav-icon" aria-label="Enrichment Jobs"><i data-lucide="zap"></i></span>Enrichment Jobs</a>
@@ -1434,6 +1435,55 @@
             </div>
         </div>
         
+        <!-- Find People Page -->
+        <div class="page" id="page-people">
+            <div class="form-card">
+                <h3><i data-lucide="users" class="icon" style="vertical-align:text-bottom"></i> Find People</h3>
+                <div style="background:#f0f9ff;border-left:4px solid #1a315d;padding:12px;margin-bottom:1rem;border-radius:4px;font-size:0.85rem;color:#374151;">
+                    <strong>How to use:</strong> Search your contacts database directly for <em>people</em> by role, function, location, or industry — free, instant, no credits. e.g. Seniority "vp", Function "sales", Country "United States". Use exact industry names (e.g. "Computer Software").
+                </div>
+                <div id="findPeopleError" class="validation-message error" style="display:none;"></div>
+                <div class="filters">
+                    <div class="filter-group"><label>Seniority</label><input type="text" id="findSeniority" class="search-input" placeholder="e.g. vp,cxo,director"><span class="field-helper">Comma-separated (optional)</span></div>
+                    <div class="filter-group"><label>Function</label><input type="text" id="findFunction" class="search-input" placeholder="e.g. sales,engineering"><span class="field-helper">Comma-separated (optional)</span></div>
+                    <div class="filter-group"><label>Country</label><input type="text" id="findCountry" class="search-input" placeholder="e.g. United States"><span class="field-helper">Canonical country name (optional)</span></div>
+                    <div class="filter-group"><label>Industry</label><input type="text" id="findIndustry" class="search-input" placeholder="e.g. Computer Software"><span class="field-helper">Exact industry (optional)</span></div>
+                    <div class="filter-group"><label>Job Title / Role</label><input type="text" id="findKeywords" class="search-input" placeholder="e.g. CEO, VP of Sales, Marketing Director"><span class="field-helper">Most accurate — matches the role (CEO ↔ Chief Executive Officer)</span></div>
+                    <div class="filter-group"><label>Name contains</label><input type="text" id="findName" class="search-input" placeholder="Partial name (optional)"><span class="field-helper">Substring on full name (optional)</span></div>
+                    <div class="filter-group"><label>Universe</label><select id="findUniverse"><option value="">All leads</option><option value="local_business">Local business</option></select><span class="field-helper">Local business vs all (optional)</span></div>
+                </div>
+                <div style="margin-top:0.75rem; display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+                    <span style="font-size:0.8rem; color:var(--gray-500);">Quick role:</span>
+                    <button class="btn btn-secondary btn-sm" type="button" onclick="pickRole('ceo')">CEO</button>
+                    <button class="btn btn-secondary btn-sm" type="button" onclick="pickRole('cto')">CTO</button>
+                    <button class="btn btn-secondary btn-sm" type="button" onclick="pickRole('cfo')">CFO</button>
+                    <button class="btn btn-secondary btn-sm" type="button" onclick="pickRole('founder')">Founder</button>
+                    <button class="btn btn-secondary btn-sm" type="button" onclick="pickRole('vp')">VP</button>
+                    <button class="btn btn-secondary btn-sm" type="button" onclick="pickRole('director')">Director</button>
+                    <button class="btn btn-secondary btn-sm" type="button" onclick="pickRole('owner')">Owner</button>
+                </div>
+                <div class="actions" style="margin-top:1rem; display:flex; align-items:center; gap:1rem; flex-wrap:wrap;">
+                    <button class="btn btn-primary" id="findPeopleBtn">Find People</button>
+                    <label style="font-size:0.85rem; display:flex; align-items:center; gap:0.4rem; margin:0;"><input type="checkbox" id="findHasEmail"> Only with email</label>
+                    <label style="font-size:0.85rem; display:flex; align-items:center; gap:0.4rem; margin:0;">Limit <input type="number" id="findPeopleLimit" value="50" min="1" max="200" style="width:70px; padding:0.3rem; border:1px solid var(--gray-300); border-radius:4px;"></label>
+                </div>
+            </div>
+            <div class="form-card" id="findPeopleResults" style="display:none;">
+                <h3>👥 Results <span id="findPeopleCount"></span></h3>
+                <div style="display:flex; gap:1rem; align-items:center; margin-bottom:0.75rem; flex-wrap:wrap;">
+                    <button class="btn btn-success btn-sm" id="downloadPeopleCsv">⬇ Download CSV</button>
+                    <label style="font-size:0.85rem; display:flex; align-items:center; gap:0.4rem; margin:0;"><input type="checkbox" id="findHideNoTitle"> Hide rows with no title</label>
+                    <span style="font-size:0.8rem; color:var(--gray-500);" id="findPeopleExportNote"></span>
+                </div>
+                <div style="overflow-x:auto;">
+                    <table class="results-table">
+                        <thead><tr><th>Name</th><th>Title</th><th>Company</th><th>Industry</th><th>Location</th><th>Email</th></tr></thead>
+                        <tbody id="findPeopleBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
         <!-- LinkedIn Page -->
         <div class="page" id="page-linkedin">
             <div class="form-card">
@@ -2210,6 +2260,7 @@ example.org,Jane Doe</pre>
             'gmaps': 'scraper',
             'upload': 'domains',
             'company-search': 'search',
+            'people': 'people',
             'linkedin': 'linkedin',
             'phone-enrich': 'phones',
             'enrichment-jobs': 'jobs',
@@ -3732,7 +3783,78 @@ example.org,Jane Doe</pre>
             document.getElementById('searchResultsCount').textContent = '(' + companies.length + ')';
             document.getElementById('searchResults').style.display = 'block';
         }
-        
+
+        // --- Find People (direct people search against the contacts DB) ---
+        function escHtml(s){ return (s==null?'':String(s)).replace(/[&<>"']/g, function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+        function csvList(v){ return (v||'').split(',').map(s=>s.trim()).filter(Boolean); }
+        let _peopleResults = [];
+        const _UNKNOWN_RE = /^(unknown|nan|none|null|n\/a|\s*)$/i;
+        function cleanTitle(p){ const t=(p.title||'').trim(), h=(p.headline||'').trim(); if(t && !_UNKNOWN_RE.test(t)) return t; if(h && !_UNKNOWN_RE.test(h)) return h; return ''; }
+        function pickRole(role){ document.getElementById('findSeniority').value=''; document.getElementById('findKeywords').value=role; document.getElementById('findPeopleBtn').click(); }
+
+        document.getElementById('findPeopleBtn').addEventListener('click', async () => {
+            const btn = document.getElementById('findPeopleBtn');
+            const err = document.getElementById('findPeopleError');
+            err.style.display = 'none'; err.textContent = '';
+            const payload = { limit: parseInt(document.getElementById('findPeopleLimit').value, 10) || 50, offset: 0 };
+            const sen = csvList(document.getElementById('findSeniority').value); if (sen.length) payload.seniority = sen;
+            const fn = csvList(document.getElementById('findFunction').value); if (fn.length) payload.function = fn;
+            const co = csvList(document.getElementById('findCountry').value); if (co.length) payload.geo_country = co;
+            const ind = csvList(document.getElementById('findIndustry').value); if (ind.length) payload.industry = ind;
+            const kw = document.getElementById('findKeywords').value.trim(); if (kw) payload.title_keywords = kw;
+            const nm = document.getElementById('findName').value.trim(); if (nm) payload.name_contains = nm;
+            if (document.getElementById('findHasEmail').checked) payload.has_email = true;
+            const univ = document.getElementById('findUniverse').value; if (univ) payload.universe = univ;
+            setButtonLoading(btn, true, 'Searching...');
+            try {
+                const res = await fetch('/api/enrichment/search/employees', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                if (res.ok) { const data = await res.json(); displayPeopleResults(data); }
+                else { err.textContent = 'Search failed (HTTP ' + res.status + '). Try narrower filters.'; err.style.display = 'block'; }
+            } catch (e) { err.textContent = 'Search failed: ' + e; err.style.display = 'block'; }
+            setButtonLoading(btn, false, 'Find People');
+        });
+
+        function displayPeopleResults(data) {
+            _peopleResults = data.people || [];
+            renderPeopleRows();
+            document.getElementById('findPeopleCount').textContent = '(' + (data.total != null ? data.total + ' total, ' : '') + _peopleResults.length + ' shown)';
+            document.getElementById('findPeopleExportNote').textContent = 'CSV exports the ' + _peopleResults.length + ' rows shown (raise Limit for more).';
+            document.getElementById('findPeopleResults').style.display = 'block';
+        }
+
+        function renderPeopleRows() {
+            const tbody = document.getElementById('findPeopleBody'); tbody.innerHTML = '';
+            const hideNoTitle = document.getElementById('findHideNoTitle') && document.getElementById('findHideNoTitle').checked;
+            _peopleResults.forEach(p => {
+                const title = cleanTitle(p);
+                if (hideNoTitle && !title) return;
+                const loc = [p.geo_city, p.geo_country].filter(Boolean).join(', ');
+                const tr = document.createElement('tr');
+                tr.innerHTML = '<td>' + escHtml(p.full_name) + '</td><td>' + escHtml(title) + '</td><td>' + escHtml(p.company_name) + '</td><td>' + escHtml(p.industry) + '</td><td>' + escHtml(loc) + '</td><td>' + escHtml(p.email) + '</td>';
+                tbody.appendChild(tr);
+            });
+        }
+
+        document.getElementById('findHideNoTitle').addEventListener('change', renderPeopleRows);
+
+        document.getElementById('downloadPeopleCsv').addEventListener('click', () => {
+            if (!_peopleResults.length) return;
+            const hideNoTitle = document.getElementById('findHideNoTitle').checked;
+            const cols = ['full_name','title','company_name','industry','geo_city','geo_state','geo_country','seniority','function','email'];
+            const header = ['Full Name','Title','Company','Industry','City','State','Country','Seniority','Function','Email'];
+            const dataRows = _peopleResults.map(p => {
+                const title = cleanTitle(p);
+                if (hideNoTitle && !title) return null;
+                const row = Object.assign({}, p, { title: title });
+                return cols.map(c => { const v = row[c]; return v==null?'':String(v).replace(/"/g,'""'); });
+            }).filter(Boolean);
+            const csv = [header.map(h=>'"'+h.replace(/"/g,'""')+'"').join(','), ...dataRows.map(r => r.map(c=>'"'+c+'"').join(','))].join('\r\n');
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = url; a.download = 'find_people_' + new Date().toISOString().slice(0,10) + '.csv';
+            document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+        });
+
         document.getElementById('searchAndEnrich').addEventListener('click', async () => {
             const btn = document.getElementById('searchAndEnrich');
             const errorContainer = document.getElementById('searchFormError');

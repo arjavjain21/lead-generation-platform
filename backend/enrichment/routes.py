@@ -4756,6 +4756,20 @@ class SearchAndEnrichRequest(BaseModel):
     include_generic_emails: bool = True
 
 
+class EmployeeSearchRequest(BaseModel):
+    """Request model for direct people search (Flow: Find People)."""
+    seniority: Optional[list[str]] = None
+    function: Optional[list[str]] = None
+    geo_country: Optional[list[str]] = None
+    industry: Optional[list[str]] = None
+    title_keywords: Optional[str] = None
+    name_contains: Optional[str] = None
+    has_email: Optional[bool] = None
+    universe: Optional[str] = None
+    limit: int = 50
+    offset: int = 0
+
+
 class LinkedInEnrichRequest(BaseModel):
     """Request model for LinkedIn enrichment (Flow 3)."""
     upload_id: str
@@ -5349,6 +5363,44 @@ async def search_companies(
         except Exception as e:
             logger.error("Company search failed: %s", e)
             raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+
+
+@router.post("/search/employees")
+async def search_employees(
+    req: EmployeeSearchRequest,
+    current_user: dict = Depends(auth.get_current_user),
+):
+    """
+    Find People: direct people search against the internal contacts DB by
+    role / function / location / industry (index-backed, free — no Blitz cost).
+    Returns matching people with one best email each.
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            result = await contacts_client.search_people(
+                client,
+                seniority=",".join(req.seniority) if req.seniority else None,
+                function=",".join(req.function) if req.function else None,
+                geo_country=",".join(req.geo_country) if req.geo_country else None,
+                industry=",".join(req.industry) if req.industry else None,
+                title_keywords=req.title_keywords,
+                name_contains=req.name_contains,
+                has_email=req.has_email,
+                universe=req.universe,
+                limit=req.limit,
+                offset=req.offset,
+            )
+            data = result or {}
+            return {
+                "total": data.get("total", 0),
+                "limit": req.limit,
+                "offset": req.offset,
+                "people": data.get("people", []),
+                "flow": "people_search",
+            }
+        except Exception as e:
+            logger.error("People search failed: %s", e)
+            raise HTTPException(status_code=500, detail=f"People search failed: {str(e)}")
 
 
 @router.post("/search/companies/enrich")
