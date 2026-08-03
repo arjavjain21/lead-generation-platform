@@ -1454,13 +1454,13 @@
                 </div>
                 <div style="margin-top:0.75rem; display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
                     <span style="font-size:0.8rem; color:var(--gray-500);">Quick role:</span>
-                    <button class="btn btn-secondary btn-sm" type="button" onclick="pickRole('ceo')">CEO</button>
-                    <button class="btn btn-secondary btn-sm" type="button" onclick="pickRole('cto')">CTO</button>
-                    <button class="btn btn-secondary btn-sm" type="button" onclick="pickRole('cfo')">CFO</button>
-                    <button class="btn btn-secondary btn-sm" type="button" onclick="pickRole('founder')">Founder</button>
-                    <button class="btn btn-secondary btn-sm" type="button" onclick="pickRole('vp')">VP</button>
-                    <button class="btn btn-secondary btn-sm" type="button" onclick="pickRole('director')">Director</button>
-                    <button class="btn btn-secondary btn-sm" type="button" onclick="pickRole('owner')">Owner</button>
+                    <button class="btn btn-secondary btn-sm" type="button" data-role="ceo">CEO</button>
+                    <button class="btn btn-secondary btn-sm" type="button" data-role="cto">CTO</button>
+                    <button class="btn btn-secondary btn-sm" type="button" data-role="cfo">CFO</button>
+                    <button class="btn btn-secondary btn-sm" type="button" data-role="founder">Founder</button>
+                    <button class="btn btn-secondary btn-sm" type="button" data-role="vp">VP</button>
+                    <button class="btn btn-secondary btn-sm" type="button" data-role="director">Director</button>
+                    <button class="btn btn-secondary btn-sm" type="button" data-role="owner">Owner</button>
                 </div>
                 <div class="actions" style="margin-top:1rem; display:flex; align-items:center; gap:1rem; flex-wrap:wrap;">
                     <button class="btn btn-primary" id="findPeopleBtn">Find People</button>
@@ -1477,7 +1477,7 @@
                 </div>
                 <div style="overflow-x:auto;">
                     <table class="results-table">
-                        <thead><tr><th>Name</th><th>Title</th><th>Company</th><th>Industry</th><th>Location</th><th>Email</th></tr></thead>
+                        <thead><tr><th>Name</th><th>Title</th><th>Company</th><th>Industry</th><th>Location</th><th>Universe</th><th>Rating</th><th>Email</th></tr></thead>
                         <tbody id="findPeopleBody"></tbody>
                     </table>
                 </div>
@@ -3790,7 +3790,8 @@ example.org,Jane Doe</pre>
         let _peopleResults = [];
         const _UNKNOWN_RE = /^(unknown|nan|none|null|n\/a|\s*)$/i;
         function cleanTitle(p){ const t=(p.title||'').trim(), h=(p.headline||'').trim(); if(t && !_UNKNOWN_RE.test(t)) return t; if(h && !_UNKNOWN_RE.test(h)) return h; return ''; }
-        function pickRole(role){ document.getElementById('findSeniority').value=''; document.getElementById('findKeywords').value=role; document.getElementById('findPeopleBtn').click(); }
+        function pickRole(role){ document.getElementById('findSeniority').value=''; document.getElementById('findKeywords').value=role; }
+        document.querySelectorAll('[data-role]').forEach(btn => { btn.addEventListener('click', () => pickRole(btn.dataset.role)); });
 
         document.getElementById('findPeopleBtn').addEventListener('click', async () => {
             const btn = document.getElementById('findPeopleBtn');
@@ -3830,7 +3831,7 @@ example.org,Jane Doe</pre>
                 if (hideNoTitle && !title) return;
                 const loc = [p.geo_city, p.geo_country].filter(Boolean).join(', ');
                 const tr = document.createElement('tr');
-                tr.innerHTML = '<td>' + escHtml(p.full_name) + '</td><td>' + escHtml(title) + '</td><td>' + escHtml(p.company_name) + '</td><td>' + escHtml(p.industry) + '</td><td>' + escHtml(loc) + '</td><td>' + escHtml(p.email) + '</td>';
+                tr.innerHTML = '<td>' + escHtml(p.full_name) + '</td><td>' + escHtml(title) + '</td><td>' + escHtml(p.company_name) + '</td><td>' + escHtml(p.industry) + '</td><td>' + escHtml(loc) + '</td><td>' + escHtml(p.lead_universe || '') + '</td><td>' + (p.rating ? '⭐' + p.rating + ' (' + (p.reviews||0) + ')' : '') + '</td><td>' + escHtml(p.email) + '</td>';
                 tbody.appendChild(tr);
             });
         }
@@ -3840,8 +3841,8 @@ example.org,Jane Doe</pre>
         document.getElementById('downloadPeopleCsv').addEventListener('click', () => {
             if (!_peopleResults.length) return;
             const hideNoTitle = document.getElementById('findHideNoTitle').checked;
-            const cols = ['full_name','title','company_name','industry','geo_city','geo_state','geo_country','seniority','function','email'];
-            const header = ['Full Name','Title','Company','Industry','City','State','Country','Seniority','Function','Email'];
+            const cols = ['full_name','title','company_name','industry','geo_city','geo_state','geo_country','seniority','function','lead_universe','rating','reviews','local_category','email'];
+            const header = ['Full Name','Title','Company','Industry','City','State','Country','Seniority','Function','Universe','Rating','Reviews','Local Category','Email'];
             const dataRows = _peopleResults.map(p => {
                 const title = cleanTitle(p);
                 if (hideNoTitle && !title) return null;
