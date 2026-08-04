@@ -399,6 +399,28 @@
             .job-card > .actions { justify-content:flex-start; align-self:stretch; }
             .job-card .job-error { white-space:normal; overflow:visible; text-overflow:clip; }
             #page-scraper .form-card .filters { max-width:100%; }
+
+        /* ===== Find People page ===== */
+        .fp-info-banner { background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: 8px; padding: 0.75rem 1rem; margin-bottom: 1.25rem; font-size: 0.85rem; color: var(--gray-600); line-height: 1.5; }
+        .fp-primary { margin-bottom: 1rem; }
+        .fp-label { font-size: 0.8rem; font-weight: 600; color: var(--gray-700); display: block; margin-bottom: 0.35rem; }
+        .fp-hint { font-size: 0.7rem; font-weight: 400; color: var(--gray-400); margin-left: 0.5rem; }
+        .fp-title-input { width: 100%; padding: 0.6rem !important; font-size: 0.95rem !important; border: 2px solid var(--primary-light) !important; border-radius: 8px !important; }
+        .fp-role-pills { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.5rem; }
+        .fp-pill { padding: 0.25rem 0.75rem; border-radius: 20px; border: 1px solid var(--gray-300); background: white; color: var(--gray-600); font-size: 0.75rem; font-weight: 500; cursor: pointer; transition: all 0.15s; }
+        .fp-pill:hover { background: var(--primary); color: white; border-color: var(--primary); }
+        .fp-filters-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
+        .fp-filters-grid .filter-group input, .fp-filters-grid .filter-group select { padding: 0.4rem; font-size: 0.8rem; }
+        .fp-actions { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+        .fp-checkbox { font-size: 0.8rem; display: flex; align-items: center; gap: 0.35rem; margin: 0; color: var(--gray-600); }
+        .fp-limit-input { width: 60px; padding: 0.25rem; border: 1px solid var(--gray-300); border-radius: 4px; font-size: 0.8rem; }
+        .fp-results-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; flex-wrap: wrap; gap: 0.5rem; }
+        .fp-results-actions { display: flex; align-items: center; gap: 0.75rem; }
+        .fp-count-badge { font-size: 0.75rem; color: var(--gray-500); font-weight: 400; }
+        .fp-export-note { font-size: 0.75rem; color: var(--gray-400); margin-top: 0.5rem; }
+        .fp-universe-local { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 4px; font-size: 0.65rem; font-weight: 600; background: #dbeafe; color: #1e40af; text-transform: uppercase; letter-spacing: 0.03em; }
+        .fp-universe-b2b { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 4px; font-size: 0.65rem; font-weight: 600; background: #f3e8ff; color: #6b21a8; text-transform: uppercase; letter-spacing: 0.03em; }
+        .fp-empty { text-align: center; padding: 2rem; color: var(--gray-400); font-size: 0.85rem; }
         }
 
         /* Button loading states */
@@ -1438,43 +1460,55 @@
         <!-- Find People Page -->
         <div class="page" id="page-people">
             <div class="form-card">
-                <h3><i data-lucide="users" class="icon" style="vertical-align:text-bottom"></i> Find People</h3>
-                <div style="background:#f0f9ff;border-left:4px solid #1a315d;padding:12px;margin-bottom:1rem;border-radius:4px;font-size:0.85rem;color:#374151;">
-                    <strong>How to use:</strong> Search your contacts database directly for <em>people</em> by role, function, location, or industry — free, instant, no credits. e.g. Seniority "vp", Function "sales", Country "United States". Use exact industry names (e.g. "Computer Software").
+                <h3> Find People</h3>
+                <div class="fp-info-banner">
+                    Search your own database of <strong>6.6M+ leads</strong> — free, instant, no credits.
+                    Pick a role below or type your own, then click <strong>Find People</strong>.
                 </div>
                 <div id="findPeopleError" class="validation-message error" style="display:none;"></div>
-                <div class="filters">
-                    <div class="filter-group"><label>Seniority</label><input type="text" id="findSeniority" class="search-input" placeholder="e.g. vp,cxo,director"><span class="field-helper">Comma-separated (optional)</span></div>
-                    <div class="filter-group"><label>Function</label><input type="text" id="findFunction" class="search-input" placeholder="e.g. sales,engineering"><span class="field-helper">Comma-separated (optional)</span></div>
-                    <div class="filter-group"><label>Country</label><input type="text" id="findCountry" class="search-input" placeholder="e.g. United States"><span class="field-helper">Canonical country name (optional)</span></div>
-                    <div class="filter-group"><label>Industry</label><input type="text" id="findIndustry" class="search-input" placeholder="e.g. Computer Software"><span class="field-helper">Exact industry (optional)</span></div>
-                    <div class="filter-group"><label>Job Title / Role</label><input type="text" id="findKeywords" class="search-input" placeholder="e.g. CEO, VP of Sales, Marketing Director"><span class="field-helper">Most accurate — matches the role (CEO ↔ Chief Executive Officer)</span></div>
-                    <div class="filter-group"><label>Name contains</label><input type="text" id="findName" class="search-input" placeholder="Partial name (optional)"><span class="field-helper">Substring on full name (optional)</span></div>
-                    <div class="filter-group"><label>Universe</label><select id="findUniverse"><option value="">All leads</option><option value="local_business">Local business</option></select><span class="field-helper">Local business vs all (optional)</span></div>
+
+                <!-- Primary filter: Job Title -->
+                <div class="fp-primary">
+                    <label class="fp-label">Job Title / Role <span class="fp-hint">most accurate — CEO matches "Chief Executive Officer"</span></label>
+                    <input type="text" id="findKeywords" class="search-input fp-title-input" placeholder="e.g. CEO, VP of Sales, Marketing Director">
+                    <div class="fp-role-pills">
+                        <button class="fp-pill" type="button" data-role="ceo">CEO</button>
+                        <button class="fp-pill" type="button" data-role="cto">CTO</button>
+                        <button class="fp-pill" type="button" data-role="founder">Founder</button>
+                        <button class="fp-pill" type="button" data-role="vp">VP</button>
+                        <button class="fp-pill" type="button" data-role="director">Director</button>
+                        <button class="fp-pill" type="button" data-role="owner">Owner</button>
+                    </div>
                 </div>
-                <div style="margin-top:0.75rem; display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
-                    <span style="font-size:0.8rem; color:var(--gray-500);">Quick role:</span>
-                    <button class="btn btn-secondary btn-sm" type="button" data-role="ceo">CEO</button>
-                    <button class="btn btn-secondary btn-sm" type="button" data-role="cto">CTO</button>
-                    <button class="btn btn-secondary btn-sm" type="button" data-role="cfo">CFO</button>
-                    <button class="btn btn-secondary btn-sm" type="button" data-role="founder">Founder</button>
-                    <button class="btn btn-secondary btn-sm" type="button" data-role="vp">VP</button>
-                    <button class="btn btn-secondary btn-sm" type="button" data-role="director">Director</button>
-                    <button class="btn btn-secondary btn-sm" type="button" data-role="owner">Owner</button>
+
+                <!-- Secondary filters -->
+                <div class="fp-filters-grid">
+                    <div class="filter-group"><label>Country</label><input type="text" id="findCountry" placeholder="e.g. United States"></div>
+                    <div class="filter-group"><label>Universe</label><select id="findUniverse"><option value="">All leads</option><option value="local_business">Local business</option><option value="b2b_agency">B2B / Agency</option></select></div>
+                    <div class="filter-group"><label>Seniority</label><input type="text" id="findSeniority" placeholder="vp, director, owner"></div>
+                    <div class="filter-group"><label>Function</label><input type="text" id="findFunction" placeholder="sales, engineering"></div>
+                    <div class="filter-group"><label>Industry</label><input type="text" id="findIndustry" placeholder="e.g. Restaurant"></div>
+                    <div class="filter-group"><label>Name contains</label><input type="text" id="findName" placeholder="Partial name"></div>
                 </div>
-                <div class="actions" style="margin-top:1rem; display:flex; align-items:center; gap:1rem; flex-wrap:wrap;">
+
+                <!-- Actions -->
+                <div class="fp-actions">
                     <button class="btn btn-primary" id="findPeopleBtn">Find People</button>
-                    <label style="font-size:0.85rem; display:flex; align-items:center; gap:0.4rem; margin:0;"><input type="checkbox" id="findHasEmail"> Only with email</label>
-                    <label style="font-size:0.85rem; display:flex; align-items:center; gap:0.4rem; margin:0;">Limit <input type="number" id="findPeopleLimit" value="50" min="1" max="200" style="width:70px; padding:0.3rem; border:1px solid var(--gray-300); border-radius:4px;"></label>
+                    <label class="fp-checkbox"><input type="checkbox" id="findHasEmail"> Only with email</label>
+                    <label class="fp-checkbox">Limit <input type="number" id="findPeopleLimit" value="50" min="1" max="200" class="fp-limit-input"></label>
                 </div>
             </div>
+
+            <!-- Results -->
             <div class="form-card" id="findPeopleResults" style="display:none;">
-                <h3>👥 Results <span id="findPeopleCount"></span></h3>
-                <div style="display:flex; gap:1rem; align-items:center; margin-bottom:0.75rem; flex-wrap:wrap;">
-                    <button class="btn btn-success btn-sm" id="downloadPeopleCsv">⬇ Download CSV</button>
-                    <label style="font-size:0.85rem; display:flex; align-items:center; gap:0.4rem; margin:0;"><input type="checkbox" id="findHideNoTitle"> Hide rows with no title</label>
-                    <span style="font-size:0.8rem; color:var(--gray-500);" id="findPeopleExportNote"></span>
+                <div class="fp-results-header">
+                    <h3 style="margin:0; border:none; padding:0;">Results <span id="findPeopleCount" class="fp-count-badge"></span></h3>
+                    <div class="fp-results-actions">
+                        <button class="btn btn-success btn-sm" id="downloadPeopleCsv"> Download CSV</button>
+                        <label class="fp-checkbox"><input type="checkbox" id="findHideNoTitle"> Hide no-title</label>
+                    </div>
                 </div>
+                <div id="findPeopleExportNote" class="fp-export-note"></div>
                 <div style="overflow-x:auto;">
                     <table class="results-table">
                         <thead><tr><th>Name</th><th>Title</th><th>Company</th><th>Industry</th><th>Location</th><th>Universe</th><th>Rating</th><th>Email</th></tr></thead>
@@ -3830,8 +3864,11 @@ example.org,Jane Doe</pre>
                 const title = cleanTitle(p);
                 if (hideNoTitle && !title) return;
                 const loc = [p.geo_city, p.geo_country].filter(Boolean).join(', ');
+                const univBadge = p.lead_universe === 'local_business' ? '<span class="fp-universe-local">Local</span>'
+                                 : p.lead_universe === 'b2b_agency' ? '<span class="fp-universe-b2b">B2B</span>' : '';
+                const ratingHtml = p.rating ? '⭐ ' + p.rating + ' <span style="color:var(--gray-400);font-size:0.7rem">(' + (p.reviews||0) + ')</span>' : '';
                 const tr = document.createElement('tr');
-                tr.innerHTML = '<td>' + escHtml(p.full_name) + '</td><td>' + escHtml(title) + '</td><td>' + escHtml(p.company_name) + '</td><td>' + escHtml(p.industry) + '</td><td>' + escHtml(loc) + '</td><td>' + escHtml(p.lead_universe || '') + '</td><td>' + (p.rating ? '⭐' + p.rating + ' (' + (p.reviews||0) + ')' : '') + '</td><td>' + escHtml(p.email) + '</td>';
+                tr.innerHTML = '<td>' + escHtml(p.full_name) + '</td><td>' + escHtml(title) + '</td><td>' + escHtml(p.company_name) + '</td><td>' + escHtml(p.industry) + '</td><td>' + escHtml(loc) + '</td><td>' + univBadge + '</td><td>' + ratingHtml + '</td><td>' + escHtml(p.email) + '</td>';
                 tbody.appendChild(tr);
             });
         }
