@@ -4945,6 +4945,9 @@ class ProviderToggleRequest(BaseModel):
     # behavior — no regression). NOT a cascade provider; ignored by the paid
     # waterfall.
     source: Optional[str] = None
+    # Scraper.tech provenance fix: tag all enriched leads with this universe
+    # (e.g., 'local_business') so write-back carries the origin forward.
+    lead_universe: Optional[str] = None
 
 
 @router.post("/flows/domain-enrich")
@@ -5000,6 +5003,11 @@ async def domain_enrich_with_providers(
             cascade_json = json.dumps(cascade)
 
     rows = df.fillna("").astype(str).to_dict(orient="records")
+
+    # Inject lead_universe tag (for scraper.tech/local-business provenance fix)
+    if hasattr(req, 'lead_universe') and req.lead_universe:
+        for row in rows:
+            row['lead_universe'] = req.lead_universe
 
     # Pre-processing: dedupe by domain column (default ON). Runs BEFORE
     # job creation so total reflects unique rows. deduped_count and the

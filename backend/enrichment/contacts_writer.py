@@ -396,6 +396,11 @@ async def _write_person_payload(
     if source_path:
         body["source_path"] = source_path
 
+    # Universe tag (e.g., 'local_business' for scraper.tech-origin enrichment)
+    lead_universe = (payload.get("lead_universe") or "").strip()
+    if lead_universe:
+        body["lead_universe"] = lead_universe
+
     # Job lineage (kept compact)
     lineage: dict[str, Any] = {}
     if job_id:
