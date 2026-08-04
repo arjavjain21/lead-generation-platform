@@ -400,27 +400,135 @@
             .job-card .job-error { white-space:normal; overflow:visible; text-overflow:clip; }
             #page-scraper .form-card .filters { max-width:100%; }
 
-        /* ===== Find People page ===== */
-        .fp-info-banner { background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: 8px; padding: 0.75rem 1rem; margin-bottom: 1.25rem; font-size: 0.85rem; color: var(--gray-600); line-height: 1.5; }
-        .fp-primary { margin-bottom: 1rem; }
-        .fp-label { font-size: 0.8rem; font-weight: 600; color: var(--gray-700); display: block; margin-bottom: 0.35rem; }
-        .fp-hint { font-size: 0.7rem; font-weight: 400; color: var(--gray-400); margin-left: 0.5rem; }
-        .fp-title-input { width: 100%; padding: 0.6rem !important; font-size: 0.95rem !important; border: 2px solid var(--primary-light) !important; border-radius: 8px !important; }
-        .fp-role-pills { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.5rem; }
-        .fp-pill { padding: 0.25rem 0.75rem; border-radius: 20px; border: 1px solid var(--gray-300); background: white; color: var(--gray-600); font-size: 0.75rem; font-weight: 500; cursor: pointer; transition: all 0.15s; }
-        .fp-pill:hover { background: var(--primary); color: white; border-color: var(--primary); }
-        .fp-filters-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
-        .fp-filters-grid .filter-group input, .fp-filters-grid .filter-group select { padding: 0.4rem; font-size: 0.8rem; }
-        .fp-actions { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
-        .fp-checkbox { font-size: 0.8rem; display: flex; align-items: center; gap: 0.35rem; margin: 0; color: var(--gray-600); }
-        .fp-limit-input { width: 60px; padding: 0.25rem; border: 1px solid var(--gray-300); border-radius: 4px; font-size: 0.8rem; }
-        .fp-results-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; flex-wrap: wrap; gap: 0.5rem; }
-        .fp-results-actions { display: flex; align-items: center; gap: 0.75rem; }
-        .fp-count-badge { font-size: 0.75rem; color: var(--gray-500); font-weight: 400; }
-        .fp-export-note { font-size: 0.75rem; color: var(--gray-400); margin-top: 0.5rem; }
-        .fp-universe-local { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 4px; font-size: 0.65rem; font-weight: 600; background: #dbeafe; color: #1e40af; text-transform: uppercase; letter-spacing: 0.03em; }
-        .fp-universe-b2b { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 4px; font-size: 0.65rem; font-weight: 600; background: #f3e8ff; color: #6b21a8; text-transform: uppercase; letter-spacing: 0.03em; }
-        .fp-empty { text-align: center; padding: 2rem; color: var(--gray-400); font-size: 0.85rem; }
+        } /* end @media (max-width:768px) — mobile job-card overrides above */
+
+        /* =============================================================
+           FIND PEOPLE PAGE — clean B2B SaaS search interface.
+           Scoped to #page-people so other surfaces are untouched.
+           (NOTE: this block was previously nested inside the mobile
+           media query above, so it never applied on desktop. Fixed.)
+           Design tokens: page #F8FAFC · card #FFFFFF · text #172033 ·
+           secondary #64748B · border #D7DEE8 · navy var(--primary) · green #059669
+           ============================================================= */
+        #page-people { background: #F8FAFC; }
+
+        /* Card — overrides the shared .form-card for this page only */
+        #page-people .form-card {
+            max-width: 1200px;
+            width: calc(100% - 48px);
+            margin-left: auto;
+            margin-right: auto;
+            padding: 32px;
+            border: 1px solid #D7DEE8;
+            border-radius: 12px;
+            background: #FFFFFF;
+            box-shadow: 0 1px 2px rgba(16,24,40,0.04), 0 1px 3px rgba(16,24,40,0.06);
+            color: #172033;
+        }
+
+        /* Header: title + connection pill, divider below */
+        #page-people .fp-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+        #page-people .fp-card-title { font-size: 24px; font-weight: 700; color: #172033; margin: 0; padding: 0; border: none; line-height: 1.2; }
+        #page-people .fp-divider { height: 1px; background: #D7DEE8; margin: 20px 0 24px; border: none; }
+
+        /* Intro banner */
+        #page-people .fp-info-banner {
+            background: #F8FAFC; border: 1px solid #D7DEE8; border-radius: 8px;
+            padding: 12px 16px; margin-bottom: 24px; font-size: 15px; color: #64748B; line-height: 1.55;
+        }
+        #page-people .fp-info-banner strong { color: #172033; font-weight: 600; }
+
+        /* Field group: label + helper + control, 16px between fields, 6px label→input */
+        #page-people .fp-field { margin-bottom: 16px; }
+        #page-people .fp-field:last-child { margin-bottom: 0; }
+        #page-people .fp-label { display: block; font-size: 14px; font-weight: 600; color: #172033; margin-bottom: 6px; }
+        #page-people .fp-helper { font-size: 13px; color: #64748B; margin: 0 0 10px; line-height: 1.5; }
+
+        /* Role chips — equal height, rounded, hover + visible selected state */
+        #page-people .fp-role-pills { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+        #page-people .fp-pill {
+            height: 36px; padding: 0 16px; border-radius: 8px;
+            border: 1px solid #D7DEE8; background: #FFFFFF; color: #475569;
+            font-size: 14px; font-weight: 500; cursor: pointer;
+            transition: background-color .15s, border-color .15s, color .15s, box-shadow .15s;
+        }
+        #page-people .fp-pill:hover { border-color: var(--primary); color: var(--primary); background: #F8FAFC; }
+        #page-people .fp-pill:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(26,49,93,0.18); border-color: var(--primary); }
+        #page-people .fp-pill.selected, #page-people .fp-pill[aria-pressed="true"] { background: var(--primary); border-color: var(--primary); color: #FFFFFF; }
+        #page-people .fp-pill.selected:hover, #page-people .fp-pill[aria-pressed="true"]:hover { background: var(--primary-dark); color: #FFFFFF; }
+
+        /* Unified control style — text inputs, selects, number inputs (44px) */
+        #page-people .fp-input,
+        #page-people .fp-filters-grid .filter-group input,
+        #page-people .fp-filters-grid .filter-group select {
+            height: 44px; width: 100%; padding: 0 12px;
+            border: 1px solid #D7DEE8; border-radius: 8px; background: #FFFFFF;
+            color: #172033; font-size: 15px; font-family: inherit;
+            transition: border-color .15s, box-shadow .15s;
+            -webkit-appearance: none; appearance: none;
+        }
+        #page-people .fp-input:hover,
+        #page-people .fp-filters-grid .filter-group input:hover,
+        #page-people .fp-filters-grid .filter-group select:hover { border-color: #94a3b8; }
+        #page-people .fp-input:focus,
+        #page-people .fp-filters-grid .filter-group input:focus,
+        #page-people .fp-filters-grid .filter-group select:focus {
+            outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(26,49,93,0.15);
+        }
+        #page-people .fp-input::placeholder,
+        #page-people .fp-filters-grid .filter-group input::placeholder { color: #94a3b8; }
+        #page-people .fp-filters-grid .filter-group { gap: 0; }
+        #page-people .fp-filters-grid .filter-group label { font-size: 14px; font-weight: 600; color: #172033; margin-bottom: 6px; }
+        #page-people .fp-filters-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 16px; }
+
+        /* Action row — button, checkbox, result-limit */
+        #page-people .fp-actions { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-top: 8px; }
+        #page-people .fp-actions .btn-primary {
+            height: 44px; padding: 0 24px; border-radius: 8px; font-weight: 500; font-size: 15px;
+            background: var(--primary); color: #FFFFFF; cursor: pointer;
+            display: inline-flex; align-items: center; justify-content: center;
+        }
+        #page-people .fp-actions .btn-primary:hover { background: var(--primary-dark); }
+        #page-people .fp-actions .btn-primary:active { background: #0f1d38; }
+        #page-people .fp-actions .btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(26,49,93,0.30); }
+        #page-people .fp-actions .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+        #page-people .fp-checkbox { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: #334155; cursor: pointer; margin: 0; }
+        #page-people .fp-checkbox input { width: 16px; height: 16px; cursor: pointer; accent-color: var(--primary); }
+        #page-people .fp-limit { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: #334155; }
+        #page-people .fp-limit-input { width: 72px; height: 44px; padding: 0 10px; border: 1px solid #D7DEE8; border-radius: 8px; background: #FFFFFF; color: #172033; font-size: 15px; }
+        #page-people .fp-limit-input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(26,49,93,0.15); }
+        #page-people .validation-message.error { margin-bottom: 16px; }
+
+        /* Connection pill in the header — mirrors global #connectionStatus state */
+        #page-people .fp-conn {
+            display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 14px;
+            border-radius: 999px; font-size: 13px; font-weight: 500; white-space: nowrap;
+            background: #ECFDF5; border: 1px solid #A7F3D0; color: #059669;
+        }
+        #page-people .fp-conn .fp-conn-dot { width: 8px; height: 8px; border-radius: 50%; background: #059669; }
+        #page-people .fp-conn.disconnected { background: #FEF2F2; border-color: #FECACA; color: #B91C1C; }
+        #page-people .fp-conn.disconnected .fp-conn-dot { background: #EF4444; }
+
+        /* Hide the floating global indicator ONLY on this page (status lives in the header) */
+        body.on-people-page #connectionStatus { display: none !important; }
+
+        /* Results card */
+        #page-people .fp-results-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
+        #page-people .fp-results-header h3 { font-size: 18px; font-weight: 600; color: #172033; margin: 0; padding: 0; border: none; }
+        #page-people .fp-results-actions { display: flex; align-items: center; gap: 12px; }
+        #page-people .fp-count-badge { font-size: 13px; color: #64748B; font-weight: 400; }
+        #page-people .fp-export-note { font-size: 13px; color: #64748B; margin: 0 0 12px; }
+        #page-people .fp-universe-local { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #dbeafe; color: #1e40af; text-transform: uppercase; letter-spacing: 0.03em; }
+        #page-people .fp-universe-b2b { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #f3e8ff; color: #6b21a8; text-transform: uppercase; letter-spacing: 0.03em; }
+        #page-people .fp-empty { text-align: center; padding: 2rem; color: var(--gray-400); font-size: 0.85rem; }
+
+        /* Responsive — Find People */
+        @media (max-width:768px) {
+            #page-people .form-card { width: 100%; padding: 20px; }
+            #page-people .fp-filters-grid { grid-template-columns: 1fr; }
+            #page-people .fp-actions { flex-direction: column; align-items: stretch; }
+            #page-people .fp-actions .btn-primary { width: 100%; }
+            #page-people .fp-checkbox, #page-people .fp-limit { justify-content: flex-start; }
         }
 
         /* Button loading states */
@@ -1460,42 +1568,52 @@
         <!-- Find People Page -->
         <div class="page" id="page-people">
             <div class="form-card">
-                <h3> Find People</h3>
+                <div class="fp-header">
+                    <h3 class="fp-card-title">Find People</h3>
+                    <div class="fp-conn connected" id="fpConnStatus" aria-live="polite" title="Backend connection status">
+                        <span class="fp-conn-dot"></span>
+                        <span id="fpConnStatusText">Connected</span>
+                    </div>
+                </div>
+                <hr class="fp-divider">
+
                 <div class="fp-info-banner">
                     Search your own database of <strong>6.6M+ leads</strong> — free, instant, no credits.
                     Pick a role below or type your own, then click <strong>Find People</strong>.
                 </div>
-                <div id="findPeopleError" class="validation-message error" style="display:none;"></div>
+                <div id="findPeopleError" class="validation-message error" style="display:none;" role="alert"></div>
 
-                <!-- Primary filter: Job Title -->
-                <div class="fp-primary">
-                    <label class="fp-label">Job Title / Role <span class="fp-hint">most accurate — CEO matches "Chief Executive Officer"</span></label>
-                    <input type="text" id="findKeywords" class="search-input fp-title-input" placeholder="e.g. CEO, VP of Sales, Marketing Director">
-                    <div class="fp-role-pills">
-                        <button class="fp-pill" type="button" data-role="ceo">CEO</button>
-                        <button class="fp-pill" type="button" data-role="cto">CTO</button>
-                        <button class="fp-pill" type="button" data-role="founder">Founder</button>
-                        <button class="fp-pill" type="button" data-role="vp">VP</button>
-                        <button class="fp-pill" type="button" data-role="director">Director</button>
-                        <button class="fp-pill" type="button" data-role="owner">Owner</button>
+                <!-- Primary field group: Job title or role -->
+                <div class="fp-field">
+                    <label class="fp-label" for="findKeywords">Job title or role</label>
+                    <p class="fp-helper" id="findKeywordsHelp">Exact titles are most accurate. For example, CEO matches “Chief Executive Officer.”</p>
+                    <div class="fp-role-pills" role="group" aria-label="Quick role picks">
+                        <button class="fp-pill" type="button" data-role="ceo" aria-pressed="false">CEO</button>
+                        <button class="fp-pill" type="button" data-role="cto" aria-pressed="false">CTO</button>
+                        <button class="fp-pill" type="button" data-role="founder" aria-pressed="false">Founder</button>
+                        <button class="fp-pill" type="button" data-role="vp" aria-pressed="false">VP</button>
+                        <button class="fp-pill" type="button" data-role="director" aria-pressed="false">Director</button>
+                        <button class="fp-pill" type="button" data-role="owner" aria-pressed="false">Owner</button>
                     </div>
+                    <input type="text" id="findKeywords" class="fp-input" placeholder="Enter a custom role" aria-describedby="findKeywordsHelp" autocomplete="off">
                 </div>
 
                 <!-- Secondary filters -->
                 <div class="fp-filters-grid">
-                    <div class="filter-group"><label>Country</label><input type="text" id="findCountry" placeholder="e.g. United States"></div>
-                    <div class="filter-group"><label>Universe</label><select id="findUniverse"><option value="">All leads</option><option value="local_business">Local business</option><option value="b2b_agency">B2B / Agency</option></select></div>
-                    <div class="filter-group"><label>Seniority</label><input type="text" id="findSeniority" placeholder="vp, director, owner"></div>
-                    <div class="filter-group"><label>Function</label><input type="text" id="findFunction" placeholder="sales, engineering"></div>
-                    <div class="filter-group"><label>Industry</label><input type="text" id="findIndustry" placeholder="e.g. Restaurant"></div>
-                    <div class="filter-group"><label>Name contains</label><input type="text" id="findName" placeholder="Partial name"></div>
+                    <div class="filter-group"><label for="findCountry">Country</label><input type="text" id="findCountry" placeholder="e.g. United States" autocomplete="off"></div>
+                    <div class="filter-group"><label for="findUniverse">Universe</label><select id="findUniverse"><option value="">All leads</option><option value="local_business">Local business</option><option value="b2b_agency">B2B / Agency</option></select></div>
+                    <div class="filter-group"><label for="findSeniority">Seniority</label><input type="text" id="findSeniority" placeholder="e.g. VP, Director, Owner" autocomplete="off"></div>
+                    <div class="filter-group"><label for="findFunction">Function</label><input type="text" id="findFunction" placeholder="e.g. Sales, Engineering" autocomplete="off"></div>
+                    <div class="filter-group"><label for="findIndustry">Industry</label><input type="text" id="findIndustry" placeholder="e.g. Restaurants" autocomplete="off"></div>
+                    <div class="filter-group"><label for="findName">Name contains</label><input type="text" id="findName" placeholder="Enter a partial name" autocomplete="off"></div>
                 </div>
 
-                <!-- Actions -->
+                <!-- Action row -->
                 <div class="fp-actions">
-                    <button class="btn btn-primary" id="findPeopleBtn">Find People</button>
-                    <label class="fp-checkbox"><input type="checkbox" id="findHasEmail"> Only with email</label>
-                    <label class="fp-checkbox">Limit <input type="number" id="findPeopleLimit" value="50" min="1" max="200" class="fp-limit-input"></label>
+                    <button class="btn btn-primary" id="findPeopleBtn" type="button">Find People</button>
+                    <button class="btn btn-danger" id="findPeopleCancel" type="button" style="display:none;">Cancel</button>
+                    <label class="fp-checkbox"><input type="checkbox" id="findHasEmail"> Only include people with email</label>
+                    <label class="fp-limit">Result limit <input type="number" id="findPeopleLimit" value="50" min="1" max="200" class="fp-limit-input" aria-label="Result limit"></label>
                 </div>
             </div>
 
@@ -2325,6 +2443,9 @@ example.org,Jane Doe</pre>
             if (pageEl) {
                 pageEl.classList.add('active');
             }
+
+            // Find People hosts the connection pill in its card header; hide the floating indicator there only.
+            document.body.classList.toggle('on-people-page', pageId === 'people');
 
             // Load data when switching to specific pages
             if (pageId === 'scraper') loadScraperJobs();
@@ -3822,10 +3943,20 @@ example.org,Jane Doe</pre>
         function escHtml(s){ return (s==null?'':String(s)).replace(/[&<>"']/g, function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
         function csvList(v){ return (v||'').split(',').map(s=>s.trim()).filter(Boolean); }
         let _peopleResults = [];
+        let _findPeopleAbort = null;
         const _UNKNOWN_RE = /^(unknown|nan|none|null|n\/a|\s*)$/i;
         function cleanTitle(p){ const t=(p.title||'').trim(), h=(p.headline||'').trim(); if(t && !_UNKNOWN_RE.test(t)) return t; if(h && !_UNKNOWN_RE.test(h)) return h; return ''; }
-        function pickRole(role){ document.getElementById('findSeniority').value=''; document.getElementById('findKeywords').value=role; }
+        function setRolePillSelected(role){
+            document.querySelectorAll('[data-role]').forEach(b => {
+                const on = b.dataset.role === role;
+                b.classList.toggle('selected', on);
+                b.setAttribute('aria-pressed', on ? 'true' : 'false');
+            });
+        }
+        function pickRole(role){ document.getElementById('findSeniority').value=''; document.getElementById('findKeywords').value = role; setRolePillSelected(role); }
         document.querySelectorAll('[data-role]').forEach(btn => { btn.addEventListener('click', () => pickRole(btn.dataset.role)); });
+        // Typing a custom role clears any selected chip; the keyword input stays the single source of truth for the search.
+        document.getElementById('findKeywords').addEventListener('input', () => setRolePillSelected(null));
 
         document.getElementById('findPeopleBtn').addEventListener('click', async () => {
             const btn = document.getElementById('findPeopleBtn');
@@ -3841,13 +3972,22 @@ example.org,Jane Doe</pre>
             if (document.getElementById('findHasEmail').checked) payload.has_email = true;
             const univ = document.getElementById('findUniverse').value; if (univ) payload.universe = univ;
             setButtonLoading(btn, true, 'Searching...');
+            _findPeopleAbort = new AbortController();
+            document.getElementById('findPeopleCancel').style.display = '';
             try {
-                const res = await fetch('/api/enrichment/search/employees', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                const res = await fetch('/api/enrichment/search/employees', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal: _findPeopleAbort.signal });
                 if (res.ok) { const data = await res.json(); displayPeopleResults(data); }
                 else { err.textContent = 'Search failed (HTTP ' + res.status + '). Try narrower filters.'; err.style.display = 'block'; }
-            } catch (e) { err.textContent = 'Search failed: ' + e; err.style.display = 'block'; }
+            } catch (e) {
+                if (e.name === 'AbortError') { err.textContent = 'Search cancelled.'; err.style.display = 'block'; }
+                else { err.textContent = 'Search failed: ' + e; err.style.display = 'block'; }
+            }
+            _findPeopleAbort = null;
+            document.getElementById('findPeopleCancel').style.display = 'none';
             setButtonLoading(btn, false, 'Find People');
         });
+
+        document.getElementById('findPeopleCancel').addEventListener('click', () => { if (_findPeopleAbort) _findPeopleAbort.abort(); });
 
         function displayPeopleResults(data) {
             _peopleResults = data.people || [];
@@ -6231,17 +6371,18 @@ example.org,Jane Doe</pre>
         // =============================================================================
         const connectionStatus = document.getElementById('connectionStatus');
         const connectionStatusText = document.getElementById('connectionStatusText');
+        const fpConnStatus = document.getElementById('fpConnStatus');
+        const fpConnStatusText = document.getElementById('fpConnStatusText');
 
         function updateConnectionStatus(connected) {
-            if (connected) {
-                connectionStatus.classList.remove('disconnected');
-                connectionStatus.classList.add('connected');
-                connectionStatusText.textContent = 'Connected';
-            } else {
-                connectionStatus.classList.remove('connected');
-                connectionStatus.classList.add('disconnected');
-                connectionStatusText.textContent = 'Disconnected';
-            }
+            const cls = connected ? 'connected' : 'disconnected';
+            const label = connected ? 'Connected' : 'Disconnected';
+            // Global floating indicator (shown on all pages except Find People)
+            if (connectionStatus) { connectionStatus.classList.remove('connected', 'disconnected'); connectionStatus.classList.add(cls); }
+            if (connectionStatusText) connectionStatusText.textContent = label;
+            // Mirrored pill in the Find People card header
+            if (fpConnStatus) { fpConnStatus.classList.remove('connected', 'disconnected'); fpConnStatus.classList.add(cls); }
+            if (fpConnStatusText) fpConnStatusText.textContent = label;
         }
 
         // Monitor online/offline status
