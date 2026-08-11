@@ -41,12 +41,25 @@ class TestSourceGroupMapping:
         assert SOURCE_GROUPS["prospeo"] == "prospeo"
         assert SOURCE_GROUPS["prospeo_person"] == "prospeo"
 
+    def test_smartprospect_sources_map_to_smartprospect(self):
+        """SmartProspect sources (both labels) should map to 'smartprospect' provider.
+
+        `smartprospect` is the label used by the unified /enrich path; `smartprospect_email`
+        is the label used by the List Building flows. Both must collapse to one provider
+        group so reporting/aggregation shows a single SmartProspect number.
+        """
+        assert SOURCE_GROUPS["smartprospect"] == "smartprospect"
+        assert SOURCE_GROUPS["smartprospect_email"] == "smartprospect"
+
     def test_normalize_source_function(self):
         """Test the normalize_source helper function."""
         assert normalize_source("blitz_email") == "blitz"
         assert normalize_source("contacts_db_email") == "contacts_db"
         assert normalize_source("better_enrich_company") == "better_enrich"
         assert normalize_source("prospeo") == "prospeo"
+        # Both SmartProspect labels must normalize to the single canonical provider
+        assert normalize_source("smartprospect") == "smartprospect"
+        assert normalize_source("smartprospect_email") == "smartprospect"
         # Unknown sources should return themselves
         assert normalize_source("unknown_source") == "unknown_source"
 
@@ -102,6 +115,20 @@ class TestAggregateByProvider:
         result = EnrichmentStatsStore.aggregate_by_provider(raw_sources)
         assert "unknown_source" in result
         assert "another_unknown" in result
+
+    def test_aggregate_smartprospect_variants_collapse(self):
+        """Both SmartProspect labels must collapse into a single 'smartprospect' count."""
+        raw_sources = [
+            "smartprospect",        # unified /enrich path
+            "smartprospect_email",  # List Building flows path
+            "smartprospect_email",
+            "smartprospect",
+            "smartprospect_email",
+        ]
+        result = EnrichmentStatsStore.aggregate_by_provider(raw_sources)
+        assert result == {"smartprospect": 5}
+        # No split keys should leak through
+        assert "smartprospect_email" not in result
 
     def test_aggregate_mixed_known_and_unknown(self):
         """Mix of known and unknown sources should work correctly."""

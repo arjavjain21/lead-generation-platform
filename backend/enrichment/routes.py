@@ -1269,6 +1269,9 @@ def _friendly_source(source: str) -> str:
         "better_enrich_person": "better_enrich",
         "wizleads": "wizleads",
         "wizleads_email": "wizleads",
+        # SmartProspect — collapse both labels to the canonical UI label
+        "smartprospect": "smartprospect",
+        "smartprospect_email": "smartprospect",
     }
     return source_map.get(source, source or "unknown")
 
