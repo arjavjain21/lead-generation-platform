@@ -29,7 +29,7 @@ import pandas as pd
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from shared import auth, db
 from . import blitz_client
@@ -1543,6 +1543,7 @@ async def enrich_single_domain(
                 "location_city": row.get("dm_location_city", ""),
                 "location_country": row.get("dm_location_country", ""),
                 "icp_tier": row.get("dm_icp_tier", 0),
+                "company_industry": row.get("company_industry", ""),
                 "email_source": _friendly_source(row.get("dm_email_source", "")),
                 "validation_status": _map_validation_status(row.get("mailtester_code", "")),
                 "email_verified": row.get("dm_email_verified", "unknown"),
@@ -2156,6 +2157,7 @@ async def unified_enrich(
                         "full_name": row.get("dm_full_name", ""),
                         "last_name": row.get("dm_last_name", ""),
                         "first_name": row.get("dm_first_name", ""),
+                        "company_industry": row.get("company_industry", ""),
                         "email_source": row.get("dm_email_source", ""),
                         "linkedin_url": row.get("dm_linkedin_url", ""),
                         "location_city": row.get("dm_location_city", ""),
@@ -2214,6 +2216,7 @@ async def unified_enrich(
                         "location_city": row.get("dm_location_city", ""),
                         "location_country": row.get("dm_location_country", ""),
                         "icp_tier": row.get("dm_icp_tier", 0),
+                        "company_industry": row.get("company_industry", ""),
                         "email_source": _friendly_source(row.get("dm_email_source", "")),
                         "validation_status": _map_validation_status(row.get("mailtester_code", "")),
                         "email_verified": row.get("dm_email_verified", "unknown"),
@@ -4758,6 +4761,13 @@ class SearchAndEnrichRequest(BaseModel):
     include_generic_emails: bool = True
 
 
+# Canonical lead-universe buckets accepted by the Find People filter.
+# Kept in sync with the DB classifier core.fn_classify_industry outputs and
+# the frontend #findUniverse dropdown. Invalid values are rejected (422) so a
+# typo or case error surfaces clearly instead of silently returning no leads.
+_VALID_LEAD_UNIVERSES = frozenset({"local_business", "b2b_agency", "saas", "ecom"})
+
+
 class EmployeeSearchRequest(BaseModel):
     """Request model for direct people search (Flow: Find People)."""
     seniority: Optional[list[str]] = None
@@ -4770,6 +4780,21 @@ class EmployeeSearchRequest(BaseModel):
     universe: Optional[str] = None
     limit: int = 50
     offset: int = 0
+
+    @field_validator("universe")
+    @classmethod
+    def _normalize_universe(cls, v: Optional[str]) -> Optional[str]:
+        """Normalize case and reject unknown buckets so a typo returns a clear
+        422 instead of a silent empty result. Empty/None means 'all universes'."""
+        if v is None or not v.strip():
+            return None
+        norm = v.strip().lower()
+        if norm not in _VALID_LEAD_UNIVERSES:
+            raise ValueError(
+                "universe must be one of "
+                f"{sorted(_VALID_LEAD_UNIVERSES)} (or omitted for all); got {v!r}"
+            )
+        return norm
 
 
 class LinkedInEnrichRequest(BaseModel):
