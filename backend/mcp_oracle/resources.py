@@ -192,6 +192,7 @@ def get_schema(model_name: str) -> str:
     - ``ProviderToggleRequest`` — POST /api/enrichment/flows/domain-enrich
     - ``LinkedInV2Request`` — POST /api/enrichment/by-linkedin-v2
     - ``CompanySearchRequest`` — POST /api/enrichment/search/companies
+    - ``EmployeeSearchRequest`` — POST /api/enrichment/search/employees (Find People; `universe` filter: local_business/b2b_agency/saas/ecom)
 
     Args:
         model_name: The Pydantic class name (case-sensitive).

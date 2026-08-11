@@ -592,5 +592,17 @@ curl -s "https://listbuilding.eagleinfoservice.com/api/enrichment/jobs/$JOB_ID/d
 
 ---
 
+## Find People — people search + Lead Universe filtering (added 2026-08-08)
+
+`POST /api/enrichment/search/employees` (JWT auth) searches the internal contacts DB (~8.7M leads) by role / function / location / industry and **filters by lead universe**. Body fields (all optional): `universe`, `seniority`, `function`, `geo_country`, `industry`, `title_keywords`, `name_contains`, `has_email`, `limit`, `offset`.
+
+`universe` values: `local_business` | `b2b_agency` | `saas` | `ecom` (omit = all leads). New leads are auto-classified on write-back. Underlying Contacts DB endpoint: `GET https://leadsdatabase.cc/v1/people/search?universe=` (Bearer `CONTACTS_API_TOKEN`). Rules + mappings: `docs/LEAD_UNIVERSE_CLASSIFICATION.md`.
+
+```bash
+curl -X POST "https://listbuilding.eagleinfoservice.com/api/enrichment/search/employees" \
+  -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
+  -d '{"universe":"saas","seniority":["vp"],"geo_country":["United States"],"limit":50}'
+```
+
 **Document version:** 1.0 — 2026-07-05
 **Covers:** every enrichment endpoint live on this date, including the new `/api/enrichment/flows/help`.

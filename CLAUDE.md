@@ -37,6 +37,8 @@ DB changes (`everything-claude-code:database-reviewer`), security (`everything-c
 **URL:** https://listbuilding.eagleinfoservice.com/
 **Backend Port:** 8765 (managed by systemd: `lead-generation-platform.service`)
 
+**Lead Universe classification:** every lead in the contacts DB carries `core.person.lead_universe` — one of `local_business` / `b2b_agency` / `saas` / `ecom` (NULL = unclassified, ~38%). Filter by it on the **Find People** UI page, via `POST /api/enrichment/search/employees` (`universe` field), or directly on the Contacts DB API `GET https://leadsdatabase.cc/v1/people/search?universe=`. New leads are auto-tagged on write-back (`classify_industry` in `enrichment/contacts_writer.py`); DB classifiers: `core.fn_classify_industry`, `core.fn_classify_industry_category`. Full rules: `docs/LEAD_UNIVERSE_CLASSIFICATION.md`.
+
 ## Directory Structure
 
 ```
