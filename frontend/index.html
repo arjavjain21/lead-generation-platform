@@ -520,6 +520,8 @@
         #page-people .fp-export-note { font-size: 13px; color: #64748B; margin: 0 0 12px; }
         #page-people .fp-universe-local { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #dbeafe; color: #1e40af; text-transform: uppercase; letter-spacing: 0.03em; }
         #page-people .fp-universe-b2b { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #f3e8ff; color: #6b21a8; text-transform: uppercase; letter-spacing: 0.03em; }
+        #page-people .fp-universe-saas { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #d1fae5; color: #065f46; text-transform: uppercase; letter-spacing: 0.03em; }
+        #page-people .fp-universe-ecom { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #fef3c7; color: #b45309; text-transform: uppercase; letter-spacing: 0.03em; }
         #page-people .fp-empty { text-align: center; padding: 2rem; color: var(--gray-400); font-size: 0.85rem; }
 
         /* Responsive — Find People */
@@ -1601,7 +1603,7 @@
                 <!-- Secondary filters -->
                 <div class="fp-filters-grid">
                     <div class="filter-group"><label for="findCountry">Country</label><input type="text" id="findCountry" placeholder="e.g. United States" autocomplete="off"></div>
-                    <div class="filter-group"><label for="findUniverse">Universe</label><select id="findUniverse"><option value="">All leads</option><option value="local_business">Local business</option><option value="b2b_agency">B2B / Agency</option></select></div>
+                    <div class="filter-group"><label for="findUniverse">Universe</label><select id="findUniverse"><option value="">All leads</option><option value="local_business">Local business</option><option value="b2b_agency">B2B / Agency</option><option value="saas">SaaS</option><option value="ecom">E-commerce</option></select></div>
                     <div class="filter-group"><label for="findSeniority">Seniority</label><input type="text" id="findSeniority" placeholder="e.g. VP, Director, Owner" autocomplete="off"></div>
                     <div class="filter-group"><label for="findFunction">Function</label><input type="text" id="findFunction" placeholder="e.g. Sales, Engineering" autocomplete="off"></div>
                     <div class="filter-group"><label for="findIndustry">Industry</label><input type="text" id="findIndustry" placeholder="e.g. Restaurants" autocomplete="off"></div>
@@ -4005,7 +4007,9 @@ example.org,Jane Doe</pre>
                 if (hideNoTitle && !title) return;
                 const loc = [p.geo_city, p.geo_country].filter(Boolean).join(', ');
                 const univBadge = p.lead_universe === 'local_business' ? '<span class="fp-universe-local">Local</span>'
-                                 : p.lead_universe === 'b2b_agency' ? '<span class="fp-universe-b2b">B2B</span>' : '';
+                                 : p.lead_universe === 'b2b_agency' ? '<span class="fp-universe-b2b">B2B</span>'
+                                 : p.lead_universe === 'saas' ? '<span class="fp-universe-saas">SaaS</span>'
+                                 : p.lead_universe === 'ecom' ? '<span class="fp-universe-ecom">E-com</span>' : '';
                 const ratingHtml = p.rating ? '⭐ ' + p.rating + ' <span style="color:var(--gray-400);font-size:0.7rem">(' + (p.reviews||0) + ')</span>' : '';
                 const tr = document.createElement('tr');
                 tr.innerHTML = '<td>' + escHtml(p.full_name) + '</td><td>' + escHtml(title) + '</td><td>' + escHtml(p.company_name) + '</td><td>' + escHtml(p.industry) + '</td><td>' + escHtml(loc) + '</td><td>' + univBadge + '</td><td>' + ratingHtml + '</td><td>' + escHtml(p.email) + '</td>';
