@@ -403,6 +403,192 @@
         } /* end @media (max-width:768px) — mobile job-card overrides above */
 
         /* =============================================================
+           GOOGLE MAPS SCRAPER PAGE — denser, cleaner B2B ops styling.
+           Scoped to #page-scraper; presentation only. All IDs, onclick
+           handlers, data-status/data-preset filters, suggestion logic,
+           and job-render JS remain untouched.
+           Tokens: page #F8FAFC · card #FFF · card-border #E2E8F0 ·
+           control-border #CBD5E1 · row-border #E8EDF3 · text #1E293B ·
+           muted #64748B · navy var(--primary) · green var(--success).
+           ============================================================= */
+        #page-scraper { background: #F8FAFC; }
+
+        /* Both main cards (form + jobs): consistent surface */
+        #page-scraper .form-card {
+            background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 12px;
+            box-shadow: 0 1px 2px rgba(16,24,40,0.04); padding: 24px; margin-bottom: 20px;
+        }
+
+        /* Compact card header: title (left) + status/refresh (right) + full-width divider */
+        #page-scraper .scraper-card-head {
+            display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+        }
+        #page-scraper .scraper-card-title {
+            display: inline-flex; align-items: center; gap: 8px;
+            font-size: 23px; font-weight: 700; color: #172033; line-height: 1.25;
+            margin: 0; padding: 0; border: none;
+        }
+        #page-scraper .scraper-card-title .icon { width: 22px; height: 22px; flex-shrink: 0; }
+        #page-scraper .scraper-divider { height: 1px; background: #E2E8F0; border: none; margin: 16px 0 18px; }
+
+        /* Connection pill in the form header (mirrors global #connectionStatus) */
+        #page-scraper .scraper-conn {
+            display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 14px;
+            border-radius: 999px; font-size: 13px; font-weight: 500; white-space: nowrap;
+            background: #ECFDF5; border: 1px solid #A7F3D0; color: #059669;
+        }
+        #page-scraper .scraper-conn .scraper-conn-dot { width: 8px; height: 8px; border-radius: 50%; background: #059669; }
+        #page-scraper .scraper-conn.disconnected { background: #FEF2F2; border-color: #FECACA; color: #B91C1C; }
+        #page-scraper .scraper-conn.disconnected .scraper-conn-dot { background: #EF4444; }
+
+        /* Compact Refresh button in the jobs header */
+        #page-scraper .scraper-refresh-btn { height: 36px; padding: 0 14px; border-radius: 8px; font-size: 13px; font-weight: 500; border: 1px solid #CBD5E1; background: #F1F5F9; }
+
+        /* Floating global indicator hidden on this page (status lives in the header) */
+        body.on-scraper-page #connectionStatus { display: none !important; }
+
+        /* Instruction notice: compact, pale blue, left accent */
+        #page-scraper .scraper-notice {
+            background: #EFF6FF; border-left: 4px solid var(--primary); border-radius: 10px;
+            padding: 14px 18px; margin-bottom: 18px; font-size: 14px; line-height: 1.5;
+            color: #334155; max-width: 820px;
+        }
+        #page-scraper .scraper-notice p { margin: 0 0 6px; }
+        #page-scraper .scraper-notice p:last-child { margin-bottom: 0; }
+        #page-scraper .scraper-notice strong { color: #1E293B; font-weight: 700; }
+
+        /* ── Scraper form: controlled-width, left-aligned rows ── */
+        #page-scraper .form-card > .filters {
+            display: flex; flex-wrap: wrap; align-items: flex-start;
+            column-gap: 18px; row-gap: 16px; margin-bottom: 16px; max-width: none;
+        }
+        #page-scraper .form-card > .filters > .filter-group { display: flex; flex-direction: column; gap: 6px; }
+        #page-scraper .form-card > .filters > .filter-group > label { font-size: 14px; font-weight: 600; color: #334155; }
+        #page-scraper .form-card > .filters > .filter-group > .field-helper { font-size: 13px; color: #64748B; margin-top: 6px; }
+        /* Row 1 — query (~580px); Row 2 — country + mode (~250px each) */
+        #page-scraper .filter-group:has(#scraperQuery) { width: 580px; max-width: 100%; flex: 0 0 580px; }
+        #page-scraper .filter-group:has(#scraperCountry),
+        #page-scraper .filter-group:has(#scraperMode) { width: 250px; max-width: 100%; flex: 0 0 250px; }
+        /* Conditional containers (states / cities / zips) — full width up to 620px */
+        #page-scraper .filter-group:has(#scraperStates),
+        #page-scraper .filter-group:has(#scraperCitySearch),
+        #page-scraper .filter-group:has(#scraperZipsInput),
+        #page-scraper .filter-group:has(#scraperZipsUploadZone) { width: 100%; max-width: 620px; flex: 1 1 100%; }
+        #page-scraper .filter-group a { font-size: 13px; }
+
+        /* ── Unified control style (44px). Selects keep their chevron + 2.2rem right padding. ── */
+        #page-scraper .filter-group select,
+        #page-scraper textarea,
+        #page-scraper .search-input,
+        #page-scraper input[type="text"] {
+            height: 44px; width: 100%; border: 1px solid #CBD5E1; border-radius: 8px;
+            background: #FFFFFF; color: #1E293B; font-size: 15px; font-family: inherit;
+            transition: border-color .15s, box-shadow .15s;
+        }
+        #page-scraper .filter-group select { padding-left: 12px; }
+        #page-scraper input[type="text"]:not(.search-input) { padding: 0 12px; }
+        #page-scraper .search-input { padding: 0 12px 0 2.5rem; }
+        #page-scraper textarea { height: auto; min-height: 120px; padding: 10px 12px; resize: vertical; }
+        #page-scraper .filter-group select:hover,
+        #page-scraper textarea:hover,
+        #page-scraper .search-input:hover,
+        #page-scraper input[type="text"]:hover { border-color: #94A3B8; }
+        #page-scraper .filter-group select:focus,
+        #page-scraper textarea:focus,
+        #page-scraper .search-input:focus,
+        #page-scraper input[type="text"]:focus {
+            outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(26,49,93,0.15);
+        }
+        #page-scraper input::placeholder, #page-scraper textarea::placeholder { color: #94A3B8; }
+        /* The multi-state <select multiple> keeps its inline height:150px (inline beats this rule). */
+
+        /* ── Primary button ── */
+        #page-scraper .scraper-start-row { margin-top: 20px; }
+        #page-scraper #startScraperJob {
+            height: 44px; padding: 0 24px; border-radius: 8px; font-weight: 600; font-size: 15px;
+            background: var(--primary); color: #FFFFFF; cursor: pointer;
+            display: inline-flex; align-items: center; justify-content: center;
+        }
+        #page-scraper #startScraperJob:hover { background: var(--primary-dark); }
+        #page-scraper #startScraperJob:active { background: #0f1d38; }
+        #page-scraper #startScraperJob:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(26,49,93,0.30); }
+        #page-scraper #startScraperJob:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        /* ── Jobs filter toolbar: compact rows ── */
+        #page-scraper .scraper-status-row,
+        #page-scraper .scraper-search-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; align-items: center; }
+        #page-scraper .scraper-search-row { margin-top: 4px; }
+        #page-scraper .date-filter-row { gap: 8px; margin-bottom: 12px; }
+        /* Filter chips — consistent 36px pills (overrides the global 30px) */
+        #page-scraper .filter-tab {
+            height: 36px; padding: 0 14px; border-radius: 999px;
+            border: 1px solid #CBD5E1; background: #FFFFFF; color: #334155;
+            font-size: 14px; font-weight: 500; line-height: 1; text-transform: capitalize;
+            display: inline-flex; align-items: center; cursor: pointer;
+            transition: background-color .15s, border-color .15s, color .15s, box-shadow .15s;
+        }
+        #page-scraper .filter-tab:hover { background: #F1F5F9; border-color: #94A3B8; transform: none; box-shadow: none; }
+        #page-scraper .filter-tab.active {
+            background: var(--primary); color: #FFFFFF; border-color: var(--primary);
+            transform: none; box-shadow: 0 1px 3px rgba(26,49,93,0.25);
+        }
+        #page-scraper .filter-tab:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(26,49,93,0.20); border-color: var(--primary); }
+        /* Date label + month picker */
+        #page-scraper .date-filter-label { font-size: 13px; color: #64748B; font-weight: 500; }
+        #page-scraper .date-month {
+            height: 36px; padding: 0 10px; border: 1px solid #CBD5E1; border-radius: 8px;
+            font-size: 13px; font-family: inherit; background: #FFFFFF; color: #1E293B; cursor: pointer;
+            transition: border-color .15s, box-shadow .15s;
+        }
+        #page-scraper .date-month:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(26,49,93,0.15); }
+        /* Job search field — full width, 44px, left icon */
+        #page-scraper .scraper-search-row .search-input-wrapper { width: 100%; }
+        #page-scraper .scraper-search-row .search-input { height: 44px; }
+
+        /* ── Job list: denser rows ── */
+        #page-scraper #scraperJobsList { display: flex; flex-direction: column; gap: 10px; }
+        #page-scraper .job-card {
+            background: #FFFFFF; border: 1px solid #E8EDF3; border-radius: 10px;
+            padding: 16px; box-shadow: none; gap: 8px 16px;
+            transition: border-color .15s, background-color .15s;
+        }
+        #page-scraper .job-card:hover { border-color: #CBD5E1; background: #FCFCFD; }
+        #page-scraper .job-card.zero-email-card { border-left: 4px solid #f59e0b; }
+        #page-scraper .job-card .job-info h4,
+        #page-scraper .job-card .scraper-job-title { font-size: 16px; font-weight: 650; color: #1E293B; margin-bottom: 4px; }
+        #page-scraper .job-card .job-meta { font-size: 13px; color: #64748B; }
+        #page-scraper .job-card .meta-sep { color: #CBD5E1; margin: 0 8px; }
+        #page-scraper .job-card .job-error { font-size: 12px; color: #b45309; margin-top: 6px; }
+        /* File-ready inline label */
+        #page-scraper .file-chip { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 6px; margin-top: 6px; }
+        #page-scraper .file-chip.file-ready { color: #047857; background: #ECFDF5; }
+        #page-scraper .file-chip.file-missing { color: #94A3B8; background: #F1F5F9; }
+        /* Status badge — compact pill (~28px). Color classes (status-done etc.) unchanged. */
+        #page-scraper .job-card .job-status { height: 28px; padding: 0 12px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+        /* Action buttons — consistent 36px */
+        #page-scraper .job-card .actions { gap: 8px; }
+        #page-scraper .job-card .actions .btn { height: 36px; padding: 0 14px; border-radius: 8px; font-size: 13px; display: inline-flex; align-items: center; justify-content: center; }
+        /* Secondary actions (Retry, Download in chunks) — light neutral bg + subtle border */
+        #page-scraper .job-card .actions .btn-secondary { border: 1px solid #CBD5E1; background: #F1F5F9; }
+        /* Empty / loading / error states */
+        #page-scraper .empty-state { font-size: 14px; color: #64748B; padding: 24px; text-align: center; }
+
+        /* ── Responsive ── */
+        @media (max-width:900px) {
+            #page-scraper .filter-group:has(#scraperCountry),
+            #page-scraper .filter-group:has(#scraperMode) { flex: 0 0 calc(50% - 9px); }
+        }
+        @media (max-width:640px) {
+            #page-scraper .form-card { padding: 18px; }
+            #page-scraper .filter-group:has(#scraperQuery),
+            #page-scraper .filter-group:has(#scraperCountry),
+            #page-scraper .filter-group:has(#scraperMode) { width: 100%; flex: 1 1 100%; }
+            #page-scraper .scraper-start-row #startScraperJob { width: 100%; }
+            #page-scraper .scraper-card-title { font-size: 20px; }
+            #page-scraper .scraper-divider { margin: 12px 0 14px; }
+        }
+
+        /* =============================================================
            FIND PEOPLE PAGE — clean B2B SaaS search interface.
            Scoped to #page-people so other surfaces are untouched.
            (NOTE: this block was previously nested inside the mobile
@@ -1005,7 +1191,14 @@
         <!-- Scraper Page -->
         <div class="page" id="page-scraper">
             <div class="form-card">
-                <h3><i data-lucide="map-pin" class="icon" style="vertical-align:text-bottom"></i> Google Maps Scraper</h3>
+                <div class="scraper-card-head">
+                    <h3 class="scraper-card-title"><i data-lucide="map-pin" class="icon"></i> Google Maps Scraper</h3>
+                    <div class="scraper-conn connected" id="scraperConnStatus" aria-live="polite" title="Backend connection status">
+                        <span class="scraper-conn-dot"></span>
+                        <span id="scraperConnStatusText">Connected</span>
+                    </div>
+                </div>
+                <hr class="scraper-divider">
                 <div class="scraper-notice">
                     <p><strong>What it does:</strong> Scrapes business listings from Google Maps based on category and location.</p>
                     <p><strong>How to use:</strong> 1) Enter a category (type to see suggestions from Google's categories). 2) Select country. 3) Choose "All" for the entire country or "Specific States/Cities" for targeted areas. 4) Click "Start Scraper Job". Results include business names, addresses, phone numbers, and websites.</p>
@@ -1096,7 +1289,7 @@
                         </div>
                     </div>
                 </div>
-                <div style="margin-top:1rem;">
+                <div class="scraper-start-row">
                     <button class="btn btn-primary" id="startScraperJob">Start Scraper Job</button>
                 </div>
             </div>
@@ -1238,12 +1431,13 @@
             </div>
 
             <div class="form-card" id="scraperJobsCard">
-                <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem;margin-bottom:1rem;">
-                    <h3 style="margin:0;">📋 Recent Scraper Jobs</h3>
-                    <button class="btn btn-secondary btn-sm" onclick="loadScraperJobs()">Refresh</button>
+                <div class="scraper-card-head">
+                    <h3 class="scraper-card-title"><span aria-hidden="true">📋</span> Recent Scraper Jobs</h3>
+                    <button class="btn btn-secondary btn-sm scraper-refresh-btn" onclick="loadScraperJobs()">Refresh</button>
                 </div>
+                <hr class="scraper-divider">
                 <!-- Status Filter Tabs -->
-                <div style="display:flex;gap:0.5rem;margin-bottom:1rem;flex-wrap:wrap;">
+                <div class="scraper-status-row">
                     <button class="filter-tab active" data-status="all" onclick="filterScraperJobs('all')">All</button>
                     <button class="filter-tab" data-status="done" onclick="filterScraperJobs('done')">Done</button>
                     <button class="filter-tab" data-status="running" onclick="filterScraperJobs('running')">Running</button>
@@ -1263,7 +1457,7 @@
                     <button type="button" class="filter-tab file-ready-toggle" id="scraperFileReadyToggle" aria-pressed="false" title="Show only jobs whose result file is ready to download" onclick="toggleScraperFileReady()">✓ Ready to download</button>
                 </div>
                 <!-- Search Box -->
-                <div style="margin-bottom:1rem;">
+                <div class="scraper-search-row">
                     <div class="search-input-wrapper">
                         <input type="text" id="jobSearchInput" class="search-input" placeholder="Search jobs by query..." aria-label="Search scraper jobs by query" oninput="filterScraperJobs()">
                         <i data-lucide="search" class="search-icon"></i>
@@ -2446,8 +2640,9 @@ example.org,Jane Doe</pre>
                 pageEl.classList.add('active');
             }
 
-            // Find People hosts the connection pill in its card header; hide the floating indicator there only.
+            // Find People + Scraper host the connection pill in their card headers; hide the floating indicator there only.
             document.body.classList.toggle('on-people-page', pageId === 'people');
+            document.body.classList.toggle('on-scraper-page', pageId === 'scraper');
 
             // Load data when switching to specific pages
             if (pageId === 'scraper') loadScraperJobs();
@@ -6377,16 +6572,21 @@ example.org,Jane Doe</pre>
         const connectionStatusText = document.getElementById('connectionStatusText');
         const fpConnStatus = document.getElementById('fpConnStatus');
         const fpConnStatusText = document.getElementById('fpConnStatusText');
+        const scraperConnStatus = document.getElementById('scraperConnStatus');
+        const scraperConnStatusText = document.getElementById('scraperConnStatusText');
 
         function updateConnectionStatus(connected) {
             const cls = connected ? 'connected' : 'disconnected';
             const label = connected ? 'Connected' : 'Disconnected';
-            // Global floating indicator (shown on all pages except Find People)
+            // Global floating indicator (shown on all pages except Find People / Scraper)
             if (connectionStatus) { connectionStatus.classList.remove('connected', 'disconnected'); connectionStatus.classList.add(cls); }
             if (connectionStatusText) connectionStatusText.textContent = label;
             // Mirrored pill in the Find People card header
             if (fpConnStatus) { fpConnStatus.classList.remove('connected', 'disconnected'); fpConnStatus.classList.add(cls); }
             if (fpConnStatusText) fpConnStatusText.textContent = label;
+            // Mirrored pill in the Scraper card header
+            if (scraperConnStatus) { scraperConnStatus.classList.remove('connected', 'disconnected'); scraperConnStatus.classList.add(cls); }
+            if (scraperConnStatusText) scraperConnStatusText.textContent = label;
         }
 
         // Monitor online/offline status
