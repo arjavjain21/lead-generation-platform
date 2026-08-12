@@ -228,6 +228,7 @@ def init_db() -> None:
     for col in (
         "emails_contacts_db",
         "emails_blitz",
+        "emails_smartprospect",
         "emails_better_enrich",
         "emails_wizleads",
         "emails_prospeo",
