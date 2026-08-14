@@ -1,9 +1,9 @@
 """
 GetLeads (app.getleads.io) client for email enrichment.
 
-Wraps the GetLeads "from-person" enrichment endpoint. Given a first name,
-last name, and company domain, returns the best-matched email plus
-opportunistic phone + LinkedIn data.
+Wraps the GetLeads "from-person" and "from-linkedin" enrichment endpoints.
+Given (first name, last name, company domain) or a LinkedIn profile URL,
+returns the best-matched email plus opportunistic phone + LinkedIn data.
 
 GetLeads provides:
 - Account limit of 100 requests/minute GLOBAL across all gunicorn workers.
@@ -92,8 +92,9 @@ else:
 _REFILL_PER_SEC = _RATE_LIMIT_RPM / 60.0
 _CAPACITY = float(os.getenv("GETLEADS_RATE_LIMIT_BURST", str(_REFILL_PER_SEC)))
 
-# Endpoint path for the from-person enrichment API (auth via Bearer header).
+# Endpoint paths for the enrichment APIs (auth via Bearer header).
 _FROM_PERSON_PATH = "/api/v1/enrich/from-person"
+_FROM_LINKEDIN_PATH = "/api/v1/enrich/from-linkedin"
 
 # Max contacts per request as enforced by the upstream API (server hard cap;
 # 400 with "At most 100 items per request" when exceeded).
@@ -266,6 +267,7 @@ def _not_found_contact(
     first_name: str = "",
     last_name: str = "",
     domain: str = "",
+    linkedin_url: str = "",
 ) -> dict[str, Any]:
     """Build a normalized Not Found entry (used for padding / errors)."""
     return {
@@ -274,7 +276,7 @@ def _not_found_contact(
         "last_name": last_name,
         "domain": domain,
         "verification_status": "unknown",
-        "linkedin_url": "",
+        "linkedin_url": linkedin_url,
         "phone": "",
         # Mirrored Phase 2 keys (all empty) so downstream spreads over a
         # mixed found/not-found list see a uniform shape.
@@ -292,6 +294,74 @@ def _not_found_contact(
         "job_level": "",
         "job_function": "",
     }
+
+
+def _normalize_linkedin_result_item(
+    item: dict[str, Any],
+    fallback_linkedin_url: str = "",
+) -> dict[str, Any]:
+    """
+    Convert one from-linkedin ``results[]`` item into the canonical dict.
+
+    Same found-gate + field capture as ``_normalize_result_item``; the only
+    differences are the input shape (the echo key is ``linkedinUrl``, NOT
+    ``profileUrl`` — verified live, /tmp/getleads_live_shapes.md §2) and the
+    ``linkedin_url`` fallback (``data.person_linkedin_url`` -> the echo ->
+    the caller-supplied input URL).
+    """
+    data = item.get("data") or {}
+    email_address = data.get("email_address") or ""
+
+    first_name = data.get("first_name") or ""
+    last_name = data.get("last_name") or ""
+    domain = data.get("email_domain") or ""
+
+    if not email_address:
+        # Not found — data may be null or a partial person record.
+        return _not_found_contact(
+            first_name=first_name,
+            last_name=last_name,
+            domain=domain,
+            linkedin_url=fallback_linkedin_url,
+        )
+
+    email_status = data.get("email_status")
+    verification_status = "Valid" if email_status == "VALID" else "unknown"
+    linkedin_url = (
+        _clean_str(data.get("person_linkedin_url"))
+        or _clean_str(item.get("linkedinUrl"))
+        or fallback_linkedin_url
+    )
+    phone = data.get("cellphone") or data.get("direct_phone") or ""
+
+    return {
+        "email": email_address,
+        "first_name": _clean_str(first_name),
+        "last_name": _clean_str(last_name),
+        "domain": _clean_str(domain),
+        "verification_status": verification_status,
+        "linkedin_url": linkedin_url,
+        "phone": phone,
+        "job_title": _clean_str(data.get("job_title")),
+        "linkedin_headline": _clean_str(data.get("linkedin_headline")),
+        "person_full_name": _clean_str(data.get("person_full_name")),
+        "company_name": _clean_str(data.get("org_company_name")),
+        "company_industry": _clean_str(data.get("industry_linkedin_org")),
+        "employee_count": _clean_str(data.get("employee_count_range_org")),
+        "revenue": _clean_str(data.get("revenue_range_org")),
+        "city": _clean_str(data.get("person_city")),
+        "country": _clean_str(data.get("person_country_name")),
+        "linkedin_connections": _clean_str(data.get("linkedin_connections_count")),
+        "email_last_verified_at": _clean_str(data.get("email_last_verified_at")),
+        "job_level": _clean_str(data.get("job_level")),
+        "job_function": _clean_str(data.get("job_function")),
+        # Raw passthrough for forward-compat (same contract as from-person).
+        "_raw_getleads": data,
+    }
+    # linkedin_url precedence: data.person_linkedin_url -> linkedinUrl echo
+    # -> the caller-supplied input URL — all applied above; nothing after
+    # the return (a leftover post-return block referencing an undefined
+    # `normalized` was removed in review).
 
 
 def _insufficient_credits_error(method: str) -> pipeline._ProviderError:
@@ -314,17 +384,30 @@ def _chunk(seq: list[Any], size: int) -> list[list[Any]]:
 # ---------------------------------------------------------------------------
 
 
-async def _post_from_person(
+async def _post_enrich(
     client: httpx.AsyncClient,
     payload_items: list[dict[str, str]],
+    path: str = _FROM_PERSON_PATH,
+    method_name: str = "find_emails_batch",
+    raw: bool = False,
+    extra_body: Optional[dict[str, Any]] = None,
 ) -> Optional[list[dict[str, Any]]]:
     """
-    POST one chunk (<=100 items) to the from-person enrichment endpoint.
+    POST one chunk (<=100 items) to an enrichment endpoint.
+
+    Shared core for from-person AND from-linkedin (same retry/rate-limit/
+    breaker/402/400 logic; only ``path``, the ``method_name`` used in
+    _ProviderError wrapping, and the result normalizer differ).
 
     Auth is via ``Authorization: Bearer <key>`` header (NOT a query param).
 
+    Args:
+        raw: when True, return the RAW ``results[]`` items (the from-linkedin
+            callers normalize with ``_normalize_linkedin_result_item`` since
+            that endpoint echoes ``linkedinUrl`` instead of ``profileUrl``).
+
     Returns:
-        - list of normalized result dicts on success
+        - list of normalized (or raw, when ``raw=True``) result dicts on success
         - _ProviderError instance when 402 (insufficient credits) — caller checks
         - None on unrecoverable failure / circuit open / kill switch
 
@@ -345,7 +428,7 @@ async def _post_from_person(
         logger.warning("GetLeads API circuit breaker OPEN, failing fast")
         return None
 
-    url = f"{BASE_URL}{_FROM_PERSON_PATH}"
+    url = f"{BASE_URL}{path}"
 
     for attempt in range(_MAX_RETRIES + 1):
         await _acquire_rate_limit()
@@ -357,7 +440,7 @@ async def _post_from_person(
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {API_KEY}",
                 },
-                json={"items": payload_items},
+                json={"items": payload_items, **(extra_body or {})},
                 timeout=_REQUEST_TIMEOUT,
             )
 
@@ -365,7 +448,7 @@ async def _post_from_person(
             if resp.status_code == 402:
                 await _getleads_circuit.record_failure()
                 logger.warning("GetLeads: Insufficient credits (402)")
-                return _insufficient_credits_error("find_emails_batch")
+                return _insufficient_credits_error(method_name)
 
             # 400 — bad payload (batch>100, empty items). Do NOT retry.
             # Treat as a chunk failure (pads with Not Found entries upstream).
@@ -418,6 +501,8 @@ async def _post_from_person(
 
             data = resp.json()
             items = data.get("results") or []
+            if raw:
+                return items
             return [_normalize_result_item(item) for item in items]
 
         except httpx.HTTPStatusError as exc:
@@ -427,7 +512,7 @@ async def _post_from_person(
                 await _getleads_circuit.record_failure()
             if status == 402:
                 logger.warning("GetLeads: Insufficient credits (402)")
-                return _insufficient_credits_error("find_emails_batch")
+                return _insufficient_credits_error(method_name)
             if attempt < _MAX_RETRIES and _should_retry(status):
                 delay = _backoff_delay(attempt)
                 logger.warning(
@@ -544,7 +629,7 @@ async def find_email(
         "email_domain": str(company_domain).strip(),
     }
 
-    result = await _post_from_person(client, [payload_item])
+    result = await _post_enrich(client, [payload_item])
 
     # Distinguish a _ProviderError from a real None.
     if pipeline._is_provider_error(result):
@@ -630,7 +715,7 @@ async def find_emails_batch(
 
     if valid_payload:
         for chunk in _chunk(valid_payload, _MAX_CONTACTS_PER_REQUEST):
-            chunk_result = await _post_from_person(client, chunk)
+            chunk_result = await _post_enrich(client, chunk)
 
             if pipeline._is_provider_error(chunk_result):
                 # Insufficient credits — short-circuit. All valid contacts
@@ -701,6 +786,127 @@ async def find_emails_batch(
                 )
             )
         valid_idx += 1
+
+    return output
+
+
+async def find_email_by_linkedin(
+    client: httpx.AsyncClient,
+    linkedin_url: str,
+) -> Optional[dict[str, Any]]:
+    """
+    Look up a single person's email via GetLeads from-linkedin.
+
+    Mirrors ``find_email`` (same 20-key normalized return shape, same
+    found-gate on ``data.email_address``, same kill-switch/402 semantics);
+    only the upstream endpoint and payload differ.
+
+    Returns the normalized dict on success (``data.email_address`` truthy),
+    None on miss/disabled/invalid input, and a falsy ``pipeline._ProviderError``
+    on 402 (insufficient credits).
+    """
+    if not _is_enabled():
+        logger.debug("GetLeads kill switch (ENABLE_GETLEADS=false) active")
+        return None
+
+    if not API_KEY:
+        logger.warning("GetLeads API key not configured, skipping")
+        return None
+
+    url = str(linkedin_url or "").strip()
+    if not url:
+        logger.debug("GetLeads find_email_by_linkedin requires linkedin_url")
+        return None
+
+    result = await _post_enrich(
+        client,
+        [{"linkedin_url": url}],
+        path=_FROM_LINKEDIN_PATH,
+        method_name="find_emails_by_linkedin_batch",
+        raw=True,
+        extra_body={"limit_per_item": 1},  # parity with live-verified shape (API default is 1)
+    )
+
+    if pipeline._is_provider_error(result):
+        # Re-wrap with the single-contact method name.
+        return _insufficient_credits_error("find_email_by_linkedin")
+
+    if not result:
+        return None
+
+    item = _normalize_linkedin_result_item(result[0], url)
+    if not item.get("email"):
+        return None
+
+    return item
+
+
+async def find_emails_by_linkedin_batch(
+    client: httpx.AsyncClient,
+    linkedin_urls: list[str],
+) -> list[dict[str, Any]]:
+    """
+    Batch email lookup by LinkedIn URL (from-linkedin endpoint).
+
+    Auto-chunks to groups of 100 (the API max; >100 returns 400). Mirrors
+    ``find_emails_batch``: exactly one entry per input URL, input order
+    preserved, misses padded with ``_not_found_contact``-shape entries
+    (with ``linkedin_url`` carried through so callers can key results by URL).
+
+    Returns [] when the kill switch is off or the input list is empty. A 402
+    from any chunk short-circuits the batch into all-Not-Found entries (no raise).
+    """
+    if not _is_enabled():
+        logger.debug("GetLeads kill switch (ENABLE_GETLEADS=false) active")
+        return []
+
+    if not linkedin_urls:
+        return []
+
+    urls = [str(u or "").strip() for u in linkedin_urls]
+
+    if not API_KEY:
+        logger.warning("GetLeads API key not configured, skipping")
+        return [
+            _not_found_contact(linkedin_url=u)
+            for u in urls
+        ]
+
+    output: list[dict[str, Any]] = []
+    for chunk in _chunk(urls, _MAX_CONTACTS_PER_REQUEST):
+        chunk_result = await _post_enrich(
+            client,
+            [{"linkedin_url": u} for u in chunk],
+            path=_FROM_LINKEDIN_PATH,
+            method_name="find_emails_by_linkedin_batch",
+            raw=True,
+        )
+
+        if pipeline._is_provider_error(chunk_result):
+            # Insufficient credits — short-circuit the batch (mirrors
+            # find_emails_batch). Remaining URLs become Not Found entries.
+            output.extend(
+                _not_found_contact(linkedin_url=u) for u in chunk
+            )
+            continue
+
+        if chunk_result is None:
+            # Chunk-level failure (network / 400 / exhausted retries).
+            output.extend(
+                _not_found_contact(linkedin_url=u) for u in chunk
+            )
+            continue
+
+        # Pad defensively if the API returns fewer items than sent.
+        padded = [
+            _normalize_linkedin_result_item(item, chunk[i])
+            for i, item in enumerate(chunk_result[: len(chunk)])
+        ]
+        while len(padded) < len(chunk):
+            padded.append(
+                _not_found_contact(linkedin_url=chunk[len(padded)])
+            )
+        output.extend(padded)
 
     return output
 

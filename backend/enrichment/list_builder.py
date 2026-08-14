@@ -1701,6 +1701,39 @@ async def search_employees(
 # Flow 3: LinkedIn URLs → Full Enrichment
 # =============================================================================
 
+def _apply_getleads_dm_overlay(row: OutputRow, getleads_result: dict[str, Any]) -> None:
+    """
+    Overlay the GetLeads DM attributes onto an output row (mirrors the
+    ``_build_person_row`` overlay contract — only non-empty values, never
+    blanks an existing field; company_* columns are fill-only).
+    """
+    getleads_dm = _getleads_dm_snapshot(getleads_result)
+    for col, src in (
+        ("dm_title", "title"),
+        ("dm_headline", "headline"),
+        ("dm_location_city", "city"),
+        ("dm_location_country", "country"),
+        ("dm_phone", "phone"),
+        ("dm_job_level", "job_level"),
+        ("dm_job_function", "job_function"),
+    ):
+        _dm_v = getleads_dm.get(src)
+        if isinstance(_dm_v, str) and _dm_v.strip():
+            row[col] = _dm_v.strip()
+    for col, src, fill_only in (
+        ("company_revenue", "revenue", True),
+        ("company_employee_count", "employee_count", True),
+        ("dm_email_last_verified_at", "email_last_verified_at", False),
+        ("dm_linkedin_connections", "linkedin_connections", False),
+    ):
+        _dm_v = getleads_dm.get(src)
+        if not (isinstance(_dm_v, str) and _dm_v.strip()):
+            continue
+        if fill_only and row.get(col):
+            continue
+        row[col] = _dm_v.strip()
+
+
 async def _enrich_single_linkedin(
     blitz_http: httpx.AsyncClient,
     contacts_http: httpx.AsyncClient,
@@ -1709,14 +1742,26 @@ async def _enrich_single_linkedin(
     include_company: bool = True,
     semaphore: asyncio.Semaphore = None,
     record_provider_use: Optional[Callable[[str], None]] = None,
+    pre_resolved_getleads_linkedin: Optional[dict[str, Any]] = None,
+    allow_getleads_single: bool = False,
 ) -> OutputRow:
     """
     Enrich a single LinkedIn URL with person + company details.
 
+    Cascade: Contacts DB (free) -> Blitz (paid) -> GetLeads from-linkedin
+    (paid fallback, only needs the URL). Contacts DB/Blitz priority is
+    unchanged; GetLeads fires only when both miss.
+
     Args:
         record_provider_use: Optional callback invoked with each provider that is
-            actually queried (``"contacts_db"``, ``"blitz"``) so the job's
-            ``used_providers`` tally stays accurate.
+            actually queried (``"contacts_db"``, ``"blitz"``, ``"getleads"``)
+            so the job's ``used_providers`` tally stays accurate.
+        pre_resolved_getleads_linkedin: Optional batch pre-pass result for
+            THIS URL (from ``find_emails_by_linkedin_batch``). When present
+            the single GetLeads call is never made (a batch already answered).
+        allow_getleads_single: When True (batch pre-pass did NOT run for this
+            URL), a GetLeads miss in the pre-resolved data — or no pre-resolved
+            data — falls back to a single ``find_email_by_linkedin`` call.
 
     Returns single output row.
     """
@@ -1777,10 +1822,102 @@ async def _enrich_single_linkedin(
         except Exception as e:
             logger.debug("Blitz person enrich failed: %s", e)
 
+        # Step 3: GetLeads from-linkedin fallback (PAID). Only reached when
+        # Contacts DB AND Blitz both missed. Prefers the batch pre-pass
+        # result for this URL; the single call only runs when the pre-pass
+        # did not cover this URL (allow_getleads_single=True).
+        gl_result: Optional[dict[str, Any]] = None
+        if pre_resolved_getleads_linkedin is not None:
+            if pre_resolved_getleads_linkedin.get("email"):
+                gl_result = pre_resolved_getleads_linkedin
+        elif allow_getleads_single:
+            if record_provider_use:
+                record_provider_use("getleads")
+            try:
+                gl_result = await getleads_client.find_email_by_linkedin(
+                    blitz_http, linkedin_url
+                )
+            except Exception as e:
+                logger.debug("GetLeads find_email_by_linkedin failed: %s", e)
+
+        if gl_result and gl_result.get("email"):
+            row["dm_linkedin_url"] = (
+                gl_result.get("linkedin_url") or linkedin_url
+            )
+            row["dm_first_name"] = gl_result.get("first_name", "") or row["dm_first_name"]
+            row["dm_last_name"] = gl_result.get("last_name", "") or row["dm_last_name"]
+            row["dm_full_name"] = gl_result.get("person_full_name", "") or row["dm_full_name"]
+            row["dm_email"] = gl_result["email"]
+            row["dm_email_source"] = SOURCE_GETLEADS
+            vs = gl_result.get("verification_status")
+            row["dm_email_verified"] = "yes" if vs == "Valid" else "unknown"
+            if include_company:
+                row["company_name"] = gl_result.get("company_name", "") or row["company_name"]
+                row["company_industry"] = gl_result.get("company_industry", "") or row["company_industry"]
+            _apply_getleads_dm_overlay(row, gl_result)
+            row["row_status"] = STATUS_ENRICHED
+            return row
+
     # Not found anywhere
     row["dm_linkedin_url"] = linkedin_url
     row["row_status"] = STATUS_NOT_FOUND
     return row
+
+
+async def _getleads_linkedin_prepass(
+    blitz_http: httpx.AsyncClient,
+    linkedin_urls: list[str],
+    record_provider_use: Optional[Callable[[str], None]] = None,
+) -> dict[str, dict[str, Any]]:
+    """
+    GetLeads from-linkedin batch pre-pass for the LinkedIn CSV flows.
+
+    Resolves every URL in chunks of 100 (internal to the client) with a
+    single batch call per chunk and returns a map keyed by BOTH the exact
+    input URL string and its lowercase form. Only email-truthy entries are
+    kept — a URL absent from the map was a batch MISS and callers must NOT
+    refire a single call for it (the batch already asked GetLeads).
+
+    Gating (caller's job): provider enabled + not force_provider-restricted
+    + >=2 URLs. On ANY failure (exception, all-chunks fail, 402) this
+    returns {} — and callers treat the pre-pass as HAVING RUN, so the
+    GetLeads fallback is silently skipped for the whole job. That is the
+    deliberate conservative behaviour: firing N per-URL singles through the
+    shared ~95 RPM limiter would serialize an entire CSV flow behind the
+    account limit. The next provider in the cascade still runs normally.
+    """
+    pre_resolved: dict[str, dict[str, Any]] = {}
+    if len(linkedin_urls) < 2:
+        return pre_resolved
+
+    if record_provider_use:
+        try:
+            record_provider_use("getleads")
+        except Exception:
+            pass
+
+    try:
+        batch_results = await getleads_client.find_emails_by_linkedin_batch(
+            blitz_http, linkedin_urls
+        )
+    except Exception as gl_exc:
+        logger.warning(
+            "GetLeads LinkedIn batch pre-pass failed: %s — GetLeads fallback "
+            "skipped for this job (conservative; no per-URL singles)",
+            gl_exc,
+        )
+        return {}
+
+    for url, result in zip(linkedin_urls, batch_results):
+        if isinstance(result, dict) and result.get("email"):
+            pre_resolved[url] = result
+            pre_resolved[url.lower()] = result
+    logger.info(
+        "GetLeads LinkedIn batch pre-pass: %d/%d pre-resolved",
+        len(pre_resolved) // 2 if pre_resolved else 0,
+        len(linkedin_urls),
+    )
+    return pre_resolved
 
 
 async def run_linkedin_enrichment(
@@ -1838,6 +1975,30 @@ async def run_linkedin_enrichment(
     all_output: list[OutputRow] = []
     total = len(rows)
 
+    # GetLeads from-linkedin batch pre-pass (Flow 3): resolve every valid
+    # personal URL in ONE batch call per 100 so the per-URL cascade (Step 3
+    # in _enrich_single_linkedin) never fires N singles. Gated on provider
+    # enabled + >=2 URLs; on failure the map stays empty and each URL gets
+    # a single call instead (allow_getleads_single below). Contacts DB ->
+    # Blitz priority is untouched — the pre-pass only replaces the GetLeads
+    # SINGLE call, never the earlier steps.
+    pre_resolved_gl_by_url: dict[str, dict[str, Any]] = {}
+    _gl_urls: list[str] = []
+    for row in rows:
+        _u = str(row.get(linkedin_col, "") or "").strip()
+        if _u and "linkedin.com" in _u:
+            _gl_urls.append(_u)
+    if (
+        len(_gl_urls) >= 2
+        and not _should_skip_provider("getleads", None, None)
+    ):
+        pre_resolved_gl_by_url = await _getleads_linkedin_prepass(
+            blitz_http, list(dict.fromkeys(_gl_urls)), record_provider_use
+        )
+        _gl_prepass_ran = True
+    else:
+        _gl_prepass_ran = False
+
     # --- Incremental CSV writer (mirrors run_domain_enrichment's proven pattern) ---
     # When write_incremental is on, the output CSV is flushed batch-by-batch so a
     # running job is live-downloadable and a crash/cancel never loses completed rows.
@@ -1879,6 +2040,17 @@ async def run_linkedin_enrichment(
         if not linkedin_url or "linkedin.com" not in linkedin_url:
             result = {**row, **_empty_enriched(), "row_status": STATUS_SKIPPED}
         else:
+            # GetLeads pre-pass result for this URL (None when the pre-pass
+            # did not run at all — then a single call is allowed). When the
+            # pre-pass ran, the map always has an entry (hit or empty-miss
+            # shape), so a miss is NEVER re-fired as a single.
+            _pre_gl: Optional[dict[str, Any]] = None
+            if pre_resolved_gl_by_url:
+                _pre_gl = pre_resolved_gl_by_url.get(linkedin_url)
+                if _pre_gl is None and linkedin_url.lower() != linkedin_url:
+                    _pre_gl = pre_resolved_gl_by_url.get(linkedin_url.lower())
+            elif not _gl_prepass_ran:
+                _pre_gl = None
             result = await _enrich_single_linkedin(
                 blitz_http,
                 contacts_http,
@@ -1886,6 +2058,9 @@ async def run_linkedin_enrichment(
                 linkedin_url,
                 True,
                 semaphore,
+                record_provider_use=record_provider_use,
+                pre_resolved_getleads_linkedin=_pre_gl,
+                allow_getleads_single=not _gl_prepass_ran,
             )
 
         if on_progress:
@@ -2392,6 +2567,27 @@ async def run_unified_linkedin_enrichment(
 
     total = len(rows)
 
+    # GetLeads from-linkedin batch pre-pass (unified LinkedIn flow): same
+    # contract as run_linkedin_enrichment — one batch per 100 URLs, hits
+    # keyed by exact + lowercase URL, misses never re-fired as singles.
+    pre_resolved_gl_by_url: dict[str, dict[str, Any]] = {}
+    _gl_urls: list[str] = []
+    if personal_col:
+        for row in rows:
+            _u = str(row.get(personal_col, "") or "").strip()
+            if _u and "linkedin.com" in _u:
+                _gl_urls.append(_u)
+    if (
+        len(_gl_urls) >= 2
+        and not _should_skip_provider("getleads", None, None)
+    ):
+        pre_resolved_gl_by_url = await _getleads_linkedin_prepass(
+            blitz_http, list(dict.fromkeys(_gl_urls)), record_provider_use
+        )
+        _gl_prepass_ran = True
+    else:
+        _gl_prepass_ran = False
+
     # --- Incremental CSV writer (mirrors run_domain_enrichment's proven pattern) ---
     write_lock = asyncio.Lock()
     csv_file = None
@@ -2456,10 +2652,17 @@ async def run_unified_linkedin_enrichment(
 
         # Step 1: personal LinkedIn URL
         if personal_url and "linkedin.com" in personal_url:
+            _pre_gl: Optional[dict[str, Any]] = None
+            if pre_resolved_gl_by_url:
+                _pre_gl = pre_resolved_gl_by_url.get(personal_url)
+                if _pre_gl is None and personal_url.lower() != personal_url:
+                    _pre_gl = pre_resolved_gl_by_url.get(personal_url.lower())
             person_result = await _enrich_single_linkedin(
                 blitz_http, contacts_http, row, personal_url,
                 include_company=include_company, semaphore=semaphore,
                 record_provider_use=record_provider_use,
+                pre_resolved_getleads_linkedin=_pre_gl,
+                allow_getleads_single=not _gl_prepass_ran,
             )
             if person_result.get("dm_email") or person_result.get("row_status") == STATUS_ENRICHED:
                 results.append(person_result)

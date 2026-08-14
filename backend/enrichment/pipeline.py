@@ -446,6 +446,7 @@ ROUTE_METHOD_PERSON_ENRICH = "person_enrich"
 ROUTE_METHOD_FIND_EMAIL = "find_email"
 ROUTE_METHOD_FIND_EMAIL_SMARTPROSPECT = "find_email_smartprospect"
 ROUTE_METHOD_FIND_EMAIL_GETLEADS = "find_email_getleads"
+ROUTE_METHOD_FIND_EMAIL_LINKEDIN_GETLEADS = "find_email_linkedin_getleads"
 ROUTE_METHOD_FIND_WORK_EMAIL_V3 = "find_work_email_v3"
 ROUTE_METHOD_PHONE_REVERSE_LOOKUP = "phone_reverse_lookup"
 
@@ -533,7 +534,7 @@ def _provider_label(method: str) -> str:
         return ROUTE_PROVIDER_BLITZ
     if method == ROUTE_METHOD_FIND_EMAIL:
         return ROUTE_PROVIDER_WIZLEADS
-    if method == ROUTE_METHOD_FIND_EMAIL_GETLEADS:
+    if method in (ROUTE_METHOD_FIND_EMAIL_GETLEADS, ROUTE_METHOD_FIND_EMAIL_LINKEDIN_GETLEADS):
         return ROUTE_PROVIDER_GETLEADS
     if method == ROUTE_METHOD_FIND_EMAIL_SMARTPROSPECT:
         return ROUTE_PROVIDER_SMARTPROSPECT
@@ -573,6 +574,8 @@ def _can_provider_use_method(method: str, inputs: dict[str, str]) -> bool:
         return bool(first) and bool(last) and bool(dom)
     if method == ROUTE_METHOD_FIND_EMAIL_GETLEADS:
         return bool(first) and bool(last) and bool(dom)
+    if method == ROUTE_METHOD_FIND_EMAIL_LINKEDIN_GETLEADS:
+        return bool(li)
     if method == ROUTE_METHOD_FIND_EMAIL_SMARTPROSPECT:
         return bool(first) and bool(last) and bool(dom)
     if method == ROUTE_METHOD_FIND_WORK_EMAIL_V3:
@@ -722,6 +725,14 @@ def route_enrichment(
                 "identifier": ROUTE_IDENTIFIER_LINKEDIN,
                 "method": ROUTE_METHOD_FIND_WORK_EMAIL,
                 "provider": ROUTE_PROVIDER_BLITZ,
+            },
+            # GetLeads from-linkedin fallback AFTER both Blitz steps miss
+            # (only needs the LinkedIn URL). SmartProspect/WizLeads stay out
+            # of the LinkedIn arm — they are name+domain gated.
+            {
+                "identifier": ROUTE_IDENTIFIER_LINKEDIN,
+                "method": ROUTE_METHOD_FIND_EMAIL_LINKEDIN_GETLEADS,
+                "provider": ROUTE_PROVIDER_GETLEADS,
             },
         ])
         if has_name_domain:
@@ -1186,6 +1197,40 @@ async def _run_route_step(
                     verification["dm_email_verified"] = "yes"
                 else:
                     verification["dm_email_verified"] = "unknown"
+                return {"email": result["email"], "source": SOURCE_GETLEADS, "verification": verification}
+            return {"email": "", "source": SOURCE_NOT_FOUND}
+
+        if method == ROUTE_METHOD_FIND_EMAIL_LINKEDIN_GETLEADS:
+            # LinkedIn-URL-only GetLeads step (from-linkedin endpoint). Same
+            # verification / getleads_dm contract as the from-person branch
+            # above; only the lookup key differs.
+            _record("getleads")
+            try:
+                result = await getleads_client.find_email_by_linkedin(
+                    blitz_http,
+                    inputs["linkedin_url"],
+                )
+            except httpx.HTTPStatusError as e:
+                logger.warning("GetLeads find_email_by_linkedin failed: %s", e)
+                error_type, message = _classify_http_error(e, "getleads", "find_email_by_linkedin")
+                return _ProviderError(
+                    provider="getleads",
+                    method="find_email_by_linkedin",
+                    error_type=error_type,
+                    message=message,
+                )
+            except Exception as e:
+                logger.warning("GetLeads find_email_by_linkedin failed: %s", e)
+                return {"email": "", "source": SOURCE_NOT_FOUND}
+            if _is_provider_error(result):
+                return result
+            if result and result.get("email"):
+                vs = result.get("verification_status")
+                if vs == "Valid":
+                    verification["dm_email_verified"] = "yes"
+                else:
+                    verification["dm_email_verified"] = "unknown"
+                verification["getleads_dm"] = _getleads_dm_snapshot(result)
                 return {"email": result["email"], "source": SOURCE_GETLEADS, "verification": verification}
             return {"email": "", "source": SOURCE_NOT_FOUND}
 

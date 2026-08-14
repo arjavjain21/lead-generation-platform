@@ -864,7 +864,7 @@ class TestFindEmailsBatchPartialFailure:
     def test_chunk_returns_none_pads_that_chunk(self):
         """
         If a chunk fails with a non-402 recoverable error (e.g. 500 exhausted),
-        ``_post_from_person`` returns None and the batch pads that chunk with
+        ``_post_enrich`` returns None and the batch pads that chunk with
         Not Found entries — without affecting other chunks.
         """
         call_count = {"n": 0}
@@ -969,6 +969,276 @@ class TestRateLimiting:
         # (up to capacity) and denies the rest with wait > 0. Over 3
         # back-to-back calls at least one positive sleep must fire.
         assert any(d > 0 for d in sleep_calls), f"expected at least one rate-limit sleep, got {sleep_calls}"
+
+
+# ---------------------------------------------------------------------------
+# find_email_by_linkedin / find_emails_by_linkedin_batch (from-linkedin)
+# ---------------------------------------------------------------------------
+
+_LINKEDIN_ENDPOINT = "https://app.getleads.io/api/v1/enrich/from-linkedin"
+
+
+def _li_result_item(
+    linkedin_url: str,
+    email: Any = None,
+    email_status: str = "VALID",
+) -> dict[str, Any]:
+    """
+    Build a single from-linkedin ``results[]`` item.
+
+    When ``email`` is None this produces the not-found shape
+    (``success:true, email:null, data:null``). The echo key is
+    ``linkedinUrl`` (camelCase) — NOT ``profileUrl`` (from-person only).
+    """
+    if email is None:
+        return {
+            "linkedinUrl": linkedin_url,
+            "success": True,
+            "email": None,
+            "data": None,
+        }
+    return {
+        "linkedinUrl": linkedin_url,
+        "success": True,
+        "email": email,
+        "data": {
+            "first_name": "Brian",
+            "last_name": "McCord",
+            "person_full_name": "Brian McCord",
+            "job_title": "Vice President of Safety",
+            "org_company_name": "Greenwaste",
+            "person_linkedin_url": linkedin_url,
+            "email_address": email,
+            "email_domain": "greenwaste.com",
+            "email_status": email_status,
+            "cellphone": "+1 555-987-6543",
+            "person_city": "Discovery Bay",
+            "person_country_name": "United States",
+        },
+    }
+
+
+class TestFindEmailByLinkedin:
+    def test_found_uses_linkedinurl_echo_shape(self):
+        """Hit: data.email_address truthy -> full 20-key shape; linkedin_url
+        falls back to the linkedinUrl echo."""
+        def handler(req: httpx.Request) -> httpx.Response:
+            assert str(req.url).startswith(_LINKEDIN_ENDPOINT)
+            body = json.loads(req.content)
+            assert body["items"] == [
+                {"linkedin_url": "https://www.linkedin.com/in/brian-mccord-pg"}
+            ]
+            return httpx.Response(
+                200,
+                content=_ok_response([
+                    _li_result_item(
+                        "https://www.linkedin.com/in/brian-mccord-pg",
+                        email="bmccord@greenwaste.com",
+                    )
+                ]),
+            )
+
+        async def go() -> Any:
+            client = _make_client(handler)
+            try:
+                return await gl.find_email_by_linkedin(
+                    client, "https://www.linkedin.com/in/brian-mccord-pg"
+                )
+            finally:
+                await client.aclose()
+
+        result = asyncio.run(go())
+        assert result is not None
+        assert result["email"] == "bmccord@greenwaste.com"
+        assert result["verification_status"] == "Valid"
+        assert result["linkedin_url"] == "https://www.linkedin.com/in/brian-mccord-pg"
+        assert result["phone"] == "+1 555-987-6543"
+        assert result["job_title"] == "Vice President of Safety"
+
+    def test_not_found_email_null_data_null_returns_none(self):
+        """Miss shape (success:true, email:null, data:null) -> None."""
+        def handler(req: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                content=_ok_response([
+                    _li_result_item("http://www.linkedin.com/in/brian-helgoe-81821726")
+                ]),
+            )
+
+        async def go() -> Any:
+            client = _make_client(handler)
+            try:
+                return await gl.find_email_by_linkedin(
+                    client, "http://www.linkedin.com/in/brian-helgoe-81821726"
+                )
+            finally:
+                await client.aclose()
+
+        assert asyncio.run(go()) is None
+
+    def test_402_returns_insufficient_credits_provider_error(self):
+        """402 surfaces as a falsy _ProviderError with the linkedin method name."""
+        def handler(req: httpx.Request) -> httpx.Response:
+            return httpx.Response(402, json={"ok": False, "message": "no credits"})
+
+        async def go() -> Any:
+            client = _make_client(handler)
+            try:
+                return await gl.find_email_by_linkedin(
+                    client, "https://www.linkedin.com/in/jane"
+                )
+            finally:
+                await client.aclose()
+
+        result = asyncio.run(go())
+        assert pipeline._is_provider_error(result)
+        assert not result
+        as_dict = result.to_dict()
+        assert as_dict["provider"] == "getleads"
+        assert as_dict["error_type"] == "insufficient_credits"
+        assert as_dict["method"] == "find_email_by_linkedin"
+
+    def test_empty_url_no_http_call(self):
+        def handler(req: httpx.Request) -> httpx.Response:
+            raise AssertionError("no HTTP call for empty linkedin_url")
+
+        async def go() -> Any:
+            client = _make_client(handler)
+            try:
+                return await gl.find_email_by_linkedin(client, "")
+            finally:
+                await client.aclose()
+
+        assert asyncio.run(go()) is None
+
+
+def _make_urls(n: int) -> list[str]:
+    return [f"https://www.linkedin.com/in/user-{i}" for i in range(n)]
+
+
+class TestFindEmailsByLinkedinBatch:
+    def test_chunking_order_and_length_250(self):
+        """250 URLs -> 3 calls (100/100/50), order + length preserved,
+        never >100 items per request."""
+        call_count = {"n": 0}
+        chunk_sizes: list[int] = []
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            call_count["n"] += 1
+            sent = json.loads(req.content)["items"]
+            chunk_sizes.append(len(sent))
+            assert len(sent) <= 100
+            return httpx.Response(
+                200,
+                content=_ok_response([
+                    _li_result_item(
+                        item["linkedin_url"],
+                        email=f"user{chunk_sizes[-1]}@found.com",
+                    )
+                    for item in sent
+                ]),
+            )
+
+        async def go() -> Any:
+            client = _make_client(handler)
+            try:
+                return await gl.find_emails_by_linkedin_batch(client, _make_urls(250))
+            finally:
+                await client.aclose()
+
+        result = asyncio.run(go())
+        assert len(result) == 250
+        assert call_count["n"] == 3
+        assert chunk_sizes == [100, 100, 50]
+        # Order preserved + URL carried through on every entry.
+        for i, entry in enumerate(result):
+            assert entry["linkedin_url"] == f"https://www.linkedin.com/in/user-{i}"
+
+    def test_misses_padded_with_not_found_shape(self):
+        """A mix of hits and misses: position preserved, misses carry
+        email='' and the input URL."""
+        def handler(req: httpx.Request) -> httpx.Response:
+            sent = json.loads(req.content)["items"]
+            items = [
+                _li_result_item(
+                    item["linkedin_url"],
+                    email="hit@x.com" if i % 2 == 0 else None,
+                )
+                for i, item in enumerate(sent)
+            ]
+            return httpx.Response(200, content=_ok_response(items))
+
+        async def go() -> Any:
+            client = _make_client(handler)
+            try:
+                return await gl.find_emails_by_linkedin_batch(client, _make_urls(4))
+            finally:
+                await client.aclose()
+
+        result = asyncio.run(go())
+        assert len(result) == 4
+        assert result[0]["email"] == "hit@x.com"
+        assert result[1]["email"] == ""
+        assert result[1]["verification_status"] == "unknown"
+        assert result[1]["linkedin_url"] == "https://www.linkedin.com/in/user-1"
+        assert result[2]["email"] == "hit@x.com"
+        assert result[3]["email"] == ""
+
+    def test_101_urls_two_chunks(self):
+        call_count = {"n": 0}
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            call_count["n"] += 1
+            sent = json.loads(req.content)["items"]
+            assert len(sent) <= 100
+            return httpx.Response(
+                200,
+                content=_ok_response([
+                    _li_result_item(item["linkedin_url"]) for item in sent
+                ]),
+            )
+
+        async def go() -> Any:
+            client = _make_client(handler)
+            try:
+                return await gl.find_emails_by_linkedin_batch(client, _make_urls(101))
+            finally:
+                await client.aclose()
+
+        result = asyncio.run(go())
+        assert len(result) == 101
+        assert call_count["n"] == 2
+        # All misses -> all padded.
+        assert all(e["email"] == "" for e in result)
+
+    def test_402_short_circuits_to_all_not_found(self):
+        """402 in a chunk pads that chunk with Not Found entries (no raise)."""
+        def handler(req: httpx.Request) -> httpx.Response:
+            return httpx.Response(402, json={"ok": False, "message": "no credits"})
+
+        async def go() -> Any:
+            client = _make_client(handler)
+            try:
+                return await gl.find_emails_by_linkedin_batch(client, _make_urls(3))
+            finally:
+                await client.aclose()
+
+        result = asyncio.run(go())
+        assert len(result) == 3
+        assert all(e["email"] == "" for e in result)
+
+    def test_empty_list_no_call(self):
+        def handler(req: httpx.Request) -> httpx.Response:
+            raise AssertionError("no HTTP call for empty list")
+
+        async def go() -> Any:
+            client = _make_client(handler)
+            try:
+                return await gl.find_emails_by_linkedin_batch(client, [])
+            finally:
+                await client.aclose()
+
+        assert asyncio.run(go()) == []
 
 
 # ---------------------------------------------------------------------------

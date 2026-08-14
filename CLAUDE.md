@@ -145,7 +145,7 @@ Each enrichment source has different cost/quality tradeoffs:
 |-----|------------|----------|---------|
 | **Contacts DB** | 75 RPS | 1st (free) | Domain → company → contacts with emails |
 | **Blitz** | 25 RPS | 2nd | LinkedIn-based enrichment with title cascade |
-| **GetLeads** | batch 100 (~10k/min) | 3rd | Verified DM emails + bonus phones (batch of 100, unlimited plan) |
+| **GetLeads** | batch 100 (~10k/min) | 3rd | Verified DM emails + bonus phones (batch of 100, unlimited plan); also the from-linkedin fallback in the LinkedIn-only arm (after Blitz) |
 | **smartprospect** | 30 RPS | 4th | Person-email finder, batch up to 10, self-verifying |
 | **WizLeads** | 10 RPS | 5th | Catch-all verified email enrichment |
 | **BetterEnrich** | 10 RPS | 6th | Person email, company email |
@@ -179,7 +179,7 @@ Both accept request-time cascade restrictors (mutually exclusive): `force_provid
 
 **Flow 1:** `POST /api/enrichment/flows/domain-enrich` - Domain CSV → decision makers
 **Flow 2:** `POST /api/enrichment/flows/search` - Company search by criteria
-**Flow 3:** `POST /api/enrichment/flows/linkedin-enrich` - Bulk LinkedIn enrichment
+**Flow 3:** `POST /api/enrichment/flows/linkedin-enrich` - Bulk LinkedIn enrichment (3 steps per URL: Contacts DB → Blitz → GetLeads from-linkedin fallback, with a GetLeads batch pre-pass of 100/chunk)
 
 **Concurrency:** 25 domains, 15 LinkedIn URLs, 5 searches in parallel
 
