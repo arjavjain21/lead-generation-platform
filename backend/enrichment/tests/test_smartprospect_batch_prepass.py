@@ -428,9 +428,11 @@ class TestBatchPrepassActivation:
         go()
         assert batch_calls["n"] == 0, "0 persons must not trigger batch"
 
-    def test_batch_skipped_when_collector_is_none(self, monkeypatch):
-        """``collector=None`` must skip the batch — the orchestrator only
-        runs the pre-pass when the caller wires the collector (CSV jobs)."""
+    def test_batch_fires_without_collector_capture_skipped(self, monkeypatch):
+        """Phase 3 (batch coverage): ``collector=None`` no longer suppresses
+        the batch pre-pass — the batch CALL + pre_resolved handoff must run
+        (POST /enrich domain_only and GET /enrich/{domain} pass no collector).
+        Only the collector capture is skipped, without crashing."""
         monkeypatch.setenv("ENABLE_SMARTPROSPECT", "true")
         _wire_minimal_company(
             monkeypatch,
@@ -440,15 +442,23 @@ class TestBatchPrepassActivation:
 
         async def fake_batch(http, contacts):
             batch_calls["n"] += 1
-            return []
+            return [
+                _sp_result(first=c["firstName"], last=c["lastName"],
+                           email=f"{c['firstName'].lower()}@acme.com")
+                for c in contacts
+            ]
 
         monkeypatch.setattr(sp, "find_emails_batch", fake_batch)
-        per_row_mock = AsyncMock(return_value=("", "not_found", {}))
+        seen_pre_resolved: list[Any] = []
+
+        async def fake_resolve(*args, **kwargs):
+            seen_pre_resolved.append(kwargs.get("pre_resolved_smartprospect"))
+            return ("", "not_found", {"dm_email_verified": "unknown"})
 
         def go():
             async def _go():
-                with patch.object(pipeline_mod, "_resolve_email_for_person", per_row_mock):
-                    await pipeline_mod._enrich_domain(
+                with patch.object(pipeline_mod, "_resolve_email_for_person", fake_resolve):
+                    rows = await pipeline_mod._enrich_domain(
                         blitz_http=MagicMock(),
                         contacts_http=MagicMock(),
                         base_row={"domain": "acme.com"},
@@ -460,10 +470,18 @@ class TestBatchPrepassActivation:
                         email_semaphore=asyncio.Semaphore(1),
                         collector=None,  # KEY: no collector
                     )
+                    return rows
             return asyncio.run(_go())
 
-        go()
-        assert batch_calls["n"] == 0, "collector=None must suppress batch"
+        rows = go()
+        assert batch_calls["n"] == 1, (
+            f"Phase 3: batch must fire without a collector, got {batch_calls['n']} calls"
+        )
+        assert len(rows) == 2, "no-collector run must still produce per-person rows"
+        for pre in seen_pre_resolved:
+            assert pre is not None and pre.get("email"), (
+                "pre_resolved handoff must fire without a collector"
+            )
 
     def test_batch_skipped_when_no_persons_have_first_last_domain(self, monkeypatch):
         """When every person's full_name cannot be split into first+last

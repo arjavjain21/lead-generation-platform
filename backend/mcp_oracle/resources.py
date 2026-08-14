@@ -139,7 +139,7 @@ def providers_status() -> str:
     state — if a provider is disabled via ``providers.py`` or env var,
     it shows as disabled here.
 
-    Cascade order: Contacts DB → Blitz → SmartProspect → WizLeads → BetterEnrich.
+    Cascade order: Contacts DB → Blitz → GetLeads → SmartProspect → WizLeads → BetterEnrich.
     The cascade stops at the first provider that returns a valid email.
     """
     from enrichment import providers as prov
@@ -147,9 +147,10 @@ def providers_status() -> str:
     cascade = [
         (1, "contacts_db", "75 RPS", "Free — internal database"),
         (2, "blitz", "25 RPS", "Paid — LinkedIn enrichment"),
-        (3, "smartprospect", "30 RPS", "Paid — SmartLead Find Emails"),
-        (4, "wizleads", "10 RPS", "Paid — verified email"),
-        (5, "better_enrich", "10 RPS", "Paid — person + company email"),
+        (3, "getleads", "100/min*", "Paid — verified DM emails + bonus phones (batch 100)"),
+        (4, "smartprospect", "30 RPS", "Paid — SmartLead Find Emails"),
+        (5, "wizleads", "10 RPS", "Paid — verified email"),
+        (6, "better_enrich", "10 RPS", "Paid — person + company email"),
     ]
 
     lines = [
@@ -166,10 +167,12 @@ def providers_status() -> str:
     lines.extend([
         "",
         "**Valid provider names for `selected_providers`:** "
-        "`contacts_db`, `blitz`, `smartprospect`, `wizleads`, `better_enrich`",
+        "`contacts_db`, `blitz`, `getleads`, `smartprospect`, `wizleads`, `better_enrich`",
         "",
         "**Note:** `contacts_db` is always allowed even when not explicitly "
         "listed in `selected_providers` (mandatory first step).",
+        "",
+        "`*` GetLeads batch of 100 amortizes to ~10k/min on the unlimited plan.",
     ])
     return "\n".join(lines)
 

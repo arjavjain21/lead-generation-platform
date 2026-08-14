@@ -37,6 +37,7 @@ from . import providers
 from . import mailtester_client
 from . import wizleads_client
 from . import smartprospect_client
+from . import getleads_client
 from . import identifier_utils
 from . import company_fallback
 
@@ -258,7 +259,7 @@ def _compact_attempts_summary(attempts: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 # Valid provider values for force_provider / selected_providers parameter
-VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "smartprospect", "wizleads", "better_enrich"})
+VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "getleads", "smartprospect", "wizleads", "better_enrich"})
 
 
 def _should_skip_provider(
@@ -331,6 +332,8 @@ def _normalize_source(source: str) -> str:
         return "contacts_db"
     elif source.startswith("blitz"):
         return "blitz"
+    elif source.startswith("getleads"):
+        return "getleads"
     elif source.startswith("smartprospect"):
         return "smartprospect"
     elif source.startswith("better_enrich"):
@@ -379,6 +382,7 @@ SOURCE_BETTER_ENRICH_FACEBOOK = "better_enrich_facebook_email"  # Page email fro
 SOURCE_BETTER_ENRICH_COMPANY_V2 = "better_enrich_company_email"  # Company email from BetterEnrich find-company-email (fallback tier)
 SOURCE_WIZLEADS = "wizleads_email"                        # Person email from WizLeads
 SOURCE_SMARTPROSPECT = "smartprospect_email"              # Person email from SmartLead Find Emails (self-verifying)
+SOURCE_GETLEADS = "getleads_email"                        # Person email from GetLeads (app.getleads.io)
 
 # Routing reasons (no_email_reason values)
 # The full standard enum (per LOOP.md acceptance test 2/8):
@@ -428,6 +432,7 @@ ROUTE_IDENTIFIER_DOMAIN = "domain"
 # Provider tokens used in source_path (must match how a provider "found" email).
 ROUTE_PROVIDER_CONTACTS_DB = "contacts_db"
 ROUTE_PROVIDER_BLITZ = "blitz"
+ROUTE_PROVIDER_GETLEADS = "getleads"
 ROUTE_PROVIDER_SMARTPROSPECT = "smartprospect"
 ROUTE_PROVIDER_WIZLEADS = "wizleads"
 ROUTE_PROVIDER_BETTER_ENRICH = "better_enrich"
@@ -440,6 +445,7 @@ ROUTE_METHOD_PERSON_BY_NAME_DOMAIN = "person_by_name_and_domain"
 ROUTE_METHOD_PERSON_ENRICH = "person_enrich"
 ROUTE_METHOD_FIND_EMAIL = "find_email"
 ROUTE_METHOD_FIND_EMAIL_SMARTPROSPECT = "find_email_smartprospect"
+ROUTE_METHOD_FIND_EMAIL_GETLEADS = "find_email_getleads"
 ROUTE_METHOD_FIND_WORK_EMAIL_V3 = "find_work_email_v3"
 ROUTE_METHOD_PHONE_REVERSE_LOOKUP = "phone_reverse_lookup"
 
@@ -448,6 +454,7 @@ ENRICHED_COLUMNS = [
     "company_name",
     "company_industry",
     "company_employee_count",
+    "company_revenue",
     "dm_first_name",
     "dm_last_name",
     "dm_full_name",
@@ -455,9 +462,11 @@ ENRICHED_COLUMNS = [
     "dm_job_level",
     "dm_job_function",
     "dm_linkedin_url",
+    "dm_linkedin_connections",
     "dm_email",
     "dm_email_source",
     "dm_email_verified",
+    "dm_email_last_verified_at",
     "mailtester_code",
     "mailtester_message",
     "dm_phone",
@@ -524,6 +533,8 @@ def _provider_label(method: str) -> str:
         return ROUTE_PROVIDER_BLITZ
     if method == ROUTE_METHOD_FIND_EMAIL:
         return ROUTE_PROVIDER_WIZLEADS
+    if method == ROUTE_METHOD_FIND_EMAIL_GETLEADS:
+        return ROUTE_PROVIDER_GETLEADS
     if method == ROUTE_METHOD_FIND_EMAIL_SMARTPROSPECT:
         return ROUTE_PROVIDER_SMARTPROSPECT
     if method == ROUTE_METHOD_FIND_WORK_EMAIL_V3:
@@ -559,6 +570,8 @@ def _can_provider_use_method(method: str, inputs: dict[str, str]) -> bool:
     if method == ROUTE_METHOD_PERSON_ENRICH:
         return bool(fn) and bool(dom)
     if method == ROUTE_METHOD_FIND_EMAIL:
+        return bool(first) and bool(last) and bool(dom)
+    if method == ROUTE_METHOD_FIND_EMAIL_GETLEADS:
         return bool(first) and bool(last) and bool(dom)
     if method == ROUTE_METHOD_FIND_EMAIL_SMARTPROSPECT:
         return bool(first) and bool(last) and bool(dom)
@@ -725,9 +738,14 @@ def route_enrichment(
                 },
             ])
             if first_name and last_name:
-                # smartprospect inserted between Blitz and BetterEnrich in the
-                # LinkedIn-first name+domain fallback arm too, mirroring the
-                # name_domain cascade ordering.
+                # getleads + smartprospect inserted between Blitz and BetterEnrich
+                # in the LinkedIn-first name+domain fallback arm too, mirroring the
+                # name_domain cascade ordering (blitz -> getleads -> smartprospect).
+                raw_steps.append({
+                    "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
+                    "method": ROUTE_METHOD_FIND_EMAIL_GETLEADS,
+                    "provider": ROUTE_PROVIDER_GETLEADS,
+                })
                 raw_steps.append({
                     "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
                     "method": ROUTE_METHOD_FIND_EMAIL_SMARTPROSPECT,
@@ -766,8 +784,14 @@ def route_enrichment(
             },
         ])
         if first_name and last_name:
+            # getleads runs before SmartProspect — both first+last+domain gated.
             # smartprospect runs before WizLeads — self-verifying, 30 RPS,
             # batch-capable. Same first+last+domain gate as WizLeads.
+            raw_steps.append({
+                "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
+                "method": ROUTE_METHOD_FIND_EMAIL_GETLEADS,
+                "provider": ROUTE_PROVIDER_GETLEADS,
+            })
             raw_steps.append({
                 "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
                 "method": ROUTE_METHOD_FIND_EMAIL_SMARTPROSPECT,
@@ -802,6 +826,7 @@ def route_enrichment(
         family_map = {
             "contacts_db": ROUTE_PROVIDER_CONTACTS_DB,
             "blitz": ROUTE_PROVIDER_BLITZ,
+            "getleads": ROUTE_PROVIDER_GETLEADS,
             "smartprospect": ROUTE_PROVIDER_SMARTPROSPECT,
             "wizleads": ROUTE_PROVIDER_WIZLEADS,
             "better_enrich": ROUTE_PROVIDER_BETTER_ENRICH,
@@ -904,12 +929,19 @@ async def _run_route_step(
     email_semaphore: asyncio.Semaphore,
     validate_email: bool = True,
     record_provider_use: Optional[Callable[[str], None]] = None,
+    pre_resolved_getleads: Optional[dict[str, Any]] = None,
+    pre_resolved_smartprospect: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Execute a single routed step. Returns one of:
 
         {"email": "x@y.com", "source": "<SOURCE_*>", "verification": {...}}
         {"phone_reverse": "https://linkedin.com/in/..."}  # phone hop
         {"email": "", "source": SOURCE_NOT_FOUND}
+
+    ``pre_resolved_getleads`` / ``pre_resolved_smartprospect`` (Phase 3 batch
+    coverage): when the caller ran a ``find_emails_batch`` pre-pass, the
+    batch result for THIS person short-circuits the single-call path. Both
+    default to None = zero behavior change for every existing caller.
     """
     from . import mailtester_client as _mt
     from . import contacts_client as _cc
@@ -1106,7 +1138,71 @@ async def _run_route_step(
                     return {"email": "", "source": SOURCE_NOT_FOUND}
             return {"email": "", "source": SOURCE_NOT_FOUND}
 
+        if method == ROUTE_METHOD_FIND_EMAIL_GETLEADS:
+            # Phase 3 (batch coverage): reuse a pre-resolved batch result
+            # instead of re-calling the single endpoint. Mirrors the
+            # _resolve_email_for_person Step 5 pre-resolved pattern
+            # (~pipeline.py:2363). An empty pre-resolved email falls through
+            # to the normal single-call path below.
+            if pre_resolved_getleads is not None:
+                pre_email = pre_resolved_getleads.get("email", "")
+                if pre_email:
+                    _record("getleads")
+                    vs = pre_resolved_getleads.get("verification_status")
+                    verification["dm_email_verified"] = "yes" if vs == "Valid" else "unknown"
+                    # Phase 2: carry the GetLeads DM attributes through on the
+                    # verification dict (same overlay contract as the domain
+                    # orchestrator path).
+                    verification["getleads_dm"] = _getleads_dm_snapshot(pre_resolved_getleads)
+                    logger.info("GetLeads (route batch pre-pass) found email: %s", pre_email)
+                    return {"email": pre_email, "source": SOURCE_GETLEADS, "verification": verification}
+            _record("getleads")
+            try:
+                result = await getleads_client.find_email(
+                    blitz_http,
+                    first_name=inputs["first_name"],
+                    last_name=inputs["last_name"],
+                    company_domain=inputs["domain"],
+                )
+            except httpx.HTTPStatusError as e:
+                logger.warning("GetLeads find_email failed: %s", e)
+                error_type, message = _classify_http_error(e, "getleads", "find_email")
+                return _ProviderError(
+                    provider="getleads",
+                    method="find_email",
+                    error_type=error_type,
+                    message=message,
+                )
+            except Exception as e:
+                logger.warning("GetLeads find_email failed: %s", e)
+                return {"email": "", "source": SOURCE_NOT_FOUND}
+            if _is_provider_error(result):
+                return result
+            if result and result.get("email"):
+                # GetLeads returns email_status (VALID observed on hits);
+                # trust verification_status="Valid", else accept-unverified.
+                vs = result.get("verification_status")
+                if vs == "Valid":
+                    verification["dm_email_verified"] = "yes"
+                else:
+                    verification["dm_email_verified"] = "unknown"
+                return {"email": result["email"], "source": SOURCE_GETLEADS, "verification": verification}
+            return {"email": "", "source": SOURCE_NOT_FOUND}
+
         if method == ROUTE_METHOD_FIND_EMAIL_SMARTPROSPECT:
+            # Phase 3 (batch coverage): reuse a pre-resolved batch result
+            # instead of re-calling the single endpoint. Mirrors the
+            # _resolve_email_for_person Step 6 pre-resolved pattern
+            # (~pipeline.py:2435). An empty pre-resolved email falls through
+            # to the normal single-call path below.
+            if pre_resolved_smartprospect is not None:
+                pre_email = pre_resolved_smartprospect.get("email", "")
+                if pre_email:
+                    _record("smartprospect")
+                    vs = pre_resolved_smartprospect.get("verification_status")
+                    verification["dm_email_verified"] = "yes" if vs == "Valid" else "unknown"
+                    logger.info("SmartProspect (route batch pre-pass) found email: %s", pre_email)
+                    return {"email": pre_email, "source": SOURCE_SMARTPROSPECT, "verification": verification}
             _record("smartprospect")
             try:
                 result = await _sp.find_email(
@@ -1222,6 +1318,8 @@ async def run_enrichment_route(
     row_index: int = -1,
     emit_logs: bool = True,
     record_provider_use: Optional[Callable[[str], None]] = None,
+    pre_resolved_getleads: Optional[dict[str, Any]] = None,
+    pre_resolved_smartprospect: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Execute a route produced by `route_enrichment`.
 
@@ -1303,6 +1401,8 @@ async def run_enrichment_route(
             email_semaphore,
             validate_email=validate_email,
             record_provider_use=record_provider_use,
+            pre_resolved_getleads=pre_resolved_getleads,
+            pre_resolved_smartprospect=pre_resolved_smartprospect,
         )
         latency_ms = int((time.monotonic() - t0) * 1000)
         steps_taken.append(step)
@@ -1673,6 +1773,33 @@ def _backfill_person_identity(person: dict[str, Any]) -> tuple[str, str, str]:
     return first, last, title
 
 
+def _getleads_dm_snapshot(item: Optional[dict[str, Any]]) -> dict[str, str]:
+    """Extract the GetLeads-sourced DM attributes from a normalized
+    ``_normalize_result_item`` result (or a pre-resolved batch result, which
+    uses the same shape).
+
+    The snapshot rides on ``verification_info["getleads_dm"]`` from the
+    Step 5 return sites into ``_build_person_row``, which overlays it onto
+    the row built from the Blitz/contacts_db person. Values are stripped
+    strings; missing keys stay "" (the overlay skips empty values).
+    """
+    if not isinstance(item, dict):
+        return {}
+    return {
+        "title": str(item.get("job_title") or "").strip(),
+        "headline": str(item.get("linkedin_headline") or "").strip(),
+        "city": str(item.get("city") or "").strip(),
+        "country": str(item.get("country") or "").strip(),
+        "phone": str(item.get("phone") or "").strip(),
+        "job_level": str(item.get("job_level") or "").strip(),
+        "job_function": str(item.get("job_function") or "").strip(),
+        "revenue": str(item.get("revenue") or "").strip(),
+        "employee_count": str(item.get("employee_count") or "").strip(),
+        "linkedin_connections": str(item.get("linkedin_connections") or "").strip(),
+        "email_last_verified_at": str(item.get("email_last_verified_at") or "").strip(),
+    }
+
+
 def _build_person_row(
     base_row: dict[str, Any],
     company_linkedin_url: str,
@@ -1731,6 +1858,40 @@ def _build_person_row(
         row["dm_email_verified"] = "unknown"
         row["mailtester_code"] = ""
         row["mailtester_message"] = ""
+
+    # Phase 2 (full capture): when GetLeads won the email race, overlay its
+    # DM attributes onto the Blitz/contacts_db-derived row. ZERO change when
+    # ``getleads_dm`` is absent (every non-GetLeads path) — the overlay only
+    # fires on non-empty values, so a GetLeads miss never blanks a field.
+    getleads_dm = (verification_info or {}).get("getleads_dm") or {}
+    for col, src in (
+        ("dm_title", "title"),
+        ("dm_headline", "headline"),
+        ("dm_location_city", "city"),
+        ("dm_location_country", "country"),
+        ("dm_phone", "phone"),
+        ("dm_job_level", "job_level"),
+        ("dm_job_function", "job_function"),
+    ):
+        v = getleads_dm.get(src)
+        if isinstance(v, str) and v.strip():
+            row[col] = v.strip()
+    # Fill-only columns: company_* are stamped earlier from Contacts DB and
+    # must NEVER be overwritten (fallback only); dm_email_last_verified_at /
+    # dm_linkedin_connections have no other source, so any value wins.
+    if getleads_dm:
+        for col, src, fill_only in (
+            ("company_revenue", "revenue", True),
+            ("company_employee_count", "employee_count", True),
+            ("dm_email_last_verified_at", "email_last_verified_at", False),
+            ("dm_linkedin_connections", "linkedin_connections", False),
+        ):
+            v = getleads_dm.get(src)
+            if not (isinstance(v, str) and v.strip()):
+                continue
+            if fill_only and row.get(col):
+                continue
+            row[col] = v.strip()
 
     # Pattern C: serialize per-row provider error list to JSON.
     # ``verification_info["provider_errors"]`` is a list[dict] populated by
@@ -1883,6 +2044,7 @@ async def _resolve_email_for_person(
     collector: Optional[Any] = None,  # RawContactCollector; Phase 2a capture
     company_linkedin_url: str = "",
     pre_resolved_smartprospect: Optional[dict[str, Any]] = None,
+    pre_resolved_getleads: Optional[dict[str, Any]] = None,
 ) -> tuple[str, str, dict[str, Any]]:
     """
     Returns (email, source, verification_info).
@@ -1891,9 +2053,11 @@ async def _resolve_email_for_person(
       2. Contacts DB by LinkedIn URL (SECONDARY)
       3. Blitz person enrich by name + domain (PRIMARY PAID)
       4. Blitz email from LinkedIn URL (SECONDARY PAID)
-      5. WizLeads person email (CATCHALL VERIFIED, 10 RPS)
-      6. BetterEnrich work email (person lookup)
-      7. Contacts DB by name + domain (name from input row, if different)
+      5. GetLeads person email (first + last + domain, batch-capable)
+      6. SmartProspect person email (self-verifying, 30 RPS, batch-capable)
+      7. WizLeads person email (CATCHALL VERIFIED, 10 RPS)
+      8. BetterEnrich work email (person lookup)
+      9. Contacts DB by name + domain (name from input row, if different)
 
     Args:
         force_provider: If set, only use that specific provider.
@@ -1911,13 +2075,20 @@ async def _resolve_email_for_person(
             cascades.
         pre_resolved_smartprospect: Phase 5 — when the domain orchestrator
             runs a smartprospect batch pre-pass, this dict carries the
-            per-person result so Step 5 can reuse it instead of re-calling
+            per-person result so Step 6 can reuse it instead of re-calling
             the API. Shape matches smartprospect_client.find_email output:
             ``{email, status, verification_status, first_name, last_name, domain}``.
-            When None (or when its email is empty), Step 5 falls back to the
+            When None (or when its email is empty), Step 6 falls back to the
             normal single-call path. The pre-resolved check ONLY short-circuits
             the smartprospect step — Contacts DB and Blitz still run first so
             free-tier emails win when available.
+        pre_resolved_getleads: Phase 5 — when the domain orchestrator runs a
+            getleads batch pre-pass, this dict carries the per-person result so
+            Step 5 can reuse it instead of re-calling the API. Shape matches
+            getleads_client.find_email output: ``{email, first_name, last_name,
+            domain, verification_status, linkedin_url, phone}``. When None (or
+            when its email is empty), Step 5 falls back to the normal single-call
+            path. The pre-resolved check ONLY short-circuits the getleads step.
 
     verification_info dict contains:
         - dm_email_verified: "yes", "no", "unknown"
@@ -2217,8 +2388,80 @@ async def _resolve_email_for_person(
                 _record_error("blitz", "find_work_email", e)
                 logger.warning("Blitz email lookup failed for %s: %s", linkedin_url, e)
 
-        # Step 5: SmartProspect person email (self-verifying, 30 RPS, batch-capable)
-        # Inserted between Blitz and WizLeads. Gates on firstName + lastName +
+        # Step 5: GetLeads person email (first + last + domain, batch-capable)
+        # Inserted between Blitz and SmartProspect. Gates on firstName + lastName +
+        # domain — decoupled from Blitz (mirrors the smartprospect capability
+        # gate). The firstName/lastName can come from the input row, Contacts DB,
+        # or Blitz.
+        if full_name and domain and not _should_skip_provider("getleads", force_provider):
+            first_name_gl = person.get("first_name", "") or (full_name.split(" ")[0] if full_name else "")
+            last_name_gl = person.get("last_name", "") or (" ".join(full_name.split(" ")[1:]) if " " in full_name else "")
+            if first_name_gl and last_name_gl:
+                # Phase 5: when the domain orchestrator ran a batch pre-pass,
+                # reuse its result instead of re-calling the API. The pre-resolved
+                # check short-circuits ONLY the getleads step — Contacts DB
+                # and Blitz above already ran, so free-tier emails still win.
+                if pre_resolved_getleads is not None:
+                    _record("getleads")
+                    pre_email = pre_resolved_getleads.get("email", "")
+                    if pre_email:
+                        _capture("getleads", {
+                            **pre_resolved_getleads,
+                            "full_name": full_name,
+                            "first_name": first_name_gl,
+                            "last_name": last_name_gl,
+                            "linkedin_url": linkedin_url,
+                            "email": pre_email,
+                        })
+                        vs = pre_resolved_getleads.get("verification_status")
+                        verification_info["dm_email_verified"] = "yes" if vs == "Valid" else "unknown"
+                        # Phase 2: carry the GetLeads DM attributes through to
+                        # _build_person_row (overlay, see getleads_dm there).
+                        verification_info["getleads_dm"] = _getleads_dm_snapshot(pre_resolved_getleads)
+                        logger.info("GetLeads (batch pre-pass) found email for %s: %s", full_name, pre_email)
+                        return pre_email, SOURCE_GETLEADS, verification_info
+                    # Batch tried but no email (Not Found / Invalid) — fall through
+                    # to SmartProspect without re-calling the single endpoint.
+                else:
+                    _record("getleads")
+                    try:
+                        result = await getleads_client.find_email(
+                            blitz_client_inst,
+                            first_name=first_name_gl,
+                            last_name=last_name_gl,
+                            company_domain=domain,
+                        )
+                        if result and result.get("email"):
+                            email = result["email"]
+                            # Phase 2a: capture the GetLeads response.
+                            _capture("getleads", {
+                                **result,
+                                "full_name": full_name,
+                                "first_name": first_name_gl,
+                                "last_name": last_name_gl,
+                                "linkedin_url": linkedin_url,
+                                "email": email,
+                            })
+                            # GetLeads reports verification_status. Trust "Valid",
+                            # otherwise accept as "unknown" (mirrors SmartProspect /
+                            # WizLeads catchall policy).
+                            vs = result.get("verification_status")
+                            if vs == "Valid":
+                                verification_info["dm_email_verified"] = "yes"
+                            else:
+                                verification_info["dm_email_verified"] = "unknown"
+                            # Phase 2: carry the GetLeads DM attributes through to
+                            # _build_person_row (overlay, see getleads_dm there).
+                            verification_info["getleads_dm"] = _getleads_dm_snapshot(result)
+                            logger.info("GetLeads found email for %s: %s (verification_status: %s)",
+                                        full_name, email, vs)
+                            return email, SOURCE_GETLEADS, verification_info
+                    except Exception as e:
+                        _record_error("getleads", "find_email", e)
+                        logger.warning("GetLeads lookup failed for %s / %s: %s", full_name, domain, e)
+
+        # Step 6: SmartProspect person email (self-verifying, 30 RPS, batch-capable)
+        # Inserted between GetLeads and WizLeads. Gates on firstName + lastName +
         # domain — decoupled from Blitz (per user requirement: "It does not
         # depend on blitz, it only depends on the input parameters"). The
         # firstName/lastName can come from the input row, Contacts DB, or Blitz.
@@ -2283,8 +2526,8 @@ async def _resolve_email_for_person(
                         _record_error("smartprospect", "find_email", e)
                         logger.warning("SmartProspect lookup failed for %s / %s: %s", full_name, domain, e)
 
-        # Step 6: WizLeads person email (catchall verified, 10 RPS)
-        # Inserted between Blitz and BetterEnrich per user-confirmed cascade order.
+        # Step 7: WizLeads person email (catchall verified, 10 RPS)
+        # Inserted between SmartProspect and BetterEnrich per user-confirmed cascade order.
         if full_name and domain and not _should_skip_provider("wizleads", force_provider):
             _record("wizleads")
             first_name = person.get("first_name", "") or (full_name.split(" ")[0] if full_name else "")
@@ -2316,7 +2559,7 @@ async def _resolve_email_for_person(
                 _record_error("wizleads", "find_email", e)
                 logger.warning("WizLeads lookup failed for %s / %s: %s", full_name, domain, e)
 
-        # Step 7: BetterEnrich person email (V3 with built-in verification)
+        # Step 8: BetterEnrich person email (V3 with built-in verification)
         if full_name and domain and not _should_skip_provider("better_enrich", force_provider):
             _record("better_enrich")
             try:
@@ -2347,7 +2590,7 @@ async def _resolve_email_for_person(
                 _record_error("better_enrich", "find_work_email_v3", e)
                 logger.warning("BetterEnrich V3 person lookup failed for %s / %s: %s", full_name, domain, e)
 
-        # Step 7: Contacts DB by input row name + domain (if different from person name)
+        # Step 9: Contacts DB by input row name + domain (if different from person name)
         # This handles edge cases where the input name differs from the person's current name
         if input_full_name and input_full_name != full_name and domain and not _should_skip_provider("contacts_db", force_provider):
             _record("contacts_db")
@@ -2724,11 +2967,14 @@ async def _enrich_domain(
     pre_resolved_by_index: dict[int, dict[str, Any]] = {}
     batch_attempted = False
     batch_found = 0
+    # Phase 3 (batch coverage): the pre-pass no longer requires a collector —
+    # the batch CALL + pre_resolved handoff run for every caller (including
+    # POST /enrich domain_only and GET /enrich/{domain}, which pass no
+    # collector); only the collector capture below is collector-gated.
     if (
         not force_provider
         and not _should_skip_provider("smartprospect", force_provider)
         and len(persons) >= 2
-        and collector is not None  # only run when caller wires the collector (CSV jobs)
     ):
         # Build the batch input list — only persons with first+last+domain.
         batch_inputs: list[tuple[int, str, str]] = []  # (person_idx, first, last)
@@ -2782,38 +3028,148 @@ async def _enrich_domain(
                     batch_found += 1
                     # Phase 5 capture: write the batch-resolved email to the
                     # collector so it drains to Contacts DB at job end. Same
-                    # shape as the per-row smartprospect capture.
-                    try:
-                        p = persons[idx].get("person", {}) if isinstance(persons[idx], dict) else {}
-                        collector.capture_company_contact(
-                            source="smartprospect",
-                            domain=domain,
-                            company_linkedin_url=company_linkedin_url,
-                            contact={
-                                **result,
-                                "full_name": p.get("full_name", ""),
-                                "first_name": first,
-                                "last_name": last,
-                                "linkedin_url": p.get("linkedin_url", ""),
-                                "email": email,
-                            },
-                        )
-                    except Exception as cap_err:
-                        logger.debug(
-                            "collector.capture_company_contact(smartprospect batch) failed for %s: %s",
-                            domain, cap_err,
-                        )
+                    # shape as the per-row smartprospect capture. No-ops when
+                    # the caller wired no collector (Phase 3 relaxed the gate).
+                    if collector is not None:
+                        try:
+                            p = persons[idx].get("person", {}) if isinstance(persons[idx], dict) else {}
+                            collector.capture_company_contact(
+                                source="smartprospect",
+                                domain=domain,
+                                company_linkedin_url=company_linkedin_url,
+                                contact={
+                                    **result,
+                                    "full_name": p.get("full_name", ""),
+                                    "first_name": first,
+                                    "last_name": last,
+                                    "linkedin_url": p.get("linkedin_url", ""),
+                                    "email": email,
+                                },
+                            )
+                        except Exception as cap_err:
+                            logger.debug(
+                                "collector.capture_company_contact(smartprospect batch) failed for %s: %s",
+                                domain, cap_err,
+                            )
 
             logger.info(
                 "SmartProspect batch pre-pass for %s: %d/%d resolved (attempted=%s)",
                 domain, batch_found, len(batch_inputs), batch_attempted,
             )
 
+    # Step 2.6: Phase 5 — GetLeads batch pre-pass.
+    #
+    # Mirror of the SmartProspect pre-pass above, but for GetLeads (runs BEFORE
+    # SmartProspect in the per-row cascade). If getleads is enabled, no
+    # force_provider is set, and we have 2+ decision makers with first+last+
+    # domain, resolve them in a single find_emails_batch() call (chunks of 100
+    # internally). Each pre-resolved email is passed down to Step 5 of the
+    # per-row cascade so it skips the single-call API hit. Contacts DB and
+    # Blitz (free + paid upstream tiers) still run first in the per-row cascade
+    # — free-tier emails win when available. Batch only replaces the getleads
+    # API call.
+    #
+    # Safety: every guard here is additive. If anything looks off, the batch
+    # is skipped and the per-row cascade runs normally for everyone.
+    pre_resolved_getleads_by_index: dict[int, dict[str, Any]] = {}
+    getleads_batch_attempted = False
+    getleads_batch_found = 0
+    # Phase 3 (batch coverage): the pre-pass no longer requires a collector —
+    # the batch CALL + pre_resolved handoff run for every caller (including
+    # POST /enrich domain_only and GET /enrich/{domain}, which pass no
+    # collector); only the collector capture below is collector-gated.
+    if (
+        not force_provider
+        and not _should_skip_provider("getleads", force_provider)
+        and len(persons) >= 2
+    ):
+        # Build the batch input list — only persons with first+last+domain.
+        getleads_batch_inputs: list[tuple[int, str, str]] = []  # (person_idx, first, last)
+        for idx, item in enumerate(persons):
+            p = item.get("person", {}) if isinstance(item, dict) else {}
+            if not isinstance(p, dict):
+                continue
+            p_full = p.get("full_name") or ""
+            p_first = p.get("first_name") or (p_full.split(" ")[0] if p_full else "")
+            p_last = p.get("last_name") or (
+                " ".join(p_full.split(" ")[1:]) if " " in p_full else ""
+            )
+            if p_first and p_last and domain:
+                getleads_batch_inputs.append((idx, p_first, p_last))
+
+        if len(getleads_batch_inputs) >= 2:
+            getleads_batch_attempted = True
+            getleads_contacts_payload = [
+                {"firstName": first, "lastName": last, "companyDomain": domain}
+                for _, first, last in getleads_batch_inputs
+            ]
+            # record_provider_use fires once for the whole batch (matches the
+            # semantic "getleads was attempted on this job"). Per-row Step 5
+            # calls _record("getleads") only when it actually consumes a
+            # pre-resolved result OR falls back to single-call.
+            if record_provider_use is not None:
+                try:
+                    record_provider_use("getleads")
+                except Exception:
+                    pass
+            try:
+                getleads_batch_results = await getleads_client.find_emails_batch(
+                    blitz_http, getleads_contacts_payload
+                )
+            except Exception as batch_exc:
+                logger.warning(
+                    "GetLeads batch pre-pass failed for %s: %s — falling back to per-row cascade",
+                    domain, batch_exc,
+                )
+                getleads_batch_results = []
+
+            # Map results back to person indices. find_emails_batch preserves
+            # input order and pads short responses with Not Found, so the zip
+            # is safe even when the API returns fewer entries than input.
+            for (idx, first, last), result in zip(getleads_batch_inputs, getleads_batch_results):
+                if not isinstance(result, dict):
+                    continue
+                email = result.get("email", "")
+                if email:
+                    pre_resolved_getleads_by_index[idx] = result
+                    getleads_batch_found += 1
+                    # Phase 5 capture: write the batch-resolved email to the
+                    # collector so it drains to Contacts DB at job end. Same
+                    # shape as the per-row getleads capture. No-ops when
+                    # the caller wired no collector (Phase 3 relaxed the gate).
+                    if collector is not None:
+                        try:
+                            p = persons[idx].get("person", {}) if isinstance(persons[idx], dict) else {}
+                            collector.capture_company_contact(
+                                source="getleads",
+                                domain=domain,
+                                company_linkedin_url=company_linkedin_url,
+                                contact={
+                                    **result,
+                                    "full_name": p.get("full_name", ""),
+                                    "first_name": first,
+                                    "last_name": last,
+                                    "linkedin_url": p.get("linkedin_url", ""),
+                                    "email": email,
+                                },
+                            )
+                        except Exception as cap_err:
+                            logger.debug(
+                                "collector.capture_company_contact(getleads batch) failed for %s: %s",
+                                domain, cap_err,
+                            )
+
+            logger.info(
+                "GetLeads batch pre-pass for %s: %d/%d resolved (attempted=%s)",
+                domain, getleads_batch_found, len(getleads_batch_inputs), getleads_batch_attempted,
+            )
+
     # Step 3: resolve email for each person concurrently.
     #
-    # Phase 5: pass pre_resolved_smartprospect (if any) so Step 5 of the
-    # per-row cascade reuses the batch result instead of re-calling the API.
-    # Per-row Contacts DB + Blitz still run first (free tier can override).
+    # Phase 5: pass pre_resolved_smartprospect + pre_resolved_getleads (if any)
+    # so Steps 5/6 of the per-row cascade reuse the batch results instead of
+    # re-calling the API. Per-row Contacts DB + Blitz still run first (free
+    # tier can override).
     tasks = [
         _resolve_email_for_person(
             blitz_http,
@@ -2828,6 +3184,7 @@ async def _enrich_domain(
             collector=collector,
             company_linkedin_url=company_linkedin_url,
             pre_resolved_smartprospect=pre_resolved_by_index.get(idx),
+            pre_resolved_getleads=pre_resolved_getleads_by_index.get(idx),
         )
         for idx, item in enumerate(persons)
     ]

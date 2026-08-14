@@ -678,6 +678,76 @@ class TestNormalizeWizleadsContact:
 
 
 # ---------------------------------------------------------------------------
+# Per-provider: GetLeads
+# ---------------------------------------------------------------------------
+
+class TestNormalizeGetLeadsContact:
+    """GetLeads (app.getleads.io) — handles enrich items + decision-makers.
+
+    The full per-shape suite lives in test_getleads_normalizer.py; this class
+    covers the dispatch + key contract here so regressions are caught by the
+    main normalizer suite too.
+    """
+
+    def test_enrich_item_with_nested_data(self):
+        raw = {
+            "email": "zac@earth.works",
+            "profileUrl": "https://www.linkedin.com/in/zac-chaffin-0475a023",
+            "data": {
+                "first_name": "Zac", "last_name": "Chaffin",
+                "person_full_name": "Zac Chaffin",
+                "job_title": "Chief Financial Officer",
+                "linkedin_headline": "CFO at Earthworks, Inc.",
+                "person_linkedin_url": "https://www.linkedin.com/in/zac-chaffin-0475a023",
+                "domain_org": "earth.works",
+                "email_address": "zac@earth.works",
+            },
+        }
+        result = rn.normalize_getleads_contact(raw)
+        assert result is not None
+        assert result["source"] == "getleads"
+        assert result["email"] == "zac@earth.works"
+        assert result["full_name"] == "Zac Chaffin"
+        assert result["title"] == "Chief Financial Officer"
+        assert result["domain"] == "earth.works"
+
+    def test_decision_makers_flat_record(self):
+        raw = {
+            "first_name": "Brad", "last_name": "Bobenrieth",
+            "email_address": "bbobenrieth@meadowsfarms.com",
+            "job_title": "Vice President", "org_domain": "meadowsfarms.com",
+            "person_linkedin_url": "https://www.linkedin.com/in/brad-bobenrieth-84a45695",
+        }
+        result = rn.normalize_getleads_contact(raw)
+        assert result is not None
+        assert result["email"] == "bbobenrieth@meadowsfarms.com"
+        assert result["domain"] == "meadowsfarms.com"
+
+    def test_not_found_returns_none(self):
+        # success:true but email:null + data:null — must be skipped.
+        raw = {"success": True, "email": None, "data": None}
+        assert rn.normalize_getleads_contact(raw) is None
+
+    def test_partial_no_email_returns_none(self):
+        # data populated with identity but no email_address — skipped.
+        raw = {
+            "email": None,
+            "data": {
+                "person_full_name": "Troy Nelson",
+                "person_linkedin_url": "https://www.linkedin.com/in/troy-nelson",
+            },
+        }
+        assert rn.normalize_getleads_contact(raw) is None
+
+    def test_junk_empty(self):
+        assert rn.normalize_getleads_contact({}) is None
+
+    def test_non_dict_returns_none(self):
+        assert rn.normalize_getleads_contact(None) is None  # type: ignore[arg-type]
+        assert rn.normalize_getleads_contact("string") is None  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
 # Generic dispatcher
 # ---------------------------------------------------------------------------
 
@@ -705,6 +775,18 @@ class TestNormalizeProviderContact:
         result = rn.normalize_provider_contact("wizleads", raw)
         assert result is not None
         assert result["source"] == "wizleads"
+
+    def test_getleads(self):
+        raw = {"email": "john@acme.com", "data": {"email_address": "john@acme.com"}}
+        result = rn.normalize_provider_contact("getleads", raw)
+        assert result is not None
+        assert result["source"] == "getleads"
+
+    def test_getleads_aliases(self):
+        raw = {"email": "john@acme.com"}
+        assert rn.normalize_provider_contact("get_leads", raw) is not None
+        assert rn.normalize_provider_contact("get-leads", raw) is not None
+        assert rn.normalize_provider_contact("GETLEADS", raw) is not None
 
     def test_unknown_provider(self):
         raw = {"email": "john@acme.com"}
@@ -740,11 +822,21 @@ class TestNormalizeProviderContact:
 # ---------------------------------------------------------------------------
 
 class TestOutputShapeInvariants:
-    """The normalized dict must always have exactly these keys, all str."""
+    """The normalized dict must always have exactly these keys, all str.
+
+    Phase 2 (full capture, 2026-08-14) widened the canonical record shared
+    by ALL providers: the 9 original identity keys plus 11 passthrough
+    firmographic fields ("" when the provider doesn't emit them). Providers
+    that pass an ``extra`` blob (GetLeads: ``_raw_getleads``) add that key
+    too — these fixtures carry no blob.
+    """
 
     EXPECTED_KEYS = {
         "email", "first_name", "last_name", "full_name",
         "title", "headline", "linkedin_url", "domain", "source",
+        "phone", "city", "country", "company_name", "company_industry",
+        "employee_count", "revenue", "linkedin_connections",
+        "email_last_verified_at", "job_level", "job_function",
     }
 
     def test_contacts_db_keys(self):
@@ -769,6 +861,13 @@ class TestOutputShapeInvariants:
 
     def test_wizleads_keys(self):
         result = rn.normalize_wizleads_contact({"email": "a@b.com"})
+        assert set(result.keys()) == self.EXPECTED_KEYS
+        for v in result.values():
+            assert isinstance(v, str)
+
+    def test_getleads_keys(self):
+        result = rn.normalize_getleads_contact({"email": "a@b.com"})
+        assert result is not None
         assert set(result.keys()) == self.EXPECTED_KEYS
         for v in result.values():
             assert isinstance(v, str)

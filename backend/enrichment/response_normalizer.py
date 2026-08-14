@@ -327,6 +327,19 @@ def is_meaningful_person(value: Optional[str]) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _plain_str(value: Any) -> str:
+    """Coerce an arbitrary provider value to a stripped string ('' for missing).
+
+    Used for the Phase 2 passthrough fields (phone, city, revenue, ...) where
+    name-style normalization would mangle values like '$50M to <$100M'.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    return str(value).strip()
+
+
 def _build_record(
     *,
     source: str,
@@ -338,11 +351,34 @@ def _build_record(
     headline: Any = "",
     linkedin_url: Any = "",
     domain: Any = "",
-) -> Optional[dict[str, str]]:
+    phone: Any = "",
+    city: Any = "",
+    country: Any = "",
+    company_name: Any = "",
+    company_industry: Any = "",
+    employee_count: Any = "",
+    revenue: Any = "",
+    linkedin_connections: Any = "",
+    email_last_verified_at: Any = "",
+    job_level: Any = "",
+    job_function: Any = "",
+    extra: Optional[dict] = None,
+) -> Optional[dict[str, Any]]:
     """Build a normalized record dict with all keys populated.
 
     If email/full_name/linkedin_url are all empty after normalization,
     returns None (junk filter).
+
+    The Phase 2 passthrough fields (phone, city, country, company_name,
+    company_industry, employee_count, revenue, linkedin_connections,
+    email_last_verified_at, job_level, job_function) are stringified and
+    stripped but NOT junk-filtered — the junk filter still only depends on
+    email/full_name/linkedin_url.
+
+    ``extra`` is an optional passthrough dict merged into the result AFTER
+    the canonical keys are placed (canonical keys win on conflict), so
+    providers can carry their raw blob (e.g. GetLeads ``_raw_getleads``)
+    forward for downstream consumers.
     """
     n_email = normalize_email(email)
     n_first = normalize_person_name(first_name)
@@ -360,7 +396,7 @@ def _build_record(
         # Per spec, return None for junk. Caller checks for None.
         return None
 
-    return {
+    record: dict[str, Any] = {
         "email": n_email,
         "first_name": n_first,
         "last_name": n_last,
@@ -370,7 +406,23 @@ def _build_record(
         "linkedin_url": n_linkedin,
         "domain": n_domain,
         "source": source,
+        # Phase 2 passthrough fields (see docstring).
+        "phone": _plain_str(phone),
+        "city": _plain_str(city),
+        "country": _plain_str(country),
+        "company_name": _plain_str(company_name),
+        "company_industry": _plain_str(company_industry),
+        "employee_count": _plain_str(employee_count),
+        "revenue": _plain_str(revenue),
+        "linkedin_connections": _plain_str(linkedin_connections),
+        "email_last_verified_at": _plain_str(email_last_verified_at),
+        "job_level": _plain_str(job_level),
+        "job_function": _plain_str(job_function),
     }
+    if extra:
+        # Canonical keys win: merge extra first, then re-apply the record.
+        return {**extra, **record}
+    return record
 
 
 def _extract_blitz_title(person: dict) -> str:
@@ -642,6 +694,126 @@ def normalize_smartprospect_contact(raw: dict) -> Optional[dict[str, str]]:
     )
 
 
+def normalize_getleads_contact(raw: dict) -> Optional[dict[str, str]]:
+    """Normalize a GetLeads (app.getleads.io) contact dict.
+
+    Handles BOTH verified response shapes (see ``/tmp/getleads_live_shapes.md``,
+    the authoritative spec):
+
+      (a) Enrich ``results[]`` item — a top-level ``email``/``profileUrl``/
+          ``linkedinUrl`` plus a nested ``data`` object holding the full person
+          record (``email_address``, ``person_full_name``, ``job_title``,
+          ``domain_org``, ``person_linkedin_url``, ``linkedin_headline`` ...).
+          ``data`` is ``null`` on the not-found shape. Returned by
+          ``/v1/enrich/from-person`` and ``/v1/enrich/from-linkedin``.
+      (b) Decision-makers ``contacts[]`` flat record — no ``data`` wrapper;
+          identity fields live at the top level under ``org_*`` aliases
+          (``org_domain``, ``org_company_name``) and ``email_address``.
+          Returned by ``/v1/contacts/lookup/decision-makers``.
+
+    The normalizer also tolerates a caller passing the bare ``data`` dict
+    directly as ``raw`` (no item wrapper) — the aliasing falls through to the
+    flat top-level keys.
+
+    GetLeads is an email-enrichment provider and its API never emits a
+    ``success:false`` flag — a no-result comes back as ``success:true`` with
+    ``email:null`` + ``data:null`` (not-found), or with ``data`` populated but
+    ``email_address`` omitted (partial). Per the verified shape spec (§5–6),
+    a record with no deliverable email is skipped (returns None) even when a
+    person identity is present. This gates both no-result shapes.
+    """
+    if not isinstance(raw, dict):
+        return None
+    # Enrich items nest the rich record under "data"; decision-makers records
+    # (and a bare data dict passed directly) have no such wrapper. Treat a
+    # non-dict "data" as empty so the flat-key fallbacks below take over.
+    data = raw.get("data")
+    if not isinstance(data, dict):
+        data = {}
+
+    email = (
+        raw.get("email")
+        or data.get("email_address")
+        or raw.get("email_address")
+    )
+    # Email is required: GetLeads returns no failure flag, so the not-found
+    # shape (email:null, data:null) and the partial shape (data populated,
+    # no email_address) are indistinguishable from success except for a
+    # null/missing email. Skip both (shapes spec §5–6).
+    if not normalize_email(email):
+        return None
+
+    return _build_record(
+        source="getleads",
+        email=email,
+        first_name=data.get("first_name") or raw.get("first_name"),
+        last_name=data.get("last_name") or raw.get("last_name"),
+        full_name=data.get("person_full_name") or raw.get("person_full_name"),
+        title=data.get("job_title") or raw.get("job_title"),
+        headline=data.get("linkedin_headline") or raw.get("linkedin_headline"),
+        linkedin_url=(
+            data.get("person_linkedin_url")
+            or raw.get("profileUrl")
+            or raw.get("linkedinUrl")
+            or raw.get("person_linkedin_url")
+            or raw.get("linkedin_url")
+        ),
+        domain=(
+            data.get("domain_org")
+            or data.get("email_domain")
+            or raw.get("domain_org")
+            or raw.get("email_domain")
+            or raw.get("org_domain")
+            or raw.get("domain")
+        ),
+        # Phase 2 passthrough: the flat-key fallbacks mirror the stitched
+        # shape the pipeline feeds the collector ({**normalized_item, ...}
+        # has no "data" wrapper but carries the flattened client keys).
+        phone=(
+            data.get("cellphone")
+            or data.get("direct_phone")
+            or raw.get("phone")
+        ),
+        city=data.get("person_city") or raw.get("city"),
+        country=data.get("person_country_name") or raw.get("country"),
+        company_name=(
+            data.get("org_company_name")
+            or raw.get("company_name")
+        ),
+        company_industry=(
+            data.get("industry_linkedin_org")
+            or raw.get("company_industry")
+        ),
+        employee_count=(
+            data.get("employee_count_range_org")
+            or raw.get("employee_count")
+        ),
+        revenue=data.get("revenue_range_org") or raw.get("revenue"),
+        linkedin_connections=(
+            data.get("linkedin_connections_count")
+            or raw.get("linkedin_connections")
+        ),
+        email_last_verified_at=(
+            data.get("email_last_verified_at")
+            or raw.get("email_last_verified_at")
+        ),
+        job_level=data.get("job_level") or raw.get("job_level"),
+        job_function=data.get("job_function") or raw.get("job_function"),
+        extra=(
+            {
+                "_raw_getleads": (
+                    raw["data"]
+                    if isinstance(raw.get("data"), dict)
+                    else raw["_raw_getleads"]
+                )
+            }
+            if isinstance(raw.get("data"), dict)
+            or isinstance(raw.get("_raw_getleads"), dict)
+            else None
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Generic dispatcher
 # ---------------------------------------------------------------------------
@@ -661,6 +833,9 @@ _PROVIDER_DISPATCH: dict[str, Callable[[dict], Optional[dict[str, str]]]] = {
     "smartprospect": normalize_smartprospect_contact,
     "smart_prospect": normalize_smartprospect_contact,
     "smart-prospect": normalize_smartprospect_contact,
+    "getleads": normalize_getleads_contact,
+    "get_leads": normalize_getleads_contact,
+    "get-leads": normalize_getleads_contact,
 }
 
 
@@ -702,5 +877,6 @@ __all__ = [
     "normalize_blitz_contact",
     "normalize_better_enrich_contact",
     "normalize_wizleads_contact",
+    "normalize_getleads_contact",
     "normalize_provider_contact",
 ]

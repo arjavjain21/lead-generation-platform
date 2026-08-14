@@ -213,6 +213,19 @@ def init_db() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_outbox_job
             ON contacts_write_outbox (job_id, row_index);
+
+        -- Cross-process token-bucket rate limiter state (2026-08-14)
+        -- Shared across gunicorn workers via SQLite (WAL). One row per
+        -- provider; shared/rate_limiter.py performs atomic refills under
+        -- BEGIN IMMEDIATE. Idempotent — the limiter module also creates
+        -- this lazily as defense in depth.
+        CREATE TABLE IF NOT EXISTS provider_rate_limit (
+            provider       TEXT PRIMARY KEY,
+            tokens         REAL NOT NULL,
+            last_refill_ts REAL NOT NULL,
+            capacity       REAL NOT NULL,
+            refill_per_sec REAL NOT NULL
+        );
         """
     )
 

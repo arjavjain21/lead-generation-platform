@@ -1127,16 +1127,17 @@
         <div class="page active" id="page-home">
             <div class="welcome-card">
                 <h2>Find Decision Makers with Verified Emails</h2>
-                <p>Build targeted lead lists by uploading domains, searching companies, or enriching LinkedIn profiles. Get emails using our 5-source cascade: Contacts DB, Blitz API, smartprospect, WizLeads, and BetterEnrich.</p>
+                <p>Build targeted lead lists by uploading domains, searching companies, or enriching LinkedIn profiles. Get emails using our 6-source cascade: Contacts DB, Blitz API, GetLeads, smartprospect, WizLeads, and BetterEnrich.</p>
             </div>
             
             <div class="info-grid">
                 <div class="info-card">
                     <h3>Data Sources</h3>
-                    <p>We use 5 data sources (in priority order):</p>
+                    <p>We use 6 data sources (in priority order):</p>
                     <ol>
                         <li><strong>Contacts DB</strong> - Free, cached data (75 RPS)</li>
                         <li><strong>Blitz API</strong> - LinkedIn-based enrichment (25 RPS)</li>
+                        <li><strong>GetLeads</strong> - Verified DM emails + bonus phones (batch of 100, unlimited plan)</li>
                         <li><strong>smartprospect</strong> - Verified email finder (30 RPS, batch up to 10)</li>
                         <li><strong>WizLeads</strong> - Catchall email verification (10 RPS)</li>
                         <li><strong>BetterEnrich</strong> - Person/company email lookup (10 RPS)</li>
@@ -1357,6 +1358,11 @@
                                 <input type="checkbox" id="chain_provider_blitz" checked style="width:18px;height:18px;">
                                 <span style="font-weight:500;">Blitz API</span>
                                 <span style="font-size:0.75rem;color:#64748b;margin-left:auto;">LinkedIn-based</span>
+                            </label>
+                            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+                                <input type="checkbox" id="chain_provider_getleads" checked style="width:18px;height:18px;">
+                                <span style="font-weight:500;">GetLeads</span>
+                                <span style="font-size:0.75rem;color:#64748b;margin-left:auto;">Verified · batch 100</span>
                             </label>
                             <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
                                 <input type="checkbox" id="chain_provider_smartprospect" checked style="width:18px;height:18px;">
@@ -1606,6 +1612,11 @@
                             <span style="font-size:0.75rem;color:#64748b;">Runs if Internal DB has no data</span>
                         </div>
                         <div style="display:flex;align-items:center;gap:8px;">
+                            <input type="checkbox" id="provider_getleads" checked style="width:16px;height:16px;cursor:pointer;">
+                            <label style="font-weight:600;cursor:pointer;">GetLeads</label>
+                            <span style="font-size:0.75rem;color:#64748b;">Verified emails + phones · batch 100</span>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:8px;">
                             <input type="checkbox" id="provider_smartprospect" checked style="width:16px;height:16px;cursor:pointer;">
                             <label style="font-weight:600;cursor:pointer;">smartprospect</label>
                             <span style="font-size:0.75rem;color:#64748b;">Verified emails · 2000 req/min</span>
@@ -1650,6 +1661,7 @@
                     <div class="cascade-steps" id="enrichmentCascadeSteps">
                         <div class="cascade-step" data-provider="contacts_db">Contacts DB</div>
                         <div class="cascade-step" data-provider="blitz">Blitz API</div>
+                        <div class="cascade-step" data-provider="getleads">GetLeads</div>
                         <div class="cascade-step" data-provider="smartprospect">smartprospect</div>
                         <div class="cascade-step" data-provider="wizleads">WizLeads</div>
                         <div class="cascade-step" data-provider="better_enrich">BetterEnrich</div>
@@ -1663,6 +1675,10 @@
                         <div class="provider-result-item">
                             <span class="provider-result-value" id="blitzResults">0</span>
                             <span class="provider-result-label">Blitz</span>
+                        </div>
+                        <div class="provider-result-item">
+                            <span class="provider-result-value" id="getleadsResults">0</span>
+                            <span class="provider-result-label">GetLeads</span>
                         </div>
                         <div class="provider-result-item">
                             <span class="provider-result-value" id="smartprospectResults">0</span>
@@ -3077,6 +3093,7 @@ example.org,Jane Doe</pre>
             // Collect selected providers (contacts_db is always sent but backend enforces it)
             const providers = [];
             if (document.getElementById('provider_blitz').checked) providers.push('blitz');
+            if (document.getElementById('provider_getleads').checked) providers.push('getleads');
             if (document.getElementById('provider_smartprospect').checked) providers.push('smartprospect');
             if (document.getElementById('provider_wizleads').checked) providers.push('wizleads');
             if (document.getElementById('provider_better_enrich').checked) providers.push('better_enrich');
@@ -4062,6 +4079,7 @@ example.org,Jane Doe</pre>
             // Collect selected providers (contacts_db is always enabled on backend)
             const providers = [];
             if (document.getElementById('chain_provider_blitz').checked) providers.push('blitz');
+            if (document.getElementById('chain_provider_getleads').checked) providers.push('getleads');
             if (document.getElementById('chain_provider_smartprospect').checked) providers.push('smartprospect');
             if (document.getElementById('chain_provider_wizleads').checked) providers.push('wizleads');
             if (document.getElementById('chain_provider_better_enrich').checked) providers.push('better_enrich');
@@ -4849,7 +4867,7 @@ example.org,Jane Doe</pre>
                 // Update activity text
                 const activityText = document.getElementById('enrichmentActivityText');
                 if (activityText && data.current_provider) {
-                    const providerNames = { contacts_db: 'Internal Database', blitz: 'Blitz API', smartprospect: 'smartprospect', wizleads: 'WizLeads', better_enrich: 'BetterEnrich' };
+                    const providerNames = { contacts_db: 'Internal Database', blitz: 'Blitz API', getleads: 'GetLeads', smartprospect: 'smartprospect', wizleads: 'WizLeads', better_enrich: 'BetterEnrich' };
                     activityText.textContent = 'Checking ' + (providerNames[data.current_provider] || data.current_provider) + '...';
                     updateCascadeStep(data.current_provider);
                 }
@@ -4894,7 +4912,7 @@ example.org,Jane Doe</pre>
         // Update cascade step indicator
         function updateCascadeStep(activeProvider) {
             const steps = document.querySelectorAll('#enrichmentCascadeSteps .cascade-step');
-            const providerOrder = ['contacts_db', 'blitz', 'smartprospect', 'wizleads', 'better_enrich', 'complete'];
+            const providerOrder = ['contacts_db', 'blitz', 'getleads', 'smartprospect', 'wizleads', 'better_enrich', 'complete'];
             const activeIndex = providerOrder.indexOf(activeProvider);
 
             steps.forEach((step, i) => {
@@ -4916,6 +4934,7 @@ example.org,Jane Doe</pre>
         function updateProviderResults(results) {
             if (results.contacts_db !== undefined) document.getElementById('contactsDbResults').textContent = results.contacts_db;
             if (results.blitz !== undefined) document.getElementById('blitzResults').textContent = results.blitz;
+            if (results.getleads !== undefined) document.getElementById('getleadsResults').textContent = results.getleads;
             if (results.smartprospect !== undefined) document.getElementById('smartprospectResults').textContent = results.smartprospect;
             if (results.wizleads !== undefined) document.getElementById('wizleadsResults').textContent = results.wizleads;
             if (results.better_enrich !== undefined) document.getElementById('betterEnrichResults').textContent = results.better_enrich;
@@ -5346,6 +5365,7 @@ example.org,Jane Doe</pre>
                         const labelFor = (p) => {
                             if (p === 'contacts_db') return 'Internal Contacts DB';
                             if (p === 'blitz') return 'Blitz';
+                            if (p === 'getleads') return 'GetLeads';
                             if (p === 'smartprospect') return 'smartprospect';
                             if (p === 'wizleads') return 'WizLeads';
                             if (p === 'better_enrich') return 'Better Enrich';
@@ -5369,7 +5389,7 @@ example.org,Jane Doe</pre>
                             selectedDisplay = selectedParsed.map(labelFor).join(' + ');
                         } else {
                             // Old job without selection field - assume defaults (all enabled)
-                            selectedDisplay = 'Internal Contacts DB + Blitz + smartprospect + WizLeads + Better Enrich';
+                            selectedDisplay = 'Internal Contacts DB + Blitz + GetLeads + smartprospect + WizLeads + Better Enrich';
                         }
 
                         // 2. USED: from job.used_providers (new), or infer from email counts (old)
@@ -6171,6 +6191,7 @@ example.org,Jane Doe</pre>
                 // Collect selected providers (contacts_db is always enabled on backend)
                 const providers = [];
                 if (document.getElementById('chain_provider_blitz').checked) providers.push('blitz');
+                if (document.getElementById('chain_provider_getleads').checked) providers.push('getleads');
                 if (document.getElementById('chain_provider_smartprospect').checked) providers.push('smartprospect');
                 if (document.getElementById('chain_provider_wizleads').checked) providers.push('wizleads');
                 if (document.getElementById('chain_provider_better_enrich').checked) providers.push('better_enrich');

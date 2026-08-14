@@ -142,6 +142,69 @@ def _extract_company_industry(raw: dict[str, Any]) -> str:
     return ""
 
 
+def _extract_first_str(raw: dict[str, Any], keys: tuple[str, ...]) -> str:
+    """Return the first non-empty string value among ``keys`` (stripped).
+
+    Shared engine for the Phase 2 ``_extract_*`` helpers below. Accepts
+    non-str scalars (e.g. int connection counts) by stringifying them.
+    Never raises; returns "" when nothing matches.
+    """
+    if not isinstance(raw, dict):
+        return ""
+    for key in keys:
+        v = raw.get(key)
+        if v is None:
+            continue
+        if isinstance(v, str):
+            if v.strip():
+                return v.strip()
+        elif isinstance(v, (int, float)) and not isinstance(v, bool):
+            return str(v)
+    return ""
+
+
+def _extract_phone(raw: dict[str, Any]) -> str:
+    """Best-effort phone pull (phone/cellphone/direct_phone aliases)."""
+    return _extract_first_str(raw, ("phone", "phone_number", "cellphone", "direct_phone"))
+
+
+def _extract_headline(raw: dict[str, Any]) -> str:
+    """Best-effort LinkedIn headline pull (headline/linkedin_headline)."""
+    return _extract_first_str(raw, ("headline", "linkedin_headline"))
+
+
+def _extract_city(raw: dict[str, Any]) -> str:
+    """Best-effort person-city pull (city/person_city)."""
+    return _extract_first_str(raw, ("city", "person_city"))
+
+
+def _extract_country(raw: dict[str, Any]) -> str:
+    """Best-effort person-country pull (country/person_country_name)."""
+    return _extract_first_str(raw, ("country", "person_country_name"))
+
+
+def _extract_employee_count(raw: dict[str, Any]) -> str:
+    """Best-effort company employee-count pull."""
+    return _extract_first_str(raw, ("employee_count", "employee_count_range_org"))
+
+
+def _extract_revenue(raw: dict[str, Any]) -> str:
+    """Best-effort company revenue-range pull."""
+    return _extract_first_str(raw, ("revenue", "revenue_range_org"))
+
+
+def _extract_linkedin_connections(raw: dict[str, Any]) -> str:
+    """Best-effort LinkedIn connection-count pull (stringified)."""
+    return _extract_first_str(
+        raw, ("linkedin_connections", "linkedin_connections_count")
+    )
+
+
+def _extract_email_last_verified_at(raw: dict[str, Any]) -> str:
+    """Best-effort email last-verified timestamp pull."""
+    return _extract_first_str(raw, ("email_last_verified_at",))
+
+
 # ---------------------------------------------------------------------------
 # Collector
 # ---------------------------------------------------------------------------
@@ -235,14 +298,62 @@ class RawContactCollector:
         }
 
         # Optional company name if available in the raw contact
-        company_name = _extract_company_name(contact)
+        company_name = normalized.get("company_name") or _extract_company_name(contact)
         if company_name:
             payload["company_name"] = company_name
 
         # Optional company industry (powers write-back universe classification)
-        company_industry = _extract_company_industry(contact)
+        company_industry = (
+            normalized.get("company_industry")
+            or _extract_company_industry(contact)
+        )
         if company_industry:
             payload["company_industry"] = company_industry
+
+        # Phase 2 (full capture): firmographic + person-attribute fields.
+        # Prefer the normalized (provider-agnostic) value; fall back to a
+        # best-effort pull from the raw contact dict. Only include when
+        # non-empty so the writer's ``if value:`` guards stay quiet.
+        dm_headline = normalized.get("headline") or _extract_headline(contact)
+        if dm_headline:
+            payload["dm_headline"] = dm_headline
+
+        dm_phone = normalized.get("phone") or _extract_phone(contact)
+        if dm_phone:
+            payload["dm_phone"] = dm_phone
+
+        dm_city = normalized.get("city") or _extract_city(contact)
+        if dm_city:
+            payload["dm_location_city"] = dm_city
+
+        dm_country = normalized.get("country") or _extract_country(contact)
+        if dm_country:
+            payload["dm_location_country"] = dm_country
+
+        company_employee_count = (
+            normalized.get("employee_count")
+            or _extract_employee_count(contact)
+        )
+        if company_employee_count:
+            payload["company_employee_count"] = company_employee_count
+
+        company_revenue = normalized.get("revenue") or _extract_revenue(contact)
+        if company_revenue:
+            payload["company_revenue"] = company_revenue
+
+        dm_linkedin_connections = (
+            normalized.get("linkedin_connections")
+            or _extract_linkedin_connections(contact)
+        )
+        if dm_linkedin_connections:
+            payload["dm_linkedin_connections"] = dm_linkedin_connections
+
+        dm_email_last_verified_at = (
+            normalized.get("email_last_verified_at")
+            or _extract_email_last_verified_at(contact)
+        )
+        if dm_email_last_verified_at:
+            payload["dm_email_last_verified_at"] = dm_email_last_verified_at
 
         # Job lineage
         if self.job_id is not None:

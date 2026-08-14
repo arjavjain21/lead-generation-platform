@@ -283,6 +283,7 @@ def explain_response_field(field_name: str) -> str:
             "Valid values:\n"
             "- `contacts_db_email`, `contacts_db_name`, `contacts_db_linkedin` — found in internal Contacts DB (free)\n"
             "- `blitz_email`, `blitz_linkedin` — found via Blitz API (paid)\n"
+            "- `getleads_email` — found via GetLeads (paid)\n"
             "- `smartprospect_email` — found via SmartProspect (paid)\n"
             "- `wizleads_email` — found via WizLeads (paid)\n"
             "- `better_enrich`, `better_enrich_company_email` — found via BetterEnrich (paid)\n"
@@ -422,14 +423,14 @@ def explain_error_code(error_message: str) -> str:
             return (
                 "## Empty selected_providers List\n\n"
                 "`selected_providers` must contain at least one provider.\n\n"
-                "**Valid values:** `contacts_db`, `blitz`, `smartprospect`, "
+                "**Valid values:** `contacts_db`, `blitz`, `getleads`, `smartprospect`, "
                 "`wizleads`, `better_enrich`"
             )
         if "invalid" in msg_lower:
             return (
                 "## Unknown Provider Name\n\n"
                 "One of your `selected_providers` values is not a valid provider name.\n\n"
-                "**Valid values:** `contacts_db`, `blitz`, `smartprospect`, "
+                "**Valid values:** `contacts_db`, `blitz`, `getleads`, `smartprospect`, "
                 "`wizleads`, `better_enrich`\n\n"
                 "Check for typos and case sensitivity (all lowercase)."
             )
@@ -479,9 +480,10 @@ def list_current_providers() -> str:
     cascade = [
         (1, "contacts_db", "75 RPS", "Free"),
         (2, "blitz", "25 RPS", "Paid"),
-        (3, "smartprospect", "30 RPS", "Paid"),
-        (4, "wizleads", "10 RPS", "Paid"),
-        (5, "better_enrich", "10 RPS", "Paid"),
+        (3, "getleads", "100/min*", "Paid"),
+        (4, "smartprospect", "30 RPS", "Paid"),
+        (5, "wizleads", "10 RPS", "Paid"),
+        (6, "better_enrich", "10 RPS", "Paid"),
     ]
 
     lines = [

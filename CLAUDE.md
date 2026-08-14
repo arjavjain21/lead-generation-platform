@@ -145,9 +145,10 @@ Each enrichment source has different cost/quality tradeoffs:
 |-----|------------|----------|---------|
 | **Contacts DB** | 75 RPS | 1st (free) | Domain → company → contacts with emails |
 | **Blitz** | 25 RPS | 2nd | LinkedIn-based enrichment with title cascade |
-| **smartprospect** | 30 RPS | 3rd | Person-email finder, batch up to 10, self-verifying |
-| **WizLeads** | 10 RPS | 4th | Catch-all verified email enrichment |
-| **BetterEnrich** | 10 RPS | 5th | Person email, company email |
+| **GetLeads** | batch 100 (~10k/min) | 3rd | Verified DM emails + bonus phones (batch of 100, unlimited plan) |
+| **smartprospect** | 30 RPS | 4th | Person-email finder, batch up to 10, self-verifying |
+| **WizLeads** | 10 RPS | 5th | Catch-all verified email enrichment |
+| **BetterEnrich** | 10 RPS | 6th | Person email, company email |
 
 > **Prospeo** is implemented in `backend/enrichment/prospeo_client.py` but **disabled end-to-end via a 4-layer belt-and-suspenders**: (1) `ENABLED_PROVIDERS["prospeo"]=False` in `providers.py`; (2) `ENABLE_PROSPEO=false` in `backend/.env`; (3) a hard guard at `pipeline.py` (~L294) that reads `ENABLE_PROSPEO` and skips *before* the global check; (4) `prospeo_client` is imported but **never called** anywhere in the cascade. **To re-enable requires all of:** `ENABLE_PROSPEO=true` + flip the dict to `True` + wire an actual cascade step (currently absent). Full provider lifecycle in the `lead-generation-platform-workflow` skill → `references/providers.md`.
 
@@ -206,6 +207,8 @@ Enriches LinkedIn profiles with phone numbers using Blitz Direct Phone API:
 JWT_SECRET=<secret>
 SCRAPER_TECH_KEY=<scraper-tech-key>
 BLITZ_API_KEY=<blitz-key>
+GETLEADS_API_KEY=<getleads-key>
+ENABLE_GETLEADS=true
 SMARTPROSPECT_API_KEY=<smartprospect-key>
 CONTACTS_API_TOKEN=<contacts-token>
 BETTER_ENRICH_API_KEY=<betterenrich-key>

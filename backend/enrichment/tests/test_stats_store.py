@@ -51,6 +51,16 @@ class TestSourceGroupMapping:
         assert SOURCE_GROUPS["smartprospect"] == "smartprospect"
         assert SOURCE_GROUPS["smartprospect_email"] == "smartprospect"
 
+    def test_getleads_sources_map_to_getleads(self):
+        """GetLeads sources (both labels) should map to 'getleads' provider.
+
+        `getleads` is the label used by the unified /enrich path; `getleads_email`
+        is the label used by the List Building flows path. Both must collapse to one
+        provider group so reporting/aggregation shows a single GetLeads number.
+        """
+        assert SOURCE_GROUPS["getleads"] == "getleads"
+        assert SOURCE_GROUPS["getleads_email"] == "getleads"
+
     def test_normalize_source_function(self):
         """Test the normalize_source helper function."""
         assert normalize_source("blitz_email") == "blitz"
@@ -60,6 +70,9 @@ class TestSourceGroupMapping:
         # Both SmartProspect labels must normalize to the single canonical provider
         assert normalize_source("smartprospect") == "smartprospect"
         assert normalize_source("smartprospect_email") == "smartprospect"
+        # Both GetLeads labels must normalize to the single canonical provider
+        assert normalize_source("getleads") == "getleads"
+        assert normalize_source("getleads_email") == "getleads"
         # Unknown sources should return themselves
         assert normalize_source("unknown_source") == "unknown_source"
 
@@ -129,6 +142,20 @@ class TestAggregateByProvider:
         assert result == {"smartprospect": 5}
         # No split keys should leak through
         assert "smartprospect_email" not in result
+
+    def test_aggregate_getleads_variants_collapse(self):
+        """Both GetLeads labels must collapse into a single 'getleads' count."""
+        raw_sources = [
+            "getleads",        # unified /enrich path
+            "getleads_email",  # List Building flows path
+            "getleads_email",
+            "getleads",
+            "getleads_email",
+        ]
+        result = EnrichmentStatsStore.aggregate_by_provider(raw_sources)
+        assert result == {"getleads": 5}
+        # No split keys should leak through
+        assert "getleads_email" not in result
 
     def test_aggregate_mixed_known_and_unknown(self):
         """Mix of known and unknown sources should work correctly."""
