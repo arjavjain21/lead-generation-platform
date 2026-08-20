@@ -64,6 +64,23 @@ class ScraperJobStore(JobStoreBase):
             return job
         return None
 
+    def get_stale_running_jobs_by_heartbeat(self) -> list[str]:
+        """Scraper-only stale-job detection.
+
+        Overrides the base query, which is NOT job_type-scoped: without this,
+        the scraper reaper would also abandon stale enrichment/phone jobs at
+        startup (it runs first in main.py lifespan). Each job type reaps only
+        its own.
+        """
+        rows = self.conn.execute(
+            """SELECT job_id FROM jobs
+               WHERE job_type='scraper'
+               AND status IN ('running', 'queued')
+               AND (datetime(last_heartbeat) IS NULL OR datetime(last_heartbeat) < datetime('now', '-2 minutes'))
+               AND datetime(created_at) < datetime('now', '-3 minutes')"""
+        ).fetchall()
+        return [r["job_id"] for r in rows]
+
 
 def get_store() -> ScraperJobStore:
     """

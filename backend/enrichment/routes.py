@@ -4456,6 +4456,23 @@ async def restart_enrichment_job(
     Creates a new job using the same CSV file and configuration as the original.
     The original job_id is preserved in the parent_job_id field for tracking.
     """
+    return await _restart_job_core(job_id, current_user, background_tasks=background_tasks)
+
+
+async def _restart_job_core(
+    job_id: str,
+    current_user: dict,
+    background_tasks: Optional[BackgroundTasks] = None,
+    auto: bool = False,
+):
+    """Shared restart logic for the user-facing endpoint and auto-resume.
+
+    Single source of truth for resume semantics (partial CSV carry-over,
+    checkpoint-space dedupe, cascade/provider preservation). The user-facing
+    endpoint is a thin wrapper; the auto-resume worker (shared/auto_resume.py)
+    calls this with ``auto=True`` and no BackgroundTasks (it runs the runner
+    as a bare asyncio task instead).
+    """
     store = job_store.get_store()
     original_job = store.get_job(job_id)
 
@@ -4702,8 +4719,7 @@ async def restart_enrichment_job(
     _active_jobs.add(new_job_id)
 
     # Always use _run_domain_enrich_job for restarts (it now has provider selection support)
-    background_tasks.add_task(
-        _run_domain_enrich_job,
+    runner_kwargs = dict(
         job_id=new_job_id,
         rows=deduped_rows,
         domain_col=original_job['domain_col'],
@@ -4720,7 +4736,15 @@ async def restart_enrichment_job(
         prepend_rows=prepend_rows,
     )
 
-    logger.info("Restarted enrichment job %s as new job %s with providers %s", job_id, new_job_id, selected_providers)
+    if background_tasks is not None:
+        background_tasks.add_task(_run_domain_enrich_job, **runner_kwargs)
+    else:
+        # Auto-resume path: no request scope, run as a bare asyncio task in
+        # this worker (same lifecycle as every other enrichment runner).
+        asyncio.create_task(_run_domain_enrich_job(**runner_kwargs))
+
+    logger.info("Restarted enrichment job %s as new job %s with providers %s (auto=%s)",
+                job_id, new_job_id, selected_providers, auto)
 
     return {
         "job_id": new_job_id,

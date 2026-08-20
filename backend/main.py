@@ -165,6 +165,17 @@ async def _run_parent_startup():
     phone_enrichment_routes.cleanup_stale_phone_jobs()
     enrichment_routes.cleanup_old_files()
 
+    # Auto-resume: any enrichment job the reaper just marked 'abandoned' is
+    # re-queued through the restart path instead of waiting for a manual
+    # click. Atomic claim + fresh-death window + restart cap make this safe
+    # across the 4 workers. Soft failure only — must never block boot.
+    try:
+        from shared.auto_resume import maybe_auto_resume_abandoned_jobs
+        asyncio.create_task(maybe_auto_resume_abandoned_jobs())
+        logger.info("Started auto-resume watcher for abandoned jobs")
+    except Exception as e:
+        logger.warning("Failed to start auto-resume watcher: %s", e)
+
     try:
         from enrichment.contacts_writer import retry_outbox_loop
         asyncio.create_task(retry_outbox_loop(interval_seconds=60))

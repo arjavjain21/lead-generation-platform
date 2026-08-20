@@ -102,6 +102,23 @@ class EnrichmentJobStore(JobStoreBase):
             return job
         return None
 
+    def get_stale_running_jobs_by_heartbeat(self) -> list[str]:
+        """Enrichment-only stale-job detection.
+
+        Overrides the base query, which is NOT job_type-scoped: without this,
+        the scraper's startup reaper (which runs first in main.py lifespan)
+        would also abandon stale enrichment jobs, and this store's own reaper
+        would abandon scraper jobs. Each job type reaps only its own.
+        """
+        rows = self.conn.execute(
+            """SELECT job_id FROM jobs
+               WHERE job_type='enrichment'
+               AND status IN ('running', 'queued')
+               AND (datetime(last_heartbeat) IS NULL OR datetime(last_heartbeat) < datetime('now', '-2 minutes'))
+               AND datetime(created_at) < datetime('now', '-3 minutes')"""
+        ).fetchall()
+        return [r["job_id"] for r in rows]
+
 
 # Singleton instance for convenience
 _default_store: Optional[EnrichmentJobStore] = None
