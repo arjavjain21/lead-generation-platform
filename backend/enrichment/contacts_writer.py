@@ -24,12 +24,79 @@ import asyncio
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
 import httpx
+
+
+# --- Lead-universe industry classifier -------------------------------------
+# Pure Python mirror of the contacts-DB function core.fn_classify_industry:
+# same normalize step (lowercase; _ / & -> space) and the same pattern buckets,
+# checked in the same precedence order (saas -> local -> ecom -> b2b), so that
+# write-back classification agrees with the DB-side backfill. Returns "" for
+# ambiguous / missing industry (callers treat "" as "no tag" -> no regression).
+_CLASSIFY_SAAS = (
+    "software", "saas", "cloud computing", "artificial intelligence",
+    "machine learning", "cybersecurity", "data process", "tech platform",
+    "computer software", "information and internet",
+)
+_CLASSIFY_LOCAL = (
+    "plumb", "hvac", "electrician", "roof", "dentist", "dental", "salon",
+    "barber", " spa", "restaurant", "cafe", "coffee", "gym", "fitness",
+    "wellness", "pet groom", "pet store", "moving", "fence", "landscap",
+    "tree service", "cleaning", "auto repair", "automotive repair",
+    "real estate", "hotel", "hospitality", "hospital", "medical practice",
+    "medical clinic", "medical spa", "veterinar", "bakery", "grocery",
+    "catering", "photograph", "florist", "pest control", "locksmith",
+    "travel", "leisure", "recreation", "food and bev",
+)
+_CLASSIFY_ECOM = (
+    "retail", "apparel", "fashion", "consumer goods", "cosmetic",
+    "beauty product", "jewel", "consumer electronic", "ecom", "e-commerce",
+    "merchand", "sporting goods", "furniture store", "interior design brand",
+)
+_CLASSIFY_B2B = (
+    "agency", "consulting", "consultant", "manufacturing", "machinery",
+    "staffing", "recruit", "financial service", "financial planner", "bank",
+    "insurance", "accounting", "engineering", "contractor", "construction",
+    "legal", "attorney", "lawyer", "public relations", "advertising",
+    "marketing", "information technology", "telecommunication", "semiconductor",
+    "chemical", "research", "medical device", "food production",
+    "pharmaceutical", "biotech", "logistics", "warehouse", "wholesale",
+    "printing", "publishing", "media", "broadcast", "entertainment", "music",
+    "website", "design service", "cabinet", "automotive", "events service",
+    "training", "energy", "mining", "education",
+)
+
+
+def classify_industry(industry: str) -> str:
+    """Classify a company industry into a lead_universe bucket.
+
+    Mirror of core.fn_classify_industry. Returns one of
+    'saas' / 'local_business' / 'ecom' / 'b2b_agency', or '' when no rule
+    matches (ambiguous / missing). Pure + deterministic.
+    """
+    if not industry:
+        return ""
+    norm = re.sub(r"[_/&]", " ", industry).lower()
+    for pat in _CLASSIFY_SAAS:
+        if pat in norm:
+            return "saas"
+    for pat in _CLASSIFY_LOCAL:
+        if pat in norm:
+            return "local_business"
+    for pat in _CLASSIFY_ECOM:
+        if pat in norm:
+            return "ecom"
+    for pat in _CLASSIFY_B2B:
+        if pat in norm:
+            return "b2b_agency"
+    return ""
+
 
 # Local module; keep import lazy in functions to avoid circulars during
 # package init (contacts_writer is imported by routes which imports many things).
@@ -395,6 +462,15 @@ async def _write_person_payload(
     source_path = (payload.get("source_path") or "").strip()
     if source_path:
         body["source_path"] = source_path
+
+    # Universe tag: an explicit origin tag wins (e.g. 'local_business' for
+    # scraper.tech-origin); otherwise derive it from the company industry so
+    # newly-enriched leads auto-classify (mirror of core.fn_classify_industry).
+    lead_universe = (payload.get("lead_universe") or "").strip()
+    if not lead_universe:
+        lead_universe = classify_industry((payload.get("company_industry") or "").strip())
+    if lead_universe:
+        body["lead_universe"] = lead_universe
 
     # Job lineage (kept compact)
     lineage: dict[str, Any] = {}

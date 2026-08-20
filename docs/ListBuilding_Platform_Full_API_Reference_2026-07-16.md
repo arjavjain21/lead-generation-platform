@@ -634,6 +634,56 @@ These endpoints still work but are deprecated. Prefer the modern equivalents abo
 | `POST /api/enrichment/search/companies/enrich` | `POST /api/enrichment/flows/domain-enrich` after extracting domains |
 | `POST /api/enrichment/jobs` (with `StartJobRequest`) | `POST /api/enrichment/flows/domain-enrich` |
 
+### B.19 Find People — direct people search: `POST /api/enrichment/search/employees`
+
+Search the internal contacts database (~8.7M leads) directly by role / function / location / industry, and **filter by lead universe** (Local business / B2B-Agency / SaaS / E-commerce). This is the engine behind the **Find People** page in the UI. Requires **JWT Bearer authentication**.
+
+**Request body** (`EmployeeSearchRequest`, JSON — all fields optional):
+
+| Field | Type | Example | Notes |
+| --- | --- | --- | --- |
+| `universe` | string | `saas` | Lead type — see below. Omit for all leads. |
+| `seniority` | list[string] | `["vp","cxo"]` | Seniority levels |
+| `function` | list[string] | `["sales","engineering"]` | Job functions |
+| `geo_country` | list[string] | `["United States"]` | Canonical country names |
+| `industry` | list[string] | `["software and tech platforms"]` | Exact industry text |
+| `title_keywords` | string | `founder` | Matched in title/headline |
+| `name_contains` | string | `Kenneth` | Substring on name |
+| `has_email` | boolean | `true` | `true` = only leads with an email |
+| `limit` | int | `50` | Page size (1–200) |
+| `offset` | int | `0` | Pagination offset |
+
+**Lead universes** (the `universe` filter):
+
+| Value | Means | Approx. size |
+| --- | --- | --- |
+| `local_business` | Physical / local services | ~2.87M |
+| `b2b_agency` | Agencies, consulting, manufacturing, finance, media | ~1.72M |
+| `saas` | Software / SaaS companies | ~0.59M |
+| `ecom` | DTC / retail / consumer brands | ~0.28M |
+| *(omit)* | All leads (incl. ~3.3M unclassified) | ~8.77M |
+
+New leads are auto-classified into a universe on write-back, so the buckets stay current without manual runs. Full rules: see `docs/LEAD_UNIVERSE_CLASSIFICATION.md`.
+
+**Example** (JWT auth):
+```bash
+curl -s -X POST "https://listbuilding.eagleinfoservice.com/api/enrichment/search/employees" \
+  -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
+  -d '{"universe":"saas","seniority":["vp"],"geo_country":["United States"],"has_email":true,"limit":50}'
+```
+
+**Response** (one best email per person — prefers primary, non-generic, verified):
+```json
+{"total": null, "limit": 50, "offset": 0, "people": [
+  {"person_id":"...","full_name":"Ken Hejduk","headline":"...","seniority":"head",
+   "geo_country":"United States","geo_state":"California","lead_universe":"saas",
+   "title":"...","company_name":"Levelpath","industry":"information technology & services",
+   "email":"ken.hejduk@levelpath.com","is_verified":true,"rating":null,"local_category":null}
+]}
+```
+
+> **Underlying endpoint (API-key access):** the same search is available directly on the Contacts DB API at `GET https://leadsdatabase.cc/v1/people/search?universe=saas&...` (Bearer `CONTACTS_API_TOKEN`); identical params as a query string.
+
 ---
 
 ## Section C: Phone Enrichment API

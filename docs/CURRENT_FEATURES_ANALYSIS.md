@@ -334,3 +334,14 @@ Add to line 2 imports: `import { History, Download, Link2, RefreshCw } from 'luc
 - It doesn't use the JobsList components I already fixed
 - It has its own table layout and action buttons
 - I didn't realize this page existed and needed the same fixes
+
+---
+
+## Lead Universe Classification (added 2026-08-08)
+
+Every lead in the contacts DB has a `lead_universe` tag — `local_business`, `b2b_agency`, `saas`, or `ecom` (NULL = unclassified). ~62% of ~8.7M leads are classified.
+
+- **Find People page** (nav: "Find People") — a Universe dropdown (All / Local business / B2B-Agency / SaaS / E-commerce) + colored badges on results. Filter any people search by lead type.
+- **API** — `POST /api/enrichment/search/employees` (`universe` field) on this platform, or `GET https://leadsdatabase.cc/v1/people/search?universe=` on the Contacts DB API.
+- **Self-maintaining** — new enriched leads are auto-tagged on write-back.
+- Rules + mappings: `docs/LEAD_UNIVERSE_CLASSIFICATION.md`.

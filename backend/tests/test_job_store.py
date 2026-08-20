@@ -155,3 +155,108 @@ def test_cleanup_checkpoints(temp_db):
     assert deleted == 5
     processed = store.get_processed_indices(job_id)
     assert processed == set()
+
+
+def _insert_job(conn, job_id, created_at, job_type="enrichment"):
+    """Helper: insert a job row with an explicit created_at (the prod value is
+    ISO-with-tz, e.g. 2026-07-29T22:44:02.014001+00:00)."""
+    conn.execute(
+        "INSERT INTO jobs (job_id, user_id, job_type, status, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (job_id, "u1", job_type, "done", created_at, created_at),
+    )
+
+
+def test_list_jobs_date_range(temp_db):
+    """list_jobs + count_jobs filter by an inclusive [date_from, date_to] range.
+
+    Uses include_hidden=True because the temp_db fixture's jobs table has no
+    hidden_from_ui column; that clause is unrelated to the date filter.
+    """
+    store = JobStoreBase(sqlite3.connect(temp_db))
+    conn = store.conn
+    # list_jobs does dict(row), which needs sqlite3.Row (production's db.get_db()
+    # sets this; the raw test connection does not).
+    conn.row_factory = sqlite3.Row
+    # Four jobs spanning June 15 → Aug 2, with prod-realistic ISO-with-tz stamps.
+    _insert_job(conn, "j1", "2026-06-15T10:00:00.000000+00:00")
+    _insert_job(conn, "j2", "2026-07-10T12:30:00.000000+00:00")
+    _insert_job(conn, "j3", "2026-07-31T23:59:59.000000+00:00")  # last second of July
+    _insert_job(conn, "j4", "2026-08-02T08:00:00.000000+00:00")
+    conn.commit()
+
+    kw = {"job_type": "enrichment", "include_hidden": True}
+
+    # No date filter → all four.
+    assert len(store.list_jobs(**kw)) == 4
+    assert store.count_jobs(**kw) == 4
+
+    # July 1–31 inclusive: j2 and j3 only. date_to must include the WHOLE last
+    # day, so j3 (July 31 23:59:59) is captured, not just midnight.
+    july = store.list_jobs(date_from="2026-07-01", date_to="2026-07-31", **kw)
+    assert [j["job_id"] for j in july] == ["j3", "j2"]  # ORDER BY created_at DESC
+    assert store.count_jobs(date_from="2026-07-01", date_to="2026-07-31", **kw) == 2
+
+    # date_from alone: July 10 onward → j2, j3, j4 (j1 excluded).
+    assert {j["job_id"] for j in store.list_jobs(date_from="2026-07-10", **kw)} == {"j2", "j3", "j4"}
+    assert store.count_jobs(date_from="2026-07-10", **kw) == 3
+
+    # date_to alone: through July 31 → j1, j2, j3 (j4 excluded).
+    assert {j["job_id"] for j in store.list_jobs(date_to="2026-07-31", **kw)} == {"j1", "j2", "j3"}
+    assert store.count_jobs(date_to="2026-07-31", **kw) == 3
+
+    # A single-day window on a boundary day captures that whole day.
+    assert [j["job_id"] for j in store.list_jobs(date_from="2026-07-31", date_to="2026-07-31", **kw)] == ["j3"]
+
+    # count_jobs and list_jobs stay consistent under the date filter (pagination).
+    assert store.count_jobs(date_from="2026-07-01", date_to="2026-07-31", **kw) == len(july)
+
+    # Malformed bounds are ignored (no crash, no filtering).
+    assert len(store.list_jobs(date_from="not-a-date", **kw)) == 4
+    assert store.count_jobs(date_from="2026-13-99", date_to="", **kw) == 4
+
+
+def test_list_jobs_source_type_filter(temp_db):
+    """list_jobs + count_jobs filter by the source_type provenance column."""
+    store = JobStoreBase(sqlite3.connect(temp_db))
+    conn = store.conn
+    conn.row_factory = sqlite3.Row
+    # source_type isn't in the temp_db fixture schema; add it to mirror prod.
+    conn.execute("ALTER TABLE jobs ADD COLUMN source_type TEXT DEFAULT ''")
+
+    def add(jid, created, src):
+        conn.execute(
+            "INSERT INTO jobs (job_id, user_id, job_type, status, created_at, updated_at, source_type) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (jid, "u1", "enrichment", "done", created, created, src),
+        )
+    add("a", "2026-07-01T00:00:00Z", "google_maps_chain")
+    add("b", "2026-07-02T00:00:00Z", "csv_upload")
+    add("c", "2026-07-03T00:00:00Z", "google_maps_chain")
+    add("d", "2026-07-04T00:00:00Z", "restart")
+    add("e", "2026-07-05T00:00:00Z", "")  # legacy / unknown
+    conn.commit()
+
+    kw = {"job_type": "enrichment", "include_hidden": True}
+
+    # No filter → all 5.
+    assert store.count_jobs(**kw) == 5
+
+    # Filter by google_maps_chain → a + c, ordered DESC by created_at.
+    g = store.list_jobs(source_type="google_maps_chain", **kw)
+    assert [j["job_id"] for j in g] == ["c", "a"]
+    assert store.count_jobs(source_type="google_maps_chain", **kw) == 2
+
+    # csv_upload + restart each isolate correctly.
+    assert [j["job_id"] for j in store.list_jobs(source_type="csv_upload", **kw)] == ["b"]
+    assert [j["job_id"] for j in store.list_jobs(source_type="restart", **kw)] == ["d"]
+    # Empty/None source_type means "no filter" (returns all) — backward-compatible.
+    assert len(store.list_jobs(source_type="", **kw)) == 5
+    assert len(store.list_jobs(source_type=None, **kw)) == 5
+
+    # list == count consistency under the filter (pagination).
+    assert store.count_jobs(source_type="google_maps_chain", **kw) == len(g)
+
+    # source_type is orthogonal to the status filter (composes via AND).
+    assert store.count_jobs(source_type="google_maps_chain", status="done", **kw) == 2
+    assert store.count_jobs(source_type="google_maps_chain", status="failed", **kw) == 0

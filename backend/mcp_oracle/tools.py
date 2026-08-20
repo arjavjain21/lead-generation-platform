@@ -78,6 +78,18 @@ _INTENT_KEYWORDS: dict[str, list[str]] = {
     # Company search
     "search company": ["/api/enrichment/search/companies"],
     "company search": ["/api/enrichment/search/companies"],
+
+    # People search / Find People (lead-universe filtering)
+    "find people": ["/api/enrichment/search/employees"],
+    "people search": ["/api/enrichment/search/employees"],
+    "search people": ["/api/enrichment/search/employees"],
+    "search employees": ["/api/enrichment/search/employees"],
+    "leads by": ["/api/enrichment/search/employees"],
+    "universe": ["/api/enrichment/search/employees"],
+    "saas leads": ["/api/enrichment/search/employees"],
+    "b2b leads": ["/api/enrichment/search/employees"],
+    "local leads": ["/api/enrichment/search/employees"],
+    "ecommerce leads": ["/api/enrichment/search/employees"],
 }
 
 

@@ -41,6 +41,7 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from enrichment import mailtester_client as mt  # noqa: E402
+from shared.circuit_breaker import CircuitBreaker  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -60,10 +61,20 @@ def _reset_module_state(monkeypatch: pytest.MonkeyPatch) -> None:
     Isolate every test:
 
     * Reset the module-level rate limiter so the first call doesn't sleep.
+    * Clear the TTL result cache and reset the circuit breaker so a prior
+      test's cached success / accumulated failures can't leak in.
     * Patch ``asyncio.sleep`` to a no-op so retry backoffs don't slow the
       suite (attempt 3 backoff is up to 16s, totalling >30s real time).
     """
     monkeypatch.setattr(mt, "_last_request_time", 0.0, raising=True)
+    mt._mailtester_cache.clear()
+    # Fresh breaker so failures accumulated in other tests can't open the
+    # circuit and short-circuit this test's retry path.
+    monkeypatch.setattr(
+        mt,
+        "_mailtester_breaker",
+        CircuitBreaker("mailtester", failure_threshold=5, recovery_timeout=60.0),
+    )
 
     async def _no_sleep(_delay: float) -> None:
         return None
@@ -100,8 +111,10 @@ class TestTimeoutHandler:
         with pytest.raises(RuntimeError, match="failing open"):
             asyncio.run(go())
 
-        # 1 initial + 3 retries = 4 attempts.
-        assert call_count["n"] == 4, f"expected 4 attempts, got {call_count['n']}"
+        # 1 initial + _MAX_RETRIES retries.
+        assert call_count["n"] == mt._MAX_RETRIES + 1, (
+            f"expected {mt._MAX_RETRIES + 1} attempts, got {call_count['n']}"
+        )
 
     def test_readtimeout_then_success(self):
         """A timeout on attempt 1 followed by a 200 should succeed with 2 calls."""
@@ -150,7 +163,9 @@ class TestTimeoutHandler:
 
         with pytest.raises(RuntimeError, match="failing open"):
             asyncio.run(go())
-        assert call_count["n"] == 4, f"expected 4 attempts, got {call_count['n']}"
+        assert call_count["n"] == mt._MAX_RETRIES + 1, (
+            f"expected {mt._MAX_RETRIES + 1} attempts, got {call_count['n']}"
+        )
 
     def test_no_attributeerror_leaks_on_timeout(self):
         """

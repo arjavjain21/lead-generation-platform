@@ -57,6 +57,10 @@
         .btn-secondary:hover { background: var(--gray-200); }
         .btn-success { background: var(--success); color: white; }
         .btn-success:hover { background: #059669; }
+        .btn-warning { background: #013220; color: white; }
+        .btn-warning:hover { background: #011d17; }
+        .btn-danger { background: var(--danger); color: white; }
+        .btn-danger:hover { background: #dc2626; }
         .btn:disabled { opacity: 0.5; cursor: not-allowed; }
         
         /* Page Sections */
@@ -161,7 +165,7 @@
             height: 1rem;
             color: var(--gray-400);
             pointer-events: none;
-            transition: color 0.15s ease;
+            transition: color 0.15s ease, opacity 0.15s ease;
             z-index: 1;
         }
 
@@ -182,6 +186,14 @@
         /* Icon color change on focus using wrapper :focus-within */
         .search-input-wrapper:focus-within .search-icon {
             color: var(--primary);
+        }
+
+        /* Hide the magnifier once the user has typed so it never sits over the
+           text. :placeholder-shown is true only while the input is empty, so
+           :not(:placeholder-shown) matches once there is content; clearing the
+           input brings the icon back. */
+        .search-input-wrapper:has(.search-input:not(:placeholder-shown)) .search-icon {
+            opacity: 0;
         }
 
         /* Task 4: Enhanced Filter Tabs Styling */
@@ -286,6 +298,426 @@
 
         .btn-sm { padding: 0.4rem 0.75rem; font-size: 0.75rem; }
         .actions { display: flex; gap: 0.5rem; }
+
+        /* ── Scraper page UI polish — presentation only, no behavior change ── */
+        /* Consistent form controls (height/radius/border/focus) for the scraper
+           form's selects, textarea, and text inputs. */
+        #page-scraper .filter-group select,
+        #page-scraper textarea,
+        #page-scraper .search-input {
+            height: 38px; padding: 0.4rem 0.6rem; border: 1px solid var(--gray-300);
+            border-radius: 8px; font-size: 0.875rem; background: white;
+            color: var(--gray-800); transition: border-color .15s, box-shadow .15s;
+        }
+        #page-scraper textarea { height: auto; min-height: 120px; resize: vertical; }
+        #page-scraper .filter-group select:focus,
+        #page-scraper textarea:focus,
+        #page-scraper .search-input:focus {
+            outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(26,49,93,.12);
+        }
+        /* Keep text clear of the magnifier: the rule above resets padding to
+           0.4rem 0.6rem, overriding the 2.5rem left gutter the wrapper gives the
+           input, so scraper-page search inputs overlap the icon. Restore it here
+           (specificity #id+.wrapper+.input = 1,2,0 beats #id+.input = 1,1,0). */
+        #page-scraper .search-input-wrapper .search-input { padding-left: 2.5rem; }
+        /* Keep the form content from feeling lost inside the wide card. */
+        #page-scraper .form-card .filters { max-width: 880px; }
+
+        /* Instruction notice: readable, visually secondary to the form title. */
+        .scraper-notice { background:#f0f9ff; border-left:4px solid var(--primary);
+            border-radius:8px; padding:.75rem 1rem; margin-bottom:1rem;
+            font-size:.85rem; line-height:1.55; color:var(--gray-700); }
+        .scraper-notice p { margin:0 0 .35rem; }
+        .scraper-notice p:last-child { margin-bottom:0; }
+        .scraper-notice strong { color:var(--gray-800); }
+
+        /* Filter pills: consistent height/padding/radius/casing (color logic
+           unchanged — active stays clear, inactive never looks disabled). */
+        .filter-tab { height:30px; padding:0 .75rem; border-radius:9999px;
+            font-size:.78rem; font-weight:500; text-transform:capitalize; line-height:1; }
+
+        /* Date-range filter row (scraper + enrichment job lists). Preset pills
+           reuse .filter-tab pill styling via the extra .date-preset class; the
+           month picker is a compact native control sized to match the pills. */
+        .date-filter-row { display:flex; align-items:center; gap:.4rem;
+            flex-wrap:wrap; margin-bottom:1rem; }
+        .date-filter-label { color:var(--gray-500); font-size:.75rem;
+            font-weight:500; }
+        .date-month { height:30px; padding:0 .5rem; border:1px solid var(--gray-300);
+            border-radius:9999px; font-size:.78rem; font-family:inherit; background:white;
+            color:var(--gray-800); cursor:pointer; transition:border-color .15s, box-shadow .15s; }
+        .date-month:focus { outline:none; border-color:var(--primary);
+            box-shadow:0 0 0 3px rgba(26,49,93,.12); }
+
+        /* Job row → stable 3-area grid (info | status | actions) for ALL job
+           cards (scraper + enrichment). No absolute positioning, actions wrap,
+           stacks on small screens. */
+        .job-card { display:grid;
+            grid-template-columns:minmax(0,1fr) auto auto;
+            gap:.5rem 1rem; align-items:center; }
+        .job-card > .job-info { min-width:0; }
+        .job-card .job-info h4 { font-weight:600; font-size:.92rem;
+            margin-bottom:.15rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .job-card .job-meta { display:flex; flex-wrap:wrap;
+            font-size:.75rem; color:var(--gray-500); }
+        .job-card .meta-sep { color:var(--gray-400); margin:0 .4rem; }
+        .file-chip { display:inline-flex; align-items:center; gap:0.2rem;
+            font-size:.7rem; font-weight:500; padding:0.1rem 0.4rem;
+            border-radius:4px; margin-top:0.2rem; }
+        .file-chip.file-ready { color:#047857; background:#ecfdf5; }
+        .file-chip.file-missing { color:var(--gray-400); background:var(--gray-100); }
+        .job-card .job-error { font-size:.72rem; color:#b45309;
+            margin-top:.2rem; white-space:nowrap; overflow:hidden;
+            text-overflow:ellipsis; cursor:help; }
+        .job-card > .job-status-wrap { align-self:center; }
+        .job-card > .actions { display:flex; flex-wrap:wrap; gap:.4rem;
+            justify-content:flex-end; align-self:center; }
+        .job-card > .shard-list { grid-column:1 / -1; }
+        /* Standardized status badge: height/padding/radius/typography. */
+        .job-card .job-status { height:22px; padding:0 .6rem;
+            border-radius:9999px; font-size:.7rem; font-weight:600;
+            display:inline-flex; align-items:center; line-height:1; text-transform:capitalize; }
+
+        /* Sidebar account footer: ellipsis, no edge-kissing. */
+        .sidebar-footer .user-email { max-width:160px; overflow:hidden;
+            text-overflow:ellipsis; white-space:nowrap; }
+
+        /* Visible keyboard focus for interactive controls (a11y). */
+        .btn:focus-visible, .filter-tab:focus-visible, .nav-item:focus-visible,
+        .logout-btn:focus-visible, a:focus-visible {
+            outline:2px solid var(--primary); outline-offset:2px; }
+
+        /* Respect reduced-motion preferences. */
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after { transition-duration:.01ms !important;
+                animation-duration:.01ms !important; animation-iteration-count:1 !important; }
+        }
+        /* Responsive: stack the job row + full-width form on small screens. */
+        @media (max-width:768px) {
+            .job-card { grid-template-columns:1fr; align-items:start; }
+            .job-card > .job-status-wrap,
+            .job-card > .actions { justify-content:flex-start; align-self:stretch; }
+            .job-card .job-error { white-space:normal; overflow:visible; text-overflow:clip; }
+            #page-scraper .form-card .filters { max-width:100%; }
+
+        } /* end @media (max-width:768px) — mobile job-card overrides above */
+
+        /* =============================================================
+           GOOGLE MAPS SCRAPER PAGE — denser, cleaner B2B ops styling.
+           Scoped to #page-scraper; presentation only. All IDs, onclick
+           handlers, data-status/data-preset filters, suggestion logic,
+           and job-render JS remain untouched.
+           Tokens: page #F8FAFC · card #FFF · card-border #E2E8F0 ·
+           control-border #CBD5E1 · row-border #E8EDF3 · text #1E293B ·
+           muted #64748B · navy var(--primary) · green var(--success).
+           ============================================================= */
+        #page-scraper { background: #F8FAFC; }
+
+        /* Both main cards (form + jobs): consistent surface */
+        #page-scraper .form-card {
+            background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 12px;
+            box-shadow: 0 1px 2px rgba(16,24,40,0.04); padding: 24px; margin-bottom: 20px;
+        }
+
+        /* Compact card header: title (left) + status/refresh (right) + full-width divider */
+        #page-scraper .scraper-card-head {
+            display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+        }
+        #page-scraper .scraper-card-title {
+            display: inline-flex; align-items: center; gap: 8px;
+            font-size: 23px; font-weight: 700; color: #172033; line-height: 1.25;
+            margin: 0; padding: 0; border: none;
+        }
+        #page-scraper .scraper-card-title .icon { width: 22px; height: 22px; flex-shrink: 0; }
+        #page-scraper .scraper-divider { height: 1px; background: #E2E8F0; border: none; margin: 16px 0 18px; }
+
+        /* Connection pill in the form header (mirrors global #connectionStatus) */
+        #page-scraper .scraper-conn {
+            display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 14px;
+            border-radius: 999px; font-size: 13px; font-weight: 500; white-space: nowrap;
+            background: #ECFDF5; border: 1px solid #A7F3D0; color: #059669;
+        }
+        #page-scraper .scraper-conn .scraper-conn-dot { width: 8px; height: 8px; border-radius: 50%; background: #059669; }
+        #page-scraper .scraper-conn.disconnected { background: #FEF2F2; border-color: #FECACA; color: #B91C1C; }
+        #page-scraper .scraper-conn.disconnected .scraper-conn-dot { background: #EF4444; }
+
+        /* Compact Refresh button in the jobs header */
+        #page-scraper .scraper-refresh-btn { height: 36px; padding: 0 14px; border-radius: 8px; font-size: 13px; font-weight: 500; border: 1px solid #CBD5E1; background: #F1F5F9; }
+
+        /* Floating global indicator hidden on this page (status lives in the header) */
+        body.on-scraper-page #connectionStatus { display: none !important; }
+
+        /* Instruction notice: compact, pale blue, left accent */
+        #page-scraper .scraper-notice {
+            background: #EFF6FF; border-left: 4px solid var(--primary); border-radius: 10px;
+            padding: 14px 18px; margin-bottom: 18px; font-size: 14px; line-height: 1.5;
+            color: #334155; max-width: 820px;
+        }
+        #page-scraper .scraper-notice p { margin: 0 0 6px; }
+        #page-scraper .scraper-notice p:last-child { margin-bottom: 0; }
+        #page-scraper .scraper-notice strong { color: #1E293B; font-weight: 700; }
+
+        /* ── Scraper form: controlled-width, left-aligned rows ── */
+        #page-scraper .form-card > .filters {
+            display: flex; flex-wrap: wrap; align-items: flex-start;
+            column-gap: 18px; row-gap: 16px; margin-bottom: 16px; max-width: none;
+        }
+        #page-scraper .form-card > .filters > .filter-group { display: flex; flex-direction: column; gap: 6px; }
+        #page-scraper .form-card > .filters > .filter-group > label { font-size: 14px; font-weight: 600; color: #334155; }
+        #page-scraper .form-card > .filters > .filter-group > .field-helper { font-size: 13px; color: #64748B; margin-top: 6px; }
+        /* Row 1 — query (~580px); Row 2 — country + mode (~250px each) */
+        #page-scraper .filter-group:has(#scraperQuery) { width: 580px; max-width: 100%; flex: 0 0 580px; }
+        #page-scraper .filter-group:has(#scraperCountry),
+        #page-scraper .filter-group:has(#scraperMode) { width: 250px; max-width: 100%; flex: 0 0 250px; }
+        /* Conditional containers (states / cities / zips) — full width up to 620px */
+        #page-scraper .filter-group:has(#scraperStates),
+        #page-scraper .filter-group:has(#scraperCitySearch),
+        #page-scraper .filter-group:has(#scraperZipsInput),
+        #page-scraper .filter-group:has(#scraperZipsUploadZone) { width: 100%; max-width: 620px; flex: 1 1 100%; }
+        #page-scraper .filter-group a { font-size: 13px; }
+
+        /* ── Unified control style (44px). Selects keep their chevron + 2.2rem right padding. ── */
+        #page-scraper .filter-group select,
+        #page-scraper textarea,
+        #page-scraper .search-input,
+        #page-scraper input[type="text"] {
+            height: 44px; width: 100%; border: 1px solid #CBD5E1; border-radius: 8px;
+            background: #FFFFFF; color: #1E293B; font-size: 15px; font-family: inherit;
+            transition: border-color .15s, box-shadow .15s;
+        }
+        #page-scraper .filter-group select { padding-left: 12px; }
+        #page-scraper input[type="text"]:not(.search-input) { padding: 0 12px; }
+        #page-scraper .search-input { padding: 0 12px 0 2.5rem; }
+        #page-scraper textarea { height: auto; min-height: 120px; padding: 10px 12px; resize: vertical; }
+        #page-scraper .filter-group select:hover,
+        #page-scraper textarea:hover,
+        #page-scraper .search-input:hover,
+        #page-scraper input[type="text"]:hover { border-color: #94A3B8; }
+        #page-scraper .filter-group select:focus,
+        #page-scraper textarea:focus,
+        #page-scraper .search-input:focus,
+        #page-scraper input[type="text"]:focus {
+            outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(26,49,93,0.15);
+        }
+        #page-scraper input::placeholder, #page-scraper textarea::placeholder { color: #94A3B8; }
+        /* The multi-state <select multiple> keeps its inline height:150px (inline beats this rule). */
+
+        /* ── Primary button ── */
+        #page-scraper .scraper-start-row { margin-top: 20px; }
+        #page-scraper #startScraperJob {
+            height: 44px; padding: 0 24px; border-radius: 8px; font-weight: 600; font-size: 15px;
+            background: var(--primary); color: #FFFFFF; cursor: pointer;
+            display: inline-flex; align-items: center; justify-content: center;
+        }
+        #page-scraper #startScraperJob:hover { background: var(--primary-dark); }
+        #page-scraper #startScraperJob:active { background: #0f1d38; }
+        #page-scraper #startScraperJob:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(26,49,93,0.30); }
+        #page-scraper #startScraperJob:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        /* ── Jobs filter toolbar: compact rows ── */
+        #page-scraper .scraper-status-row,
+        #page-scraper .scraper-search-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; align-items: center; }
+        #page-scraper .scraper-search-row { margin-top: 4px; }
+        #page-scraper .date-filter-row { gap: 8px; margin-bottom: 12px; }
+        /* Filter chips — consistent 36px pills (overrides the global 30px) */
+        #page-scraper .filter-tab {
+            height: 36px; padding: 0 14px; border-radius: 999px;
+            border: 1px solid #CBD5E1; background: #FFFFFF; color: #334155;
+            font-size: 14px; font-weight: 500; line-height: 1; text-transform: capitalize;
+            display: inline-flex; align-items: center; cursor: pointer;
+            transition: background-color .15s, border-color .15s, color .15s, box-shadow .15s;
+        }
+        #page-scraper .filter-tab:hover { background: #F1F5F9; border-color: #94A3B8; transform: none; box-shadow: none; }
+        #page-scraper .filter-tab.active {
+            background: var(--primary); color: #FFFFFF; border-color: var(--primary);
+            transform: none; box-shadow: 0 1px 3px rgba(26,49,93,0.25);
+        }
+        #page-scraper .filter-tab:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(26,49,93,0.20); border-color: var(--primary); }
+        /* Date label + month picker */
+        #page-scraper .date-filter-label { font-size: 13px; color: #64748B; font-weight: 500; }
+        #page-scraper .date-month {
+            height: 36px; padding: 0 10px; border: 1px solid #CBD5E1; border-radius: 8px;
+            font-size: 13px; font-family: inherit; background: #FFFFFF; color: #1E293B; cursor: pointer;
+            transition: border-color .15s, box-shadow .15s;
+        }
+        #page-scraper .date-month:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(26,49,93,0.15); }
+        /* Job search field — full width, 44px, left icon */
+        #page-scraper .scraper-search-row .search-input-wrapper { width: 100%; }
+        #page-scraper .scraper-search-row .search-input { height: 44px; }
+
+        /* ── Job list: denser rows ── */
+        #page-scraper #scraperJobsList { display: flex; flex-direction: column; gap: 10px; }
+        #page-scraper .job-card {
+            background: #FFFFFF; border: 1px solid #E8EDF3; border-radius: 10px;
+            padding: 16px; box-shadow: none; gap: 8px 16px;
+            transition: border-color .15s, background-color .15s;
+        }
+        #page-scraper .job-card:hover { border-color: #CBD5E1; background: #FCFCFD; }
+        #page-scraper .job-card.zero-email-card { border-left: 4px solid #f59e0b; }
+        #page-scraper .job-card .job-info h4,
+        #page-scraper .job-card .scraper-job-title { font-size: 16px; font-weight: 650; color: #1E293B; margin-bottom: 4px; }
+        #page-scraper .job-card .job-meta { font-size: 13px; color: #64748B; }
+        #page-scraper .job-card .meta-sep { color: #CBD5E1; margin: 0 8px; }
+        #page-scraper .job-card .job-error { font-size: 12px; color: #b45309; margin-top: 6px; }
+        /* File-ready inline label */
+        #page-scraper .file-chip { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 6px; margin-top: 6px; }
+        #page-scraper .file-chip.file-ready { color: #047857; background: #ECFDF5; }
+        #page-scraper .file-chip.file-missing { color: #94A3B8; background: #F1F5F9; }
+        /* Status badge — compact pill (~28px). Color classes (status-done etc.) unchanged. */
+        #page-scraper .job-card .job-status { height: 28px; padding: 0 12px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+        /* Action buttons — consistent 36px */
+        #page-scraper .job-card .actions { gap: 8px; }
+        #page-scraper .job-card .actions .btn { height: 36px; padding: 0 14px; border-radius: 8px; font-size: 13px; display: inline-flex; align-items: center; justify-content: center; }
+        /* Secondary actions (Retry, Download in chunks) — light neutral bg + subtle border */
+        #page-scraper .job-card .actions .btn-secondary { border: 1px solid #CBD5E1; background: #F1F5F9; }
+        /* Empty / loading / error states */
+        #page-scraper .empty-state { font-size: 14px; color: #64748B; padding: 24px; text-align: center; }
+
+        /* ── Responsive ── */
+        @media (max-width:900px) {
+            #page-scraper .filter-group:has(#scraperCountry),
+            #page-scraper .filter-group:has(#scraperMode) { flex: 0 0 calc(50% - 9px); }
+        }
+        @media (max-width:640px) {
+            #page-scraper .form-card { padding: 18px; }
+            #page-scraper .filter-group:has(#scraperQuery),
+            #page-scraper .filter-group:has(#scraperCountry),
+            #page-scraper .filter-group:has(#scraperMode) { width: 100%; flex: 1 1 100%; }
+            #page-scraper .scraper-start-row #startScraperJob { width: 100%; }
+            #page-scraper .scraper-card-title { font-size: 20px; }
+            #page-scraper .scraper-divider { margin: 12px 0 14px; }
+        }
+
+        /* =============================================================
+           FIND PEOPLE PAGE — clean B2B SaaS search interface.
+           Scoped to #page-people so other surfaces are untouched.
+           (NOTE: this block was previously nested inside the mobile
+           media query above, so it never applied on desktop. Fixed.)
+           Design tokens: page #F8FAFC · card #FFFFFF · text #172033 ·
+           secondary #64748B · border #D7DEE8 · navy var(--primary) · green #059669
+           ============================================================= */
+        #page-people { background: #F8FAFC; }
+
+        /* Card — overrides the shared .form-card for this page only */
+        #page-people .form-card {
+            max-width: 1200px;
+            width: calc(100% - 48px);
+            margin-left: auto;
+            margin-right: auto;
+            padding: 32px;
+            border: 1px solid #D7DEE8;
+            border-radius: 12px;
+            background: #FFFFFF;
+            box-shadow: 0 1px 2px rgba(16,24,40,0.04), 0 1px 3px rgba(16,24,40,0.06);
+            color: #172033;
+        }
+
+        /* Header: title + connection pill, divider below */
+        #page-people .fp-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+        #page-people .fp-card-title { font-size: 24px; font-weight: 700; color: #172033; margin: 0; padding: 0; border: none; line-height: 1.2; }
+        #page-people .fp-divider { height: 1px; background: #D7DEE8; margin: 20px 0 24px; border: none; }
+
+        /* Intro banner */
+        #page-people .fp-info-banner {
+            background: #F8FAFC; border: 1px solid #D7DEE8; border-radius: 8px;
+            padding: 12px 16px; margin-bottom: 24px; font-size: 15px; color: #64748B; line-height: 1.55;
+        }
+        #page-people .fp-info-banner strong { color: #172033; font-weight: 600; }
+
+        /* Field group: label + helper + control, 16px between fields, 6px label→input */
+        #page-people .fp-field { margin-bottom: 16px; }
+        #page-people .fp-field:last-child { margin-bottom: 0; }
+        #page-people .fp-label { display: block; font-size: 14px; font-weight: 600; color: #172033; margin-bottom: 6px; }
+        #page-people .fp-helper { font-size: 13px; color: #64748B; margin: 0 0 10px; line-height: 1.5; }
+
+        /* Role chips — equal height, rounded, hover + visible selected state */
+        #page-people .fp-role-pills { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+        #page-people .fp-pill {
+            height: 36px; padding: 0 16px; border-radius: 8px;
+            border: 1px solid #D7DEE8; background: #FFFFFF; color: #475569;
+            font-size: 14px; font-weight: 500; cursor: pointer;
+            transition: background-color .15s, border-color .15s, color .15s, box-shadow .15s;
+        }
+        #page-people .fp-pill:hover { border-color: var(--primary); color: var(--primary); background: #F8FAFC; }
+        #page-people .fp-pill:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(26,49,93,0.18); border-color: var(--primary); }
+        #page-people .fp-pill.selected, #page-people .fp-pill[aria-pressed="true"] { background: var(--primary); border-color: var(--primary); color: #FFFFFF; }
+        #page-people .fp-pill.selected:hover, #page-people .fp-pill[aria-pressed="true"]:hover { background: var(--primary-dark); color: #FFFFFF; }
+
+        /* Unified control style — text inputs, selects, number inputs (44px) */
+        #page-people .fp-input,
+        #page-people .fp-filters-grid .filter-group input,
+        #page-people .fp-filters-grid .filter-group select {
+            height: 44px; width: 100%; padding: 0 12px;
+            border: 1px solid #D7DEE8; border-radius: 8px; background: #FFFFFF;
+            color: #172033; font-size: 15px; font-family: inherit;
+            transition: border-color .15s, box-shadow .15s;
+            -webkit-appearance: none; appearance: none;
+        }
+        #page-people .fp-input:hover,
+        #page-people .fp-filters-grid .filter-group input:hover,
+        #page-people .fp-filters-grid .filter-group select:hover { border-color: #94a3b8; }
+        #page-people .fp-input:focus,
+        #page-people .fp-filters-grid .filter-group input:focus,
+        #page-people .fp-filters-grid .filter-group select:focus {
+            outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(26,49,93,0.15);
+        }
+        #page-people .fp-input::placeholder,
+        #page-people .fp-filters-grid .filter-group input::placeholder { color: #94a3b8; }
+        #page-people .fp-filters-grid .filter-group { gap: 0; }
+        #page-people .fp-filters-grid .filter-group label { font-size: 14px; font-weight: 600; color: #172033; margin-bottom: 6px; }
+        #page-people .fp-filters-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 16px; }
+
+        /* Action row — button, checkbox, result-limit */
+        #page-people .fp-actions { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-top: 8px; }
+        #page-people .fp-actions .btn-primary {
+            height: 44px; padding: 0 24px; border-radius: 8px; font-weight: 500; font-size: 15px;
+            background: var(--primary); color: #FFFFFF; cursor: pointer;
+            display: inline-flex; align-items: center; justify-content: center;
+        }
+        #page-people .fp-actions .btn-primary:hover { background: var(--primary-dark); }
+        #page-people .fp-actions .btn-primary:active { background: #0f1d38; }
+        #page-people .fp-actions .btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(26,49,93,0.30); }
+        #page-people .fp-actions .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+        #page-people .fp-checkbox { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: #334155; cursor: pointer; margin: 0; }
+        #page-people .fp-checkbox input { width: 16px; height: 16px; cursor: pointer; accent-color: var(--primary); }
+        #page-people .fp-limit { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: #334155; }
+        #page-people .fp-limit-input { width: 72px; height: 44px; padding: 0 10px; border: 1px solid #D7DEE8; border-radius: 8px; background: #FFFFFF; color: #172033; font-size: 15px; }
+        #page-people .fp-limit-input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(26,49,93,0.15); }
+        #page-people .validation-message.error { margin-bottom: 16px; }
+
+        /* Connection pill in the header — mirrors global #connectionStatus state */
+        #page-people .fp-conn {
+            display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 14px;
+            border-radius: 999px; font-size: 13px; font-weight: 500; white-space: nowrap;
+            background: #ECFDF5; border: 1px solid #A7F3D0; color: #059669;
+        }
+        #page-people .fp-conn .fp-conn-dot { width: 8px; height: 8px; border-radius: 50%; background: #059669; }
+        #page-people .fp-conn.disconnected { background: #FEF2F2; border-color: #FECACA; color: #B91C1C; }
+        #page-people .fp-conn.disconnected .fp-conn-dot { background: #EF4444; }
+
+        /* Hide the floating global indicator ONLY on this page (status lives in the header) */
+        body.on-people-page #connectionStatus { display: none !important; }
+
+        /* Results card */
+        #page-people .fp-results-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
+        #page-people .fp-results-header h3 { font-size: 18px; font-weight: 600; color: #172033; margin: 0; padding: 0; border: none; }
+        #page-people .fp-results-actions { display: flex; align-items: center; gap: 12px; }
+        #page-people .fp-count-badge { font-size: 13px; color: #64748B; font-weight: 400; }
+        #page-people .fp-export-note { font-size: 13px; color: #64748B; margin: 0 0 12px; }
+        #page-people .fp-universe-local { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #dbeafe; color: #1e40af; text-transform: uppercase; letter-spacing: 0.03em; }
+        #page-people .fp-universe-b2b { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #f3e8ff; color: #6b21a8; text-transform: uppercase; letter-spacing: 0.03em; }
+        #page-people .fp-universe-saas { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #d1fae5; color: #065f46; text-transform: uppercase; letter-spacing: 0.03em; }
+        #page-people .fp-universe-ecom { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #fef3c7; color: #b45309; text-transform: uppercase; letter-spacing: 0.03em; }
+        #page-people .fp-empty { text-align: center; padding: 2rem; color: var(--gray-400); font-size: 0.85rem; }
+
+        /* Responsive — Find People */
+        @media (max-width:768px) {
+            #page-people .form-card { width: 100%; padding: 20px; }
+            #page-people .fp-filters-grid { grid-template-columns: 1fr; }
+            #page-people .fp-actions { flex-direction: column; align-items: stretch; }
+            #page-people .fp-actions .btn-primary { width: 100%; }
+            #page-people .fp-checkbox, #page-people .fp-limit { justify-content: flex-start; }
+        }
 
         /* Button loading states */
         .btn.btn-loading { position: relative; pointer-events: none; opacity: 0.8; }
@@ -629,6 +1061,7 @@
                 <a class="nav-item" href="#" data-page="scraper"><span class="nav-icon" aria-label="Google Maps Scraper"><i data-lucide="map-pin"></i></span>Google Maps Scraper</a>
                 <a class="nav-item" href="#" data-page="domains"><span class="nav-icon" aria-label="Upload Domains"><i data-lucide="upload"></i></span>Upload Domains</a>
                 <a class="nav-item" href="#" data-page="search"><span class="nav-icon" aria-label="Company Search"><i data-lucide="search"></i></span>Company Search</a>
+                <a class="nav-item" href="#" data-page="people"><span class="nav-icon" aria-label="Find People"><i data-lucide="users"></i></span>Find People</a>
                 <a class="nav-item" href="#" data-page="linkedin"><span class="nav-icon" aria-label="LinkedIn Enrich"><i data-lucide="link"></i></span>LinkedIn Enrich</a>
                 <a class="nav-item" href="#" data-page="phones"><span class="nav-icon" aria-label="Phone Enrichment"><i data-lucide="phone"></i></span>Phone Enrichment</a>
                 <a class="nav-item" href="#" data-page="jobs"><span class="nav-icon" aria-label="Enrichment Jobs"><i data-lucide="zap"></i></span>Enrichment Jobs</a>
@@ -643,7 +1076,7 @@
             <div class="user-badge">
                 <div class="user-avatar" id="userAvatar">?</div>
                 <div class="user-details">
-                    <div class="user-email" id="userEmail">Loading...</div>
+                    <div class="user-email" id="userEmail" title="Loading...">Loading...</div>
                     <button type="button" class="logout-btn" id="logoutBtn">Sign out</button>
                 </div>
             </div>
@@ -758,10 +1191,17 @@
         <!-- Scraper Page -->
         <div class="page" id="page-scraper">
             <div class="form-card">
-                <h3><i data-lucide="map-pin" class="icon" style="vertical-align:text-bottom"></i> Google Maps Scraper</h3>
-                <div style="background:#f0f9ff;border-left:4px solid #1a315d;padding:12px;margin-bottom:1rem;border-radius:4px;font-size:0.85rem;color:#374151;">
-                    <strong>What it does:</strong> Scrapes business listings from Google Maps based on category and location.<br>
-                    <strong>How to use:</strong> 1) Enter a category (type to see suggestions from Google's categories), 2) Select country, 3) Choose "All" for entire country or "Specific States/Cities" for targeted areas, 4) Click "Start Scraper Job". Results include business names, addresses, phone numbers, and websites.
+                <div class="scraper-card-head">
+                    <h3 class="scraper-card-title"><i data-lucide="map-pin" class="icon"></i> Google Maps Scraper</h3>
+                    <div class="scraper-conn connected" id="scraperConnStatus" aria-live="polite" title="Backend connection status">
+                        <span class="scraper-conn-dot"></span>
+                        <span id="scraperConnStatusText">Connected</span>
+                    </div>
+                </div>
+                <hr class="scraper-divider">
+                <div class="scraper-notice">
+                    <p><strong>What it does:</strong> Scrapes business listings from Google Maps based on category and location.</p>
+                    <p><strong>How to use:</strong> 1) Enter a category (type to see suggestions from Google's categories). 2) Select country. 3) Choose "All" for the entire country or "Specific States/Cities" for targeted areas. 4) Click "Start Scraper Job". Results include business names, addresses, phone numbers, and websites.</p>
                 </div>
                 <div class="filters">
                     <div class="filter-group" style="grid-column: span 2;">
@@ -860,7 +1300,7 @@
                         </div>
                     </div>
                 </div>
-                <div style="margin-top:1rem;">
+                <div class="scraper-start-row">
                     <button class="btn btn-primary" id="startScraperJob">Start Scraper Job</button>
                 </div>
             </div>
@@ -1002,12 +1442,13 @@
             </div>
 
             <div class="form-card" id="scraperJobsCard">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
-                    <h3 style="margin:0;">📋 Recent Scraper Jobs</h3>
-                    <button class="btn btn-secondary btn-sm" onclick="loadScraperJobs()">Refresh</button>
+                <div class="scraper-card-head">
+                    <h3 class="scraper-card-title"><span aria-hidden="true">📋</span> Recent Scraper Jobs</h3>
+                    <button class="btn btn-secondary btn-sm scraper-refresh-btn" onclick="loadScraperJobs()">Refresh</button>
                 </div>
+                <hr class="scraper-divider">
                 <!-- Status Filter Tabs -->
-                <div style="display:flex;gap:0.5rem;margin-bottom:1rem;flex-wrap:wrap;">
+                <div class="scraper-status-row">
                     <button class="filter-tab active" data-status="all" onclick="filterScraperJobs('all')">All</button>
                     <button class="filter-tab" data-status="done" onclick="filterScraperJobs('done')">Done</button>
                     <button class="filter-tab" data-status="running" onclick="filterScraperJobs('running')">Running</button>
@@ -1015,10 +1456,21 @@
                     <button class="filter-tab" data-status="abandoned" onclick="filterScraperJobs('abandoned')">Abandoned</button>
                     <button class="filter-tab" data-status="cancelled" onclick="filterScraperJobs('cancelled')">Cancelled</button>
                 </div>
+                <!-- Date Filter -->
+                <div class="date-filter-row" id="scraperDateFilter">
+                    <span class="date-filter-label">Date:</span>
+                    <button type="button" class="filter-tab date-preset active" data-preset="all" onclick="setScraperDatePreset('all')">All time</button>
+                    <button type="button" class="filter-tab date-preset" data-preset="this_month" onclick="setScraperDatePreset('this_month')">This month</button>
+                    <button type="button" class="filter-tab date-preset" data-preset="last_30" onclick="setScraperDatePreset('last_30')">Last 30 days</button>
+                    <button type="button" class="filter-tab date-preset" data-preset="last_7" onclick="setScraperDatePreset('last_7')">Last 7 days</button>
+                    <input type="month" id="scraperMonthPicker" class="date-month" aria-label="Filter scraper jobs by month" onchange="setScraperDateMonth(this.value)">
+                    <span class="date-filter-label" style="margin-left:.4rem">File:</span>
+                    <button type="button" class="filter-tab file-ready-toggle" id="scraperFileReadyToggle" aria-pressed="false" title="Show only jobs whose result file is ready to download" onclick="toggleScraperFileReady()">✓ Ready to download</button>
+                </div>
                 <!-- Search Box -->
-                <div style="margin-bottom:1rem;">
+                <div class="scraper-search-row">
                     <div class="search-input-wrapper">
-                        <input type="text" id="jobSearchInput" class="search-input" placeholder="Search jobs by query..." oninput="filterScraperJobs()">
+                        <input type="text" id="jobSearchInput" class="search-input" placeholder="Search jobs by query..." aria-label="Search scraper jobs by query" oninput="filterScraperJobs()">
                         <i data-lucide="search" class="search-icon"></i>
                     </div>
                 </div>
@@ -1320,6 +1772,77 @@
             </div>
         </div>
         
+        <!-- Find People Page -->
+        <div class="page" id="page-people">
+            <div class="form-card">
+                <div class="fp-header">
+                    <h3 class="fp-card-title">Find People</h3>
+                    <div class="fp-conn connected" id="fpConnStatus" aria-live="polite" title="Backend connection status">
+                        <span class="fp-conn-dot"></span>
+                        <span id="fpConnStatusText">Connected</span>
+                    </div>
+                </div>
+                <hr class="fp-divider">
+
+                <div class="fp-info-banner">
+                    Search your own database of <strong>6.6M+ leads</strong> — free, instant, no credits.
+                    Pick a role below or type your own, then click <strong>Find People</strong>.
+                </div>
+                <div id="findPeopleError" class="validation-message error" style="display:none;" role="alert"></div>
+
+                <!-- Primary field group: Job title or role -->
+                <div class="fp-field">
+                    <label class="fp-label" for="findKeywords">Job title or role</label>
+                    <p class="fp-helper" id="findKeywordsHelp">Exact titles are most accurate. For example, CEO matches “Chief Executive Officer.”</p>
+                    <div class="fp-role-pills" role="group" aria-label="Quick role picks">
+                        <button class="fp-pill" type="button" data-role="ceo" aria-pressed="false">CEO</button>
+                        <button class="fp-pill" type="button" data-role="cto" aria-pressed="false">CTO</button>
+                        <button class="fp-pill" type="button" data-role="founder" aria-pressed="false">Founder</button>
+                        <button class="fp-pill" type="button" data-role="vp" aria-pressed="false">VP</button>
+                        <button class="fp-pill" type="button" data-role="director" aria-pressed="false">Director</button>
+                        <button class="fp-pill" type="button" data-role="owner" aria-pressed="false">Owner</button>
+                    </div>
+                    <input type="text" id="findKeywords" class="fp-input" placeholder="Enter a custom role" aria-describedby="findKeywordsHelp" autocomplete="off">
+                </div>
+
+                <!-- Secondary filters -->
+                <div class="fp-filters-grid">
+                    <div class="filter-group"><label for="findCountry">Country</label><input type="text" id="findCountry" placeholder="e.g. United States" autocomplete="off"></div>
+                    <div class="filter-group"><label for="findUniverse">Universe</label><select id="findUniverse"><option value="">All leads</option><option value="local_business">Local business</option><option value="b2b_agency">B2B / Agency</option><option value="saas">SaaS</option><option value="ecom">E-commerce</option></select></div>
+                    <div class="filter-group"><label for="findSeniority">Seniority</label><input type="text" id="findSeniority" placeholder="e.g. VP, Director, Owner" autocomplete="off"></div>
+                    <div class="filter-group"><label for="findFunction">Function</label><input type="text" id="findFunction" placeholder="e.g. Sales, Engineering" autocomplete="off"></div>
+                    <div class="filter-group"><label for="findIndustry">Industry</label><input type="text" id="findIndustry" placeholder="e.g. Restaurants" autocomplete="off"></div>
+                    <div class="filter-group"><label for="findName">Name contains</label><input type="text" id="findName" placeholder="Enter a partial name" autocomplete="off"></div>
+                </div>
+
+                <!-- Action row -->
+                <div class="fp-actions">
+                    <button class="btn btn-primary" id="findPeopleBtn" type="button">Find People</button>
+                    <button class="btn btn-danger" id="findPeopleCancel" type="button" style="display:none;">Cancel</button>
+                    <label class="fp-checkbox"><input type="checkbox" id="findHasEmail"> Only include people with email</label>
+                    <label class="fp-limit">Result limit <input type="number" id="findPeopleLimit" value="50" min="1" max="200" class="fp-limit-input" aria-label="Result limit"></label>
+                </div>
+            </div>
+
+            <!-- Results -->
+            <div class="form-card" id="findPeopleResults" style="display:none;">
+                <div class="fp-results-header">
+                    <h3 style="margin:0; border:none; padding:0;">Results <span id="findPeopleCount" class="fp-count-badge"></span></h3>
+                    <div class="fp-results-actions">
+                        <button class="btn btn-success btn-sm" id="downloadPeopleCsv"> Download CSV</button>
+                        <label class="fp-checkbox"><input type="checkbox" id="findHideNoTitle"> Hide no-title</label>
+                    </div>
+                </div>
+                <div id="findPeopleExportNote" class="fp-export-note"></div>
+                <div style="overflow-x:auto;">
+                    <table class="results-table">
+                        <thead><tr><th>Name</th><th>Title</th><th>Company</th><th>Industry</th><th>Location</th><th>Universe</th><th>Rating</th><th>Email</th></tr></thead>
+                        <tbody id="findPeopleBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
         <!-- LinkedIn Page -->
         <div class="page" id="page-linkedin">
             <div class="form-card">
@@ -1459,6 +1982,26 @@
                     <button class="filter-tab" data-status="failed" onclick="filterEnrichmentJobs('failed')">Failed</button>
                     <button class="filter-tab" data-status="abandoned" onclick="filterEnrichmentJobs('abandoned')">Abandoned</button>
                     <button class="filter-tab" data-status="cancelled" onclick="filterEnrichmentJobs('cancelled')">Cancelled</button>
+                </div>
+                <!-- Date Filter -->
+                <div class="date-filter-row" id="enrichmentDateFilter">
+                    <span class="date-filter-label">Date:</span>
+                    <button type="button" class="filter-tab date-preset active" data-preset="all" onclick="setEnrichmentDatePreset('all')">All time</button>
+                    <button type="button" class="filter-tab date-preset" data-preset="this_month" onclick="setEnrichmentDatePreset('this_month')">This month</button>
+                    <button type="button" class="filter-tab date-preset" data-preset="last_30" onclick="setEnrichmentDatePreset('last_30')">Last 30 days</button>
+                    <button type="button" class="filter-tab date-preset" data-preset="last_7" onclick="setEnrichmentDatePreset('last_7')">Last 7 days</button>
+                    <input type="month" id="enrichmentMonthPicker" class="date-month" aria-label="Filter enrichment jobs by month" onchange="setEnrichmentDateMonth(this.value)">
+                    <span class="date-filter-label" style="margin-left:.4rem">File:</span>
+                    <button type="button" class="filter-tab file-ready-toggle" id="enrichmentFileReadyToggle" aria-pressed="false" title="Show only jobs whose result file is ready to download" onclick="toggleEnrichmentFileReady()">✓ Ready to download</button>
+                    <span class="date-filter-label" style="margin-left:.4rem">Source:</span>
+                    <select id="enrichmentSourceFilter" class="date-month" aria-label="Filter enrichment jobs by source" onchange="setEnrichmentSource(this.value)">
+                        <option value="">All sources</option>
+                        <option value="google_maps_chain">🌐 Google Maps</option>
+                        <option value="csv_upload">📤 Upload</option>
+                        <option value="linkedin">🔗 LinkedIn</option>
+                        <option value="search">🔎 Search</option>
+                        <option value="restart">↻ Restart</option>
+                    </select>
                 </div>
                 <input type="text" id="enrichmentSearchInput" placeholder="Search by filename, job ID, or status..."
                        style="width:100%;padding:0.5rem 0.75rem;border:1px solid var(--gray-300);border-radius:6px;margin-bottom:0.75rem;font-size:0.85rem;">
@@ -1712,6 +2255,18 @@ example.org,Jane Doe</pre>
             let enrichmentTotalJobs = 0;
             const ENRICHMENT_PAGE_SIZE = 25;
             let enrichmentSearchQuery = '';
+            // Date-range filters (null = all time). {from,to} are day-granularity
+            // 'YYYY-MM-DD' strings (local). Scraper filters client-side; enrichment
+            // sends them to the server (loadJobs → /api/enrichment/jobs).
+            let scraperDateRange = null;
+            let enrichmentDateRange = null;
+            // "File ready" toggles — when on, only show jobs whose result file is
+            // on disk (downloadable). Scraper filters client-side; enrichment sends
+            // file_ready=true to the server (the list is paginated).
+            let scraperFileReadyOnly = false;
+            let enrichmentFileReadyOnly = false;
+            // Enrichment source filter ('' = all). Mirrors the backend source param.
+            let enrichmentSourceFilter = '';
             (function() {
                 var timer;
                 var si = document.getElementById('enrichmentSearchInput');
@@ -1948,7 +2503,9 @@ example.org,Jane Doe</pre>
         
         function updateUserUI() {
             const email = user?.email || 'User';
-            document.getElementById('userEmail').textContent = email;
+            const userEmailEl = document.getElementById('userEmail');
+            userEmailEl.textContent = email;
+            userEmailEl.title = email;
             document.getElementById('userAvatar').textContent = email.charAt(0).toUpperCase();
         }
         
@@ -2062,6 +2619,7 @@ example.org,Jane Doe</pre>
             'gmaps': 'scraper',
             'upload': 'domains',
             'company-search': 'search',
+            'people': 'people',
             'linkedin': 'linkedin',
             'phone-enrich': 'phones',
             'enrichment-jobs': 'jobs',
@@ -2092,6 +2650,10 @@ example.org,Jane Doe</pre>
             if (pageEl) {
                 pageEl.classList.add('active');
             }
+
+            // Find People + Scraper host the connection pill in their card headers; hide the floating indicator there only.
+            document.body.classList.toggle('on-people-page', pageId === 'people');
+            document.body.classList.toggle('on-scraper-page', pageId === 'scraper');
 
             // Load data when switching to specific pages
             if (pageId === 'scraper') loadScraperJobs();
@@ -3584,7 +4146,103 @@ example.org,Jane Doe</pre>
             document.getElementById('searchResultsCount').textContent = '(' + companies.length + ')';
             document.getElementById('searchResults').style.display = 'block';
         }
-        
+
+        // --- Find People (direct people search against the contacts DB) ---
+        function escHtml(s){ return (s==null?'':String(s)).replace(/[&<>"']/g, function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+        function csvList(v){ return (v||'').split(',').map(s=>s.trim()).filter(Boolean); }
+        let _peopleResults = [];
+        let _findPeopleAbort = null;
+        const _UNKNOWN_RE = /^(unknown|nan|none|null|n\/a|\s*)$/i;
+        function cleanTitle(p){ const t=(p.title||'').trim(), h=(p.headline||'').trim(); if(t && !_UNKNOWN_RE.test(t)) return t; if(h && !_UNKNOWN_RE.test(h)) return h; return ''; }
+        function setRolePillSelected(role){
+            document.querySelectorAll('[data-role]').forEach(b => {
+                const on = b.dataset.role === role;
+                b.classList.toggle('selected', on);
+                b.setAttribute('aria-pressed', on ? 'true' : 'false');
+            });
+        }
+        function pickRole(role){ document.getElementById('findSeniority').value=''; document.getElementById('findKeywords').value = role; setRolePillSelected(role); }
+        document.querySelectorAll('[data-role]').forEach(btn => { btn.addEventListener('click', () => pickRole(btn.dataset.role)); });
+        // Typing a custom role clears any selected chip; the keyword input stays the single source of truth for the search.
+        document.getElementById('findKeywords').addEventListener('input', () => setRolePillSelected(null));
+
+        document.getElementById('findPeopleBtn').addEventListener('click', async () => {
+            const btn = document.getElementById('findPeopleBtn');
+            const err = document.getElementById('findPeopleError');
+            err.style.display = 'none'; err.textContent = '';
+            const payload = { limit: parseInt(document.getElementById('findPeopleLimit').value, 10) || 50, offset: 0 };
+            const sen = csvList(document.getElementById('findSeniority').value); if (sen.length) payload.seniority = sen;
+            const fn = csvList(document.getElementById('findFunction').value); if (fn.length) payload.function = fn;
+            const co = csvList(document.getElementById('findCountry').value); if (co.length) payload.geo_country = co;
+            const ind = csvList(document.getElementById('findIndustry').value); if (ind.length) payload.industry = ind;
+            const kw = document.getElementById('findKeywords').value.trim(); if (kw) payload.title_keywords = kw;
+            const nm = document.getElementById('findName').value.trim(); if (nm) payload.name_contains = nm;
+            if (document.getElementById('findHasEmail').checked) payload.has_email = true;
+            const univ = document.getElementById('findUniverse').value; if (univ) payload.universe = univ;
+            setButtonLoading(btn, true, 'Searching...');
+            _findPeopleAbort = new AbortController();
+            document.getElementById('findPeopleCancel').style.display = '';
+            try {
+                const res = await fetch('/api/enrichment/search/employees', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal: _findPeopleAbort.signal });
+                if (res.ok) { const data = await res.json(); displayPeopleResults(data); }
+                else { err.textContent = 'Search failed (HTTP ' + res.status + '). Try narrower filters.'; err.style.display = 'block'; }
+            } catch (e) {
+                if (e.name === 'AbortError') { err.textContent = 'Search cancelled.'; err.style.display = 'block'; }
+                else { err.textContent = 'Search failed: ' + e; err.style.display = 'block'; }
+            }
+            _findPeopleAbort = null;
+            document.getElementById('findPeopleCancel').style.display = 'none';
+            setButtonLoading(btn, false, 'Find People');
+        });
+
+        document.getElementById('findPeopleCancel').addEventListener('click', () => { if (_findPeopleAbort) _findPeopleAbort.abort(); });
+
+        function displayPeopleResults(data) {
+            _peopleResults = data.people || [];
+            renderPeopleRows();
+            document.getElementById('findPeopleCount').textContent = '(' + (data.total != null ? data.total + ' total, ' : '') + _peopleResults.length + ' shown)';
+            document.getElementById('findPeopleExportNote').textContent = 'CSV exports the ' + _peopleResults.length + ' rows shown (raise Limit for more).';
+            document.getElementById('findPeopleResults').style.display = 'block';
+        }
+
+        function renderPeopleRows() {
+            const tbody = document.getElementById('findPeopleBody'); tbody.innerHTML = '';
+            const hideNoTitle = document.getElementById('findHideNoTitle') && document.getElementById('findHideNoTitle').checked;
+            _peopleResults.forEach(p => {
+                const title = cleanTitle(p);
+                if (hideNoTitle && !title) return;
+                const loc = [p.geo_city, p.geo_country].filter(Boolean).join(', ');
+                const univBadge = p.lead_universe === 'local_business' ? '<span class="fp-universe-local">Local</span>'
+                                 : p.lead_universe === 'b2b_agency' ? '<span class="fp-universe-b2b">B2B</span>'
+                                 : p.lead_universe === 'saas' ? '<span class="fp-universe-saas">SaaS</span>'
+                                 : p.lead_universe === 'ecom' ? '<span class="fp-universe-ecom">E-com</span>' : '';
+                const ratingHtml = p.rating ? '⭐ ' + p.rating + ' <span style="color:var(--gray-400);font-size:0.7rem">(' + (p.reviews||0) + ')</span>' : '';
+                const tr = document.createElement('tr');
+                tr.innerHTML = '<td>' + escHtml(p.full_name) + '</td><td>' + escHtml(title) + '</td><td>' + escHtml(p.company_name) + '</td><td>' + escHtml(p.industry) + '</td><td>' + escHtml(loc) + '</td><td>' + univBadge + '</td><td>' + ratingHtml + '</td><td>' + escHtml(p.email) + '</td>';
+                tbody.appendChild(tr);
+            });
+        }
+
+        document.getElementById('findHideNoTitle').addEventListener('change', renderPeopleRows);
+
+        document.getElementById('downloadPeopleCsv').addEventListener('click', () => {
+            if (!_peopleResults.length) return;
+            const hideNoTitle = document.getElementById('findHideNoTitle').checked;
+            const cols = ['full_name','title','company_name','industry','geo_city','geo_state','geo_country','seniority','function','lead_universe','rating','reviews','local_category','email'];
+            const header = ['Full Name','Title','Company','Industry','City','State','Country','Seniority','Function','Universe','Rating','Reviews','Local Category','Email'];
+            const dataRows = _peopleResults.map(p => {
+                const title = cleanTitle(p);
+                if (hideNoTitle && !title) return null;
+                const row = Object.assign({}, p, { title: title });
+                return cols.map(c => { const v = row[c]; return v==null?'':String(v).replace(/"/g,'""'); });
+            }).filter(Boolean);
+            const csv = [header.map(h=>'"'+h.replace(/"/g,'""')+'"').join(','), ...dataRows.map(r => r.map(c=>'"'+c+'"').join(','))].join('\r\n');
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = url; a.download = 'find_people_' + new Date().toISOString().slice(0,10) + '.csv';
+            document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+        });
+
         document.getElementById('searchAndEnrich').addEventListener('click', async () => {
             const btn = document.getElementById('searchAndEnrich');
             const errorContainer = document.getElementById('searchFormError');
@@ -4473,7 +5131,7 @@ example.org,Jane Doe</pre>
                 if (!res.ok) {
                     const err = await res.json();
                     alert('Download failed: ' + (err.detail || 'No partial file'));
-                    if (btn) { btn.disabled = false; btn.textContent = 'Download Partial'; }
+                    if (btn) { btn.disabled = false; btn.textContent = '↓ Download partial'; }
                     return;
                 }
                 const blob = await res.blob();
@@ -4487,7 +5145,7 @@ example.org,Jane Doe</pre>
                 document.body.removeChild(a); URL.revokeObjectURL(url);
             } catch (e) {
                 alert('Error: ' + e.message);
-                if (btn) { btn.disabled = false; btn.textContent = 'Download Partial'; }
+                if (btn) { btn.disabled = false; btn.textContent = '↓ Download partial'; }
             }
         }
 
@@ -4537,7 +5195,7 @@ example.org,Jane Doe</pre>
                 container.style.display = 'none';
                 return;
             }
-            const originalLabel = btn ? btn.textContent : '▦ Download in 10K chunks';
+            const originalLabel = btn ? btn.textContent : '▦ Download in chunks';
             if (btn) { btn.disabled = true; btn.textContent = 'Loading...'; }
             try {
                 const res = await fetch('/api/enrichment/jobs/' + jobId + '/shards', {
@@ -4596,6 +5254,16 @@ example.org,Jane Doe</pre>
                 if (enrichmentSearchQuery) {
                     params.set('search', enrichmentSearchQuery);
                 }
+                if (enrichmentDateRange) {
+                    params.set('date_from', enrichmentDateRange.from);
+                    params.set('date_to', enrichmentDateRange.to);
+                }
+                if (enrichmentFileReadyOnly) {
+                    params.set('file_ready', 'true');
+                }
+                if (enrichmentSourceFilter) {
+                    params.set('source', enrichmentSourceFilter);
+                }
                 const res = await fetch('/api/enrichment/jobs?' + params, { headers: { 'Authorization': 'Bearer ' + token } });
                 if (res.ok) {
                     const data = await res.json();
@@ -4611,9 +5279,9 @@ example.org,Jane Doe</pre>
         function filterEnrichmentJobs(statusFilter) {
             if (statusFilter) {
                 currentEnrichmentStatusFilter = statusFilter;
-                // Update active tab — scope to enrichment tabs so we don't
-                // collide with the scraper filter tabs on the same page.
-                document.querySelectorAll('#enrichmentFilterTabs .filter-tab').forEach(tab => {
+                // Update active tab — scope to enrichment STATUS pills (they carry
+                // data-status) so the file-ready toggle keeps its own state.
+                document.querySelectorAll('#enrichmentFilterTabs .filter-tab[data-status]').forEach(tab => {
                     tab.classList.remove('active');
                     if (tab.dataset.status === statusFilter) tab.classList.add('active');
                 });
@@ -4622,6 +5290,52 @@ example.org,Jane Doe</pre>
             // so reset to page 1 and re-fetch.
             enrichmentCurrentPage = 1;
             loadJobs();
+        }
+
+        // Enrichment date-filter handlers (server-side; the list is paginated,
+        // so each change resets to page 1 and re-fetches via loadJobs).
+        function setEnrichmentDatePreset(preset) {
+            const row = document.getElementById('enrichmentDateFilter');
+            if (row) row.querySelectorAll('.date-preset').forEach(b => b.classList.toggle('active', b.dataset.preset === preset));
+            const mp = document.getElementById('enrichmentMonthPicker');
+            if (mp) mp.value = '';
+            enrichmentDateRange = datePresetRange(preset);
+            enrichmentCurrentPage = 1;
+            loadJobs();
+        }
+        function setEnrichmentDateMonth(monthValue) {
+            const row = document.getElementById('enrichmentDateFilter');
+            if (row) row.querySelectorAll('.date-preset').forEach(b => b.classList.remove('active'));
+            enrichmentDateRange = monthToRange(monthValue);
+            enrichmentCurrentPage = 1;
+            loadJobs();
+        }
+        // Toggle "file ready only" (server-side; resets to page 1 and re-fetches).
+        function toggleEnrichmentFileReady() {
+            enrichmentFileReadyOnly = !enrichmentFileReadyOnly;
+            const btn = document.getElementById('enrichmentFileReadyToggle');
+            if (btn) { btn.classList.toggle('active', enrichmentFileReadyOnly); btn.setAttribute('aria-pressed', String(enrichmentFileReadyOnly)); }
+            enrichmentCurrentPage = 1;
+            loadJobs();
+        }
+        // Source filter (server-side; resets to page 1 and re-fetches).
+        function setEnrichmentSource(val) {
+            enrichmentSourceFilter = val || '';
+            enrichmentCurrentPage = 1;
+            loadJobs();
+        }
+
+        // Single source of truth for job-status display labels. Used by both
+        // renderEnrichmentJobs and renderScraperJobs so every job card shows the
+        // same accurate label for a given status. Display text only — the status
+        // value, filters, and endpoints are unchanged.
+        const JOB_STATUS_LABELS = {
+            running: 'Running', queued: 'Queued', starting: 'Starting', pending: 'Pending',
+            done: 'Done', partial: 'Partial', failed: 'Failed',
+            abandoned: 'Abandoned', cancelled: 'Cancelled', stopped: 'Stopped',
+        };
+        function jobStatusLabel(status) {
+            return JOB_STATUS_LABELS[status] || (status ? status.charAt(0).toUpperCase() + status.slice(1) : '');
         }
 
         function renderEnrichmentJobs() {
@@ -4634,16 +5348,8 @@ example.org,Jane Doe</pre>
             // Status filtering is now done server-side via the `status` query param
             // (see loadJobs). Only the "no jobs yet" empty state remains here.
             jobsList.innerHTML = jobs.map(job => {
-                        // Status display with human-readable labels
-                        let statusLabel = job.status;
-                        let statusDisplay = statusLabel;
-                        if (job.status === 'running') statusDisplay = 'Running';
-                        if (job.status === 'starting') statusDisplay = 'Starting';
-                        if (job.status === 'done') statusDisplay = 'Done';
-                        if (job.status === 'abandoned') statusDisplay = 'Abandoned';
-                        if (job.status === 'cancelled') statusDisplay = 'Cancelled';
-                        if (job.status === 'partial') statusDisplay = 'Partial';
-                        if (job.status === 'failed') statusDisplay = 'Failed';
+                        // Status display via the shared label map.
+                        let statusDisplay = jobStatusLabel(job.status);
 
                         // Format providers display - show BOTH selected and used side by side
                         // 1. selectedDisplay: what the user selected (from selected_providers)
@@ -4697,7 +5403,8 @@ example.org,Jane Doe</pre>
                             usedDisplay = usedList.map(labelFor).join(' + ');
                         }
 
-                        let actions = '<span class="job-status status-' + job.status + '">' + statusDisplay + '</span>';
+                        const statusBadge = '<span class="job-status status-' + job.status + '">' + statusDisplay + '</span>';
+                        let actions = '';
                         if (job.status === 'done') {
                             const fname = job.display_filename || job.filename || 'enrichment_job';
                             const safeName = fname.replace(/[^a-z0-9]/gi, '_').substring(0, 30);
@@ -4714,37 +5421,37 @@ example.org,Jane Doe</pre>
                             }
                             actions += ' <button class="btn btn-secondary btn-sm" data-action="retry" data-job-id="'+job.job_id+'" onclick="retryEnrichmentJob(\''+job.job_id+'\', this)">Retry</button>';
                             if (job.partial_output_path) {
-                                actions += ' <button class="btn btn-success btn-sm" onclick="downloadEnrichmentPartial(\''+job.job_id+'\', this)">Download Partial</button>';
+                                actions += ' <button class="btn btn-success btn-sm" onclick="downloadEnrichmentPartial(\''+job.job_id+'\', this)">↓ Download partial</button>';
                             }
                         } else if (job.status === 'partial') {
                             // Partial jobs have output available
                             const fname = job.display_filename || job.filename || 'enrichment_job';
                             const safeName = fname.replace(/[^a-z0-9]/gi, '_').substring(0, 30);
-                            actions += ' <button class="btn btn-success btn-sm" onclick="downloadFile(\''+job.job_id+'\',\''+safeName+'_partial_'+job.job_id.substr(0,8)+'.csv\', this)">Download Partial</button>';
+                            actions += ' <button class="btn btn-success btn-sm" onclick="downloadFile(\''+job.job_id+'\',\''+safeName+'_partial_'+job.job_id.substr(0,8)+'.csv\', this)">↓ Download partial</button>';
                             // Resume picks up from the partial's row count; for
                             // pre-fix partials (no checkpoints) the resume-info
                             // modal will warn the user.
                             actions += ' <button class="btn btn-warning btn-sm" data-action="resume" data-job-id="'+job.job_id+'" onclick="resumeEnrichmentJob(\''+job.job_id+'\', this)">↻ Resume</button>';
-                            actions += ' <button class="btn btn-secondary btn-sm" data-action="retry" data-job-id="'+job.job_id+'" onclick="retryEnrichmentJob(\''+job.job_id+'\', this)">Retry Full</button>';
+                            actions += ' <button class="btn btn-secondary btn-sm" data-action="retry" data-job-id="'+job.job_id+'" onclick="retryEnrichmentJob(\''+job.job_id+'\', this)">Retry</button>';
                         } else if (job.status === 'running' || job.status === 'queued' || job.status === 'starting') {
-                            actions += ' <button class="btn btn-danger btn-sm" onclick="cancelEnrichmentJob(\''+job.job_id+'\', this)">Cancel</button>';
+                            actions += ' <button class="btn btn-danger btn-sm" onclick="cancelEnrichmentJob(\''+job.job_id+'\', this)">Stop</button>';
                             // Let the user pull the leads found so far WITHOUT cancelling.
                             // /recover-partial has no status guard, so this works mid-run.
-                            actions += ' <button class="btn btn-secondary btn-sm" onclick="downloadEnrichmentPartial(\''+job.job_id+'\', this)">↓ Download progress</button>';
+                            actions += ' <button class="btn btn-success btn-sm" onclick="downloadEnrichmentPartial(\''+job.job_id+'\', this)">↓ Download partial</button>';
                         }
                         // Chunked shard download — reveals a per-shard download list
                         // under the job card on click (toggle). The shard endpoint
                         // serves any job on demand, so surface it on rows that have
                         // (or will have) rows on disk: done/partial/running.
                         if (job.status === 'done' || job.status === 'partial' || job.status === 'running') {
-                            actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleEnrichmentShards(\''+job.job_id+'\', this)">▦ Download in 10K chunks</button>';
+                            actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleEnrichmentShards(\''+job.job_id+'\', this)">▦ Download in chunks</button>';
                         }
                         // Show error message for failed/abandoned/cancelled jobs with hover tooltip
                         let errorInfo = '';
                         if (job.error && (job.status === 'failed' || job.status === 'abandoned' || job.status === 'cancelled')) {
                             const fullError = job.error.replace(/'/g, "\\'").replace(/"/g, '\\"');
                             const shortError = job.error.length > 60 ? job.error.substring(0, 60) + '...' : job.error;
-                            errorInfo = '<div class="job-error" style="font-size: 0.7rem; color: #dc2626; margin-top: 4px; cursor: help;" title="' + fullError + '">' + shortError + '</div>';
+                            errorInfo = '<div class="job-error" title="' + fullError + '">' + shortError + '</div>';
                         }
 
                         // Show provider errors if any were tracked during processing
@@ -4790,7 +5497,42 @@ example.org,Jane Doe</pre>
                                 '</div>';
                         }
 
-                        return '<div class="job-card' + zeroEmailCardClass + '"><div class="job-info"><h4>' + (job.display_filename || job.filename || 'Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.processed||0) + '/' + (job.total||0) + ' | ' + (job.emails_found||0) + ' emails</div><div class="job-providers" style="font-size: 0.75rem; margin-top: 4px;"><div style="color: #1e40af;"><strong>Selected:</strong> ' + selectedDisplay + '</div><div style="color: #059669;"><strong>Used:</strong> ' + usedDisplay + '</div></div>' + errorInfo + providerErrorsDisplay + zeroEmailWarning + '</div><div class="actions">' + actions + '</div><div id="shard-list-' + job.job_id + '"></div></div>';
+                        const metaParts = [
+                            new Date(job.created_at).toLocaleString(),
+                            (job.processed||0) + '/' + (job.total||0) + ' rows',
+                            (job.emails_found||0) + ' emails',
+                        ];
+                        const metaHtml = metaParts.map(p => '<span class="meta-item">' + p + '</span>').join('<span class="meta-sep" aria-hidden="true">·</span>');
+
+                        const _isTerminal = ['done','failed','abandoned','cancelled','partial'].includes(job.status);
+                        const fileChip = _isTerminal ? (job.output_exists === false
+                            ? '<span class="file-chip file-missing" title="Result file is no longer on disk">⊘ File unavailable</span>'
+                            : '<span class="file-chip file-ready" title="Result file is ready">✓ File ready</span>') : '';
+
+                        // Source-provenance chip (origin of the enrichment run).
+                        const _srcMap = {
+                            google_maps_chain: { t: '🌐 Google Maps', c: '#1d4ed8', b: '#dbeafe' },
+                            csv_upload: { t: '📤 Upload', c: '#475569', b: '#f1f5f9' },
+                            linkedin: { t: '🔗 LinkedIn', c: '#075985', b: '#e0f2fe' },
+                            search: { t: '🔎 Search', c: '#6b21a8', b: '#f3e8ff' },
+                            restart: { t: '↻ Restart', c: '#92400e', b: '#fef3c7' },
+                        };
+                        const _src = _srcMap[job.source_type];
+                        const sourceChip = _src ? '<span class="file-chip" style="color:' + _src.c + ';background:' + _src.b + ';" title="Origin: ' + job.source_type + '">' + _src.t + '</span>' : '';
+
+                        return '<div class="job-card' + zeroEmailCardClass + '">'
+                            + '<div class="job-info">'
+                            + '<h4>' + (job.display_filename || job.filename || 'Job') + '</h4>'
+                            + '<div class="job-meta">' + metaHtml + '</div>'
+                            + fileChip
+                            + sourceChip
+                            + '<div class="job-providers" style="font-size: 0.75rem; margin-top: 4px;"><div style="color: #1e40af;"><strong>Selected:</strong> ' + selectedDisplay + '</div><div style="color: #059669;"><strong>Used:</strong> ' + usedDisplay + '</div></div>'
+                            + errorInfo + providerErrorsDisplay + zeroEmailWarning
+                            + '</div>'
+                            + '<div class="job-status-wrap">' + statusBadge + '</div>'
+                            + '<div class="actions">' + actions + '</div>'
+                            + '<div class="shard-list" id="shard-list-' + job.job_id + '"></div>'
+                            + '</div>';
                     }).join('') + renderEnrichmentPagination();
         }
 
@@ -4813,13 +5555,13 @@ example.org,Jane Doe</pre>
 
         // Cancel an enrichment job
         async function cancelEnrichmentJob(jobId, btn) {
-            if (!confirm('Cancel this enrichment job?')) return;
+            if (!confirm('Stop this enrichment job? This will stop further processing.')) return;
 
             // Show immediate feedback - disable button and show loading state (mirrors cancelScraperJob)
             if (btn) {
                 btn.disabled = true;
                 btn.dataset.originalText = btn.textContent;
-                btn.innerHTML = '<span class="spinner" style="width:12px;height:12px;display:inline-block;"></span> Cancelling...';
+                btn.innerHTML = '<span class="spinner" style="width:12px;height:12px;display:inline-block;"></span> Stopping...';
             }
 
             try {
@@ -4831,11 +5573,11 @@ example.org,Jane Doe</pre>
                     loadJobs(); // Refresh the list (button will be removed/re-rendered)
                 } else {
                     const err = await res.json();
-                    alert('Failed to cancel: ' + (err.detail || 'Unknown error'));
+                    alert('Failed to stop: ' + (err.detail || 'Unknown error'));
                     // Re-enable button on error
                     if (btn) {
                         btn.disabled = false;
-                        btn.innerHTML = btn.dataset.originalText || 'Cancel';
+                        btn.innerHTML = btn.dataset.originalText || 'Stop';
                     }
                 }
             } catch (e) {
@@ -4843,7 +5585,7 @@ example.org,Jane Doe</pre>
                 // Re-enable button on error
                 if (btn) {
                     btn.disabled = false;
-                    btn.innerHTML = btn.dataset.originalText || 'Cancel';
+                    btn.innerHTML = btn.dataset.originalText || 'Stop';
                 }
             }
         }
@@ -4896,12 +5638,89 @@ example.org,Jane Doe</pre>
             } catch (e) { console.error('Failed to load scraper jobs:', e); jobsList.innerHTML = '<div class="empty-state">Error</div>'; }
         }
 
+        // ── Date-range filtering (shared by scraper + enrichment job lists) ──
+        // Bounds are day-granularity 'YYYY-MM-DD' (UTC — created_at is stored in
+        // UTC, so the slice and the bounds share one frame in every timezone).
+        // created_at is ISO-with-tz (e.g. 2026-07-29T22:44:02.014001+00:00);
+        // slicing the first 10 chars yields the date, which compares cleanly
+        // as a string.
+        // 'YYYY-MM-DD' from a Date's UTC components. created_at is stored in UTC,
+        // so filter bounds must be UTC-day values to line up with its UTC date
+        // prefix — local getters would shift the boundary by the viewer's tz
+        // offset and silently drop/shift jobs near UTC midnight.
+        function utcDay(d) {
+            const y = d.getUTCFullYear();
+            const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+            const day = String(d.getUTCDate()).padStart(2, '0');
+            return y + '-' + m + '-' + day;
+        }
+        // Preset → inclusive {from,to} UTC-day range, or null for "all time".
+        // Bounds are built in UTC (Date.UTC) so the client-side slice and the
+        // server-side created_at compare share one frame in every timezone.
+        function datePresetRange(preset) {
+            const now = new Date();
+            const Y = now.getUTCFullYear(), M = now.getUTCMonth(), D = now.getUTCDate();
+            const to = utcDay(now); // today, UTC
+            if (preset === 'this_month') {
+                return { from: Y + '-' + String(M + 1).padStart(2, '0') + '-01', to };
+            }
+            if (preset === 'last_30') {
+                return { from: utcDay(new Date(Date.UTC(Y, M, D - 29))), to };
+            }
+            if (preset === 'last_7') {
+                return { from: utcDay(new Date(Date.UTC(Y, M, D - 6))), to };
+            }
+            return null; // 'all' or unknown → no filter
+        }
+        // '<input type="month">' value 'YYYY-MM' → inclusive {from,to} for that month.
+        function monthToRange(monthValue) {
+            if (!monthValue) return null;
+            const parts = monthValue.split('-');
+            const y = Number(parts[0]); const m = Number(parts[1]);
+            if (!y || !m) return null;
+            const mm = String(m).padStart(2, '0');
+            const lastDay = new Date(y, m, 0).getDate(); // day 0 of next month
+            return { from: y + '-' + mm + '-01', to: y + '-' + mm + '-' + String(lastDay).padStart(2, '0') };
+        }
+        // Client-side inclusion check (scraper). ISO created_at vs day-granularity range.
+        function jobInDateRange(iso, range) {
+            if (!range) return true;
+            const day = (iso || '').slice(0, 10);
+            if (!day) return false;
+            return day >= range.from && day <= range.to;
+        }
+
+        // Scraper date-filter handlers (client-side; re-render on change).
+        function setScraperDatePreset(preset) {
+            const row = document.getElementById('scraperDateFilter');
+            if (row) row.querySelectorAll('.date-preset').forEach(b => b.classList.toggle('active', b.dataset.preset === preset));
+            const mp = document.getElementById('scraperMonthPicker');
+            if (mp) mp.value = '';
+            scraperDateRange = datePresetRange(preset);
+            renderScraperJobs();
+        }
+        function setScraperDateMonth(monthValue) {
+            const row = document.getElementById('scraperDateFilter');
+            if (row) row.querySelectorAll('.date-preset').forEach(b => b.classList.remove('active'));
+            scraperDateRange = monthToRange(monthValue);
+            renderScraperJobs();
+        }
+        // Toggle "file ready only" (client-side). aria-pressed + .active track state.
+        function toggleScraperFileReady() {
+            scraperFileReadyOnly = !scraperFileReadyOnly;
+            const btn = document.getElementById('scraperFileReadyToggle');
+            if (btn) { btn.classList.toggle('active', scraperFileReadyOnly); btn.setAttribute('aria-pressed', String(scraperFileReadyOnly)); }
+            renderScraperJobs();
+        }
+
         // Filter scraper jobs by status and search query
         function filterScraperJobs(statusFilter) {
             if (statusFilter) {
                 currentStatusFilter = statusFilter;
-                // Update active tab
-                document.querySelectorAll('.filter-tab').forEach(tab => {
+                // Update active tab — scope to status pills only (they carry
+                // data-status) so the date-preset and file-ready pills (also
+                // .filter-tab) keep their own state across a status change.
+                document.querySelectorAll('.filter-tab[data-status]').forEach(tab => {
                     tab.classList.remove('active');
                     if (tab.dataset.status === statusFilter) tab.classList.add('active');
                 });
@@ -4920,6 +5739,16 @@ example.org,Jane Doe</pre>
                 filteredJobs = filteredJobs.filter(job => job.status === currentStatusFilter);
             }
 
+            // Filter by date range (AND with status + search)
+            if (scraperDateRange) {
+                filteredJobs = filteredJobs.filter(job => jobInDateRange(job.created_at, scraperDateRange));
+            }
+
+            // Filter by file-ready (only jobs whose result file is on disk)
+            if (scraperFileReadyOnly) {
+                filteredJobs = filteredJobs.filter(job => job.output_exists === true);
+            }
+
             // Filter by search query
             if (searchQuery) {
                 filteredJobs = filteredJobs.filter(job => {
@@ -4931,45 +5760,72 @@ example.org,Jane Doe</pre>
             }
 
             if (filteredJobs.length === 0) {
-                jobsList.innerHTML = '<div class="empty-state">No jobs found</div>';
+                const msg = scraperFileReadyOnly
+                    ? 'No downloadable files match these filters'
+                    : 'No jobs found';
+                jobsList.innerHTML = '<div class="empty-state">' + msg + '</div>';
                 return;
             }
 
             jobsList.innerHTML = filteredJobs.map(job => {
-                // Status display with human-readable labels
-                let statusLabel = job.status;
-                let statusDisplay = statusLabel;
-                if (job.status === 'abandoned') statusDisplay = 'Abandoned';
-                if (job.status === 'cancelled') statusDisplay = 'Cancelled';
-                if (job.status === 'partial') statusDisplay = 'Partial';
-                if (job.status === 'failed') statusDisplay = 'Failed';
-                if (job.status === 'stopped') statusDisplay = 'Stopped';
+                // Status display via the shared label map.
+                let statusDisplay = jobStatusLabel(job.status);
 
-                let actions = '<span class="job-status status-' + job.status + '">' + statusDisplay + '</span>';
+                const statusBadge = '<span class="job-status status-' + job.status + '">' + statusDisplay + '</span>';
+                let actions = '';
                 if (job.status === 'done') {
                     actions += ' <button class="btn btn-success btn-sm" id="dl-scraper-'+job.job_id+'" onclick="downloadScraperJob(\''+job.job_id+'\', this)">Download</button>';
                     actions += ' <button class="btn btn-primary btn-sm" onclick="chainScraperToEnrichment(\''+job.job_id+'\')">Chain to Enrichment</button>';
+                    actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleScraperShards(\''+job.job_id+'\', this)">▦ Download in chunks</button>';
                 } else if (job.status === 'failed' || job.status === 'abandoned' || job.status === 'cancelled' || job.status === 'stopped') {
                     // Show resume button if job has checkpoints
                     if (job.checkpoint_count > 0 && job.is_resumable === 1) {
                         actions += ' <button class="btn btn-warning btn-sm" onclick="resumeScraperJob(\''+job.job_id+'\')">↻ Resume ('+job.checkpoint_count+' tasks)</button>';
                     }
-                    actions += ' <button class="btn btn-secondary btn-sm" onclick="retryScraperJob(\''+job.job_id+'\')">Retry Fresh</button>';
-                    // Allow download of partial results if output file exists
-                    if (job.output_path) {
-                        actions += ' <button class="btn btn-success btn-sm" onclick="downloadScraperJob(\''+job.job_id+'\', this)">Download Partial</button>';
-                    }
+                    actions += ' <button class="btn btn-secondary btn-sm" onclick="retryScraperJob(\''+job.job_id+'\')">Retry</button>';
+                    // /partial-download has no status gate and falls back to the on-disk
+                    // CSV, so this works for abandoned jobs even though output_path is
+                    // null until set_done runs at completion.
+                    actions += ' <button class="btn btn-success btn-sm" onclick="downloadScraperPartial(\''+job.job_id+'\', this)">↓ Download partial</button>';
+                    actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleScraperShards(\''+job.job_id+'\', this)">▦ Download in chunks</button>';
                 } else if (job.status === 'running' || job.status === 'queued' || job.status === 'pending') {
                     actions += ' <button class="btn btn-danger btn-sm" onclick="cancelScraperJob(\''+job.job_id+'\')">Stop</button>';
+                    actions += ' <button class="btn btn-success btn-sm" onclick="downloadScraperPartial(\''+job.job_id+'\', this)">↓ Download partial</button>';
+                    actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleScraperShards(\''+job.job_id+'\', this)">▦ Download in chunks</button>';
                 }
-                // Show error message for failed/abandoned/cancelled jobs with hover tooltip
+                // Show error message for failed/abandoned/cancelled jobs with hover
+                // tooltip. Restrained color + truncation; full text via title.
                 let errorInfo = '';
                 if (job.error && (job.status === 'failed' || job.status === 'abandoned' || job.status === 'cancelled')) {
                     const fullError = job.error.replace(/'/g, "\\'").replace(/"/g, '\\"');
                     const shortError = job.error.length > 60 ? job.error.substring(0, 60) + '...' : job.error;
-                    errorInfo = '<div class="job-error" style="font-size: 0.7rem; color: #dc2626; margin-top: 4px; cursor: help;" title="' + fullError + '">' + shortError + '</div>';
+                    errorInfo = '<div class="job-error" title="' + fullError + '">' + shortError + '</div>';
                 }
-                return '<div class="job-card"><div class="job-info"><h4>' + (job.display_name || job.query || 'Scraper Job') + '</h4><div class="job-meta">' + new Date(job.created_at).toLocaleString() + ' | ' + (job.done_tasks||0) + '/' + (job.total_tasks||0) + ' | ' + (job.result_count||0) + ' results' + (job.regions ? ' | ' + getLocationDisplay(job.regions) : '') + '</div>' + errorInfo + '</div><div class="actions">' + actions + '</div></div>';
+                // Metadata as separated inline items (wraps, not one dense string).
+                const metaParts = [
+                    new Date(job.created_at).toLocaleString(),
+                    (job.done_tasks||0) + '/' + (job.total_tasks||0) + ' tasks',
+                    (job.result_count||0) + ' results',
+                ];
+                if (job.regions) metaParts.push(getLocationDisplay(job.regions));
+                const metaHtml = metaParts.map(p => '<span class="meta-item">' + p + '</span>').join('<span class="meta-sep" aria-hidden="true">·</span>');
+
+                const _isTerminal = ['done','failed','abandoned','cancelled','stopped','partial'].includes(job.status);
+                const fileChip = _isTerminal ? (job.output_exists === false
+                    ? '<span class="file-chip file-missing" title="Result file is no longer on disk">⊘ File unavailable</span>'
+                    : '<span class="file-chip file-ready" title="Result file is ready">✓ File ready</span>') : '';
+
+                return '<div class="job-card scraper-job">'
+                    + '<div class="job-info">'
+                    + '<h4 class="scraper-job-title">' + (job.display_name || job.query || 'Scraper Job') + '</h4>'
+                    + '<div class="job-meta">' + metaHtml + '</div>'
+                    + fileChip
+                    + errorInfo
+                    + '</div>'
+                    + '<div class="job-status-wrap">' + statusBadge + '</div>'
+                    + '<div class="actions">' + actions + '</div>'
+                    + '<div class="shard-list" id="shard-list-' + job.job_id + '"></div>'
+                    + '</div>';
             }).join('');
         }
 
@@ -5007,6 +5863,116 @@ example.org,Jane Doe</pre>
                 URL.revokeObjectURL(url);
             } catch (e) { alert('Error: ' + e.message); }
             if (btn) { btn.disabled = false; btn.innerHTML = 'Download'; }
+        }
+
+        // --- Incremental / segmented partial downloads (running + abandoned jobs) ---
+        // Mirrors the enrichment shard pattern but hits /api/scraper/... (which
+        // accept the same Bearer JWT). Lets a user grab partial results and
+        // 10K-row chunks while a long scrape is still running, or recover an
+        // abandoned job's on-disk CSV. /partial-download has no status gate and
+        // falls back to the live output file, so it works even when output_path
+        // is null (abandoned jobs).
+        async function downloadScraperPartial(jobId, btn) {
+            if (btn) { btn.disabled = true; btn.textContent = 'Downloading...'; }
+            try {
+                const res = await fetch('/api/scraper/jobs/' + jobId + '/partial-download', {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (!res.ok) {
+                    let msg = 'Download failed';
+                    try { const err = await res.json(); msg = 'Download failed: ' + (err.detail || 'No data available yet'); } catch (_) {}
+                    alert(msg);
+                    return;
+                }
+                const blob = await res.blob();
+                const cd = res.headers.get('content-disposition') || '';
+                const match = cd.match(/filename="?([^"]+)"?/);
+                const filename = match ? match[1] : `partial_${jobId.substr(0, 8)}.csv`;
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = filename;
+                document.body.appendChild(a); a.click();
+                document.body.removeChild(a); URL.revokeObjectURL(url);
+            } catch (e) {
+                alert('Error: ' + e.message);
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = '↓ Download partial'; }
+            }
+        }
+
+        async function downloadScraperShard(jobId, shardIdx, btn) {
+            if (btn) { btn.disabled = true; btn.textContent = 'Downloading...'; }
+            try {
+                const res = await fetch('/api/scraper/jobs/' + jobId + '/shard/' + shardIdx, {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (!res.ok) {
+                    let msg = 'Download failed';
+                    try { const err = await res.json(); msg = 'Download failed: ' + (err.detail || 'No data written yet'); } catch (_) {}
+                    alert(msg);
+                    return;
+                }
+                const blob = await res.blob();
+                const cd = res.headers.get('content-disposition') || '';
+                const match = cd.match(/filename="?([^"]+)"?/);
+                const filename = match ? match[1] : `shard_${shardIdx}_${jobId.substr(0, 8)}.csv`;
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = filename;
+                document.body.appendChild(a); a.click();
+                document.body.removeChild(a); URL.revokeObjectURL(url);
+            } catch (e) {
+                alert('Error: ' + e.message);
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = 'Download'; }
+            }
+        }
+
+        // Toggle the per-shard download list. Fetches /shards ON DEMAND (only on
+        // click) so renderScraperJobs stays free of per-card API calls.
+        async function toggleScraperShards(jobId, btn) {
+            const container = document.getElementById('shard-list-' + jobId);
+            if (!container) { alert('Could not find shard list container'); return; }
+            if (container.dataset.loaded === '1' && container.style.display !== 'none') {
+                container.style.display = 'none';
+                return;
+            }
+            const originalLabel = btn ? btn.textContent : '▦ Download in chunks';
+            if (btn) { btn.disabled = true; btn.textContent = 'Loading...'; }
+            try {
+                const res = await fetch('/api/scraper/jobs/' + jobId + '/shards', {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (!res.ok) {
+                    let msg = 'Could not load shards';
+                    try { const err = await res.json(); msg = 'Could not load shards: ' + (err.detail || 'Unknown error'); } catch (_) {}
+                    alert(msg);
+                    return;
+                }
+                const data = await res.json();
+                const shards = data.shards || [];
+                const shardSize = data.shard_size || 10000;
+                if (shards.length === 0) {
+                    container.innerHTML = '<div style="font-size:0.72rem;color:#6b7280;margin-top:6px;">No shards available yet (no rows scraped).</div>';
+                } else {
+                    const rowsHtml = shards.map(s => {
+                        const k = s.shard;
+                        const ready = s.rows_available || 0;
+                        const disabled = ready === 0 ? ' disabled' : '';
+                        const dlBtn = '<button class="btn btn-secondary btn-sm"' + disabled + ' onclick="downloadScraperShard(\'' + jobId + '\',' + k + ', this)">Download</button>';
+                        return '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">' +
+                            '<span>Shard ' + k + ': rows ' + s.start_row + '-' + s.end_row + ' · ' + ready + '/' + shardSize + ' ready</span>' +
+                            dlBtn + '</div>';
+                    }).join('');
+                    container.innerHTML = '<div style="font-size:0.7rem;color:#374151;margin-top:6px;display:flex;flex-direction:column;gap:3px;">' + rowsHtml + '</div>';
+                }
+                container.dataset.loaded = '1';
+                container.style.display = 'block';
+            } catch (e) {
+                alert('Error: ' + e.message);
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = originalLabel; }
+            }
         }
 
         // Retry scraper job - now uses resume modal
@@ -5378,7 +6344,18 @@ example.org,Jane Doe</pre>
         // Expose functions to global scope for onclick handlers
         window.filterScraperJobs = filterScraperJobs;
         window.loadScraperJobs = loadScraperJobs;
+        // Scraper date-filter handlers (inline onclick/onchange need window export).
+        window.setScraperDatePreset = setScraperDatePreset;
+        window.setScraperDateMonth = setScraperDateMonth;
+        // File-ready toggles.
+        window.toggleScraperFileReady = toggleScraperFileReady;
+        window.toggleEnrichmentFileReady = toggleEnrichmentFileReady;
+        // Source filter.
+        window.setEnrichmentSource = setEnrichmentSource;
         window.downloadScraperJob = downloadScraperJob;
+        window.downloadScraperPartial = downloadScraperPartial;
+        window.downloadScraperShard = downloadScraperShard;
+        window.toggleScraperShards = toggleScraperShards;
         window.chainScraperToEnrichment = chainScraperToEnrichment;
         window.resumeScraperJob = resumeScraperJob;
         window.copyApiKeyByValue = copyApiKeyByValue;
@@ -5388,8 +6365,22 @@ example.org,Jane Doe</pre>
         window.downloadFile = downloadFile;
         window.retryEnrichmentJob = retryEnrichmentJob;
         window.cancelEnrichmentJob = cancelEnrichmentJob;
+        // Inline onclick="fn(...)" handlers resolve via the global (window) scope,
+        // but every function below lives inside the DOMContentLoaded closure - so
+        // each MUST be exported or its button throws "fn is not defined" on click.
+        // Enrichment chunk-download + resume UI:
+        window.downloadEnrichmentPartial = downloadEnrichmentPartial;
+        window.downloadEnrichmentShard = downloadEnrichmentShard;
+        window.toggleEnrichmentShards = toggleEnrichmentShards;
+        window.resumeEnrichmentJob = resumeEnrichmentJob;
+        // Scraper Stop + Retry Fresh (were silently broken on click):
+        window.cancelScraperJob = cancelScraperJob;
+        window.retryScraperJob = retryScraperJob;
         window.filterEnrichmentJobs = filterEnrichmentJobs;
         window.loadJobs = loadJobs;
+        // Enrichment date-filter handlers (inline onclick/onchange need window export).
+        window.setEnrichmentDatePreset = setEnrichmentDatePreset;
+        window.setEnrichmentDateMonth = setEnrichmentDateMonth;
         // Expose ModalManager to global scope for inline onclick handlers
         window.ModalManager = ModalManager;
         console.log('Functions exposed to global scope');
@@ -5590,17 +6581,23 @@ example.org,Jane Doe</pre>
         // =============================================================================
         const connectionStatus = document.getElementById('connectionStatus');
         const connectionStatusText = document.getElementById('connectionStatusText');
+        const fpConnStatus = document.getElementById('fpConnStatus');
+        const fpConnStatusText = document.getElementById('fpConnStatusText');
+        const scraperConnStatus = document.getElementById('scraperConnStatus');
+        const scraperConnStatusText = document.getElementById('scraperConnStatusText');
 
         function updateConnectionStatus(connected) {
-            if (connected) {
-                connectionStatus.classList.remove('disconnected');
-                connectionStatus.classList.add('connected');
-                connectionStatusText.textContent = 'Connected';
-            } else {
-                connectionStatus.classList.remove('connected');
-                connectionStatus.classList.add('disconnected');
-                connectionStatusText.textContent = 'Disconnected';
-            }
+            const cls = connected ? 'connected' : 'disconnected';
+            const label = connected ? 'Connected' : 'Disconnected';
+            // Global floating indicator (shown on all pages except Find People / Scraper)
+            if (connectionStatus) { connectionStatus.classList.remove('connected', 'disconnected'); connectionStatus.classList.add(cls); }
+            if (connectionStatusText) connectionStatusText.textContent = label;
+            // Mirrored pill in the Find People card header
+            if (fpConnStatus) { fpConnStatus.classList.remove('connected', 'disconnected'); fpConnStatus.classList.add(cls); }
+            if (fpConnStatusText) fpConnStatusText.textContent = label;
+            // Mirrored pill in the Scraper card header
+            if (scraperConnStatus) { scraperConnStatus.classList.remove('connected', 'disconnected'); scraperConnStatus.classList.add(cls); }
+            if (scraperConnStatusText) scraperConnStatusText.textContent = label;
         }
 
         // Monitor online/offline status

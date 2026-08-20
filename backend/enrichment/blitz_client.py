@@ -119,13 +119,13 @@ async def _post_with_retry(
             await _blitz_circuit.record_success()
             return resp.json()
         except httpx.HTTPStatusError as e:
-            # 429 (rate-limit) must NOT trip the circuit breaker — it means
-            # we're over the rate limit, not that Blitz is down. Tripping the
-            # breaker degrades the whole cascade onto the much slower
-            # BetterEnrich fallback (10 RPS), which was the root cause of the
-            # 2026-07-21/22 multi-job slowdown. Let the retry/backoff above
-            # self-limit the rate; only real failures (5xx etc.) trip it.
-            if e.response.status_code != 429:
+            # 429 (rate-limit) and 4xx payload errors (400/404/422) must NOT trip
+            # the circuit breaker — they mean the request was bad or over-limit,
+            # not that Blitz is down. Tripping on a bad-payload storm (e.g.
+            # un-normalized deep-URL domains -> 422) blacks out Blitz for valid
+            # rows for 60s, degrading the cascade onto the slower BetterEnrich
+            # fallback. Only real service failures (5xx etc.) trip it.
+            if e.response.status_code not in (400, 404, 422, 429):
                 await _blitz_circuit.record_failure()
             raise
         except Exception as exc:
@@ -439,6 +439,10 @@ async def person_enrich(
     POST /v2/enrichment/person
     Enrich a person profile with verified email and additional data.
 
+    NOTE: disabled by default — /v2/enrichment/person is not accessible on our
+    Blitz plan (HTTP 401 "no access to this route"; 24h: 0 successes / 19,616
+    calls). Set env BLITZ_PERSON_ENRICH=1 to re-enable after a plan upgrade.
+
     Args:
         client: Async HTTP client
         linkedin_url: Person's LinkedIn profile URL
@@ -466,10 +470,22 @@ async def person_enrich(
         }
     Cost: 1 credit on success, 0 if not found.
     """
+    # /v2/enrichment/person is NOT accessible on our Blitz plan: every call
+    # returns 401 "You do not have access to this route" (or 422 when the
+    # required `linkedin_profile_url` field is missing). 24h telemetry:
+    # 19,616 calls, 0 successes. Calling it wastes ~5 req/sec for nothing, so
+    # skip it unless explicitly re-enabled via BLITZ_PERSON_ENRICH=1 (e.g. after
+    # a plan upgrade). The cascade still resolves emails via
+    # person_enrich_by_linkedin (/v2/enrichment/email, working) plus the
+    # name+domain providers (smartprospect/wizleads/better_enrich).
+    if os.getenv("BLITZ_PERSON_ENRICH", "0") != "1":
+        logger.debug("person_enrich skipped (/v2/enrichment/person not accessible on this Blitz plan)")
+        return {"found": False, "person": {}}
+
     payload: dict[str, Any] = {}
 
     if linkedin_url:
-        payload["linkedin_url"] = linkedin_url
+        payload["linkedin_profile_url"] = linkedin_url
     else:
         # Name-based lookup requires domain
         if full_name:

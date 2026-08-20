@@ -30,6 +30,10 @@ def _mocked_linkedin_runner(tmp_path):
     # An unconfigured MagicMock returns a truthy value which would falsely trip
     # the partial/cancel path — so explicitly model a normal, non-cancelled job.
     store.is_job_cancelled_or_abandoned.return_value = False
+    # The runner finalises a completed job via _mark_done_and_cleanup (which on
+    # the real store calls set_done + cleanup_checkpoints). Make the mock delegate
+    # to set_done so the lifecycle assertion (set_done.called) still holds.
+    store._mark_done_and_cleanup.side_effect = lambda job_id, output_path=None: store.set_done(job_id, str(output_path))
 
     async def fake_enrich(*args, **kwargs):
         # Yield a few times so the heartbeat background task can fire.

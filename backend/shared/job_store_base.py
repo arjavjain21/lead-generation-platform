@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import sqlite3
@@ -76,7 +76,8 @@ class JobStoreBase:
                            "name_col", "first_name_col", "last_name_col", "cascade_config", "max_results",
                            "selected_providers", "used_providers",
                            "linkedin_url_col", "phone_col", "company_name_col", "existing_email_col",
-                           "normalize_domains", "dedupe_by_domain", "deduped_rows", "dedupe_skipped_domains"])
+                           "normalize_domains", "dedupe_by_domain", "deduped_rows", "dedupe_skipped_domains",
+                           "source_type"])
             values.extend([
                 kwargs.get("total", 0),
                 0,
@@ -99,6 +100,7 @@ class JobStoreBase:
                 1 if kwargs.get("dedupe_by_domain", True) else 0,
                 kwargs.get("deduped_rows", 0),
                 kwargs.get("dedupe_skipped_domains", ""),
+                kwargs.get("source_type", ""),
             ])
 
         placeholders = ",".join(["?" for _ in columns])
@@ -121,6 +123,25 @@ class JobStoreBase:
             (output_path, _now(), job_id),
         )
         self.conn.commit()
+
+    def _mark_done_and_cleanup(self, job_id: str, output_path) -> None:
+        """Mark a job done and remove its operational residue (checkpoints).
+
+        Done jobs never resume, so their per-row checkpoints (used only for
+        resume) are dead weight — deleting them here prevents the
+        job_checkpoints table from growing without bound. Best-effort: a
+        cleanup failure must not prevent the job from being marked done.
+        (Progress events are bounded separately by the daily prune_old_job_events
+        loop; the SSE 'done' event reads the jobs row, not events.)
+        """
+        self.set_done(job_id, str(output_path))
+        try:
+            self.cleanup_checkpoints(job_id)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Job %s: post-done checkpoint cleanup failed: %s", job_id, e
+            )
 
     def update_result_count(self, job_id: str, count: int) -> None:
         """Update result count for a job."""
@@ -252,6 +273,43 @@ class JobStoreBase:
         self.conn.commit()
         return cursor.rowcount > 0
 
+    @staticmethod
+    def _date_range_conditions(date_from: Optional[str], date_to: Optional[str]):
+        """Build WHERE fragments + params for an inclusive [date_from, date_to]
+        range over the ISO `created_at` column.
+
+        Both bounds are day-granularity 'YYYY-MM-DD' (or any leading ISO prefix);
+        ``date_to`` is inclusive of the *entire* day. ``created_at`` is stored as
+        ISO-with-tz (e.g. ``2026-07-29T22:44:02.014001+00:00``), so a plain
+        'YYYY-MM-DD' bound compares correctly as a string — the comparison is
+        decided within the first 10 (date) characters regardless of the T/space
+        separator or trailing time/offset.
+
+        ``date_to`` is converted to an exclusive next-day bound (``created_at < ?``)
+        so the whole last day matches. Malformed bounds are ignored (no condition
+        added) rather than raising — keeps list/count defensive for direct callers.
+
+        Returns (conditions, params); both empty when nothing parses.
+        """
+        conditions: list[str] = []
+        params: list[str] = []
+        if date_from:
+            try:
+                frm = datetime.strptime(str(date_from)[:10], "%Y-%m-%d")
+                conditions.append("created_at >= ?")
+                params.append(frm.strftime("%Y-%m-%d"))
+            except ValueError:
+                logger.debug("ignoring malformed date_from=%r", date_from)
+        if date_to:
+            try:
+                # +1 day → exclusive upper bound captures the whole last day.
+                nxt = datetime.strptime(str(date_to)[:10], "%Y-%m-%d") + timedelta(days=1)
+                conditions.append("created_at < ?")
+                params.append(nxt.strftime("%Y-%m-%d"))
+            except ValueError:
+                logger.debug("ignoring malformed date_to=%r", date_to)
+        return conditions, params
+
     def list_jobs(
         self,
         user_id: Optional[str] = None,
@@ -260,6 +318,9 @@ class JobStoreBase:
         offset: int = 0,
         status: Optional[str] = None,
         search: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        source_type: Optional[str] = None,
         include_hidden: bool = False,
     ) -> list[dict[str, Any]]:
         """List jobs with optional filtering by user, job type, and status.
@@ -270,6 +331,9 @@ class JobStoreBase:
             limit: Maximum number of jobs to return
             offset: Number of jobs to skip (for pagination)
             status: Filter by job status (e.g. 'done', 'running', 'failed')
+            search: Free-text search across filename/job_id/status
+            date_from: Optional inclusive lower bound (YYYY-MM-DD) on created_at
+            date_to: Optional inclusive upper bound (YYYY-MM-DD) on created_at
             include_hidden: If False, excludes jobs marked with hidden_from_ui=1
         """
         conditions = []
@@ -291,6 +355,14 @@ class JobStoreBase:
             conditions.append("(original_filename LIKE ? OR filename LIKE ? OR job_id LIKE ? OR status LIKE ?)")
             params.extend([f"%{search}%", f"%{search}%", f"%{search}%", f"%{search}%"])
 
+        dc, dp = self._date_range_conditions(date_from, date_to)
+        conditions.extend(dc)
+        params.extend(dp)
+
+        if source_type:
+            conditions.append("source_type = ?")
+            params.append(source_type)
+
         # Always exclude hidden jobs unless explicitly requested
         if not include_hidden:
             conditions.append("(hidden_from_ui IS NULL OR hidden_from_ui = 0)")
@@ -311,9 +383,16 @@ class JobStoreBase:
         job_type: Optional[str] = None,
         status: Optional[str] = None,
         search: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        source_type: Optional[str] = None,
         include_hidden: bool = False,
     ) -> int:
-        """Count jobs matching the same filters as list_jobs (for pagination)."""
+        """Count jobs matching the same filters as list_jobs (for pagination).
+
+        Accepts the same date_from/date_to bounds as list_jobs so the page count
+        and the returned page stay consistent under the date filter.
+        """
         conditions = []
         params = []
 
@@ -332,6 +411,14 @@ class JobStoreBase:
         if search:
             conditions.append("(original_filename LIKE ? OR filename LIKE ? OR job_id LIKE ? OR status LIKE ?)")
             params.extend([f"%{search}%", f"%{search}%", f"%{search}%", f"%{search}%"])
+
+        dc, dp = self._date_range_conditions(date_from, date_to)
+        conditions.extend(dc)
+        params.extend(dp)
+
+        if source_type:
+            conditions.append("source_type = ?")
+            params.append(source_type)
 
         if not include_hidden:
             conditions.append("(hidden_from_ui IS NULL OR hidden_from_ui = 0)")
@@ -624,6 +711,41 @@ class JobStoreBase:
         )
         self.conn.commit()
         return cursor.rowcount
+
+    def prune_old_job_events(self, retention_days: int = 7, batch_size: int = 50000) -> int:
+        """Delete job_events for non-running jobs older than retention_days,
+        plus orphaned events (job row gone), in batches.
+
+        job_events has no timestamp column, so we gate on jobs.created_at.
+        Running/queued jobs' events are always kept (they drive the live SSE
+        progress stream). Batched (LIMIT + commit per batch) so a large
+        historical backlog doesn't hold one long write lock — each batch
+        releases the lock between commits, letting other writers through."""
+        cutoff = f"-{int(retention_days)} days"
+        total = 0
+        while True:
+            cursor = self.conn.execute(
+                """
+                DELETE FROM job_events
+                WHERE rowid IN (
+                    SELECT rowid FROM job_events
+                    WHERE job_id IN (
+                        SELECT job_id FROM jobs
+                        WHERE created_at < datetime('now', ?)
+                          AND status NOT IN ('running', 'queued', 'pending', 'starting')
+                    )
+                       OR job_id NOT IN (SELECT job_id FROM jobs)
+                    LIMIT ?
+                )
+                """,
+                (cutoff, batch_size),
+            )
+            self.conn.commit()
+            removed = cursor.rowcount
+            total += removed
+            if removed < batch_size:
+                break
+        return total
 
     def write_task_checkpoint(
         self,

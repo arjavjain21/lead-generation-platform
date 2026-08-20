@@ -126,6 +126,22 @@ def _extract_company_name(raw: dict[str, Any]) -> str:
     return ""
 
 
+def _extract_company_industry(raw: dict[str, Any]) -> str:
+    """Best-effort company-industry pull from a raw contact dict.
+
+    Used so newly-captured leads carry their company industry into the
+    contacts_writer payload, where the write-back hook auto-classifies them
+    into a lead_universe bucket. Returns "" when not present (graceful).
+    """
+    if not isinstance(raw, dict):
+        return ""
+    for key in ("company_industry", "industry"):
+        v = raw.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Collector
 # ---------------------------------------------------------------------------
@@ -222,6 +238,11 @@ class RawContactCollector:
         company_name = _extract_company_name(contact)
         if company_name:
             payload["company_name"] = company_name
+
+        # Optional company industry (powers write-back universe classification)
+        company_industry = _extract_company_industry(contact)
+        if company_industry:
+            payload["company_industry"] = company_industry
 
         # Job lineage
         if self.job_id is not None:

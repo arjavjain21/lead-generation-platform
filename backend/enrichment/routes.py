@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import time
 import sqlite3
 import tempfile
 import uuid
@@ -28,7 +29,7 @@ import pandas as pd
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from shared import auth, db
 from . import blitz_client
@@ -126,6 +127,7 @@ def _build_contacts_writer_payloads(
             "dm_title": (c.get("title") or "").strip(),
             "dm_linkedin_url": (c.get("linkedin_url") or "").strip(),
             "domain": domain,
+            "company_industry": (c.get("company_industry") or "").strip(),
             "job_id": job_id,
             "row_index": idx,
             "source_path": (c.get("email_source") or "").strip(),
@@ -152,6 +154,7 @@ def _csv_rows_to_payloads(output_path: Path) -> list[dict]:
                 "dm_title": (row.get("dm_title") or "").strip(),
                 "dm_linkedin_url": (row.get("dm_linkedin_url") or "").strip(),
                 "domain": (row.get("domain") or "").strip(),
+                "company_industry": (row.get("company_industry") or "").strip(),
                 "job_id": (row.get("job_id") or "").strip() or None,
                 "row_index": idx,
                 "source_path": (row.get("dm_email_source") or row.get("source_path") or "").strip(),
@@ -401,6 +404,13 @@ DATA_DIR.mkdir(exist_ok=True)
 UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
 
+# Upper bound on how many jobs the `file_ready` filter scans for on-disk output.
+# output_exists is a per-job filesystem check (not a DB column), so the filter
+# fetches candidates then keeps only those whose file is present; this caps that
+# scan. Enrichment jobs are in the hundreds today — the cap is a backstop, and a
+# log line fires if it's ever reached.
+FILE_READY_SCAN_CAP = 2000
+
 router = APIRouter(prefix="/api/enrichment", tags=["enrichment"])
 
 # In-memory set of job_ids currently being actively processed
@@ -409,6 +419,181 @@ _active_jobs: set[str] = set()
 _job_signals: dict[str, asyncio.Event] = {}
 # Set of jobs that have been cancelled by user
 _cancelled_jobs: set[str] = set()
+
+
+# ---------------------------------------------------------------------------
+# Enrichment concurrency & HTTP-client hardening (2026-07-28)
+#
+# The /enrich hot path previously had NO process-global bound on concurrent
+# cascades: every request built its own per-request semaphores AND two fresh
+# httpx.AsyncClient()s with no connection limits, so aggregate fan-in scaled
+# linearly with request count — the OOM driver under the 2026-07-27 AWS flood.
+#
+# _ENRICH_SEMAPHORE caps concurrent in-flight cascades PER WORKER. With N
+# gunicorn workers the effective app-wide ceiling is N x ENRICH_MAX_CONCURRENT.
+# Requests that cannot acquire within ENRICH_QUEUE_TIMEOUT get a fast 429
+# (cheap) instead of piling up in memory. Both are env-tunable (no redeploy).
+#
+# The shared cascade httpx clients (Limits + Timeout, mirroring the batch path
+# at pipeline.py ~L2902) are reused across requests — caps connection memory
+# and kills per-request TLS/pool churn. They are NOT closed per-request.
+ENRICH_MAX_CONCURRENT = int(os.getenv("ENRICH_MAX_CONCURRENT", "16"))
+ENRICH_QUEUE_TIMEOUT = float(os.getenv("ENRICH_QUEUE_TIMEOUT", "5.0"))
+_ENRICH_SEMAPHORE = asyncio.Semaphore(ENRICH_MAX_CONCURRENT)
+
+_ENRICH_HTTP_LIMITS = httpx.Limits(
+    max_keepalive_connections=20,
+    max_connections=100,
+    keepalive_expiry=30.0,
+)
+_ENRICH_HTTP_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
+_shared_blitz_http: Optional[httpx.AsyncClient] = None
+_shared_contacts_http: Optional[httpx.AsyncClient] = None
+
+
+def _get_blitz_http() -> httpx.AsyncClient:
+    """Lazy shared cascade client (one per worker). Do NOT close per-request."""
+    global _shared_blitz_http
+    if _shared_blitz_http is None:
+        _shared_blitz_http = httpx.AsyncClient(
+            limits=_ENRICH_HTTP_LIMITS, timeout=_ENRICH_HTTP_TIMEOUT
+        )
+    return _shared_blitz_http
+
+
+def _get_contacts_http() -> httpx.AsyncClient:
+    """Lazy shared cascade client (one per worker). Do NOT close per-request."""
+    global _shared_contacts_http
+    if _shared_contacts_http is None:
+        _shared_contacts_http = httpx.AsyncClient(
+            limits=_ENRICH_HTTP_LIMITS, timeout=_ENRICH_HTTP_TIMEOUT
+        )
+    return _shared_contacts_http
+
+
+async def _acquire_enrich_slot() -> None:
+    """Acquire a global cascade slot, or fail fast with HTTP 429 if saturated.
+
+    Raises HTTPException(429, Retry-After) on timeout so the client backs off
+    instead of the request piling up in worker memory.
+    """
+    try:
+        await asyncio.wait_for(_ENRICH_SEMAPHORE.acquire(), ENRICH_QUEUE_TIMEOUT)
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=429,
+            detail="Enrichment API at capacity, please retry shortly.",
+            headers={"Retry-After": "3"},
+        )
+
+
+# ---------------------------------------------------------------------------
+# /enrich response cache (2026-07-28)
+#
+# Measured on live traffic: ~60% of /enrich requests are repeat queries for the
+# same domain within 5 minutes. This short-TTL cache serves those instantly,
+# skipping the whole cascade (contacts_db -> blitz -> mailtester -> sync). Cache
+# HITS also bypass the concurrency semaphore entirely (so they never 429 and
+# consume no slot). Net effect at the current rate: ~60% fewer provider calls.
+# Gated by ENRICH_RESPONSE_CACHE (default on); TTL/maxsize env-tunable. Bypassed
+# when debug=True. GET path only (that is 100% of Clay's traffic).
+ENRICH_RESPONSE_CACHE = os.getenv("ENRICH_RESPONSE_CACHE", "true").lower() in ("1", "true", "yes", "on")
+ENRICH_CACHE_TTL = float(os.getenv("ENRICH_CACHE_TTL", "300"))
+ENRICH_CACHE_MAX = int(os.getenv("ENRICH_CACHE_MAX", "10000"))
+_enrich_response_cache: dict[str, tuple[float, Any]] = {}
+
+
+def _enrich_cache_key(req: Any) -> str:
+    """Stable cache key from the request fields that affect the result.
+
+    Domain is scheme/slash-normalized so `http://x.com/` and `x.com` share an
+    entry. Uses getattr defensively so an unexpected request shape can never
+    500 the endpoint (worst case: a cache miss).
+    """
+    dom = (getattr(req, "domain", None) or "").strip().lower()
+    for pref in ("https://", "http://"):
+        if dom.startswith(pref):
+            dom = dom[len(pref):]
+    dom = dom.strip("/")
+    sp = getattr(req, "selected_providers", None) or []
+    sp = ",".join(sorted(sp))
+    titles = getattr(req, "titles", None)
+    if isinstance(titles, (list, tuple)):
+        titles = ",".join(str(t) for t in titles)
+    else:
+        titles = str(titles or "")
+    cascade = getattr(req, "cascade", None)
+    cascade = json.dumps(cascade, sort_keys=True, default=str) if cascade else ""
+    return "|".join((
+        "v1",
+        dom,
+        (getattr(req, "full_name", None) or "").strip().lower(),
+        (getattr(req, "first_name", None) or "").strip().lower(),
+        (getattr(req, "last_name", None) or "").strip().lower(),
+        (getattr(req, "linkedin_url", None) or "").strip(),
+        (getattr(req, "company_linkedin_url", None) or "").strip(),
+        getattr(req, "force_provider", None) or "",
+        sp,
+        str(getattr(req, "max_results", None)),
+        titles,
+        getattr(req, "source", None) or "",
+        cascade,
+    ))
+
+
+def _enrich_cache_get(key: str) -> Optional[Any]:
+    """Return a cached response if present and unexpired, else None."""
+    if not ENRICH_RESPONSE_CACHE:
+        return None
+    entry = _enrich_response_cache.get(key)
+    if entry is None:
+        return None
+    expiry, value = entry
+    if expiry > time.monotonic():
+        return value
+    _enrich_response_cache.pop(key, None)
+    return None
+
+
+def _enrich_cache_set(key: str, value: Any) -> None:
+    """Store a response with a TTL; evict the soonest-expiring entry when full."""
+    if not ENRICH_RESPONSE_CACHE:
+        return
+    if len(_enrich_response_cache) >= ENRICH_CACHE_MAX:
+        try:
+            oldest = min(_enrich_response_cache, key=lambda k: _enrich_response_cache[k][0])
+            _enrich_response_cache.pop(oldest, None)
+        except ValueError:
+            pass
+    _enrich_response_cache[key] = (time.monotonic() + ENRICH_CACHE_TTL, value)
+
+
+# Hit/miss counters for the response cache (per-worker). Mutated via helpers so
+# no `global` declaration is needed; increments are single statements with no
+# await -> safe under concurrency within one worker's event loop. Logged every
+# 100 lookups so all 4 workers aggregate in journald for live hit-rate reading.
+_ENRICH_CACHE_STATS: dict[str, int] = {"hits": 0, "misses": 0}
+
+
+def _enrich_cache_record_hit() -> None:
+    _ENRICH_CACHE_STATS["hits"] += 1
+    _enrich_cache_maybe_log()
+
+
+def _enrich_cache_record_miss() -> None:
+    _ENRICH_CACHE_STATS["misses"] += 1
+    _enrich_cache_maybe_log()
+
+
+def _enrich_cache_maybe_log() -> None:
+    s = _ENRICH_CACHE_STATS
+    lookups = s["hits"] + s["misses"]
+    if lookups > 0 and lookups % 100 == 0:
+        logger.info(
+            "enrich_cache: hits=%d misses=%d hit_rate=%.1f%% size=%d",
+            s["hits"], s["misses"], 100.0 * s["hits"] / lookups,
+            len(_enrich_response_cache),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1275,9 +1460,10 @@ async def enrich_single_domain(
         except json.JSONDecodeError:
             raise HTTPException(status_code=400, detail="Invalid cascade JSON")
 
-    # Clean domain
-    domain = domain.strip().lower()
-    if not domain or "." not in domain:
+    # Normalize domain: strip protocol/www/path/query, reject emails/non-domains.
+    # Prevents deep URLs and emails from reaching providers (Blitz 422, contacts 404).
+    domain = identifier_utils.normalize_domain(domain)
+    if not domain:
         raise HTTPException(status_code=400, detail="Invalid domain format")
 
     logger.info("Enriching single domain: %s (user: %s)", domain, current_user.get("email"))
@@ -1291,8 +1477,9 @@ async def enrich_single_domain(
     domain_semaphore = asyncio.Semaphore(pipeline.DOMAIN_CONCURRENCY)
     email_semaphore = asyncio.Semaphore(pipeline.EMAIL_CONCURRENCY)
 
-    blitz_http = httpx.AsyncClient()
-    contacts_http = httpx.AsyncClient()
+    await _acquire_enrich_slot()
+    blitz_http = _get_blitz_http()
+    contacts_http = _get_contacts_http()
 
     try:
         # Call _enrich_domain directly for single domain
@@ -1309,8 +1496,8 @@ async def enrich_single_domain(
             force_provider=force_provider,
         )
     finally:
-        await blitz_http.aclose()
-        await contacts_http.aclose()
+        # Shared cascade clients are reused across requests — do NOT close here.
+        _ENRICH_SEMAPHORE.release()
 
     # Extract contacts from output rows
     contacts = []
@@ -1356,6 +1543,7 @@ async def enrich_single_domain(
                 "location_city": row.get("dm_location_city", ""),
                 "location_country": row.get("dm_location_country", ""),
                 "icp_tier": row.get("dm_icp_tier", 0),
+                "company_industry": row.get("company_industry", ""),
                 "email_source": _friendly_source(row.get("dm_email_source", "")),
                 "validation_status": _map_validation_status(row.get("mailtester_code", "")),
                 "email_verified": row.get("dm_email_verified", "unknown"),
@@ -1721,8 +1909,8 @@ async def unified_enrich(
     # Validate domain format if provided
     domain = ""
     if req.domain:
-        domain = req.domain.strip().lower()
-        if "." not in domain:
+        domain = identifier_utils.normalize_domain(req.domain)
+        if not domain:
             raise HTTPException(status_code=400, detail="Invalid domain format")
 
     # Resolve full_name from first_name + last_name if provided
@@ -1774,8 +1962,9 @@ async def unified_enrich(
                 mode, current_user.get("email"))
 
     # Create HTTP clients
-    blitz_http = httpx.AsyncClient()
-    contacts_http = httpx.AsyncClient()
+    await _acquire_enrich_slot()
+    blitz_http = _get_blitz_http()
+    contacts_http = _get_contacts_http()
 
     domain_semaphore = asyncio.Semaphore(pipeline.DOMAIN_CONCURRENCY)
     email_semaphore = asyncio.Semaphore(pipeline.EMAIL_CONCURRENCY)
@@ -1968,6 +2157,7 @@ async def unified_enrich(
                         "full_name": row.get("dm_full_name", ""),
                         "last_name": row.get("dm_last_name", ""),
                         "first_name": row.get("dm_first_name", ""),
+                        "company_industry": row.get("company_industry", ""),
                         "email_source": row.get("dm_email_source", ""),
                         "linkedin_url": row.get("dm_linkedin_url", ""),
                         "location_city": row.get("dm_location_city", ""),
@@ -2026,6 +2216,7 @@ async def unified_enrich(
                         "location_city": row.get("dm_location_city", ""),
                         "location_country": row.get("dm_location_country", ""),
                         "icp_tier": row.get("dm_icp_tier", 0),
+                        "company_industry": row.get("company_industry", ""),
                         "email_source": _friendly_source(row.get("dm_email_source", "")),
                         "validation_status": _map_validation_status(row.get("mailtester_code", "")),
                         "email_verified": row.get("dm_email_verified", "unknown"),
@@ -2337,8 +2528,8 @@ async def unified_enrich(
                             logger.debug("BetterEnrich V3 lookup failed: %s", e)
 
     finally:
-        await blitz_http.aclose()
-        await contacts_http.aclose()
+        # Shared cascade clients are reused across requests — do NOT close here.
+        _ENRICH_SEMAPHORE.release()
 
     # Sync to Contacts DB
     sync_result = {"synced": 0, "skipped": 0, "failed": 0}
@@ -2533,7 +2724,20 @@ async def unified_enrich_get(
     )
 
     # Call the POST handler logic (reuse by calling unified_enrich internally)
-    # We'll manually invoke the same logic flow here to avoid duplication
+    # We'll manually invoke the same logic flow here to avoid duplication.
+    # Response cache: repeat queries (same domain/name/mode) within TTL skip the
+    # whole cascade AND the concurrency semaphore (~60% of traffic). Bypassed
+    # for debug. See _enrich_cache_key / _enrich_cache_get / _enrich_cache_set.
+    if ENRICH_RESPONSE_CACHE and not debug:
+        _ckey = _enrich_cache_key(req)
+        _cached = _enrich_cache_get(_ckey)
+        if _cached is not None:
+            _enrich_cache_record_hit()
+            return _cached
+        _enrich_cache_record_miss()
+        _result = await _unified_enrich_logic(req, current_user, debug=debug)
+        _enrich_cache_set(_ckey, _result)
+        return _result
     return await _unified_enrich_logic(req, current_user, debug=debug)
 
 
@@ -2589,8 +2793,8 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
     # Validate domain format if provided
     domain = ""
     if req.domain:
-        domain = req.domain.strip().lower()
-        if "." not in domain:
+        domain = identifier_utils.normalize_domain(req.domain)
+        if not domain:
             raise HTTPException(status_code=400, detail="Invalid domain format")
 
     # Resolve full_name from first_name + last_name if provided
@@ -2613,8 +2817,9 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                 domain, bool(req.linkedin_url), mode, current_user.get("email"))
 
     # Create HTTP clients
-    blitz_http = httpx.AsyncClient()
-    contacts_http = httpx.AsyncClient()
+    await _acquire_enrich_slot()
+    blitz_http = _get_blitz_http()
+    contacts_http = _get_contacts_http()
 
     domain_semaphore = asyncio.Semaphore(pipeline.DOMAIN_CONCURRENCY)
     email_semaphore = asyncio.Semaphore(pipeline.EMAIL_CONCURRENCY)
@@ -3182,8 +3387,8 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
         })
 
     finally:
-        await blitz_http.aclose()
-        await contacts_http.aclose()
+        # Shared cascade clients are reused across requests — do NOT close here.
+        _ENRICH_SEMAPHORE.release()
 
 
 @router.post("/upload")
@@ -3228,6 +3433,16 @@ def _owns_job(job: dict[str, Any], current_user: dict[str, Any]) -> bool:
     return job.get("user_id") == current_user["user_id"]
 
 
+def _job_output_exists(job: dict) -> bool:
+    """Whether the job's result CSV is still on disk. Drives the UI
+    file-available indicator."""
+    p = job.get("output_path") or job.get("partial_output_path")
+    if p and Path(p).exists():
+        return True
+    jid = job.get("job_id")
+    return bool(jid) and (OUTPUT_DIR / f"{jid}.csv").exists()
+
+
 @router.get("/jobs")
 async def list_enrichment_jobs(
     current_user: dict = Depends(auth.get_current_user),
@@ -3235,12 +3450,44 @@ async def list_enrichment_jobs(
     offset: int = Query(0, ge=0),
     status: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None, description="Inclusive lower bound (YYYY-MM-DD) on created_at"),
+    date_to: Optional[str] = Query(None, description="Inclusive upper bound (YYYY-MM-DD) on created_at"),
+    file_ready: bool = Query(False, description="Only return jobs whose result file is on disk (downloadable)"),
+    source: Optional[str] = Query(None, description="Filter by origin: google_maps_chain | csv_upload | restart"),
 ):
-    """List enrichment jobs (paginated, optional status + search filter)."""
+    """List enrichment jobs (paginated, optional status + search + date + file-ready + source filter)."""
     store = job_store.get_store()
     user_id = None if current_user.get("is_admin") else current_user["user_id"]
-    jobs = store.list_jobs(user_id=user_id, job_type="enrichment", limit=limit, offset=offset, status=status, search=search)
-    total = store.count_jobs(user_id=user_id, job_type="enrichment", status=status, search=search)
+
+    if file_ready:
+        # output_exists is a per-job filesystem check (_job_output_exists), not a
+        # DB column, so it can't be a SQL WHERE on list_jobs/count_jobs. Fetch the
+        # full filtered candidate set (bounded by FILE_READY_SCAN_CAP), keep only
+        # jobs whose file is on disk, then paginate the ready list in Python so
+        # the page and the total stay consistent.
+        candidates = store.list_jobs(
+            user_id=user_id, job_type="enrichment", status=status, search=search,
+            date_from=date_from, date_to=date_to, source_type=source,
+            limit=FILE_READY_SCAN_CAP, offset=0,
+        )
+        if len(candidates) >= FILE_READY_SCAN_CAP:
+            logger.info(
+                "file_ready filter reached scan cap (%d); some ready jobs may be uncounted",
+                FILE_READY_SCAN_CAP,
+            )
+        ready = [j for j in candidates if _job_output_exists(j)]
+        total = len(ready)
+        jobs = ready[offset:offset + limit]
+    else:
+        jobs = store.list_jobs(
+            user_id=user_id, job_type="enrichment", limit=limit, offset=offset,
+            status=status, search=search, date_from=date_from, date_to=date_to,
+            source_type=source,
+        )
+        total = store.count_jobs(
+            user_id=user_id, job_type="enrichment", status=status, search=search,
+            date_from=date_from, date_to=date_to, source_type=source,
+        )
 
     # Enhance job display with user-friendly filenames
     for job in jobs:
@@ -3284,6 +3531,10 @@ async def list_enrichment_jobs(
         logger.warning("checkpoint_count augmentation failed: %s", cke)
         for job in jobs:
             job.setdefault("checkpoint_count", 0)
+
+    # File-availability flag for the UI (cheap stat per job).
+    for job in jobs:
+        job["output_exists"] = _job_output_exists(job)
 
     return {"jobs": jobs, "total": total, "limit": limit, "offset": offset}
 
@@ -3339,6 +3590,7 @@ async def start_enrichment_job(
         last_name_col=req.last_name_col,
         cascade_config=cascade_json,
         max_results=req.max_results,
+        source_type="csv_upload",
     )
 
     _job_signals[job_id] = asyncio.Event()
@@ -3970,7 +4222,7 @@ async def _run_job(
                 f"This is always a bug — check logs for 'Row processing failed' warnings."
             )
 
-        store.set_done(job_id, str(output_path))
+        store._mark_done_and_cleanup(job_id, output_path)
         logger.info("Enrichment job %s completed, %d output rows", job_id, len(output_rows))
 
         # Run auto-sync in the background without blocking the API
@@ -4076,7 +4328,7 @@ async def _run_job(
             if partial_size > 0:
                 user_msg += " (Partial results are available for download)"
                 # Mark as done instead of failed so user can download partial results
-                store.set_done(job_id, str(output_path))
+                store._mark_done_and_cleanup(job_id, output_path)
                 logger.warning("Enrichment job %s completed with errors, partial output available: %s", job_id, user_msg)
             else:
                 store.set_failed(job_id, user_msg)
@@ -4307,6 +4559,7 @@ async def restart_enrichment_job(
         store.increment_restart_count(job_id)
         store.create_enrichment_job(
             job_id=new_job_id, user_id=current_user["user_id"], total=total_deduped,
+            source_type="restart",
             filename=original_job['filename'], domain_col=original_job['domain_col'],
             original_filename=original_job.get('original_filename', ''),
             parent_job_id=job_id, name_col=original_job.get('name_col'),
@@ -4355,6 +4608,7 @@ async def restart_enrichment_job(
         domain_col=original_job['domain_col'],
         original_filename=original_job.get('original_filename', ''),
         parent_job_id=job_id,  # Track original job for restart chain
+        source_type="restart",
         name_col=original_job.get('name_col'),
         first_name_col=original_job.get('first_name_col'),
         last_name_col=original_job.get('last_name_col'),
@@ -4507,6 +4761,42 @@ class SearchAndEnrichRequest(BaseModel):
     include_generic_emails: bool = True
 
 
+# Canonical lead-universe buckets accepted by the Find People filter.
+# Kept in sync with the DB classifier core.fn_classify_industry outputs and
+# the frontend #findUniverse dropdown. Invalid values are rejected (422) so a
+# typo or case error surfaces clearly instead of silently returning no leads.
+_VALID_LEAD_UNIVERSES = frozenset({"local_business", "b2b_agency", "saas", "ecom"})
+
+
+class EmployeeSearchRequest(BaseModel):
+    """Request model for direct people search (Flow: Find People)."""
+    seniority: Optional[list[str]] = None
+    function: Optional[list[str]] = None
+    geo_country: Optional[list[str]] = None
+    industry: Optional[list[str]] = None
+    title_keywords: Optional[str] = None
+    name_contains: Optional[str] = None
+    has_email: Optional[bool] = None
+    universe: Optional[str] = None
+    limit: int = 50
+    offset: int = 0
+
+    @field_validator("universe")
+    @classmethod
+    def _normalize_universe(cls, v: Optional[str]) -> Optional[str]:
+        """Normalize case and reject unknown buckets so a typo returns a clear
+        422 instead of a silent empty result. Empty/None means 'all universes'."""
+        if v is None or not v.strip():
+            return None
+        norm = v.strip().lower()
+        if norm not in _VALID_LEAD_UNIVERSES:
+            raise ValueError(
+                "universe must be one of "
+                f"{sorted(_VALID_LEAD_UNIVERSES)} (or omitted for all); got {v!r}"
+            )
+        return norm
+
+
 class LinkedInEnrichRequest(BaseModel):
     """Request model for LinkedIn enrichment (Flow 3)."""
     upload_id: str
@@ -4599,6 +4889,7 @@ async def enrich_by_domains(
         phone_col=req.phone_col,
         company_name_col=req.company_name_col,
         existing_email_col=req.existing_email_col,
+        source_type="csv_upload",
     )
 
     _job_signals[job_id] = asyncio.Event()
@@ -4681,6 +4972,9 @@ class ProviderToggleRequest(BaseModel):
     # behavior — no regression). NOT a cascade provider; ignored by the paid
     # waterfall.
     source: Optional[str] = None
+    # Scraper.tech provenance fix: tag all enriched leads with this universe
+    # (e.g., 'local_business') so write-back carries the origin forward.
+    lead_universe: Optional[str] = None
 
 
 @router.post("/flows/domain-enrich")
@@ -4737,6 +5031,11 @@ async def domain_enrich_with_providers(
 
     rows = df.fillna("").astype(str).to_dict(orient="records")
 
+    # Inject lead_universe tag (for scraper.tech/local-business provenance fix)
+    if hasattr(req, 'lead_universe') and req.lead_universe:
+        for row in rows:
+            row['lead_universe'] = req.lead_universe
+
     # Pre-processing: dedupe by domain column (default ON). Runs BEFORE
     # job creation so total reflects unique rows. deduped_count and the
     # raw skipped values are persisted for auditability.
@@ -4783,6 +5082,7 @@ async def domain_enrich_with_providers(
         max_results=req.max_results,
         selected_providers=req.providers,
         linkedin_url_col=req.linkedin_url_col,
+        source_type="csv_upload",
         phone_col=req.phone_col,
         company_name_col=req.company_name_col,
         existing_email_col=req.existing_email_col,
@@ -4994,7 +5294,7 @@ async def _run_domain_enrich_job(
                 f"This is always a bug — check logs for 'Row processing failed' warnings."
             )
 
-        store.set_done(job_id, str(output_path))
+        store._mark_done_and_cleanup(job_id, output_path)
         logger.info("Domain enrich job %s completed, %d output rows", job_id, len(output_rows))
 
         # Sync results back to Contacts DB (async, non-blocking)
@@ -5100,6 +5400,44 @@ async def search_companies(
             raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 
 
+@router.post("/search/employees")
+async def search_employees(
+    req: EmployeeSearchRequest,
+    current_user: dict = Depends(auth.get_current_user),
+):
+    """
+    Find People: direct people search against the internal contacts DB by
+    role / function / location / industry (index-backed, free — no Blitz cost).
+    Returns matching people with one best email each.
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            result = await contacts_client.search_people(
+                client,
+                seniority=",".join(req.seniority) if req.seniority else None,
+                function=",".join(req.function) if req.function else None,
+                geo_country=",".join(req.geo_country) if req.geo_country else None,
+                industry=",".join(req.industry) if req.industry else None,
+                title_keywords=req.title_keywords,
+                name_contains=req.name_contains,
+                has_email=req.has_email,
+                universe=req.universe,
+                limit=req.limit,
+                offset=req.offset,
+            )
+            data = result or {}
+            return {
+                "total": data.get("total", 0),
+                "limit": req.limit,
+                "offset": req.offset,
+                "people": data.get("people", []),
+                "flow": "people_search",
+            }
+        except Exception as e:
+            logger.error("People search failed: %s", e)
+            raise HTTPException(status_code=500, detail=f"People search failed: {str(e)}")
+
+
 @router.post("/search/companies/enrich")
 async def search_and_enrich(
     req: SearchAndEnrichRequest,
@@ -5179,6 +5517,7 @@ async def search_and_enrich(
         original_filename=f"search_enrich_{job_id[:8]}.csv",
         cascade_config=cascade_json,
         max_results=req.max_decision_makers,
+        source_type="search",
     )
 
     _job_signals[job_id] = asyncio.Event()
@@ -5258,6 +5597,7 @@ async def enrich_by_linkedin(
         total=len(rows),
         filename=str(req.upload_id),
         domain_col=req.linkedin_col,  # Using domain_col to store linkedin_col reference
+        source_type="linkedin",
         original_filename=original_filename,
         name_col=None,
         first_name_col=None,
@@ -5401,7 +5741,7 @@ async def _run_linkedin_job(
                 logger.error("Partial-job contacts drain failed for %s: %s", job_id, drain_err)
             return
 
-        store.set_done(job_id, str(output_path))
+        store._mark_done_and_cleanup(job_id, output_path)
         logger.info("LinkedIn enrichment job %s completed, %d output rows", job_id, len(output_rows))
 
         # Sync results back to Contacts DB (async, non-blocking)
@@ -5440,7 +5780,7 @@ async def _run_linkedin_job(
         else:
             logger.exception("LinkedIn enrichment job %s failed: %s", job_id, e)
             if output_path.exists() and output_path.stat().st_size > 0:
-                store.set_done(job_id, str(output_path))
+                store._mark_done_and_cleanup(job_id, output_path)
                 # Even on partial success, attempt a sync of whatever rows landed.
                 asyncio.create_task(_run_background_sync(job_id, output_path, collector=collector))
             else:
@@ -5536,6 +5876,7 @@ async def enrich_by_linkedin_v2(
         last_name_col=None,
         cascade_config=None,
         max_results=req.max_dms,
+        source_type="linkedin",
     )
 
     _job_signals[job_id] = asyncio.Event()
@@ -5693,7 +6034,7 @@ async def _run_linkedin_v2_job(
                 logger.error("Partial-job contacts drain failed for %s: %s", job_id, drain_err)
             return
 
-        store.set_done(job_id, str(output_path))
+        store._mark_done_and_cleanup(job_id, output_path)
         logger.info(
             "LinkedIn v2 enrichment job %s completed, %d output rows",
             job_id,
@@ -5736,7 +6077,7 @@ async def _run_linkedin_v2_job(
         else:
             logger.exception("LinkedIn v2 enrichment job %s failed: %s", job_id, e)
             if output_path.exists() and output_path.stat().st_size > 0:
-                store.set_done(job_id, str(output_path))
+                store._mark_done_and_cleanup(job_id, output_path)
                 # Even on partial success, attempt a sync of whatever rows landed.
                 asyncio.create_task(_run_background_sync(job_id, output_path, collector=collector))
             else:

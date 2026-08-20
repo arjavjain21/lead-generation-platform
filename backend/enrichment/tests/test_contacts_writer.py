@@ -197,6 +197,63 @@ class TestWriteEnrichmentResultUnit(unittest.TestCase):
             self.assertEqual(status, cw.WriteStatus.NO_DATA)
         asyncio.run(runner())
 
+    def test_classify_industry_buckets(self):
+        """classify_industry mirrors core.fn_classify_industry."""
+        cases = {
+            "software and tech platforms": "saas",
+            "Software & Internet": "saas",
+            "information technology & services": "b2b_agency",
+            "plumber": "local_business",
+            "Dentist": "local_business",
+            "marketing & advertising": "b2b_agency",
+            "Financial Services": "b2b_agency",
+            "retail": "ecom",
+            "apparel & fashion": "ecom",
+            "property and interior design brands": "ecom",
+            "real_estate_property_interiors": "local_business",  # underscore normalize
+            "food & beverages": "",          # ambiguous -> no tag
+            "Consumer Services": "",
+            "": "",
+        }
+        for industry, expected in cases.items():
+            self.assertEqual(
+                cw.classify_industry(industry), expected, f"industry={industry!r}"
+            )
+
+    def _capture_body(self, payload):
+        """Run write_enrichment_result; return the person body sent to _do_upsert."""
+        captured = {}
+
+        async def fake_upsert(client, body, pl, **kw):
+            captured.update(body)
+            return cw.WriteStatus.INSERTED
+
+        async def runner():
+            with patch.object(cw, "_do_upsert", new=fake_upsert):
+                await cw.write_enrichment_result(payload)
+
+        asyncio.run(runner())
+        return captured
+
+    def test_lead_universe_derived_from_industry(self):
+        body = self._capture_body(
+            {"dm_email": "a@b.com", "domain": "b.com",
+             "company_industry": "software and tech platforms"}
+        )
+        self.assertEqual(body.get("lead_universe"), "saas")
+
+    def test_origin_lead_universe_wins_over_industry(self):
+        body = self._capture_body(
+            {"dm_email": "a@b.com", "domain": "b.com",
+             "lead_universe": "local_business",
+             "company_industry": "software and tech platforms"}
+        )
+        self.assertEqual(body.get("lead_universe"), "local_business")
+
+    def test_no_industry_leaves_no_universe_tag(self):
+        body = self._capture_body({"dm_email": "a@b.com", "domain": "b.com"})
+        self.assertNotIn("lead_universe", body)
+
 
 # Import asyncio at module level for the unit tests
 import asyncio  # noqa: E402

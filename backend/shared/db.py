@@ -268,6 +268,14 @@ def init_db() -> None:
             )
     if "dedupe_skipped_domains" not in existing_columns:
         c.execute("ALTER TABLE jobs ADD COLUMN dedupe_skipped_domains TEXT DEFAULT ''")
+    # Source provenance (2026-07-30) — distinguishes how an enrichment job
+    # originated so the UI can label/filter jobs by origin in one click,
+    # disambiguating the overloaded parent_job_id (scraper-chain vs restart):
+    #   'google_maps_chain' — chained from a Google Maps scraper job
+    #   'csv_upload'        — started from a manually-uploaded domains CSV
+    #   'restart'           — resumed/restarted from a prior enrichment job
+    if "source_type" not in existing_columns:
+        c.execute("ALTER TABLE jobs ADD COLUMN source_type TEXT DEFAULT ''")
 
     c.commit()
 

@@ -651,6 +651,17 @@ def _owns_job(job: dict[str, Any], current_user: dict[str, Any]) -> bool:
     return job.get("user_id") == current_user["user_id"]
 
 
+def _job_output_exists(job: dict) -> bool:
+    """Whether the job's result CSV is still on disk (done jobs' output_path,
+    or the {job_id}.csv fallback for abandoned/partial). Drives the UI
+    file-available indicator."""
+    p = job.get("output_path")
+    if p and Path(p).exists():
+        return True
+    jid = job.get("job_id")
+    return bool(jid) and (OUTPUT_DIR / f"{jid}.csv").exists()
+
+
 @router.get("/jobs")
 async def list_scraper_jobs(current_user: dict = Depends(auth.get_current_user)):
     """List scraper jobs for current user (or all for admin)."""
@@ -659,6 +670,8 @@ async def list_scraper_jobs(current_user: dict = Depends(auth.get_current_user))
         jobs = store.list_jobs(job_type="scraper", limit=200)
     else:
         jobs = store.list_jobs(user_id=current_user["user_id"], job_type="scraper", limit=200)
+    for j in jobs:
+        j["output_exists"] = _job_output_exists(j)
     return {"jobs": jobs}
 
 
@@ -887,14 +900,60 @@ async def download_scraper_result(job_id: str, current_user: dict = Depends(auth
     return FileResponse(path=str(output_path), media_type="text/csv", filename=filename)
 
 
+# Size of each virtual download shard (rows). Tunable.
+SHARD_SIZE = 10_000
+
+
+def _db_busy() -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail="The platform database is briefly busy. Please retry in a few seconds.",
+        headers={"Retry-After": "3"},
+    )
+
+
+# Cache for _count_csv_data_rows keyed by (path, size, mtime_ns). While a job is
+# actively writing, size/mtime change every batch so the cache naturally
+# invalidates (re-scan is correct); for a stable/completed file, repeated
+# /shards + /partial-progress calls hit the cache instead of re-scanning the CSV.
+_CSV_ROW_COUNT_CACHE: dict[tuple[str, int, int], int] = {}
+
+
+def _count_csv_data_rows(path: Path) -> int:
+    """Count data RECORDS in a CSV without loading it (minus the header).
+    Uses csv.reader so quoted embedded newlines don't inflate the count.
+    Cached by (path, size, mtime_ns) to avoid re-scanning on repeat calls."""
+    try:
+        st = path.stat()
+    except Exception:
+        return 0
+    key = (str(path), st.st_size, st.st_mtime_ns)
+    cached = _CSV_ROW_COUNT_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        with open(path, newline="", encoding="utf-8") as f:
+            n = max(0, sum(1 for _ in csv.reader(f)) - 1)
+    except Exception:
+        return 0
+    _CSV_ROW_COUNT_CACHE[key] = n
+    if len(_CSV_ROW_COUNT_CACHE) > 1000:  # bound growth across many jobs
+        _CSV_ROW_COUNT_CACHE.clear()
+    return n
+
+
 @router.get("/jobs/{job_id}/partial-download")
 async def partial_download_scraper(job_id: str, current_user: dict = Depends(auth.get_current_user_with_api_key)):
     """
-    Download partial CSV results from a running scraper job.
-    Returns whatever data has been written so far.
+    Download partial CSV results from a running scraper job (no status guard).
+    Returns whatever data has been written so far. The frontend's 'Download
+    partial' button calls this; 404 if nothing has flushed yet.
     """
-    store = job_store.get_store()
-    job_data = store.get_job(job_id)
+    try:
+        store = job_store.get_store()
+        job_data = store.get_job(job_id)
+    except sqlite3.OperationalError:
+        raise _db_busy()
     if not job_data:
         raise HTTPException(status_code=404, detail="Job not found.")
     if job_data.get("job_type") != "scraper":
@@ -913,6 +972,167 @@ async def partial_download_scraper(job_id: str, current_user: dict = Depends(aut
     filename = f"{query_slug}_{total_tasks}_centers_{result_count}_results_INCOMPLETE.csv"
 
     return FileResponse(path=str(output_path), media_type="text/csv", filename=filename)
+
+
+@router.get("/jobs/{job_id}/partial-progress")
+async def scraper_partial_progress(
+    job_id: str,
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """Progress metadata for a scraper job (no status guard — works while running).
+    Powers the frontend 'Download partial (X% complete, ~Y rows)' affordance.
+    Task-based percentage (centers x zooms) is the honest progress signal;
+    rows_on_disk is the live CSV row count. partial_available=false if the file
+    has not flushed yet."""
+    try:
+        store = job_store.get_store()
+        job_data = store.get_job(job_id)
+    except sqlite3.OperationalError:
+        raise _db_busy()
+    if not job_data or job_data.get("job_type") != "scraper":
+        raise HTTPException(status_code=404, detail="Scraper job not found.")
+    if not _owns_job(job_data, current_user):
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+    total_tasks = int(job_data.get("total_tasks", 0) or 0)
+    done_tasks = int(job_data.get("done_tasks", 0) or 0)
+    result_count = int(job_data.get("result_count", 0) or 0)
+    try:
+        checkpoint_count = len(store.get_task_checkpoints(job_id))
+    except Exception:
+        checkpoint_count = 0
+
+    csv_path = OUTPUT_DIR / f"{job_id}.csv"
+    partial_available = csv_path.exists() and csv_path.stat().st_size > 0
+    rows_on_disk = _count_csv_data_rows(csv_path) if partial_available else 0
+    # Cap at 100: done_tasks can exceed total_tasks on resumed/legacy jobs
+    # (done_tasks accumulates while total_tasks is the original full count).
+    pct_complete = round(min(100.0, done_tasks / total_tasks * 100), 1) if total_tasks else 0.0
+
+    return {
+        "job_id": job_id,
+        "status": job_data["status"],
+        "query": job_data.get("query"),
+        "total_tasks": total_tasks,
+        "done_tasks": done_tasks,
+        "checkpoint_count": checkpoint_count,
+        "result_count": result_count,
+        "rows_on_disk": rows_on_disk,
+        "pct_complete": pct_complete,
+        "partial_available": partial_available,
+        "shard_size": SHARD_SIZE,
+    }
+
+
+@router.get("/jobs/{job_id}/shards")
+async def scraper_shards(
+    job_id: str,
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """List virtual 10K-row download shards for a scraper job's live CSV. Works
+    while the job is running — each shard becomes downloadable as its rows land.
+
+    NOTE: the scraper shard basis is rows_on_disk (the live CSV), NOT total_tasks
+    (which is a task count, not a row count — we don't know the final row count
+    until the job completes). Because basis == rows_on_disk, every listed shard
+    is fully available; late shards simply appear as the file grows, so re-fetch
+    /shards to discover them."""
+    try:
+        store = job_store.get_store()
+        job_data = store.get_job(job_id)
+    except sqlite3.OperationalError:
+        raise _db_busy()
+    if not job_data or job_data.get("job_type") != "scraper":
+        raise HTTPException(status_code=404, detail="Scraper job not found.")
+    if not _owns_job(job_data, current_user):
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+    csv_path = OUTPUT_DIR / f"{job_id}.csv"
+    rows_on_disk = _count_csv_data_rows(csv_path) if (csv_path.exists() and csv_path.stat().st_size > 0) else 0
+    total_tasks = int(job_data.get("total_tasks", 0) or 0)
+    num_shards = (rows_on_disk + SHARD_SIZE - 1) // SHARD_SIZE if rows_on_disk else 0
+    shards = []
+    for i in range(num_shards):
+        start = i * SHARD_SIZE
+        end = min(start + SHARD_SIZE, rows_on_disk)
+        ready = max(0, end - start)
+        shards.append({
+            "shard": i,
+            "start_row": start,
+            "end_row": end,
+            "rows_available": ready,
+            "complete": (end - start) > 0 and ready >= (end - start),
+        })
+    return {
+        "job_id": job_id,
+        "shard_size": SHARD_SIZE,
+        "rows_on_disk": rows_on_disk,
+        "total_tasks": total_tasks,
+        "shards": shards,
+    }
+
+
+@router.get("/jobs/{job_id}/shard/{shard}")
+async def scraper_shard_download(
+    job_id: str,
+    shard: int,
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """Stream one 10K-row shard of the live CSV (no status guard — works while
+    the job is still running). Reads the file sequentially so a multi-hundred-MB
+    job is never loaded into memory."""
+    try:
+        store = job_store.get_store()
+        job_data = store.get_job(job_id)
+    except sqlite3.OperationalError:
+        raise _db_busy()
+    if not job_data or job_data.get("job_type") != "scraper":
+        raise HTTPException(status_code=404, detail="Scraper job not found.")
+    if not _owns_job(job_data, current_user):
+        raise HTTPException(status_code=403, detail="Access denied.")
+    if shard < 0:
+        raise HTTPException(status_code=400, detail="Invalid shard index.")
+    csv_path = OUTPUT_DIR / f"{job_id}.csv"
+    if not csv_path.exists() or csv_path.stat().st_size == 0:
+        raise HTTPException(status_code=404, detail="No data written yet.")
+    start = shard * SHARD_SIZE
+
+    def iter_shard():
+        import csv as _csv
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            reader = _csv.reader(f)
+            try:
+                header = next(reader)
+            except StopIteration:
+                return
+            buf = _csv.StringIO()
+            writer = _csv.writer(buf)
+            writer.writerow(header)
+            # skip to the shard's start row
+            for _ in range(start):
+                try:
+                    next(reader)
+                except StopIteration:
+                    break
+            count = 0
+            for row in reader:
+                if count >= SHARD_SIZE:
+                    break
+                writer.writerow(row)
+                count += 1
+                if count % 1000 == 0:
+                    yield buf.getvalue()
+                    buf.seek(0)
+                    buf.truncate(0)
+            if buf.getvalue():
+                yield buf.getvalue()
+
+    query_slug = (str(job_data.get("query", "results")) or "results")[:30].replace(" ", "_").replace("/", "_")
+    return StreamingResponse(
+        iter_shard(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="shard_{shard}_{query_slug}_{job_id[:8]}.csv"'},
+    )
 
 
 @router.post("/jobs/{job_id}/sync-to-contacts")
@@ -1359,6 +1579,28 @@ async def _run_job(
     # job with partial output hits UnboundLocalError and never caches its results.
     result_count = 0
 
+    # Start heartbeat task (updates last_heartbeat every 30s).
+    # Without this, any sibling-worker boot (max-requests recycle or a
+    # WORKER TIMEOUT elsewhere) runs cleanup_stale_jobs() and reaps this live
+    # job as 'abandoned' even though it is running fine in another worker. The
+    # heartbeat lets the heartbeat-aware reaper see the job is still alive.
+    # Mirrors enrichment/routes.py and phone_enrichment/routes.py.
+    store.heartbeat(job_id)  # initial heartbeat so last_heartbeat is non-NULL immediately
+
+    async def heartbeat_loop():
+        try:
+            while True:
+                await asyncio.sleep(30)
+                try:
+                    heartbeat_store = job_store.get_store()
+                    heartbeat_store.heartbeat(job_id)
+                except Exception as hb_err:
+                    logger.warning("Heartbeat failed for %s: %s", job_id, hb_err)
+        except asyncio.CancelledError:
+            pass
+
+    heartbeat_task = asyncio.create_task(heartbeat_loop())
+
     async def on_progress(event: dict[str, Any]) -> None:
         # Get FRESH store instance for this thread
         # This fixes the progress counter bug where background tasks couldn't commit
@@ -1516,6 +1758,9 @@ async def _run_job(
         store.set_failed(job_id, str(e))
 
     finally:
+        # Cancel heartbeat task
+        if 'heartbeat_task' in locals():
+            heartbeat_task.cancel()
         _active_jobs.discard(job_id)
         sig = _job_signals.pop(job_id, None)
         if sig:
@@ -1543,6 +1788,24 @@ async def _run_job_with_tasks(
     store.set_running(job_id)
     seq = [0]
     requests_made = [0]
+
+    # Start heartbeat task (updates last_heartbeat every 30s). See _run_job for
+    # the rationale — prevents sibling-worker boots from reaping this live job.
+    store.heartbeat(job_id)  # initial heartbeat so last_heartbeat is non-NULL immediately
+
+    async def heartbeat_loop():
+        try:
+            while True:
+                await asyncio.sleep(30)
+                try:
+                    heartbeat_store = job_store.get_store()
+                    heartbeat_store.heartbeat(job_id)
+                except Exception as hb_err:
+                    logger.warning("Heartbeat failed for %s: %s", job_id, hb_err)
+        except asyncio.CancelledError:
+            pass
+
+    heartbeat_task = asyncio.create_task(heartbeat_loop())
 
     async def on_progress(event: dict) -> None:
         progress_store = job_store.get_store()
@@ -1680,6 +1943,9 @@ async def _run_job_with_tasks(
         store.set_failed(job_id, str(e))
 
     finally:
+        # Cancel heartbeat task
+        if 'heartbeat_task' in locals():
+            heartbeat_task.cancel()
         _active_jobs.discard(job_id)
         sig = _job_signals.pop(job_id, None)
         if sig:
@@ -1692,7 +1958,11 @@ def cleanup_stale_jobs() -> None:
     This status distinguishes from jobs that failed due to errors (user can retry).
     """
     store = job_store.get_store()
-    stale = store.get_stale_running_jobs()
+    # Heartbeat-aware: a job actively heartbeating (running in another worker)
+    # is NOT reaped — only jobs whose heartbeat is stale (>2 min) get abandoned.
+    # This prevents the max-requests/WORKER-TIMEOUT worker churn from abandoning
+    # live scraper jobs. Mirrors enrichment/phone cleanup behavior.
+    stale = store.get_stale_running_jobs_by_heartbeat()
     for job_id in stale:
         store.set_abandoned(
             job_id,

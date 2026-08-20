@@ -44,7 +44,7 @@ def normalize_domain(value) -> str:
 
     Strips:
       * protocol prefix (http://, https://)
-      * leading "www." (and "ww1.", "ww2." etc. — any leading "w" repeated)
+      * a leading "www." (repeated, so "www.www.acme.com" -> "acme.com")
       * path, query string, and fragment
       * trailing slashes / whitespace
       * surrounding whitespace
@@ -86,13 +86,9 @@ def normalize_domain(value) -> str:
         candidate = host
     if not candidate:
         return ""
-    # Strip leading "www." and any "ww<n>." prefixes from the host.
-    # We loop to handle "ww1.", "ww2.", etc. — the first "w" group.
-    while True:
-        if candidate.startswith("www."):
-            candidate = candidate[4:]
-        else:
-            break
+    # Strip a leading "www." (loop so "www.www.acme.com" -> "acme.com").
+    while candidate.startswith("www."):
+        candidate = candidate[4:]
     # Drop a trailing dot (FQDN notation).
     candidate = candidate.rstrip(".")
     # Must contain a dot — a single token like "localhost" is not a domain

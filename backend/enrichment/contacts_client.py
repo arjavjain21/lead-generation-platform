@@ -297,6 +297,50 @@ async def company_by_domain(
     )
 
 
+async def search_people(
+    client: httpx.AsyncClient,
+    *,
+    seniority: Optional[str] = None,
+    function: Optional[str] = None,
+    geo_country: Optional[str] = None,
+    industry: Optional[str] = None,
+    title_keywords: Optional[str] = None,
+    name_contains: Optional[str] = None,
+    has_email: Optional[bool] = None,
+    universe: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """
+    GET /v1/people/search — direct people search by role / function / location /
+    industry against the internal contacts DB (index-backed, free).
+    Returns {'total','limit','offset','people':[...]}.
+    """
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
+    if seniority:
+        params["seniority"] = seniority
+    if function:
+        params["function"] = function
+    if geo_country:
+        params["geo_country"] = geo_country
+    if industry:
+        params["industry"] = industry
+    if title_keywords:
+        params["title_keywords"] = title_keywords
+    if name_contains:
+        params["name_contains"] = name_contains
+    if has_email is not None:
+        params["has_email"] = "true" if has_email else "false"
+    if universe:
+        params["universe"] = universe
+    return await _get_with_retry(
+        client,
+        f"{_base_url()}/v1/people/search",
+        params,
+        timeout=30.0,
+    )
+
+
 async def company_contacts_enriched(
     client: httpx.AsyncClient, domain: str, limit: int = 5
 ) -> Optional[list[dict[str, Any]]]:
