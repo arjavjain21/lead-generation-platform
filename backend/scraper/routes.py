@@ -49,7 +49,7 @@ _active_jobs: set[str] = set()
 _cancelled_jobs: set[str] = set()
 
 
-def _regions_for_cache(regions: dict) -> dict:
+def _regions_for_cache(regions: "dict | str | None") -> dict:
     """Return a copy of ``regions`` with the ``expected_types`` key removed.
 
     ``expected_types`` is persisted inside the job's regions blob (see
@@ -60,7 +60,22 @@ def _regions_for_cache(regions: dict) -> dict:
     would change, invalidating existing cache entries and breaking the
     fresh-job happy path. Stripping it here keeps the region signature
     byte-identical to a fresh job's signature.
+
+    Accepts the regions as a dict (fresh jobs), a JSON string (the form
+    ``store.get_job()`` returns from the DB), or None. A str/None/undecodable
+    input returns {} so the done-path's cache write can never raise — the
+    2026-07-17 regression (0892d08) passed get_job()'s JSON string straight
+    through and crashed on ``.items()`` for every job for 5 weeks.
     """
+    if regions is None:
+        return {}
+    if isinstance(regions, str):
+        try:
+            regions = json.loads(regions)
+        except (ValueError, TypeError):
+            return {}
+        if not isinstance(regions, dict):
+            return {}
     return {k: v for k, v in regions.items() if k != "expected_types"}
 
 
