@@ -127,17 +127,18 @@ class TestRouteEnrichmentSelectedProviders:
         assert "wizleads" not in providers
 
     def test_selected_providers_none_returns_full_cascade(self):
-        """A5: selected_providers=None (baseline) → all 5 providers in cascade."""
+        """A5: selected_providers=None (baseline) → all 6 providers in cascade."""
         result = pipeline_mod.route_enrichment(
             full_name="Jane Doe",
             domain="acme.com",
             selected_providers=None,
         )
         providers = [s["provider"] for s in result["steps"]]
-        # Full cascade: contacts_db -> blitz -> smartprospect -> wizleads -> better_enrich
+        # Full cascade: contacts_db -> blitz -> getleads -> smartprospect -> wizleads -> better_enrich
         assert providers == [
             "contacts_db",
             "blitz",
+            "getleads",
             "smartprospect",
             "wizleads",
             "better_enrich",

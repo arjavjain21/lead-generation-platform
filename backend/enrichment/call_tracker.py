@@ -59,6 +59,7 @@ _HOSTS: dict[str, str] = {
     "leadsdatabase.cc": "contacts_db",
     "api.wizleads.io": "wizleads",
     "api.prospeo.io": "prospeo",
+    "app.getleads.io": "getleads",
     "validation.hyperke.org": "mailtester",
     "api.scraper.tech": "scraper_tech",
 }
@@ -73,6 +74,7 @@ _PROVIDER_OWN_DOMAINS: dict[str, set[str]] = {
     "contacts_db": {"leadsdatabase.cc", "leadsdatabase.com"},
     "wizleads": {"wizleads.io", "wizleads.com"},
     "prospeo": {"prospeo.io"},
+    "getleads": {"getleads.io"},
     "mailtester": {"hyperke.org", "validation.hyperke.org"},
     "scraper_tech": {"scraper.tech"},
 }

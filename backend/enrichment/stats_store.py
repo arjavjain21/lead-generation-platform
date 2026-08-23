@@ -55,6 +55,16 @@ SOURCE_GROUPS: dict[str, str] = {
     # rows aggregate correctly.
     "wizleads": "wizleads",
     "wizleads_email": "wizleads",
+    # SmartProspect sources — both `smartprospect` (unified /enrich path) and
+    # `smartprospect_email` (List Building flows path) map to the canonical
+    # `smartprospect` provider group so reporting aggregates to one number.
+    "smartprospect": "smartprospect",
+    "smartprospect_email": "smartprospect",
+    # GetLeads sources — both `getleads` (unified /enrich path) and
+    # `getleads_email` (List Building flows path) map to the canonical
+    # `getleads` provider group so reporting aggregates to one number.
+    "getleads": "getleads",
+    "getleads_email": "getleads",
     # BetterEnrich sources
     "better_enrich_company": "better_enrich",
     "better_enrich_person": "better_enrich",

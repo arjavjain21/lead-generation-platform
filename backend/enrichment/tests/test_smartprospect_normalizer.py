@@ -33,12 +33,20 @@ from enrichment import response_normalizer as rn  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# Canonical output keys (every record has exactly these 9 keys).
+# Canonical output keys (every record has exactly these keys).
+#
+# Phase 2 (full capture, 2026-08-14) widened the canonical record shared by
+# ALL providers: the 9 original identity keys plus 11 passthrough firmographic
+# fields (empty strings when the provider doesn't emit them). SmartProspect
+# records never carry a provider raw blob, so no ``_raw_*`` key here.
 # ---------------------------------------------------------------------------
 
 EXPECTED_KEYS = {
     "email", "first_name", "last_name", "full_name",
     "title", "headline", "linkedin_url", "domain", "source",
+    "phone", "city", "country", "company_name", "company_industry",
+    "employee_count", "revenue", "linkedin_connections",
+    "email_last_verified_at", "job_level", "job_function",
 }
 
 

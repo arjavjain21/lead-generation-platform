@@ -145,9 +145,10 @@ Each enrichment source has different cost/quality tradeoffs:
 |-----|------------|----------|---------|
 | **Contacts DB** | 75 RPS | 1st (free) | Domain → company → contacts with emails |
 | **Blitz** | 25 RPS | 2nd | LinkedIn-based enrichment with title cascade |
-| **smartprospect** | 30 RPS | 3rd | Person-email finder, batch up to 10, self-verifying |
-| **WizLeads** | 10 RPS | 4th | Catch-all verified email enrichment |
-| **BetterEnrich** | 10 RPS | 5th | Person email, company email |
+| **GetLeads** | batch 100 (~10k/min) | 3rd | Verified DM emails + bonus phones (batch of 100, unlimited plan); also the from-linkedin fallback in the LinkedIn-only arm (after Blitz) |
+| **smartprospect** | 30 RPS | 4th | Person-email finder, batch up to 10, self-verifying |
+| **WizLeads** | 10 RPS | 5th | Catch-all verified email enrichment |
+| **BetterEnrich** | 10 RPS | 6th | Person email, company email |
 
 > **Prospeo** is implemented in `backend/enrichment/prospeo_client.py` but **disabled end-to-end via a 4-layer belt-and-suspenders**: (1) `ENABLED_PROVIDERS["prospeo"]=False` in `providers.py`; (2) `ENABLE_PROSPEO=false` in `backend/.env`; (3) a hard guard at `pipeline.py` (~L294) that reads `ENABLE_PROSPEO` and skips *before* the global check; (4) `prospeo_client` is imported but **never called** anywhere in the cascade. **To re-enable requires all of:** `ENABLE_PROSPEO=true` + flip the dict to `True` + wire an actual cascade step (currently absent). Full provider lifecycle in the `lead-generation-platform-workflow` skill → `references/providers.md`.
 
@@ -178,7 +179,7 @@ Both accept request-time cascade restrictors (mutually exclusive): `force_provid
 
 **Flow 1:** `POST /api/enrichment/flows/domain-enrich` - Domain CSV → decision makers
 **Flow 2:** `POST /api/enrichment/flows/search` - Company search by criteria
-**Flow 3:** `POST /api/enrichment/flows/linkedin-enrich` - Bulk LinkedIn enrichment
+**Flow 3:** `POST /api/enrichment/flows/linkedin-enrich` - Bulk LinkedIn enrichment (3 steps per URL: Contacts DB → Blitz → GetLeads from-linkedin fallback, with a GetLeads batch pre-pass of 100/chunk)
 
 **Concurrency:** 25 domains, 15 LinkedIn URLs, 5 searches in parallel
 
@@ -206,6 +207,8 @@ Enriches LinkedIn profiles with phone numbers using Blitz Direct Phone API:
 JWT_SECRET=<secret>
 SCRAPER_TECH_KEY=<scraper-tech-key>
 BLITZ_API_KEY=<blitz-key>
+GETLEADS_API_KEY=<getleads-key>
+ENABLE_GETLEADS=true
 SMARTPROSPECT_API_KEY=<smartprospect-key>
 CONTACTS_API_TOKEN=<contacts-token>
 BETTER_ENRICH_API_KEY=<betterenrich-key>

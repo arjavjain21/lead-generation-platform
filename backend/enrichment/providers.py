@@ -18,6 +18,7 @@ ENABLED_PROVIDERS: Final[dict[str, bool]] = {
     "smartprospect": True,   # SmartLead Find Emails API (prospect-api.smartlead.ai), 30 RPS, batch up to 10
     "wizleads": True,
     "better_enrich": True,
+    "getleads": True,   # GetLeads (app.getleads.io), email + decision-makers enrichment
     "prospeo": False,   # ← disable Prospeo (was paid, temporarily disabled)
 }
 
@@ -37,6 +38,9 @@ def is_provider_enabled(provider: str) -> bool:
     # Per-provider env kill-switches (default true unless explicitly disabled)
     if provider == "smartprospect":
         if os.environ.get("ENABLE_SMARTPROSPECT", "true").lower() != "true":
+            return False
+    if provider == "getleads":
+        if os.environ.get("ENABLE_GETLEADS", "true").lower() != "true":
             return False
     return True
 

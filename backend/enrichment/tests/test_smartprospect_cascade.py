@@ -284,15 +284,15 @@ class TestRouteEnrichmentAutoDerivesNames:
         providers = [s["provider"] for s in result["steps"]]
         assert "wizleads" in providers
 
-    def test_full_name_only_produces_all_five_providers_in_correct_order(self):
+    def test_full_name_only_produces_all_six_providers_in_correct_order(self):
         """End-to-end check: enhanced-mode style call produces the full cascade
-        in the documented order."""
+        in the documented order (getleads sits between blitz and smartprospect)."""
         result = pipeline.route_enrichment(
             full_name="Connor Gillivan",
             domain="ecombalance.com",
         )
         providers = [s["provider"] for s in result["steps"]]
-        assert providers == ["contacts_db", "blitz", "smartprospect", "wizleads", "better_enrich"]
+        assert providers == ["contacts_db", "blitz", "getleads", "smartprospect", "wizleads", "better_enrich"]
 
     def test_explicit_first_and_last_are_not_overridden(self):
         """When the caller provides explicit first_name and last_name, the
@@ -604,6 +604,12 @@ class TestValidProvidersAgreement:
         for module in (pipeline, routes, list_builder):
             assert "smartprospect" in module.VALID_PROVIDERS, (
                 f"{module.__name__}.VALID_PROVIDERS missing smartprospect"
+            )
+
+    def test_all_three_valid_provider_sets_contain_getleads(self):
+        for module in (pipeline, routes, list_builder):
+            assert "getleads" in module.VALID_PROVIDERS, (
+                f"{module.__name__}.VALID_PROVIDERS missing getleads"
             )
 
     def test_all_three_valid_provider_sets_are_equal(self):

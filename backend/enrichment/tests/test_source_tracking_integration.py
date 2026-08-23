@@ -305,6 +305,80 @@ class TestSourceTrackingIntegration:
                 # Best-effort cleanup — don't mask the real assertion failures
                 conn.rollback()
 
+    def test_smartprospect_source_tracked_in_jobs_table(self):
+        """SmartProspect source_counts must increment emails_smartprospect on the jobs table.
+
+        Regression guard: SmartProspect was previously missing from the per-provider
+        col_map (and had no column), so its per-job count was silently dropped even
+        though the frontend already reads job.emails_smartprospect. This test pins the
+        full path: source_counts -> col_map -> jobs.emails_smartprospect + enrichment_stats.
+        """
+        from shared.job_store_base import JobStoreBase
+        import hashlib
+
+        conn = db.get_db()
+        test_user_id = f"sp_user_{int(time.time() * 1000)}"
+        test_email = f"{test_user_id}@example.com"
+        password_hash = hashlib.sha256(b"test_password").hexdigest()
+        conn.execute(
+            "INSERT OR IGNORE INTO users (user_id, email, password_hash, created_at) VALUES (?, ?, ?, ?)",
+            (test_user_id, test_email, password_hash, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+
+        job_store = JobStoreBase()
+        job_id = f"sp_job_{int(time.time() * 1000)}"
+        try:
+            job_store.create_job(
+                job_id=job_id,
+                user_id=test_user_id,
+                job_type="enrichment",
+                total=5,
+                filename="test.csv",
+                domain_col="website",
+            )
+
+            # Two events attributing emails to SmartProspect (+ one to blitz for contrast)
+            job_store.append_event(job_id, 1, {
+                "index": 0,
+                "total": 5,
+                "domain": "example.com",
+                "status": "success",
+                "contacts_found": 1,
+                "emails_found": 2,
+                "source_counts": {"smartprospect": 2},
+            })
+            job_store.append_event(job_id, 2, {
+                "index": 1,
+                "total": 5,
+                "domain": "test.com",
+                "status": "success",
+                "contacts_found": 1,
+                "emails_found": 2,
+                "source_counts": {"smartprospect": 1, "blitz": 1},
+            })
+
+            job = job_store.get_job(job_id)
+            # SmartProspect must accumulate across events (2 + 1 = 3)
+            assert job.get("emails_smartprospect", 0) == 3
+            # Blitz still works (regression check on an existing provider)
+            assert job.get("emails_blitz", 0) == 1
+
+            # And the detailed stats table records smartprospect too
+            stats = EnrichmentStatsStore.get_job_stats(job_id)
+            assert stats.get("smartprospect", {}).get("emails", 0) == 3
+        finally:
+            try:
+                conn.execute("DELETE FROM job_events WHERE job_id = ?", (job_id,))
+                conn.execute("DELETE FROM enrichment_stats WHERE job_id = ?", (job_id,))
+                conn.execute("DELETE FROM job_checkpoints WHERE job_id = ?", (job_id,))
+                conn.execute("DELETE FROM job_state WHERE job_id = ?", (job_id,))
+                conn.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
+                conn.execute("DELETE FROM users WHERE user_id = ?", (test_user_id,))
+                conn.commit()
+            except Exception:
+                conn.rollback()
+
     def test_multiple_sources_in_single_event(self):
         """Test that a single event with multiple sources records correctly."""
         job_id = f"multi_source_test_{int(time.time() * 1000)}"

@@ -322,15 +322,28 @@ async def write_enrichment_result(
 
         domain, normalized_domain, website
         company_name, company_linkedin_url, company_phone, company_industry,
-        company_employee_count
+        company_employee_count, company_revenue
         dm_full_name, dm_first_name, dm_last_name, dm_title, dm_linkedin_url,
-        dm_phone, dm_headline
+        dm_phone, dm_headline, dm_location_city, dm_location_country,
+        dm_linkedin_connections, dm_email_last_verified_at
         dm_email, dm_email_source, dm_email_verified
         mailtester_code, mailtester_message
         company_email, company_email_source, company_email_verified,
         company_email_type
         final_email, final_email_level, source_path
         job_id, row_index
+
+    Transport note (verified against the live /v1/persons/upsert
+    ``PersonUpsertRequest`` model, 2026-08-14): only email, domain, the
+    name fields, title, linkedin_url, company_name/company_domain/
+    company_website, email_type, verification_status, phone_number,
+    phone_type, lead_universe and custom_fields are persisted; every other
+    body key (phone, email_verified, email_source, ...) is silently
+    ignored by the server's pydantic model. Firmographic attributes that
+    have no dedicated field (headline, industry, employee count, revenue,
+    city, country, LinkedIn connections, email last-verified-at) are
+    therefore transported via ``custom_fields`` (merged into
+    core.person.custom_fields JSONB by the Contacts DB).
 
     Returns a WriteStatus:
         INSERTED  - new person record created
@@ -422,6 +435,11 @@ async def _write_person_payload(
     phone = (payload.get("dm_phone") or "").strip()
     if phone:
         body["phone"] = phone
+        # phone_number is the field the live PersonUpsertRequest model
+        # actually persists (body["phone"] above is ignored server-side but
+        # kept for backward compat with older readers). Non-E.164 values are
+        # silently skipped by the Contacts DB, so no client-side gate needed.
+        body["phone_number"] = phone
 
     # Company context (we set the company on the person record)
     company_name = (payload.get("company_name") or "").strip()
@@ -471,6 +489,31 @@ async def _write_person_payload(
         lead_universe = classify_industry((payload.get("company_industry") or "").strip())
     if lead_universe:
         body["lead_universe"] = lead_universe
+
+    # Phase 2 (full capture): firmographic attributes with no dedicated
+    # PersonUpsertRequest field travel via custom_fields (merged into
+    # core.person.custom_fields JSONB by the Contacts DB — the only
+    # server-persisted catch-all). Each key only when non-empty so existing
+    # records are never blanked, and never overwrites a caller-supplied
+    # custom_fields entry with an empty value.
+    _FIRMOGRAPHIC_CUSTOM_FIELDS: tuple[tuple[str, str], ...] = (
+        ("headline", "dm_headline"),
+        ("industry", "company_industry"),
+        ("employee_count", "company_employee_count"),
+        ("revenue", "company_revenue"),
+        ("city", "dm_location_city"),
+        ("country", "dm_location_country"),
+        ("linkedin_connections", "dm_linkedin_connections"),
+        ("email_last_verified_at", "dm_email_last_verified_at"),
+    )
+    custom: dict[str, Any] = dict(payload.get("custom_fields") or {})
+    for cf_key, payload_key in _FIRMOGRAPHIC_CUSTOM_FIELDS:
+        raw_value = payload.get(payload_key)
+        value = str(raw_value).strip() if raw_value not in (None, "") else ""
+        if value:
+            custom[cf_key] = value
+    if custom:
+        body["custom_fields"] = custom
 
     # Job lineage (kept compact)
     lineage: dict[str, Any] = {}

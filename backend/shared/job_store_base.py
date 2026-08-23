@@ -236,6 +236,7 @@ class JobStoreBase:
                 col_map = {
                     "contacts_db": "emails_contacts_db",
                     "blitz": "emails_blitz",
+                    "smartprospect": "emails_smartprospect",
                     "better_enrich": "emails_better_enrich",
                     "prospeo": "emails_prospeo",
                     "wizleads": "emails_wizleads",

@@ -603,16 +603,19 @@ class TestRegression(unittest.TestCase):
     """Verify existing contracts are unchanged."""
 
     def test_existing_csv_columns_unchanged(self):
-        """All 49 ENRICHED_COLUMNS still present, in same order."""
-        expected_first_six = [
+        """All pre-Phase-2 ENRICHED_COLUMNS still present, in same order."""
+        # Phase 2 (2026-08-14) inserted company_revenue after
+        # company_employee_count, so the head is now 7 columns.
+        expected_first_seven = [
             "company_linkedin_url",
             "company_name",
             "company_industry",
             "company_employee_count",
+            "company_revenue",
             "dm_first_name",
             "dm_last_name",
         ]
-        self.assertEqual(pipeline_mod.ENRICHED_COLUMNS[:6], expected_first_six)
+        self.assertEqual(pipeline_mod.ENRICHED_COLUMNS[:7], expected_first_seven)
         # Confirm the 6 new fields exist in the schema.
         for field in ("company_name", "company_industry",
                       "company_employee_count", "dm_job_level",

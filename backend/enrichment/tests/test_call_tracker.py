@@ -120,6 +120,16 @@ def test_hook_records_better_enrich(installed: None) -> None:
     assert rows == [("better_enrich", "/api/v1/find-company-email", 403)]
 
 
+def test_hook_records_getleads(installed: None) -> None:
+    """app.getleads.io must resolve to the 'getleads' provider."""
+    asyncio.run(call_tracker._on_response(_make_response("app.getleads.io", "/v1/enrich/from-person", "POST", 200)))
+    with sqlite3.connect(call_tracker.DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT provider, endpoint, method, status FROM provider_call_log"
+        ).fetchall()
+    assert rows == [("getleads", "/v1/enrich/from-person", "POST", 200)]
+
+
 def test_hook_ignores_untracked_host(installed: None) -> None:
     asyncio.run(call_tracker._on_response(_make_response("api.unknown.com", "/foo")))
     with sqlite3.connect(call_tracker.DB_PATH) as conn:
@@ -386,6 +396,20 @@ def test_extract_emails_filters_provider_own_domain() -> None:
 def test_extract_emails_filters_provider_subdomain() -> None:
     body = {"email": "real@customer.com", "meta": "noreply@api.betterenrich.com"}
     emails = call_tracker._extract_emails("better_enrich", body)
+    assert emails == ["real@customer.com"]
+
+
+def test_extract_emails_filters_getleads_own_domain() -> None:
+    """support@getleads.io is GetLeads' own support address — a false positive."""
+    body = {"email": "real@customer.com", "support": "support@getleads.io"}
+    emails = call_tracker._extract_emails("getleads", body)
+    assert emails == ["real@customer.com"]
+
+
+def test_extract_emails_filters_getleads_subdomain() -> None:
+    """app.getleads.io subdomain must also be filtered out."""
+    body = {"email": "real@customer.com", "meta": "noreply@app.getleads.io"}
+    emails = call_tracker._extract_emails("getleads", body)
     assert emails == ["real@customer.com"]
 
 

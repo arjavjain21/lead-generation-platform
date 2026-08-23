@@ -617,16 +617,27 @@ async def mark_email_invalid(
     domain: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """
-    Mark an email as invalid by upserting with empty email field.
+    Mark an email as invalid (``core.email.is_verified = false``).
 
-    This effectively removes the invalid email from Contacts DB while
-    preserving the person record for future updates.
+    Mechanism (verified live 2026-08-23): a NORMAL /v1/persons/upsert with
+    the real email and ``verification_status="invalid"`` maps server-side
+    through ``_map_verification_status`` to a falsy value, which the email
+    upsert writes as ``is_verified = false``.
+
+    The previous implementation sent ``{"email": ""}``, which the server's
+    PersonUpsertRequest validator rejects with HTTP 400 *every time*
+    ("email is required"). The generic exception handler then retried the
+    permanently-invalid request 4 more times — 5 wasted calls per event,
+    ~1,500 events/day under active enrichment (the "upsert-400 leak").
+
+    Non-retryable (400/404/422) responses return None after exactly one
+    call; only 429/5xx retry with backoff.
 
     Args:
         client: Async HTTP client
-        email: The invalid email to clear
-        person_id: Optional person_id for targeted update
-        domain: Optional domain for lookup-based update
+        email: The email to mark invalid (must be non-empty)
+        person_id: Unused by the upsert contract; kept for call-site compat
+        domain: Optional domain context for the upsert
 
     Returns:
         API response on success, None on failure
@@ -634,14 +645,14 @@ async def mark_email_invalid(
     if not email:
         return None
 
-    # Prepare payload with empty email to mark as invalid
-    payload: dict[str, Any] = {"email": ""}
+    # Normal upsert of the real email with a falsy verification status —
+    # this is what flips is_verified to false server-side.
+    payload: dict[str, Any] = {
+        "email": email.strip().lower(),
+        "verification_status": "invalid",
+        "email_type": "work",
+    }
 
-    # If we have person_id, use it for targeted update
-    if person_id:
-        payload["person_id"] = person_id
-
-    # If we have domain, include it for lookup
     if domain:
         payload["domain"] = domain
 
@@ -674,12 +685,24 @@ async def mark_email_invalid(
                 logger.error("Contacts DB upsert returned %d, exhausted retries", resp.status_code)
                 return None
 
+            # Non-retryable status (400/422/other 4xx): permanent — one
+            # call, no retry. Retrying a validation error can never succeed.
+            if 400 <= resp.status_code < 500:
+                logger.warning(
+                    "Cannot mark email invalid (%s): permanent status=%d body=%s",
+                    email, resp.status_code, resp.text[:120],
+                )
+                return None
+
             resp.raise_for_status()
             logger.info("Marked email as invalid in Contacts DB: %s", email)
             return resp.json()
 
         except Exception as exc:
             last_exc = exc
+            # raise_for_status() only fires for 2xx-mapping anomalies here;
+            # network errors remain retryable. Validation 4xx never reaches
+            # this handler (handled above), so no blind retries.
             if attempt < _MAX_RETRIES:
                 delay = _backoff_delay(attempt)
                 logger.warning(
@@ -688,5 +711,5 @@ async def mark_email_invalid(
                 )
                 await asyncio.sleep(delay)
 
-    logger.error("Failed to mark email invalid after retries: %s", email)
+    logger.error("Failed to mark email invalid after retries: %s (last: %s)", email, last_exc)
     return None

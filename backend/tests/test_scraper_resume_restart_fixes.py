@@ -55,6 +55,41 @@ class TestRegionsForCache:
         # Caller's dict still has expected_types (immutability)
         assert "expected_types" in regions
 
+    def test_accepts_json_string_from_get_job(self):
+        """get_job() returns the regions column as a JSON string, not a dict.
+
+        Regression (2026-08-23): the done-path passed that string straight into
+        _regions_for_cache, whose dict comprehension called .items() on it ->
+        AttributeError swallowed by the call site's try/except -> ZERO cache
+        rows written for every scraper job since 2026-07-17 (0892d08).
+        """
+        import json as _json
+
+        from scraper.routes import _regions_for_cache
+
+        regions_str = _json.dumps({
+            "mode": "zips", "country": "us", "states": [], "cities": [],
+            "zips": ["10001", "10002"], "center_ids": [],
+            "expected_types": ["dentist"],
+        })
+        out = _regions_for_cache(regions_str)
+
+        assert isinstance(out, dict)
+        assert "expected_types" not in out
+        assert out["zips"] == ["10001", "10002"]
+
+    def test_invalid_json_string_falls_back_to_empty(self):
+        """Corrupt stored JSON must not raise into the done-path try/except."""
+        from scraper.routes import _regions_for_cache
+
+        out = _regions_for_cache("{not valid json")
+        assert out == {}
+
+    def test_none_regions_returns_empty_dict(self):
+        from scraper.routes import _regions_for_cache
+
+        assert _regions_for_cache(None) == {}
+
 
 # ---------------------------------------------------------------------------
 # Fix 4 + 5: cache identity preserved across fresh/restart/resume

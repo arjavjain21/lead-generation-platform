@@ -123,17 +123,19 @@ def _reaper_db():
         """
         CREATE TABLE jobs (
             job_id TEXT PRIMARY KEY,
+            job_type TEXT DEFAULT 'scraper',
             status TEXT,
             created_at TEXT,
             updated_at TEXT,
             error TEXT,
             last_heartbeat TEXT
         );
-        INSERT INTO jobs (job_id, status, created_at, last_heartbeat) VALUES
-            ('stale-job',  'running', datetime('now','-1 hour'),  datetime('now','-30 minutes')),
-            ('fresh-job',  'running', datetime('now','-1 hour'),  datetime('now')),
-            ('young-job',  'running', datetime('now'),            NULL),
-            ('done-job',   'done',    datetime('now','-1 hour'),  NULL);
+        INSERT INTO jobs (job_id, job_type, status, created_at, last_heartbeat) VALUES
+            ('stale-job',  'scraper', 'running', datetime('now','-1 hour'),  datetime('now','-30 minutes')),
+            ('fresh-job',  'scraper', 'running', datetime('now','-1 hour'),  datetime('now')),
+            ('young-job',  'scraper', 'running', datetime('now'),            NULL),
+            ('other-type', 'enrichment', 'running', datetime('now','-1 hour'), datetime('now','-30 minutes')),
+            ('done-job',   'scraper', 'done',    datetime('now','-1 hour'),  NULL);
         """
     )
     conn.commit()
@@ -160,4 +162,5 @@ def test_cleanup_stale_jobs_uses_heartbeat(_reaper_db):
     assert statuses["stale-job"] == "abandoned", "stale-heartbeat running job must be reaped"
     assert statuses["fresh-job"] == "running", "fresh-heartbeat job must be spared"
     assert statuses["young-job"] == "running", "job younger than 3 min must be spared"
+    assert statuses["other-type"] == "running", "scraper reaper must not touch enrichment jobs"
     assert statuses["done-job"] == "done", "non-running job must be untouched"

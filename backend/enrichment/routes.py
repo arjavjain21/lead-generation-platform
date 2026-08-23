@@ -39,6 +39,7 @@ from . import pipeline
 from . import list_builder
 from . import better_enrich_client
 from . import wizleads_client
+from . import getleads_client
 from . import providers
 from . import identifier_utils
 from . import contacts_writer
@@ -196,7 +197,7 @@ async def _run_contacts_writer_v2(
 
 
 # Valid provider values for force_provider / selected_providers parameter
-VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "smartprospect", "wizleads", "better_enrich"})
+VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "getleads", "smartprospect", "wizleads", "better_enrich"})
 
 
 def _should_skip_provider(
@@ -1269,6 +1270,9 @@ def _friendly_source(source: str) -> str:
         "better_enrich_person": "better_enrich",
         "wizleads": "wizleads",
         "wizleads_email": "wizleads",
+        # SmartProspect — collapse both labels to the canonical UI label
+        "smartprospect": "smartprospect",
+        "smartprospect_email": "smartprospect",
     }
     return source_map.get(source, source or "unknown")
 
@@ -3102,6 +3106,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
             person_name: str,
             person_first_name: str = "",
             person_last_name: str = "",
+            pre_resolved_getleads: Optional[dict] = None,
         ):
             """Find email for a person using the unified routing layer.
 
@@ -3147,6 +3152,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                 job_id=f"api_{current_user.get('id', 'anon')}_{uuid.uuid4().hex[:8]}",
                 row_index=0,
                 emit_logs=True,
+                pre_resolved_getleads=pre_resolved_getleads,
             )
             email = route_result.get("email", "") or ""
             source = route_result.get("source", "not_found") or "not_found"
@@ -3168,6 +3174,54 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
         last_route: dict[str, Any] = {}
         last_route_result: dict[str, Any] = {}
 
+        # Phase 3 (batch coverage): GetLeads pre-pass for the per-DM loop.
+        #
+        # When 2+ decision makers have splittable first+last names and
+        # getleads is not restricted (force_provider / selected_providers),
+        # resolve ALL of them in a single find_emails_batch() call instead of
+        # N single find_email() calls inside the loop below. The domain is
+        # constant per request, so the pre-resolved map is keyed by
+        # (first_name.lower(), last_name.lower()); duplicate names are
+        # last-wins (same person → same expected email). On any failure the
+        # map stays empty and every DM falls back to the normal single-call
+        # cascade — zero behavior change.
+        pre_resolved_by_contact: dict[tuple[str, str], dict[str, Any]] = {}
+        dm_batch_candidates: list[tuple[str, str]] = []
+        for contact in contacts_list[:req.max_results]:
+            _dm_full = contact.get("full_name", "") or ""
+            _dm_first = contact.get("first_name", "") or (_dm_full.split(" ")[0] if _dm_full else "")
+            _dm_last = contact.get("last_name", "") or (
+                " ".join(_dm_full.split(" ")[1:]) if " " in _dm_full else ""
+            )
+            if _dm_first.strip() and _dm_last.strip() and domain:
+                dm_batch_candidates.append((_dm_first.strip(), _dm_last.strip()))
+        if (
+            len(dm_batch_candidates) >= 2
+            and not _should_skip_provider("getleads", req.force_provider, req.selected_providers)
+        ):
+            try:
+                dm_batch_payload = [
+                    {"firstName": first, "lastName": last, "companyDomain": domain}
+                    for first, last in dm_batch_candidates
+                ]
+                dm_batch_results = await getleads_client.find_emails_batch(
+                    blitz_http, dm_batch_payload
+                )
+                for (first, last), result in zip(dm_batch_candidates, dm_batch_results):
+                    if isinstance(result, dict) and result.get("email"):
+                        pre_resolved_by_contact[(first.lower(), last.lower())] = result
+                if dm_batch_results:
+                    logger.info(
+                        "GetLeads domain_only pre-pass for %s: %d/%d pre-resolved",
+                        domain, len(pre_resolved_by_contact), len(dm_batch_candidates),
+                    )
+            except Exception as gl_exc:
+                logger.debug(
+                    "GetLeads domain_only pre-pass failed for %s: %s — per-DM single calls",
+                    domain, gl_exc,
+                )
+                pre_resolved_by_contact = {}
+
         # For each contact, try to find email
         enriched_contacts = []
         for contact in contacts_list[:req.max_results]:
@@ -3176,11 +3230,25 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
             person_first_name = contact.get("first_name", "")
             person_last_name = contact.get("last_name", "")
 
+            # Per-DM GetLeads batch result (None → normal single-call cascade).
+            _dm_pre_gl = None
+            if pre_resolved_by_contact:
+                _dm_key_first = (person_first_name or "").strip() or (
+                    person_name.split(" ")[0] if person_name else ""
+                )
+                _dm_key_last = (person_last_name or "").strip() or (
+                    " ".join(person_name.split(" ")[1:]) if " " in person_name else ""
+                )
+                _dm_pre_gl = pre_resolved_by_contact.get(
+                    (_dm_key_first.lower(), _dm_key_last.lower())
+                )
+
             email, email_src, route_result = await find_email_for_person(
                 person_linkedin,
                 person_name,
                 person_first_name=person_first_name,
                 person_last_name=person_last_name,
+                pre_resolved_getleads=_dm_pre_gl,
             )
             last_route_result = route_result
             if email:
@@ -4388,6 +4456,23 @@ async def restart_enrichment_job(
     Creates a new job using the same CSV file and configuration as the original.
     The original job_id is preserved in the parent_job_id field for tracking.
     """
+    return await _restart_job_core(job_id, current_user, background_tasks=background_tasks)
+
+
+async def _restart_job_core(
+    job_id: str,
+    current_user: dict,
+    background_tasks: Optional[BackgroundTasks] = None,
+    auto: bool = False,
+):
+    """Shared restart logic for the user-facing endpoint and auto-resume.
+
+    Single source of truth for resume semantics (partial CSV carry-over,
+    checkpoint-space dedupe, cascade/provider preservation). The user-facing
+    endpoint is a thin wrapper; the auto-resume worker (shared/auto_resume.py)
+    calls this with ``auto=True`` and no BackgroundTasks (it runs the runner
+    as a bare asyncio task instead).
+    """
     store = job_store.get_store()
     original_job = store.get_job(job_id)
 
@@ -4634,8 +4719,7 @@ async def restart_enrichment_job(
     _active_jobs.add(new_job_id)
 
     # Always use _run_domain_enrich_job for restarts (it now has provider selection support)
-    background_tasks.add_task(
-        _run_domain_enrich_job,
+    runner_kwargs = dict(
         job_id=new_job_id,
         rows=deduped_rows,
         domain_col=original_job['domain_col'],
@@ -4652,7 +4736,15 @@ async def restart_enrichment_job(
         prepend_rows=prepend_rows,
     )
 
-    logger.info("Restarted enrichment job %s as new job %s with providers %s", job_id, new_job_id, selected_providers)
+    if background_tasks is not None:
+        background_tasks.add_task(_run_domain_enrich_job, **runner_kwargs)
+    else:
+        # Auto-resume path: no request scope, run as a bare asyncio task in
+        # this worker (same lifecycle as every other enrichment runner).
+        asyncio.create_task(_run_domain_enrich_job(**runner_kwargs))
+
+    logger.info("Restarted enrichment job %s as new job %s with providers %s (auto=%s)",
+                job_id, new_job_id, selected_providers, auto)
 
     return {
         "job_id": new_job_id,
