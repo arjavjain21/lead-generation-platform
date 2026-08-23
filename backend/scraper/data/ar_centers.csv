@@ -1,0 +1,64 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Buenos Aires,Buenos Aires F.D.,-34.6131500,-58.3772300,metro,1,geonames_ar_2026_2891082,anchor_city,Buenos Aires,ar
+Buenos Aires - East,Buenos Aires F.D.,-34.6131500,-58.0872300,metro_offset,1,derived,offset_ring,Buenos Aires,ar
+Buenos Aires - North,Buenos Aires F.D.,-34.4331500,-58.3772300,metro_offset,1,derived,offset_ring,Buenos Aires,ar
+Buenos Aires - South,Buenos Aires F.D.,-34.7931500,-58.3772300,metro_offset,1,derived,offset_ring,Buenos Aires,ar
+Buenos Aires - West,Buenos Aires F.D.,-34.6131500,-58.6672300,metro_offset,1,derived,offset_ring,Buenos Aires,ar
+Buenos Aires - Northeast,Buenos Aires F.D.,-34.4831500,-58.1672300,metro_offset,1,derived,offset_ring,Buenos Aires,ar
+Buenos Aires - Northwest,Buenos Aires F.D.,-34.4831500,-58.5872300,metro_offset,1,derived,offset_ring,Buenos Aires,ar
+Buenos Aires - Southeast,Buenos Aires F.D.,-34.7431500,-58.1672300,metro_offset,1,derived,offset_ring,Buenos Aires,ar
+Buenos Aires - Southwest,Buenos Aires F.D.,-34.7431500,-58.5872300,metro_offset,1,derived,offset_ring,Buenos Aires,ar
+Córdoba,Cordoba,-31.4064800,-64.1885300,metro,2,geonames_ar_2026_2106734,anchor_city,Córdoba,ar
+Córdoba - East,Cordoba,-31.4064800,-63.8985300,metro_offset,2,derived,offset_ring,Córdoba,ar
+Córdoba - North,Cordoba,-31.2264800,-64.1885300,metro_offset,2,derived,offset_ring,Córdoba,ar
+Córdoba - South,Cordoba,-31.5864800,-64.1885300,metro_offset,2,derived,offset_ring,Córdoba,ar
+Córdoba - West,Cordoba,-31.4064800,-64.4785300,metro_offset,2,derived,offset_ring,Córdoba,ar
+Córdoba - Northeast,Cordoba,-31.2764800,-63.9785300,metro_offset,2,derived,offset_ring,Córdoba,ar
+Córdoba - Northwest,Cordoba,-31.2764800,-64.3985300,metro_offset,2,derived,offset_ring,Córdoba,ar
+Córdoba - Southeast,Cordoba,-31.5364800,-63.9785300,metro_offset,2,derived,offset_ring,Córdoba,ar
+Córdoba - Southwest,Cordoba,-31.5364800,-64.3985300,metro_offset,2,derived,offset_ring,Córdoba,ar
+Rosario,Santa Fe,-32.9468200,-60.6393200,metro,3,geonames_ar_2026_948312,anchor_city,Rosario,ar
+Rosario - East,Santa Fe,-32.9468200,-60.3493200,metro_offset,3,derived,offset_ring,Rosario,ar
+Rosario - North,Santa Fe,-32.7668200,-60.6393200,metro_offset,3,derived,offset_ring,Rosario,ar
+Rosario - South,Santa Fe,-33.1268200,-60.6393200,metro_offset,3,derived,offset_ring,Rosario,ar
+Rosario - West,Santa Fe,-32.9468200,-60.9293200,metro_offset,3,derived,offset_ring,Rosario,ar
+Rosario - Northeast,Santa Fe,-32.8168200,-60.4293200,metro_offset,3,derived,offset_ring,Rosario,ar
+Rosario - Northwest,Santa Fe,-32.8168200,-60.8493200,metro_offset,3,derived,offset_ring,Rosario,ar
+Rosario - Southeast,Santa Fe,-33.0768200,-60.4293200,metro_offset,3,derived,offset_ring,Rosario,ar
+Rosario - Southwest,Santa Fe,-33.0768200,-60.8493200,metro_offset,3,derived,offset_ring,Rosario,ar
+Mar del Plata,Buenos Aires,-38.0004200,-57.5562000,metro,4,geonames_ar_2026_593337,anchor_city,Mar del Plata,ar
+Mar del Plata - East,Buenos Aires,-38.0004200,-57.2662000,metro_offset,4,derived,offset_ring,Mar del Plata,ar
+Mar del Plata - North,Buenos Aires,-37.8204200,-57.5562000,metro_offset,4,derived,offset_ring,Mar del Plata,ar
+Mar del Plata - South,Buenos Aires,-38.1804200,-57.5562000,metro_offset,4,derived,offset_ring,Mar del Plata,ar
+Mar del Plata - West,Buenos Aires,-38.0004200,-57.8462000,metro_offset,4,derived,offset_ring,Mar del Plata,ar
+Mar del Plata - Northeast,Buenos Aires,-37.8704200,-57.3462000,metro_offset,4,derived,offset_ring,Mar del Plata,ar
+Mar del Plata - Northwest,Buenos Aires,-37.8704200,-57.7662000,metro_offset,4,derived,offset_ring,Mar del Plata,ar
+Mar del Plata - Southeast,Buenos Aires,-38.1304200,-57.3462000,metro_offset,4,derived,offset_ring,Mar del Plata,ar
+Mar del Plata - Southwest,Buenos Aires,-38.1304200,-57.7662000,metro_offset,4,derived,offset_ring,Mar del Plata,ar
+San Miguel de Tucumán,Tucuman,-26.8160100,-65.2105100,metro,5,geonames_ar_2026_548866,anchor_city,San Miguel de Tucumán,ar
+San Miguel de Tucumán - East,Tucuman,-26.8160100,-64.9205100,metro_offset,5,derived,offset_ring,San Miguel de Tucumán,ar
+San Miguel de Tucumán - North,Tucuman,-26.6360100,-65.2105100,metro_offset,5,derived,offset_ring,San Miguel de Tucumán,ar
+San Miguel de Tucumán - South,Tucuman,-26.9960100,-65.2105100,metro_offset,5,derived,offset_ring,San Miguel de Tucumán,ar
+San Miguel de Tucumán - West,Tucuman,-26.8160100,-65.5005100,metro_offset,5,derived,offset_ring,San Miguel de Tucumán,ar
+San Miguel de Tucumán - Northeast,Tucuman,-26.6860100,-65.0005100,metro_offset,5,derived,offset_ring,San Miguel de Tucumán,ar
+San Miguel de Tucumán - Northwest,Tucuman,-26.6860100,-65.4205100,metro_offset,5,derived,offset_ring,San Miguel de Tucumán,ar
+San Miguel de Tucumán - Southeast,Tucuman,-26.9460100,-65.0005100,metro_offset,5,derived,offset_ring,San Miguel de Tucumán,ar
+San Miguel de Tucumán - Southwest,Tucuman,-26.9460100,-65.4205100,metro_offset,5,derived,offset_ring,San Miguel de Tucumán,ar
+Salta,Salta,-24.8064500,-65.4199900,metro,6,geonames_ar_2026_520683,anchor_city,Salta,ar
+Salta - East,Salta,-24.8064500,-65.1299900,metro_offset,6,derived,offset_ring,Salta,ar
+Salta - North,Salta,-24.6264500,-65.4199900,metro_offset,6,derived,offset_ring,Salta,ar
+Salta - South,Salta,-24.9864500,-65.4199900,metro_offset,6,derived,offset_ring,Salta,ar
+Salta - West,Salta,-24.8064500,-65.7099900,metro_offset,6,derived,offset_ring,Salta,ar
+Salta - Northeast,Salta,-24.6764500,-65.2099900,metro_offset,6,derived,offset_ring,Salta,ar
+Salta - Northwest,Salta,-24.6764500,-65.6299900,metro_offset,6,derived,offset_ring,Salta,ar
+Salta - Southeast,Salta,-24.9364500,-65.2099900,metro_offset,6,derived,offset_ring,Salta,ar
+Salta - Southwest,Salta,-24.9364500,-65.6299900,metro_offset,6,derived,offset_ring,Salta,ar
+Santa Fe,Santa Fe,-31.6488100,-60.7086800,regional_large,7,geonames_ar_2026_391164,anchor_city,Santa Fe,ar
+Corrientes,Corrientes,-27.4678400,-58.8344000,regional_large,8,geonames_ar_2026_346334,anchor_city,Corrientes,ar
+Posadas,Misiones,-27.3918400,-55.9237900,regional_large,9,geonames_ar_2026_305874,anchor_city,Posadas,ar
+Bahía Blanca,Buenos Aires,-38.7176000,-62.2654500,regional_large,10,geonames_ar_2026_299101,anchor_city,Bahía Blanca,ar
+Merlo,Buenos Aires,-34.6653600,-58.7274400,regional_large,11,geonames_ar_2026_268961,anchor_city,Merlo,ar
+San Salvador de Jujuy,Jujuy,-24.1928000,-65.2934200,regional_large,12,geonames_ar_2026_257970,anchor_city,San Salvador de Jujuy,ar
+Santiago del Estero,Santiago del Estero,-27.8004700,-64.2628500,regional_large,13,geonames_ar_2026_252192,anchor_city,Santiago del Estero,ar
+Neuquén,Neuquen,-38.9507800,-68.0592000,regional_large,14,geonames_ar_2026_231198,anchor_city,Neuquén,ar
+Formosa,Formosa,-26.1848900,-58.1731300,regional_large,15,geonames_ar_2026_222226,anchor_city,Formosa,ar

@@ -1,0 +1,16 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Caracas,Distrito Federal,10.4880100,-66.8791900,metro,1,geonames_ve_2026_3000000,anchor_city,Caracas,ve
+Maracaibo,Zulia,10.6423200,-71.6108900,metro,2,geonames_ve_2026_1752602,anchor_city,Maracaibo,ve
+Valencia,Carabobo,10.1615300,-68.0004400,metro,3,geonames_ve_2026_1619470,anchor_city,Valencia,ve
+Barquisimeto,Lara,10.0647000,-69.3570300,metro,4,geonames_ve_2026_1240714,anchor_city,Barquisimeto,ve
+Ciudad Guayana,Bolívar,8.3512200,-62.6410200,metro,5,geonames_ve_2026_978202,anchor_city,Ciudad Guayana,ve
+Barcelona,Anzoátegui,10.1384000,-64.6876900,metro,6,geonames_ve_2026_815141,anchor_city,Barcelona,ve
+Maturín,Monagas,9.7456900,-63.1832300,metro,7,geonames_ve_2026_647459,anchor_city,Maturín,ve
+Maracay,Aragua,10.2497200,-67.5947500,regional_large,8,geonames_ve_2026_464700,anchor_city,Maracay,ve
+Ciudad Bolívar,Bolívar,8.1236600,-63.5469400,regional_large,9,geonames_ve_2026_412619,anchor_city,Ciudad Bolívar,ve
+Cumaná,Sucre,10.4639000,-64.1785900,regional_large,10,geonames_ve_2026_405626,anchor_city,Cumaná,ve
+Barinas,Barinas,8.6206400,-70.2310500,regional_large,11,geonames_ve_2026_397279,anchor_city,Barinas,ve
+Cabimas,Zulia,10.3990700,-71.4520600,regional_large,12,geonames_ve_2026_351736,anchor_city,Cabimas,ve
+Mérida,Mérida,8.5789900,-71.1692200,regional_large,13,geonames_ve_2026_300000,anchor_city,Mérida,ve
+San Cristóbal,Táchira,7.7659300,-72.2357600,regional_large,14,geonames_ve_2026_289852,anchor_city,San Cristóbal,ve
+Santa Teresa del Tuy,Miranda,10.2329100,-66.6647400,regional_large,15,geonames_ve_2026_278890,anchor_city,Santa Teresa del Tuy,ve

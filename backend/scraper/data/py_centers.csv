@@ -1,0 +1,7 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Asunción,Asuncion,-25.2864600,-57.6470000,metro,1,geonames_py_2026_1482200,anchor_city,Asunción,py
+Ciudad del Este,Alto Paraná Department,-25.5036000,-54.6506700,regional_large,2,geonames_py_2026_301815,anchor_city,Ciudad del Este,py
+Capiatá,Central Department,-25.3552000,-57.4454500,regional_large,3,geonames_py_2026_198553,anchor_city,Capiatá,py
+Limpio,Central Department,-25.1661100,-57.4856200,regional,4,geonames_py_2026_96143,anchor_city,Limpio,py
+Pedro Juan Caballero,Amambay Department,-22.5492500,-55.7387000,regional,5,geonames_py_2026_75109,anchor_city,Pedro Juan Caballero,py
+Encarnación,Itapúa,-27.3317600,-55.8666200,regional,6,geonames_py_2026_74983,anchor_city,Encarnación,py

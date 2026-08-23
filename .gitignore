@@ -47,6 +47,20 @@ backend/scraper/data/*.csv
 !backend/scraper/data/ca_centers.csv
 !backend/scraper/data/ca_centers.csv.backup
 !backend/scraper/data/ca_cities_statscan.csv
+# Allow Latin American country center files (generated from GeoNames cities15000 by generate_country_centers.py)
+!backend/scraper/data/mx_centers.csv
+!backend/scraper/data/br_centers.csv
+!backend/scraper/data/ar_centers.csv
+!backend/scraper/data/co_centers.csv
+!backend/scraper/data/cl_centers.csv
+!backend/scraper/data/pe_centers.csv
+!backend/scraper/data/ve_centers.csv
+!backend/scraper/data/ec_centers.csv
+!backend/scraper/data/bo_centers.csv
+!backend/scraper/data/py_centers.csv
+!backend/scraper/data/uy_centers.csv
+!backend/scraper/data/geonames_cities15000.txt
+!backend/scraper/data/admin1CodesASCII.txt
 # Allow template CSV files for user downloads
 !backend/scraper/data/templates/*.csv
 
