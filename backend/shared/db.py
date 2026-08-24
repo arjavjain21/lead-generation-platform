@@ -290,6 +290,14 @@ def init_db() -> None:
     #   'restart'           — resumed/restarted from a prior enrichment job
     if "source_type" not in existing_columns:
         c.execute("ALTER TABLE jobs ADD COLUMN source_type TEXT DEFAULT ''")
+    # Resume claim marker (2026-08-24) — cross-process mutex for enrichment
+    # auto-resume. The 4-worker fan-out bug (hyperke-saas chain, 4 children in
+    # 5ms) happened because the "already has a child?" check and the child
+    # creation were not atomic. The claim transaction sets this timestamp on
+    # the abandoned parent inside BEGIN IMMEDIATE; only the winner proceeds to
+    # build the resume child. NULL = never claimed.
+    if "resume_claimed_at" not in existing_columns:
+        c.execute("ALTER TABLE jobs ADD COLUMN resume_claimed_at TEXT")
 
     c.commit()
 

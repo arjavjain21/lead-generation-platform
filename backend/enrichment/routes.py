@@ -4459,18 +4459,53 @@ async def restart_enrichment_job(
     return await _restart_job_core(job_id, current_user, background_tasks=background_tasks)
 
 
+def _find_active_descendant(job_id: str) -> Optional[dict]:
+    """Find any RUNNING/QUEUED job in the restart-descendant tree of job_id.
+
+    BFS over parent_job_id links, capped at 10 levels. The old guard checked
+    only DIRECT children with active status; when a direct child had itself
+    died and been resumed (child abandoned, grandchild running), the guard
+    passed and a second restart of the same file was allowed — the parallel-
+    branch bug of the Aug 24 hyperke-saas chain.
+    """
+    conn = db.get_db()
+    frontier = [job_id]
+    seen = {job_id}
+    for _ in range(10):
+        if not frontier:
+            break
+        placeholders = ",".join("?" for _ in frontier)
+        rows = conn.execute(
+            f"""SELECT job_id, status, parent_job_id FROM jobs
+                WHERE parent_job_id IN ({placeholders})
+                  AND status IN ('running', 'queued', 'pending')""",
+            frontier,
+        ).fetchall()
+        if rows:
+            return dict(rows[0])
+        rows = conn.execute(
+            f"""SELECT job_id FROM jobs WHERE parent_job_id IN ({placeholders})""",
+            frontier,
+        ).fetchall()
+        frontier = [r["job_id"] for r in rows if r["job_id"] not in seen]
+        seen.update(frontier)
+    return None
+
+
 async def _restart_job_core(
     job_id: str,
     current_user: dict,
     background_tasks: Optional[BackgroundTasks] = None,
     auto: bool = False,
+    claim_already_won: bool = False,
 ):
     """Shared restart logic for the user-facing endpoint and auto-resume.
 
     Single source of truth for resume semantics (partial CSV carry-over,
     checkpoint-space dedupe, cascade/provider preservation). The user-facing
     endpoint is a thin wrapper; the auto-resume worker (shared/auto_resume.py)
-    calls this with ``auto=True`` and no BackgroundTasks (it runs the runner
+    calls this with ``auto=True``, ``claim_already_won=True`` (it won the
+    atomic claim marker first) and no BackgroundTasks (it runs the runner
     as a bare asyncio task instead).
     """
     store = job_store.get_store()
@@ -4489,16 +4524,16 @@ async def _restart_job_core(
         raise HTTPException(status_code=400,
             detail="Only failed, abandoned, cancelled, or partial jobs can be restarted")
 
-    # Prevent duplicate restarts - check if there's already an active restart
-    active_statuses = ("running", "queued", "pending")
-    existing_restart = store.conn.execute(
-        "SELECT job_id, status FROM jobs WHERE parent_job_id = ? AND status IN (?, ?, ?) LIMIT 1",
-        (job_id, active_statuses[0], active_statuses[1], active_statuses[2])
-    ).fetchone()
+    # Prevent duplicate restarts across the WHOLE descendant tree (see
+    # _find_active_descendant): a running grandchild is as much "in progress"
+    # as a running child. The auto-resume path skips this check only when it
+    # has already won the atomic claim (resume_claimed_at) — the claim txn's
+    # NOT EXISTS child check is the authoritative gate there.
+    existing_restart = None if claim_already_won else _find_active_descendant(job_id)
     if existing_restart:
         raise HTTPException(
             status_code=409,
-            detail=f"A restart for this job is already in progress (job_id: {existing_restart['job_id']}, status: {existing_restart['status']}). Please wait for it to complete or cancel it first."
+            detail=f"A restart of this file is already in progress (job_id: {existing_restart['job_id']}, status: {existing_restart['status']}). Please wait for it to complete or cancel it first."
         )
 
     # Read the original CSV file
@@ -4561,6 +4596,14 @@ async def _restart_job_core(
     # from these rows (no duplicates, no dedup needed).
     prepend_rows: list[dict] = []
     prev_output = OUTPUT_DIR / f"{original_job['job_id']}.csv"
+    if not prev_output.exists():
+        # A previous resume already renamed <id>.csv to <id>_partial.csv — a
+        # SECOND restart of the same parent would otherwise carry 0 rows and
+        # silently drop them from the new job's output (Aug 24 chain: job
+        # 28219beb started empty despite 18K banked rows on its parent).
+        renamed = OUTPUT_DIR / f"{original_job['job_id']}_partial.csv"
+        if renamed.exists():
+            prev_output = renamed
     if prev_output.exists() and prev_output.stat().st_size > 0:
         try:
             import csv as _csv
@@ -4573,7 +4616,10 @@ async def _restart_job_core(
 
     # Preserve the previous partial on disk (renamed) and register it as the
     # original job's downloadable partial (UI 'Download Partial' reads partial_output_path).
-    if prev_output.exists():
+    # Skip the rename when we're already reading the renamed partial (second
+    # restart of the same parent) — renaming onto itself raises on some
+    # platforms and would clobber the file we just read.
+    if prev_output.exists() and prev_output.name.endswith("_partial.csv") is False:
         partial_path = OUTPUT_DIR / f"{original_job['job_id']}_partial.csv"
         prev_output.rename(partial_path)
         try:
@@ -4581,6 +4627,11 @@ async def _restart_job_core(
         except Exception as sper:
             logger.warning("Job %s: set_partial_output_path failed: %s", job_id, sper)
         logger.info("Renamed previous output to %s", partial_path)
+    elif prev_output.exists():
+        try:
+            store.set_partial_output_path(job_id, str(prev_output))
+        except Exception as sper:
+            logger.warning("Job %s: set_partial_output_path failed: %s", job_id, sper)
 
     # Parse cascade configuration from JSON
     cascade = None
@@ -4819,8 +4870,8 @@ def cleanup_stale_jobs() -> None:
     for job_id in stale:
         store.set_abandoned(
             job_id,
-            "Job was abandoned: Server restarted or crashed while processing. "
-            "The job was interrupted before completion. Please retry from the beginning."
+            "Job was interrupted by a server restart. Your results so far are saved — "
+            "use Resume/Restart to continue from where it stopped."
         )
         logger.warning("Marked stale enrichment job %s as abandoned on startup", job_id)
 

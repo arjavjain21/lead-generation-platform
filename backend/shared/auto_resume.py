@@ -68,6 +68,16 @@ SCRAPER_AUTO_RESUME_MAX_ABANDONED_AGE_MINUTES = float(
 
 AUTO_RESUME_ENABLED = os.getenv("AUTO_RESUME_ENABLED", "true").lower() in ("1", "true", "yes")
 
+# Enrichment-specific: max automatic resume attempts per job CHAIN (counted on
+# the root job, mirroring the scraper cap). Per-generation counting resets on
+# every hop (each child starts restart_count=0), which is how the Aug 24
+# hyperke-saas chain laddered to 22 cards: by the time any single job neared a
+# cap, the head of the chain had moved on. Default 2 = "try twice, then leave
+# it for a human" — same contract as the scraper.
+ENRICHMENT_AUTO_RESUME_MAX_RESTARTS = int(
+    os.getenv("ENRICHMENT_AUTO_RESUME_MAX_RESTARTS", "2")
+)
+
 
 def try_claim_abandoned(job_id: str) -> bool:
     """Atomically transition a job from 'running' to 'abandoned' and claim it.
@@ -82,8 +92,8 @@ def try_claim_abandoned(job_id: str) -> bool:
     """
     conn = db.get_db()
     error_text = (
-        "Job was interrupted by a worker restart. Auto-resume will restart "
-        "it from its last checkpoint."
+        "Job was interrupted by a server restart. Your results so far are saved — "
+        "the system will resume it from its last checkpoint."
     )
     cursor = conn.execute(
         """UPDATE jobs
@@ -106,6 +116,9 @@ def get_recently_abandoned_resumable_jobs() -> list[dict[str, Any]]:
       not an ancient job)
     - restart_count below the cap
     - is_resumable flag set on the row
+    - no resume claim already held (resume_claimed_at IS NULL) — a claimed
+      job is being resumed by the claim winner (or its resume failed and it
+      is left for a human; re-claiming would re-fan-out)
     """
     conn = db.get_db()
     rows = conn.execute(
@@ -116,7 +129,8 @@ def get_recently_abandoned_resumable_jobs() -> list[dict[str, Any]]:
              AND is_resumable=1
              AND restart_count < ?
              AND last_heartbeat IS NOT NULL
-             AND datetime(last_heartbeat) >= datetime('now', ?)""",
+             AND datetime(last_heartbeat) >= datetime('now', ?)
+             AND (resume_claimed_at IS NULL OR resume_claimed_at = '')""",
         (AUTO_RESUME_MAX_RESTARTS, f"-{int(AUTO_RESUME_MAX_STALE_AGE_HOURS)} hours"),
     ).fetchall()
     return [dict(r) for r in rows]
@@ -157,16 +171,112 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def claim_enrichment_resume_job(job_id: str) -> bool:
+    """Atomically claim the right to resume an abandoned ENRICHMENT job.
+
+    Port of the scraper claim (``claim_scraper_resume_job``, 5b0842a) to the
+    enrichment flow. The enrichment resume child is built by
+    ``_restart_job_core`` (CSV read, dedupe, runner spawn — too heavy to run
+    inside a transaction), so instead of inserting the child here, this txn
+    stamps a claim marker on the parent: eligibility re-check + chain-root
+    attempt bump + ``resume_claimed_at`` stamp, all inside ONE
+    ``BEGIN IMMEDIATE``. Concurrently-booting workers block on the reserved
+    lock; after commit they re-read the row, see the marker, and bail.
+
+    Why the marker is durable (not just in-memory): the 4 workers are separate
+    processes, and the claim must also survive a crash between claim and child
+    creation — a claimed-but-childless job is simply not auto-resumed again
+    (the human-facing Restart button still works; it clears nothing).
+
+    The attempt budget lives on the chain ROOT (walk parent_job_id links under
+    the txn), because each generation's child starts restart_count=0 — the
+    per-row cap the previous code used resets every hop.
+
+    Returns True if THIS caller won the claim.
+    """
+    import sqlite3 as _sqlite3
+
+    conn = _sqlite3.connect(str(db.DB_PATH), timeout=30.0, isolation_level=None)
+    conn.row_factory = _sqlite3.Row
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            parent = conn.execute(
+                """SELECT job_id, user_id, parent_job_id, restart_count
+                   FROM jobs
+                   WHERE job_id=? AND job_type='enrichment'
+                     AND status='abandoned'
+                     AND is_resumable=1
+                     AND resume_claimed_at IS NULL
+                     AND NOT EXISTS (SELECT 1 FROM jobs c WHERE c.parent_job_id = jobs.job_id)""",
+                (job_id,),
+            ).fetchone()
+            if not parent:
+                conn.execute("ROLLBACK")
+                return False
+
+            # Walk to the chain root under the write lock; the budget is
+            # root-counted (per-generation counts reset every hop).
+            root = parent
+            hops = 0
+            while root["parent_job_id"] and hops < 10:
+                row = conn.execute(
+                    "SELECT job_id, parent_job_id, restart_count FROM jobs WHERE job_id=?",
+                    (root["parent_job_id"],),
+                ).fetchone()
+                if not row:
+                    break
+                root = row
+                hops += 1
+            if int(root["restart_count"] or 0) >= ENRICHMENT_AUTO_RESUME_MAX_RESTARTS:
+                conn.execute("ROLLBACK")
+                logger.info(
+                    "Enrichment auto-resume: chain of %s at attempt cap (%d) — leaving abandoned",
+                    job_id[:8], root["restart_count"],
+                )
+                return False
+
+            conn.execute(
+                "UPDATE jobs SET restart_count = restart_count + 1, updated_at=? WHERE job_id=?",
+                (_utc_now_iso(), root["job_id"]),
+            )
+            conn.execute(
+                "UPDATE jobs SET resume_claimed_at=?, updated_at=? WHERE job_id=?",
+                (_utc_now_iso(), _utc_now_iso(), job_id),
+            )
+            conn.execute("COMMIT")
+            logger.info(
+                "Enrichment auto-resume: %s claimed (chain attempt %d)",
+                job_id[:8], int(root["restart_count"] or 0) + 1,
+            )
+            return True
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+    finally:
+        conn.close()
+
+
 async def resume_one(job_id: str, user_id: str) -> bool:
     """Resume a single abandoned ENRICHMENT job through the restart code path.
 
-    Reuses ``enrichment.routes._restart_job_core``'s logic by invoking the
-    function directly with a synthetic admin identity. This keeps a single
-    source of truth for resume semantics (partial CSV carry-over, checkpoint
-    space dedupe, cascade preservation).
+    First wins the atomic claim (``claim_enrichment_resume_job``) so only one
+    of the concurrently-booting workers builds the resume child; the losers
+    bail before touching the restart machinery. Then reuses
+    ``enrichment.routes._restart_job_core``'s logic by invoking the function
+    directly with a synthetic admin identity. This keeps a single source of
+    truth for resume semantics (partial CSV carry-over, checkpoint space
+    dedupe, cascade preservation).
 
     Returns True if a new job was created.
     """
+    if not claim_enrichment_resume_job(job_id):
+        logger.info("Enrichment auto-resume: lost claim on %s, skipping", job_id[:8])
+        return False
+
     # Import inside the function: enrichment.routes imports shared.db and is
     # heavy; also avoids circular imports at module load.
     from enrichment import routes as enrichment_routes
@@ -175,7 +285,7 @@ async def resume_one(job_id: str, user_id: str) -> bool:
 
     try:
         result = await enrichment_routes._restart_job_core(
-            job_id, current_user=synthetic_user, auto=True
+            job_id, current_user=synthetic_user, auto=True, claim_already_won=True
         )
         logger.info(
             "Auto-resume: job %s resumed as %s (total=%s)",
@@ -386,13 +496,11 @@ async def maybe_auto_resume_abandoned_jobs() -> None:
         logger.info("Auto-resume: %d candidate job(s) after boot", len(candidates))
         for job in candidates:
             job_id = job["job_id"]
-            # Only resume jobs nobody has resumed yet. ANY child (regardless
-            # of its status) means a restart already happened — if the child
-            # is done the work is complete, if running/queued it is in flight,
-            # and if the child itself later dies, IT becomes the abandoned
-            # head that gets auto-resumed. This prevents re-running chains
-            # that already completed (e.g. the Aug 19-20 incident chain where
-            # a manual restart finished the file).
+            # Cheap fast-path: ANY existing child (regardless of its status)
+            # means a restart already happened. The authoritative gate is the
+            # atomic claim inside resume_one (BEGIN IMMEDIATE + resume_claimed_at
+            # marker + root-counted attempt cap) — the 4-worker fan-out of
+            # Aug 24 slipped through this SELECT-only check alone.
             if _has_child_job(job_id):
                 logger.info("Auto-resume: job %s already has a restart child, skipping", job_id)
                 continue

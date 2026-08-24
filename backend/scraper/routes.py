@@ -2092,7 +2092,7 @@ def cleanup_stale_jobs() -> None:
     for job_id in stale:
         store.set_abandoned(
             job_id,
-            "Job was abandoned: Server restarted or crashed while processing. "
-            "The job was interrupted before completion. Please retry from the beginning."
+            "Job was interrupted by a server restart. Your results so far are saved — "
+            "use Resume/Restart to continue from where it stopped."
         )
         logger.warning("Marked stale scraper job %s as abandoned", job_id)
