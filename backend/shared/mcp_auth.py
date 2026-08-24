@@ -37,6 +37,7 @@ from __future__ import annotations
 
 from typing import Any, Awaitable, Callable
 
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -67,7 +68,12 @@ class MCPAuthMiddleware(BaseHTTPMiddleware):
         if not request.url.path.startswith("/mcp"):
             return await call_next(request)
 
-        user = self._resolve_user(request)
+        # Blocking SQLite auth must never run on the event loop (RCA
+        # 2026-08-24): under write contention it stalled MCP requests for
+        # the full busy_timeout=30s. The threadpool is the same warm pool
+        # the sync FastAPI auth dependencies already use, so per-thread
+        # SQLite connections are reused rather than re-opened.
+        user = await run_in_threadpool(self._resolve_user, request)
         if user is not None:
             request.scope["user"] = user
             return await call_next(request)
