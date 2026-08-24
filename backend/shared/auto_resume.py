@@ -78,6 +78,12 @@ ENRICHMENT_AUTO_RESUME_MAX_RESTARTS = int(
     os.getenv("ENRICHMENT_AUTO_RESUME_MAX_RESTARTS", "2")
 )
 
+# A resume claim older than this (with still no child job) is treated as
+# abandoned by a crashed worker: the job becomes claimable again. The real
+# claim->child gap is seconds (a CSV read + one INSERT), so 30 minutes is
+# conservatively huge — no legitimate claimant can still be mid-flight.
+RESUME_CLAIM_STALE_MINUTES = float(os.getenv("RESUME_CLAIM_STALE_MINUTES", "30"))
+
 
 def try_claim_abandoned(job_id: str) -> bool:
     """Atomically transition a job from 'running' to 'abandoned' and claim it.
@@ -114,11 +120,31 @@ def get_recently_abandoned_resumable_jobs() -> list[dict[str, Any]]:
     - job_type='enrichment' and status='abandoned'
     - heartbeat went stale within AUTO_RESUME_MAX_STALE_AGE_HOURS (fresh death,
       not an ancient job)
-    - restart_count below the cap
+    - restart_count below the per-row cap (see note below)
     - is_resumable flag set on the row
-    - no resume claim already held (resume_claimed_at IS NULL) — a claimed
-      job is being resumed by the claim winner (or its resume failed and it
-      is left for a human; re-claiming would re-fan-out)
+    - no resume claim already held, OR a STALE claim (older than
+      RESUME_CLAIM_STALE_MINUTES) — see the claim-recovery note below
+    - no child job (a child means a restart already happened; checked again
+      authoritatively inside the claim transaction)
+
+    restart_count filter note (deliberate): this ROW-level filter uses the
+    loose per-row AUTO_RESUME_MAX_RESTARTS (10), NOT the chain budget
+    ENRICHMENT_AUTO_RESUME_MAX_RESTARTS (2). The authoritative cap is the
+    claim's ROOT-counted check — this pre-filter cannot cheaply know the
+    root (it would need a parent-walk per candidate on every boot). A chain
+    at its cap therefore shows up as a candidate and is rejected by the claim
+    (one log line, no side effects). That is far cheaper than walking every
+    candidate's ancestry on every boot, and only at-cap chains pay the cost.
+
+    Claim-recovery note: a worker crash between the claim COMMIT and the
+    child INSERT used to leave the job permanently un-auto-resumable (nothing
+    ever cleared resume_claimed_at). A claim older than
+    RESUME_CLAIM_STALE_MINUTES with still no child is treated as unclaimed.
+    Safe because the claim's BEGIN IMMEDIATE re-check also enforces
+    "NOT EXISTS child": if the original winner is somehow still alive and
+    about to insert the child, it commits first and the re-check bails. The
+    window (30 min) is orders of magnitude longer than the claim->child gap
+    (a CSV read + one INSERT, seconds at most).
     """
     conn = db.get_db()
     rows = conn.execute(
@@ -130,8 +156,17 @@ def get_recently_abandoned_resumable_jobs() -> list[dict[str, Any]]:
              AND restart_count < ?
              AND last_heartbeat IS NOT NULL
              AND datetime(last_heartbeat) >= datetime('now', ?)
-             AND (resume_claimed_at IS NULL OR resume_claimed_at = '')""",
-        (AUTO_RESUME_MAX_RESTARTS, f"-{int(AUTO_RESUME_MAX_STALE_AGE_HOURS)} hours"),
+             AND NOT EXISTS (SELECT 1 FROM jobs c WHERE c.parent_job_id = jobs.job_id)
+             AND (
+               resume_claimed_at IS NULL
+               OR resume_claimed_at = ''
+               OR datetime(resume_claimed_at) < datetime('now', ?)
+             )""",
+        (
+            AUTO_RESUME_MAX_RESTARTS,
+            f"-{int(AUTO_RESUME_MAX_STALE_AGE_HOURS)} hours",
+            f"-{RESUME_CLAIM_STALE_MINUTES} minutes",
+        ),
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -184,9 +219,15 @@ def claim_enrichment_resume_job(job_id: str) -> bool:
     lock; after commit they re-read the row, see the marker, and bail.
 
     Why the marker is durable (not just in-memory): the 4 workers are separate
-    processes, and the claim must also survive a crash between claim and child
-    creation — a claimed-but-childless job is simply not auto-resumed again
-    (the human-facing Restart button still works; it clears nothing).
+    processes, and the claim must survive a worker crash between claim and
+    child creation. Recovery: a claim is only authoritative for
+    RESUME_CLAIM_STALE_MINUTES (30 min) — after that a childless claim is
+    treated as unclaimed and the job can be claimed again (the crash-orphan
+    case would otherwise leave the job permanently un-auto-resumable). This
+    is safe under BEGIN IMMEDIATE: the eligibility re-check also requires
+    "no child", so a winner that somehow is still mid-flight commits its
+    child first and the re-claim bails. The marker is also cleared by
+    ``_restart_job_core`` once the child row exists.
 
     The attempt budget lives on the chain ROOT (walk parent_job_id links under
     the txn), because each generation's child starts restart_count=0 — the
@@ -207,9 +248,13 @@ def claim_enrichment_resume_job(job_id: str) -> bool:
                    WHERE job_id=? AND job_type='enrichment'
                      AND status='abandoned'
                      AND is_resumable=1
-                     AND resume_claimed_at IS NULL
+                     AND (
+                       resume_claimed_at IS NULL
+                       OR resume_claimed_at = ''
+                       OR datetime(resume_claimed_at) < datetime('now', ?)
+                     )
                      AND NOT EXISTS (SELECT 1 FROM jobs c WHERE c.parent_job_id = jobs.job_id)""",
-                (job_id,),
+                (job_id, f"-{RESUME_CLAIM_STALE_MINUTES} minutes"),
             ).fetchone()
             if not parent:
                 conn.execute("ROLLBACK")

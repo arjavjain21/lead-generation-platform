@@ -3637,17 +3637,6 @@ async def run_pipeline(
                 source_counts[provider] = source_counts.get(provider, 0) + 1
 
         emails_found = sum(1 for r in result_rows if r.get("dm_email"))
-        await on_progress(
-            {
-                "index": idx,
-                "total": total,
-                "domain": domain,
-                "status": result_rows[0].get("row_status", STATUS_ERROR),
-                "contacts_found": len(result_rows),
-                "emails_found": emails_found,
-                "source_counts": source_counts,
-            }
-        )
 
         # Build and collect the audit record for this input row.
         # Use the first result row's diagnostic fields; if multi-row (legacy
@@ -3693,6 +3682,25 @@ async def run_pipeline(
                 for r in result_rows:
                     csv_writer.writerow(r)
                 csv_file.flush()
+
+        # Progress LAST, strictly AFTER the incremental CSV write above.
+        # on_progress is where the caller writes the index + domain
+        # checkpoints (routes._run_job's hook); firing it before the row is
+        # flushed meant a crash in the gap left a domain checkpointed as
+        # done while its row was never on disk — silently missing from the
+        # final output (H1). Mirrors list_builder's flush -> fsync ->
+        # checkpoint ordering.
+        await on_progress(
+            {
+                "index": idx,
+                "total": total,
+                "domain": domain,
+                "status": result_rows[0].get("row_status", STATUS_ERROR),
+                "contacts_found": len(result_rows),
+                "emails_found": emails_found,
+                "source_counts": source_counts,
+            }
+        )
 
         return result_rows
 

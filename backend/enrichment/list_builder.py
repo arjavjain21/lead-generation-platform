@@ -1254,6 +1254,7 @@ async def run_domain_enrichment(
     existing_email_col: Optional[str] = None,
     prepend_rows: Optional[list[dict]] = None,  # resume: carried-over partial rows (written first, NOT checkpointed)
     return_partial_on_cancel: bool = False,  # Flow 1 runner: cancel returns partial (no raise) so the writer closes cleanly
+    dedupe_on: bool = True,  # job's dedupe_by_domain flag: gates domain-keyed checkpoint WRITES
 ) -> list[OutputRow]:
     """
     Main entry point for Flow 1: Domain → Generic Emails + Decision Makers
@@ -1610,11 +1611,17 @@ async def run_domain_enrichment(
                     all_output.extend(result)
                     batch_new.extend(result)
                     done_indices.append(batch_start + i)
-                    _dom = identifier_utils.domain_checkpoint_key(
-                        batch_rows[i].get(domain_col, ""), normalize_domains
-                    )
-                    if _dom:
-                        done_domains.append(_dom)
+                    # Domain checkpoints are only meaningful when domains are
+                    # UNIQUE per row (dedupe on). With dedupe off, domain twins
+                    # must each be processed — checkpointing twin #1's domain
+                    # would make a later resume silently drop twin #2 (C1).
+                    # Index checkpoints still cover every row either way.
+                    if dedupe_on:
+                        _dom = identifier_utils.domain_checkpoint_key(
+                            batch_rows[i].get(domain_col, ""), normalize_domains
+                        )
+                        if _dom:
+                            done_domains.append(_dom)
 
             # Durable snapshot for this batch (incremental persistence). Gated by
             # write_incremental so legacy callers (write_incremental=False) are unchanged.

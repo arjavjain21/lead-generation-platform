@@ -269,10 +269,33 @@ class JobStoreBase:
         return dict(row) if row else None
 
     def delete_job(self, job_id: str) -> bool:
-        """Delete a job by ID. Returns True if deleted, False if not found."""
+        """Delete a job by ID. Returns True if deleted, False if not found.
+
+        Also removes the job's checkpoints (index + domain-keyed). Without
+        this, deleting a chain member left orphan rows in both checkpoint
+        tables; for ``job_checkpoints_domains`` that breaks the resume chain
+        union — the deleted job's domains stayed "done" forever, but its
+        partial CSV (the rows behind those domains) went away with the job,
+        so a resume would skip domains whose output no longer exists.
+        Best-effort: a missing table is tolerated (same as
+        ``cleanup_checkpoints``), and a checkpoint failure never blocks the
+        job deletion itself.
+        """
         cursor = self.conn.execute("DELETE FROM jobs WHERE job_id=?", (job_id,))
         self.conn.commit()
-        return cursor.rowcount > 0
+        deleted = cursor.rowcount > 0
+        if not deleted:
+            return False
+        for table in ("job_checkpoints", "job_checkpoints_domains"):
+            try:
+                self.conn.execute(f"DELETE FROM {table} WHERE job_id=?", (job_id,))
+                self.conn.commit()
+            except sqlite3.OperationalError:
+                pass  # table absent on this DB — nothing to clean
+            except Exception as del_err:
+                logger.warning("delete_job(%s): %s cleanup failed: %s",
+                               job_id, table, del_err)
+        return True
 
     @staticmethod
     def _date_range_conditions(date_from: Optional[str], date_to: Optional[str]):
