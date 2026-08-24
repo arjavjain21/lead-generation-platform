@@ -16,7 +16,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    # asyncio.run() instead of the deprecated get_event_loop(): other test
+    # modules (e.g. test_domain_checkpoints) close the thread's loop via
+    # asyncio.run(), after which get_event_loop() raises — order pollution.
+    return asyncio.run(coro)
 
 
 class TestInputColumnsPreserved:
