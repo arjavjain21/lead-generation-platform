@@ -187,77 +187,158 @@ async def resume_one(job_id: str, user_id: str) -> bool:
         return False
 
 
-def _claim_scraper_resume(job_id: str) -> bool:
-    """Serialized claim for scraper auto-resume — exactly one worker wins.
+def claim_scraper_resume_job(job_id: str) -> "str | None":
+    """Atomically create the resume child for an abandoned scraper job.
 
-    Uses a DEDICATED connection in BEGIN IMMEDIATE mode. Unlike the previous
-    thread-local CAS (which read a pre-child snapshot and let all concurrent
-    claimants' UPDATEs match), a write transaction takes SQLite's reserved
-    lock: concurrent claimants BLOCK on busy_timeout until we commit, then
-    re-read fresh state — where the winner's child exists and the losers'
-    UPDATE matches 0 rows. This is the textbook fix for the 2026-08-24
-    duplicate-resume race (3 children for one parent within the same second).
+    Everything — the eligibility re-check, the chain attempt-count bump on
+    the ROOT job, and the child row INSERT — happens inside ONE
+    ``BEGIN IMMEDIATE`` transaction on a dedicated connection. Concurrent
+    claimants (4 workers' guard loops tick in the same second) block on the
+    reserved lock; after commit they re-read, see the child, and bail. This
+    closes both races the first two deploy iterations exposed:
+      1. SELECT/UPDATE CAS on the thread-local conn read stale snapshots
+         (no cross-process serialization) → N winners.
+      2. Serializing only the counter bump still left the child INSERT
+         outside the txn → rivals claimed in the gap after COMMIT.
+
+    The child is created fully-formed (status='queued', regions copied
+    verbatim, total/done counters from the chain root, result_count from the
+    carried-over CSV). The parent's partial CSV is copied BEFORE the txn
+    (deterministic child path); on any bail the copy is unlinked. The
+    dispatcher claims the child within seconds and the standard
+    checkpoint-aware runner does the work — exactly like a user-clicked
+    resume, minus the HTTP layer.
+
+    Returns the new child job_id, or None when this claimant lost / the job
+    is ineligible (already has a child, chain at cap, not abandoned).
     """
     import sqlite3 as _sqlite3
+    import uuid as _uuid
+    from pathlib import Path as _Path
+    from scraper.dispatch import safe_copy_csv
+
+    output_dir = _Path(__file__).resolve().parent.parent / "data" / "outputs"
 
     conn = _sqlite3.connect(str(db.DB_PATH), timeout=30.0, isolation_level=None)
     conn.row_factory = _sqlite3.Row
+    new_child_id = str(_uuid.uuid4())
+    copied_csv = output_dir / f"{new_child_id}.csv"
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            """SELECT restart_count FROM jobs
-               WHERE job_id=? AND status='abandoned'
-               AND restart_count < ?
-               AND NOT EXISTS (SELECT 1 FROM jobs c WHERE c.parent_job_id = jobs.job_id)""",
-            (job_id, SCRAPER_AUTO_RESUME_MAX_RESTARTS),
+        parent = conn.execute(
+            """SELECT * FROM jobs
+               WHERE job_id=? AND job_type='scraper' AND status='abandoned'
+                 AND is_resumable=1""",
+            (job_id,),
         ).fetchone()
-        if not row:
-            conn.execute("ROLLBACK")
-            return False
-        cursor = conn.execute(
-            """UPDATE jobs SET restart_count = restart_count + 1, updated_at=?
-               WHERE job_id=? AND status='abandoned' AND restart_count=?""",
-            (_utc_now_iso(), job_id, row["restart_count"]),
-        )
-        if cursor.rowcount != 1:
-            conn.execute("ROLLBACK")
-            return False
-        conn.execute("COMMIT")
-        return True
-    except Exception:
+        if not parent:
+            return None
+
+        # Carry over the partial CSV (truncated-tail repaired). Copied before
+        # the txn under the child's deterministic path; unlinked on bail.
+        src = None
+        if parent["output_path"]:
+            candidate = _Path(parent["output_path"])
+            if candidate.exists():
+                src = candidate
+        if src is None:
+            fallback = output_dir / f"{job_id}.csv"
+            if fallback.exists():
+                src = fallback
+        carried_rows = 0
+        if src is not None and safe_copy_csv(src, copied_csv) > 0:
+            import csv as _csv
+            try:
+                with open(copied_csv, newline="", encoding="utf-8") as f:
+                    carried_rows = sum(1 for _ in _csv.DictReader(f))
+            except Exception:
+                carried_rows = 0
+
+        conn.execute("BEGIN IMMEDIATE")
         try:
-            conn.execute("ROLLBACK")
+            # Re-check under the write lock: another claimant may have won
+            # while we copied the CSV.
+            parent = conn.execute(
+                """SELECT * FROM jobs
+                   WHERE job_id=? AND job_type='scraper' AND status='abandoned'
+                     AND is_resumable=1
+                     AND NOT EXISTS (SELECT 1 FROM jobs c WHERE c.parent_job_id = jobs.job_id)""",
+                (job_id,),
+            ).fetchone()
+            if not parent:
+                conn.execute("ROLLBACK")
+                copied_csv.unlink(missing_ok=True)
+                return None
+
+            # Walk to the chain root INSIDE the txn. The attempt budget lives
+            # on the root: each generation's child starts restart_count=0, so
+            # counting on the abandoned row would reset the cap every restart.
+            root = parent
+            hops = 0
+            while root["parent_job_id"] and hops < 10:
+                row = conn.execute(
+                    "SELECT * FROM jobs WHERE job_id=?", (root["parent_job_id"],)
+                ).fetchone()
+                if not row:
+                    break
+                root = row
+                hops += 1
+            if int(root["restart_count"] or 0) >= SCRAPER_AUTO_RESUME_MAX_RESTARTS:
+                conn.execute("ROLLBACK")
+                copied_csv.unlink(missing_ok=True)
+                logger.info(
+                    "Scraper auto-resume: chain of %s at attempt cap (%d) — leaving abandoned",
+                    job_id[:8], root["restart_count"],
+                )
+                return None
+
+            conn.execute(
+                "UPDATE jobs SET restart_count = restart_count + 1, updated_at=? WHERE job_id=?",
+                (_utc_now_iso(), root["job_id"]),
+            )
+            now = _utc_now_iso()
+            conn.execute(
+                """INSERT INTO jobs (job_id, user_id, job_type, status, parent_job_id,
+                     query, regions, total_tasks, done_tasks, result_count,
+                     is_resumable, created_at, updated_at)
+                   VALUES (?, ?, 'scraper', 'queued', ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
+                (
+                    new_child_id, parent["user_id"], job_id,
+                    parent["query"], parent["regions"],
+                    int(root["total_tasks"] or 0), int(root["done_tasks"] or 0),
+                    carried_rows, now, now,
+                ),
+            )
+            conn.execute("COMMIT")
+            logger.info(
+                "Scraper auto-resume: %s -> new child %s (carried %d rows, chain attempt %d)",
+                job_id[:8], new_child_id[:8], carried_rows, int(root["restart_count"] or 0) + 1,
+            )
+            return new_child_id
         except Exception:
-            pass
-        raise
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            copied_csv.unlink(missing_ok=True)
+            raise
     finally:
         conn.close()
 
 
 async def resume_one_scraper(job_id: str, user_id: str) -> bool:
-    """Resume a single abandoned SCRAPER job by queueing it through the dispatcher.
+    """Resume a single abandoned SCRAPER job via claim_scraper_resume_job.
 
-    Claim semantics: ``_claim_scraper_resume`` serializes claimants cross-
-    process (BEGIN IMMEDIATE), so of the 4 workers' guard loops exactly one
-    bumps restart_count and proceeds to create the resume child. Losers log
-    'lost claim race' and skip.
-
-    The heavy lifting (checkpoint subtraction, partial-CSV carry-over) happens
-    inside the resume path itself; here we only drive it with a synthetic
-    admin identity and swallow its HTTP-shaped errors into warnings (an
-    abandoned job that can't be resumed must not crash the guard loop).
+    Thin wrapper: the claim function creates the queued child atomically;
+    the dispatcher picks it up. No HTTP-layer involvement.
     """
-    from scraper import routes as scraper_routes
-    from fastapi import HTTPException
-
-    synthetic_user = {"user_id": user_id, "email": "auto-resume@system", "is_admin": True, "name": "Auto Resume"}
-
     try:
-        if not _claim_scraper_resume(job_id):
-            logger.info("Scraper auto-resume: lost claim race for %s — skipping", job_id[:8])
+        child = claim_scraper_resume_job(job_id)
+        if child is None:
+            logger.info("Scraper auto-resume: skipped %s (lost race / ineligible / at cap)", job_id[:8])
             return False
+        return True
     except Exception as exc:
-        logger.warning("Scraper auto-resume: claim failed for %s: %s", job_id, exc)
+        logger.warning("Scraper auto-resume failed for job %s: %s", job_id, exc)
         return False
 
     try:

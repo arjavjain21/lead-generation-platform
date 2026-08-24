@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import csv as csv_mod
+import json
 import os
 import sqlite3
 import threading
@@ -322,79 +323,91 @@ class TestScraperAutoResumeEligibility:
 # ---------------------------------------------------------------------------
 
 class TestResumeClaimRace:
-    def test_only_one_winner_bumps_restart_count(self, temp_db, monkeypatch):
-        """Concurrent claimants: exactly one wins, one child is created.
+    def test_four_concurrent_claimants_single_child(self, temp_db, monkeypatch, tmp_path):
+        """THE race regression test: 4 workers tick in the same second.
 
-        _claim_scraper_resume opens its OWN connection to db.DB_PATH with
-        BEGIN IMMEDIATE — that path is exercised for real here because the
-        temp fixture re-points shared.db.DB_PATH at the temp file. The
-        endpoint fake inserts the child through the shared conn, exactly as
-        production does.
+        claim_scraper_resume_job does everything (eligibility, root-cap bump,
+        child INSERT) in one BEGIN IMMEDIATE txn, so exactly one child is
+        created. Runs against the file-backed temp DB via real extra
+        connections — the true cross-process semantics.
         """
         from shared import auto_resume
         import shared.db as shared_db
 
-        # temp_db fixture made a real file-backed DB; point DB_PATH at it so
-        # the dedicated claim connection hits the same data.
-        db_file = shared_db.DB_PATH
         _insert_job(temp_db, "a1", status="abandoned", restart_count=0, updated_age=60)
 
-        calls: list[str] = []
+        results = []
+        errors = []
 
-        async def fake_resume_endpoint(job_id, req, background_tasks, current_user):
-            calls.append(job_id)
-            # Faithful to production: the resume creates a child row.
-            _insert_job(temp_db, f"child-{len(calls)}", status="queued", parent=job_id)
-            return {"job_id": f"child-{len(calls)}", "pending_tasks": 5}
+        def claimant():
+            try:
+                results.append(auto_resume.claim_scraper_resume_job("a1"))
+            except Exception as e:  # pragma: no cover
+                errors.append(e)
 
-        import scraper.routes as scraper_routes
-        monkeypatch.setattr(scraper_routes, "resume_scraper_job", fake_resume_endpoint)
+        threads = [threading.Thread(target=claimant) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
-        async def run():
-            # FOUR concurrent claimants (one per guard loop) — only one may win.
-            results = await asyncio.gather(
-                *[auto_resume.resume_one_scraper("a1", "u1") for _ in range(4)]
-            )
-            return results
-
-        results = asyncio.run(run())
-        row = temp_db.execute("SELECT restart_count FROM jobs WHERE job_id='a1'").fetchone()
+        assert not errors
+        winners = [r for r in results if r]
+        assert len(winners) == 1
         children = temp_db.execute(
             "SELECT COUNT(*) FROM jobs WHERE parent_job_id='a1'"
         ).fetchone()[0]
-        assert sum(1 for r in results if r) == 1
-        assert row["restart_count"] == 1
         assert children == 1
-        assert len(calls) == 1
+        row = temp_db.execute("SELECT restart_count FROM jobs WHERE job_id='a1'").fetchone()
+        assert row["restart_count"] == 1
 
-    def test_claim_rejected_when_child_exists(self, temp_db, monkeypatch):
+    def test_claim_rejected_when_child_exists(self, temp_db):
         """A job that already has a resume child must never be re-claimed."""
         from shared import auto_resume
         _insert_job(temp_db, "a2", status="abandoned", restart_count=1, updated_age=60)
         _insert_job(temp_db, "existing-child", status="done", parent="a2")
-        assert auto_resume._claim_scraper_resume("a2") is False
+        assert auto_resume.claim_scraper_resume_job("a2") is None
         row = temp_db.execute("SELECT restart_count FROM jobs WHERE job_id='a2'").fetchone()
         assert row["restart_count"] == 1  # untouched
 
-    def test_claim_rejected_at_cap(self, temp_db, monkeypatch):
+    def test_chain_cap_counted_on_root(self, temp_db):
+        """Attempt budget is the ROOT's restart_count, not the leaf's.
+
+        Gen-3 leaf has restart_count=0 (children start fresh) but its root is
+        at cap — claim must refuse. This is the counter-reset bug caught in
+        deploy iteration 2.
+        """
+        from shared import auto_resume
+        _insert_job(temp_db, "root-old", status="abandoned", restart_count=2)
+        _insert_job(temp_db, "gen2", status="abandoned", restart_count=0, parent="root-old")
+        _insert_job(temp_db, "gen3", status="abandoned", restart_count=0, parent="gen2")
+        assert auto_resume.claim_scraper_resume_job("gen3") is None
+
+    def test_claim_rejected_at_cap_flat(self, temp_db):
         from shared import auto_resume
         _insert_job(temp_db, "a3", status="abandoned", restart_count=2, updated_age=60)
-        # No child, but cap (2) already consumed — claim must fail.
-        assert auto_resume._claim_scraper_resume("a3") is False
+        assert auto_resume.claim_scraper_resume_job("a3") is None
 
-    def test_http_409_from_resume_swallowed(self, temp_db, monkeypatch):
-        from fastapi import HTTPException
+    def test_child_inherits_root_counters_and_regions(self, temp_db):
         from shared import auto_resume
-        _insert_job(temp_db, "a1", status="abandoned", updated_age=60)
-
-        async def failing_endpoint(job_id, req, background_tasks, current_user):
-            raise HTTPException(status_code=400, detail="All tasks already completed")
-
-        import scraper.routes as scraper_routes
-        monkeypatch.setattr(scraper_routes, "resume_scraper_job", failing_endpoint)
-
-        result = asyncio.run(auto_resume.resume_one_scraper("a1", "u1"))
-        assert result is False  # swallowed, not raised
+        temp_db.execute(
+            """INSERT INTO jobs (job_id, user_id, job_type, status, query, regions,
+               total_tasks, done_tasks, result_count, restart_count, is_resumable,
+               last_heartbeat, created_at, updated_at)
+               VALUES ('r1','u1','scraper','abandoned','q','{"mode":"zips"}', 900, 400, 350, 0, 1, ?, ?, ?)""",
+            (_now_iso(-60), _now_iso(-600), _now_iso(-60)),
+        )
+        temp_db.commit()
+        child = auto_resume.claim_scraper_resume_job("r1")
+        assert child is not None
+        row = temp_db.execute(
+            "SELECT total_tasks, done_tasks, regions, status FROM jobs WHERE job_id=?",
+            (child,),
+        ).fetchone()
+        assert row["total_tasks"] == 900
+        assert row["done_tasks"] == 400
+        assert json.loads(row["regions"]) == {"mode": "zips"}
+        assert row["status"] == "queued"
 
 
 # ---------------------------------------------------------------------------
