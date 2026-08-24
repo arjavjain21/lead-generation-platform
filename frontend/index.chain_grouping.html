@@ -396,6 +396,7 @@
             padding:.15rem 0; }
         .chain-attempt .att-badge { font-size:.65rem; font-weight:600;
             padding:.05rem .35rem; border-radius:4px; background:#f1f5f9; color:#64748b; }
+        .chain-attempt .att-badge.att-current { background:#dcfce7; color:#166534; }
         .chain-attempt .att-dl { font-size:.68rem; font-weight:600; color:#047857;
             background:none; border:none; padding:0; cursor:pointer; text-decoration:underline; }
         .chain-attempt .att-dl[disabled] { color:#9ca3af; cursor:default; text-decoration:none; }
@@ -5440,7 +5441,7 @@ example.org,Jane Doe</pre>
         }
 
         function chainBadgeHtml(n) {
-            return '<span class="chain-badge" title="This job was automatically resumed after a server restart. Your results are saved; only remaining rows are processed.">↻ Restarted ' + n + '×</span>';
+            return '<span class="chain-badge" title="This job was automatically resumed after a server restart. Your results are saved; only remaining rows are processed.">↻ Resumed ' + n + ' times</span>';
         }
 
         // Build one render unit per card. Grouped units carry chain overrides
@@ -5480,6 +5481,16 @@ example.org,Jane Doe</pre>
             // fragments sharing (user, original upload filename) merge into
             // ONE card. Root-topped fragments are never merged with anything
             // (a same-named root here is a different upload of that file).
+            // The (user, filename) key alone is not proof of same upload —
+            // users habitually re-upload identically named files (4 distinct
+            // FD_new_lead_List.csv uploads exist live) — so candidates must
+            // ALSO be close in age: two fragments of ONE chain are created
+            // within hours (a restart resumes immediately), while separate
+            // uploads of the same name are typically a day or more apart.
+            // Fragments whose newest members are >24h apart are left as
+            // separate cards rather than risk merging two uploads.
+            const FRAGMENT_REUNION_MAX_GAP_MS = 24 * 60 * 60 * 1000;
+            const tsOf = (j) => Date.parse(j.created_at || '') || 0;
             const fragmentKey = (j) => (j.user_id || '') + ' ' + (j.original_filename || '');
             const fragGroups = {};
             Object.keys(buckets).forEach(r => {
@@ -5496,6 +5507,11 @@ example.org,Jane Doe</pre>
                     fragGroups[r + '|own'] = [frag];
                 }
             });
+            // Group same-key candidates by the age of their newest member:
+            // candidates land in the same reunion group only when consecutive
+            // newest-members are within the gap window (transitive chaining is
+            // allowed — an attempt resumed at 09:00 and 20:00 of one day is
+            // still one chain even though the ends are >12h apart).
             const mergedBuckets = {};
             Object.keys(fragGroups).forEach(k => {
                 const frags = fragGroups[k];
@@ -5503,13 +5519,28 @@ example.org,Jane Doe</pre>
                     mergedBuckets[frags[0].r] = frags[0].members;
                     return;
                 }
-                // One card: merge members into the OLDEST fragment's bucket.
-                frags.sort((a, b) => String(a.top.created_at || '').localeCompare(String(b.top.created_at || '')));
-                const target = frags[0];
+                // newest member per fragment = the fragment's age anchor.
+                frags.forEach(f => { f.newestTs = Math.max.apply(null, f.members.map(tsOf)); });
+                frags.sort((a, b) => a.newestTs - b.newestTs);
+                const clusters = [[frags[0]]];
                 for (let i = 1; i < frags.length; i++) {
-                    target.members = target.members.concat(frags[i].members);
+                    const prev = clusters[clusters.length - 1];
+                    const gap = frags[i].newestTs - prev[prev.length - 1].newestTs;
+                    if (gap <= FRAGMENT_REUNION_MAX_GAP_MS) prev.push(frags[i]);
+                    else clusters.push([frags[i]]);
                 }
-                mergedBuckets[target.r] = target.members;
+                // Merge each cluster into its OLDEST fragment's bucket (r is
+                // that fragment's top ancestor id, so distinct clusters keep
+                // distinct card ids).
+                clusters.forEach(cl => {
+                    if (cl.length < 2) { mergedBuckets[cl[0].r] = cl[0].members; return; }
+                    cl.sort((a, b) => String(a.top.created_at || '').localeCompare(String(b.top.created_at || '')));
+                    const target = cl[0];
+                    for (let i = 1; i < cl.length; i++) {
+                        target.members = target.members.concat(cl[i].members);
+                    }
+                    mergedBuckets[target.r] = target.members;
+                });
             });
 
             // On-page children per parent — a parent with 2+ children means the
@@ -5600,9 +5631,15 @@ example.org,Jane Doe</pre>
 
             // Exact arithmetic is only guaranteed for a complete linear chain:
             // branch points, off-page members, or a missing root make the
-            // numbers approximate → rendered with "≈".
+            // numbers approximate → rendered with "≈". A member whose
+            // restart_count exceeds its on-page children PROVABLY has more
+            // descendants off-page (children exist that this page doesn't
+            // show), so the chain continues beyond the page → approximate.
+            const chainContinuesOffPage = members.some(m =>
+                (m.restart_count || 0) > (childCount[m.job_id] || 0));
             const approx = hiddenAncestorBreak || !rootOnPage
-                || members.some(m => (childCount[m.job_id] || 0) > 1);
+                || members.some(m => (childCount[m.job_id] || 0) > 1)
+                || chainContinuesOffPage;
 
             const pct = denom > 0 ? Math.min(100, Math.round((numer / denom) * 100)) : 0;
             const prefix = approx ? '≈' : '';
@@ -5614,11 +5651,11 @@ example.org,Jane Doe</pre>
                     new Date(identity.created_at).toLocaleString(),
                     prefix + numer.toLocaleString() + ' of ' + denom.toLocaleString() + ' domains',
                     prefix + lineageEmails.toLocaleString() + ' emails',
-                ],
+                ].concat(approx ? ['(estimated)'] : []),
                 total: denom,
                 emails: lineageEmails,
             };
-            const chainProgressHtml = '<div class="chain-progress" title="Accumulated across every attempt of this upload (head lineage vs the deduped upload size).' + approxNote + '">'
+            const chainProgressHtml = '<div class="chain-progress" title="Progress adds up every time this upload was resumed. ≈ means some attempts overlapped, so the number is an estimate.' + approxNote + '">'
                 + '<strong>' + pct + '%</strong> of the uploaded file processed</div>';
 
             // Restart count: each spawned child incremented its PARENT's
@@ -5634,22 +5671,43 @@ example.org,Jane Doe</pre>
             const historyToggleHtml = attempts.length > 0
                 ? '<button class="chain-history-btn" onclick="toggleEnrichmentChainHistory(\'' + identityId + '\', this)" aria-expanded="' + String(isOpen) + '">' + (isOpen ? '▾' : '▸') + ' Attempt history (' + attempts.length + ')</button>'
                 : '';
-            const historyHtml = attempts.length > 0
+            // History rows, OLDEST FIRST so "Attempt 1" is the first try. The
+            // newest attempt is rendered separately as "Current attempt" (it
+            // drives the card's own status/actions) so its data is always
+            // reachable even when the card itself shows no download action
+            // (e.g. an abandoned head with a CSV on disk but no recorded
+            // partial_output_path). Download visibility uses output_exists —
+            // /recover-partial falls back to outputs/{id}.csv, which is how a
+            // head with an empty partial_output_path still serves 16 MB.
+            const attemptRow = (m, badgeLabel, current) => {
+                const dl = m.output_exists
+                    ? '<button class="att-dl" onclick="downloadEnrichmentPartial(\'' + m.job_id + '\', this)">↓ Download partial</button>'
+                    : '<button class="att-dl" disabled title="No CSV on disk for this attempt">↓ Download partial</button>';
+                return '<div class="chain-attempt">'
+                    + '<span class="att-badge' + (current ? ' att-current' : '') + '">' + badgeLabel + '</span>'
+                    + '<span>' + new Date(m.created_at).toLocaleString() + '</span>'
+                    + '<span class="job-status status-' + m.status + '">' + jobStatusLabel(m.status) + '</span>'
+                    + '<span>' + (m.processed || 0).toLocaleString() + ' rows · ' + (m.emails_found || 0).toLocaleString() + ' emails</span>'
+                    + dl
+                    + '</div>';
+            };
+            const historyRows = attempts.length > 0
+                ? attempts.map((m, i) => attemptRow(m, 'Attempt ' + (i + 1), false))
+                    .concat([attemptRow(head, 'Current attempt', true)])
+                : [];
+            const historyHtml = historyRows.length > 0
                 ? '<div class="chain-history" id="chain-history-' + identityId + '" style="display:' + (isOpen ? 'block' : 'none') + ';">'
-                    + attempts.map((m, i) => {
-                        const dl = m.output_exists
-                            ? '<button class="att-dl" onclick="downloadEnrichmentPartial(\'' + m.job_id + '\', this)">↓ Download partial</button>'
-                            : '<button class="att-dl" disabled title="No CSV on disk for this attempt">↓ Download partial</button>';
-                        return '<div class="chain-attempt">'
-                            + '<span class="att-badge">Attempt ' + (i + 1) + '</span>'
-                            + '<span>' + new Date(m.created_at).toLocaleString() + '</span>'
-                            + '<span class="job-status status-' + m.status + '">' + jobStatusLabel(m.status) + '</span>'
-                            + '<span>' + (m.processed || 0).toLocaleString() + ' rows · ' + (m.emails_found || 0).toLocaleString() + ' emails</span>'
-                            + dl
-                            + '</div>';
-                    }).join('')
+                    + historyRows.join('')
                     + '</div>'
                 : '';
+
+            // True origin of the upload: the identity may itself be a restart
+            // (root off-page), so prefer any member that still carries a real
+            // origin. 'restart' is not an origin — when no member knows it,
+            // hide the chip rather than show a wrong one.
+            const originMember = members.find(m =>
+                m.source_type === 'csv_upload' || m.source_type === 'google_maps_chain');
+            const resolvedOrigin = originMember ? originMember.source_type : null;
 
             return {
                 job: head,
@@ -5660,7 +5718,14 @@ example.org,Jane Doe</pre>
                 chainBadge: restarts > 0 ? chainBadgeHtml(restarts) : null,
                 historyToggleHtml,
                 historyHtml,
-                sourceType: identity.source_type,
+                sourceType: resolvedOrigin,
+                // Root-topped bucket whose restarts outnumber its on-page
+                // children: the chain provably continues off-page (a newer
+                // attempt exists that this page doesn't show). Rendering it
+                // as an actionable head would target a STALE ancestor with
+                // Resume/Retry/Stop — demote those, keep the partial download
+                // (the data on disk is real).
+                continuation: rootOnPage && chainContinuesOffPage,
                 sortKey: String(head.updated_at || head.created_at || ''),
             };
         }
@@ -5750,7 +5815,15 @@ example.org,Jane Doe</pre>
                                 actions += ' <button class="btn btn-warning btn-sm" data-action="resume" data-job-id="'+job.job_id+'" onclick="resumeEnrichmentJob(\''+job.job_id+'\', this)">↻ Resume</button>';
                             }
                             actions += ' <button class="btn btn-secondary btn-sm" data-action="retry" data-job-id="'+job.job_id+'" onclick="retryEnrichmentJob(\''+job.job_id+'\', this)">Retry</button>';
-                            if (job.partial_output_path) {
+                            // Partial download gate. Grouped cards use
+                            // output_exists: the HEAD's counters/paths cover
+                            // only its slice, and /recover-partial falls back
+                            // to outputs/{id}.csv — so a head with an empty
+                            // partial_output_path can still serve a full CSV
+                            // (the Aug-24 hyperke head served 16.6 MB that
+                            // way). Singletons keep the exact-path gate.
+                            const partialAvailable = ctx.chainMeta ? job.output_exists : job.partial_output_path;
+                            if (partialAvailable) {
                                 actions += ' <button class="btn btn-success btn-sm" onclick="downloadEnrichmentPartial(\''+job.job_id+'\', this)">↓ Download partial</button>';
                             }
                         } else if (job.status === 'partial') {
@@ -5776,11 +5849,14 @@ example.org,Jane Doe</pre>
                         if (job.status === 'done' || job.status === 'partial' || job.status === 'running') {
                             actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleEnrichmentShards(\''+job.job_id+'\', this)">▦ Download in chunks</button>';
                         }
-                        // Show error message for failed/abandoned/cancelled jobs with hover tooltip
+                        // Show error message for failed/abandoned/cancelled jobs with hover tooltip.
+                        // Both the visible text and the title attribute are
+                        // HTML-escaped — job.error is server-controlled text
+                        // and must never reach the DOM as markup.
                         let errorInfo = '';
                         if (job.error && (job.status === 'failed' || job.status === 'abandoned' || job.status === 'cancelled')) {
-                            const fullError = job.error.replace(/'/g, "\\'").replace(/"/g, '\\"');
-                            const shortError = job.error.length > 60 ? job.error.substring(0, 60) + '...' : job.error;
+                            const fullError = esc(job.error);
+                            const shortError = esc(job.error.length > 60 ? job.error.substring(0, 60) + '...' : job.error);
                             errorInfo = '<div class="job-error" title="' + fullError + '">' + shortError + '</div>';
                         }
 
@@ -5848,7 +5924,11 @@ example.org,Jane Doe</pre>
 
                         // Source-provenance chip (origin of the enrichment run).
                         // Grouped cards show the ORIGINAL upload's origin, not
-                        // the head's 'restart'.
+                        // the head's 'restart'. ctx.sourceType is the resolved
+                        // origin (null when every visible member is a restart
+                        // and the true root is off-page) — in that case hide
+                        // the chip rather than show a wrong origin. Singletons
+                        // fall back to the job's own source_type as before.
                         const _srcMap = {
                             google_maps_chain: { t: '🌐 Google Maps', c: '#1d4ed8', b: '#dbeafe' },
                             csv_upload: { t: '📤 Upload', c: '#475569', b: '#f1f5f9' },
@@ -5856,18 +5936,40 @@ example.org,Jane Doe</pre>
                             search: { t: '🔎 Search', c: '#6b21a8', b: '#f3e8ff' },
                             restart: { t: '↻ Restart', c: '#92400e', b: '#fef3c7' },
                         };
-                        const _src = _srcMap[ctx.sourceType || job.source_type];
-                        const sourceChip = _src ? '<span class="file-chip" style="color:' + _src.c + ';background:' + _src.b + ';" title="Origin: ' + (ctx.sourceType || job.source_type) + '">' + _src.t + '</span>' : '';
+                        const _srcKey = ctx.group ? ctx.sourceType : (ctx.sourceType || job.source_type);
+                        const _src = _srcKey ? _srcMap[_srcKey] : null;
+                        const sourceChip = _src ? '<span class="file-chip" style="color:' + _src.c + ';background:' + _src.b + ';" title="Origin: ' + _srcKey + '">' + _src.t + '</span>' : '';
 
                         // A terminal singleton whose restart children are all
                         // off-page has been superseded by a newer attempt —
                         // its actions would operate on stale state, so replace
                         // them with an explanatory badge.
+                        //
+                        // A CONTINUATION card is the same idea for grouped
+                        // cards: a root-topped bucket whose chain provably
+                        // continues off-page (Σrestart_count > on-page
+                        // children). Its head is a stale mid-chain ancestor,
+                        // so Resume/Retry/Stop are removed. The partial
+                        // download STAYS: the CSV on disk for this attempt is
+                        // real data (output_exists gates it — /recover-partial
+                        // falls back to outputs/{id}.csv).
                         let actionsHtml = actions;
                         let supersededBadge = '';
                         if (ctx.superseded) {
-                            actionsHtml = '';
-                            supersededBadge = '<span class="chain-badge superseded" title="A newer attempt of this upload exists but is outside the current filter/page. Clear the filters to see it.">Superseded</span>';
+                            // Superseded too keeps its partial download: the CSV
+                            // on disk for THIS attempt is real data the user
+                            // must not lose access to.
+                            const dlPartial = job.output_exists
+                                ? ' <button class="btn btn-success btn-sm" onclick="downloadEnrichmentPartial(\'' + job.job_id + '\', this)">↓ Download partial</button>'
+                                : '';
+                            actionsHtml = dlPartial;
+                            supersededBadge = '<span class="chain-badge superseded" title="A newer attempt of this upload exists but is outside the current filter/page. Clear the filters to see it. The partial download is this attempt\'s own data.">Superseded</span>';
+                        } else if (ctx.continuation) {
+                            const dlPartial = job.output_exists
+                                ? ' <button class="btn btn-success btn-sm" onclick="downloadEnrichmentPartial(\'' + job.job_id + '\', this)">↓ Download partial</button>'
+                                : '';
+                            actionsHtml = dlPartial;
+                            supersededBadge = '<span class="chain-badge superseded" title="This upload continues on another page — a newer attempt exists outside the current filter/page. Go to the next page (or clear filters) to act on it. The partial download below is this attempt\'s own data.">Continued on another page</span>';
                         }
 
                         return '<div class="job-card' + zeroEmailCardClass + '">'
