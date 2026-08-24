@@ -137,6 +137,13 @@ async def _run_parent_startup():
     auth.init_auth_db()
     db.init_db()
 
+    # Production-only boot actions (default on; pytest sets it false via
+    # conftest). The startup reapers + background loops write to the REAL
+    # jobs DB — a TestClient boot inside a pytest run against prod data
+    # reaped 6 live scraper jobs on 2026-08-24 (09:37:12) with zero service-
+    # log trace. Tests must never mutate production job state.
+    reapers_enabled = os.environ.get("ENABLE_STARTUP_REAPERS", "true").lower() in ("1", "true", "yes")
+
     try:
         call_tracker.init()
         asyncio.create_task(_call_tracker_purge_loop())
@@ -160,28 +167,44 @@ async def _run_parent_startup():
     except Exception as e:
         logger.warning("Failed to restore job state: %s", e)
 
-    scraper_routes.cleanup_stale_jobs()
-    enrichment_routes.cleanup_stale_jobs()
-    phone_enrichment_routes.cleanup_stale_phone_jobs()
-    enrichment_routes.cleanup_old_files()
+    if not reapers_enabled:
+        logger.info("ENABLE_STARTUP_REAPERS=false — skipping reapers, auto-resume, "
+                    "dispatcher and outbox loop (test/CI boot)")
+    else:
+        scraper_routes.cleanup_stale_jobs()
+        enrichment_routes.cleanup_stale_jobs()
+        phone_enrichment_routes.cleanup_stale_phone_jobs()
+        enrichment_routes.cleanup_old_files()
 
-    # Auto-resume: any enrichment job the reaper just marked 'abandoned' is
-    # re-queued through the restart path instead of waiting for a manual
-    # click. Atomic claim + fresh-death window + restart cap make this safe
-    # across the 4 workers. Soft failure only — must never block boot.
-    try:
-        from shared.auto_resume import maybe_auto_resume_abandoned_jobs
-        asyncio.create_task(maybe_auto_resume_abandoned_jobs())
-        logger.info("Started auto-resume watcher for abandoned jobs")
-    except Exception as e:
-        logger.warning("Failed to start auto-resume watcher: %s", e)
+        # Auto-resume: any enrichment job the reaper just marked 'abandoned' is
+        # re-queued through the restart path instead of waiting for a manual
+        # click. Atomic claim + fresh-death window + restart cap make this safe
+        # across the 4 workers. Soft failure only — must never block boot.
+        try:
+            from shared.auto_resume import maybe_auto_resume_abandoned_jobs
+            asyncio.create_task(maybe_auto_resume_abandoned_jobs())
+            logger.info("Started auto-resume watcher for abandoned jobs")
+        except Exception as e:
+            logger.warning("Failed to start auto-resume watcher: %s", e)
 
-    try:
-        from enrichment.contacts_writer import retry_outbox_loop
-        asyncio.create_task(retry_outbox_loop(interval_seconds=60))
-        logger.info("Started contacts_write_outbox retry loop")
-    except Exception as e:
-        logger.warning("Failed to start outbox retry loop: %s", e)
+        # Scraper dispatcher (2026-08-24): claims queued jobs under a
+        # platform-wide concurrency cap and re-launches stale-abandoned ones.
+        # One loop per worker; the atomic claim serializes them.
+        try:
+            from scraper.dispatch import dispatch_loop, runtime_guard_loop
+            from scraper.routes import _launch_claimed_job
+            asyncio.create_task(dispatch_loop(_launch_claimed_job))
+            asyncio.create_task(runtime_guard_loop())
+            logger.info("Started scraper dispatcher + runtime guard")
+        except Exception as e:
+            logger.warning("Failed to start scraper dispatcher: %s", e)
+
+        try:
+            from enrichment.contacts_writer import retry_outbox_loop
+            asyncio.create_task(retry_outbox_loop(interval_seconds=60))
+            logger.info("Started contacts_write_outbox retry loop")
+        except Exception as e:
+            logger.warning("Failed to start outbox retry loop: %s", e)
 
 
 @contextlib.asynccontextmanager
