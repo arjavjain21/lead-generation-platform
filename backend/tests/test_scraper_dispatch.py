@@ -323,7 +323,20 @@ class TestScraperAutoResumeEligibility:
 
 class TestResumeClaimRace:
     def test_only_one_winner_bumps_restart_count(self, temp_db, monkeypatch):
+        """Concurrent claimants: exactly one wins, one child is created.
+
+        _claim_scraper_resume opens its OWN connection to db.DB_PATH with
+        BEGIN IMMEDIATE — that path is exercised for real here because the
+        temp fixture re-points shared.db.DB_PATH at the temp file. The
+        endpoint fake inserts the child through the shared conn, exactly as
+        production does.
+        """
         from shared import auto_resume
+        import shared.db as shared_db
+
+        # temp_db fixture made a real file-backed DB; point DB_PATH at it so
+        # the dedicated claim connection hits the same data.
+        db_file = shared_db.DB_PATH
         _insert_job(temp_db, "a1", status="abandoned", restart_count=0, updated_age=60)
 
         calls: list[str] = []
@@ -338,19 +351,36 @@ class TestResumeClaimRace:
         monkeypatch.setattr(scraper_routes, "resume_scraper_job", fake_resume_endpoint)
 
         async def run():
-            # Two concurrent claimants — only one may win.
-            r1, r2 = await asyncio.gather(
-                auto_resume.resume_one_scraper("a1", "u1"),
-                auto_resume.resume_one_scraper("a1", "u1"),
+            # FOUR concurrent claimants (one per guard loop) — only one may win.
+            results = await asyncio.gather(
+                *[auto_resume.resume_one_scraper("a1", "u1") for _ in range(4)]
             )
-            return r1, r2
+            return results
 
-        with mock.patch("shared.auto_resume.db.get_db", return_value=temp_db):
-            ok_count = sum(1 for r in asyncio.run(run()) if r)
+        results = asyncio.run(run())
         row = temp_db.execute("SELECT restart_count FROM jobs WHERE job_id='a1'").fetchone()
-        assert ok_count == 1
+        children = temp_db.execute(
+            "SELECT COUNT(*) FROM jobs WHERE parent_job_id='a1'"
+        ).fetchone()[0]
+        assert sum(1 for r in results if r) == 1
         assert row["restart_count"] == 1
+        assert children == 1
         assert len(calls) == 1
+
+    def test_claim_rejected_when_child_exists(self, temp_db, monkeypatch):
+        """A job that already has a resume child must never be re-claimed."""
+        from shared import auto_resume
+        _insert_job(temp_db, "a2", status="abandoned", restart_count=1, updated_age=60)
+        _insert_job(temp_db, "existing-child", status="done", parent="a2")
+        assert auto_resume._claim_scraper_resume("a2") is False
+        row = temp_db.execute("SELECT restart_count FROM jobs WHERE job_id='a2'").fetchone()
+        assert row["restart_count"] == 1  # untouched
+
+    def test_claim_rejected_at_cap(self, temp_db, monkeypatch):
+        from shared import auto_resume
+        _insert_job(temp_db, "a3", status="abandoned", restart_count=2, updated_age=60)
+        # No child, but cap (2) already consumed — claim must fail.
+        assert auto_resume._claim_scraper_resume("a3") is False
 
     def test_http_409_from_resume_swallowed(self, temp_db, monkeypatch):
         from fastapi import HTTPException

@@ -187,16 +187,60 @@ async def resume_one(job_id: str, user_id: str) -> bool:
         return False
 
 
+def _claim_scraper_resume(job_id: str) -> bool:
+    """Serialized claim for scraper auto-resume — exactly one worker wins.
+
+    Uses a DEDICATED connection in BEGIN IMMEDIATE mode. Unlike the previous
+    thread-local CAS (which read a pre-child snapshot and let all concurrent
+    claimants' UPDATEs match), a write transaction takes SQLite's reserved
+    lock: concurrent claimants BLOCK on busy_timeout until we commit, then
+    re-read fresh state — where the winner's child exists and the losers'
+    UPDATE matches 0 rows. This is the textbook fix for the 2026-08-24
+    duplicate-resume race (3 children for one parent within the same second).
+    """
+    import sqlite3 as _sqlite3
+
+    conn = _sqlite3.connect(str(db.DB_PATH), timeout=30.0, isolation_level=None)
+    conn.row_factory = _sqlite3.Row
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """SELECT restart_count FROM jobs
+               WHERE job_id=? AND status='abandoned'
+               AND restart_count < ?
+               AND NOT EXISTS (SELECT 1 FROM jobs c WHERE c.parent_job_id = jobs.job_id)""",
+            (job_id, SCRAPER_AUTO_RESUME_MAX_RESTARTS),
+        ).fetchone()
+        if not row:
+            conn.execute("ROLLBACK")
+            return False
+        cursor = conn.execute(
+            """UPDATE jobs SET restart_count = restart_count + 1, updated_at=?
+               WHERE job_id=? AND status='abandoned' AND restart_count=?""",
+            (_utc_now_iso(), job_id, row["restart_count"]),
+        )
+        if cursor.rowcount != 1:
+            conn.execute("ROLLBACK")
+            return False
+        conn.execute("COMMIT")
+        return True
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+
+
 async def resume_one_scraper(job_id: str, user_id: str) -> bool:
     """Resume a single abandoned SCRAPER job by queueing it through the dispatcher.
 
-    Claim semantics: the restart_count bump IS the atomic claim — a
-    compare-and-set on (job_id, status='abandoned', restart_count=<observed>)
-    ensures that of the 4 workers' guard loops only the first proceeds (the
-    others' UPDATE matches 0 rows because restart_count already moved). Only
-    the winner creates a resume child; over-counting on a later failure is
-    the safe direction (a pathological job gives up sooner, never loops
-    forever).
+    Claim semantics: ``_claim_scraper_resume`` serializes claimants cross-
+    process (BEGIN IMMEDIATE), so of the 4 workers' guard loops exactly one
+    bumps restart_count and proceeds to create the resume child. Losers log
+    'lost claim race' and skip.
 
     The heavy lifting (checkpoint subtraction, partial-CSV carry-over) happens
     inside the resume path itself; here we only drive it with a synthetic
@@ -208,37 +252,9 @@ async def resume_one_scraper(job_id: str, user_id: str) -> bool:
 
     synthetic_user = {"user_id": user_id, "email": "auto-resume@system", "is_admin": True, "name": "Auto Resume"}
 
-    conn = db.get_db()
     try:
-        observed = conn.execute(
-            "SELECT restart_count FROM jobs WHERE job_id=? AND status='abandoned'",
-            (job_id,),
-        ).fetchone()
-        if not observed:
-            return False  # status moved under us — another claimant won
-        # CAS on restart_count AND no-child: a resume child (parent_job_id =
-        # this job) appearing between our SELECT and UPDATE means another
-        # worker already resumed it.
-        cursor = conn.execute(
-            """UPDATE jobs SET restart_count = restart_count + 1, updated_at=?
-               WHERE job_id=? AND status='abandoned' AND restart_count=?
-               AND NOT EXISTS (SELECT 1 FROM jobs c WHERE c.parent_job_id = jobs.job_id)""",
-            (_utc_now_iso(), job_id, observed["restart_count"]),
-        )
-        conn.commit()
-        if cursor.rowcount != 1:
+        if not _claim_scraper_resume(job_id):
             logger.info("Scraper auto-resume: lost claim race for %s — skipping", job_id[:8])
-            return False
-        # Close the remaining window: another claimant may have won earlier
-        # and inserted its child between our CAS and now. If so, release the
-        # attempt we just consumed and bail.
-        if _has_child_job(job_id):
-            conn.execute(
-                "UPDATE jobs SET restart_count = restart_count - 1 WHERE job_id=?",
-                (job_id,),
-            )
-            conn.commit()
-            logger.info("Scraper auto-resume: child appeared post-claim for %s — releasing", job_id[:8])
             return False
     except Exception as exc:
         logger.warning("Scraper auto-resume: claim failed for %s: %s", job_id, exc)
