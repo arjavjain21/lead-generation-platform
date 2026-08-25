@@ -378,6 +378,29 @@
             border-radius:9999px; font-size:.7rem; font-weight:600;
             display:inline-flex; align-items:center; line-height:1; text-transform:capitalize; }
 
+        /* ── One card per upload: restart-chain grouping (enrichment only) ── */
+        .chain-badge { display:inline-flex; align-items:center; gap:.2rem;
+            font-size:.7rem; font-weight:600; padding:.1rem .45rem;
+            border-radius:9999px; margin-top:.2rem; margin-left:.3rem;
+            background:#fef3c7; color:#92400e; cursor:help; vertical-align:middle; }
+        .chain-badge.superseded { background:#f1f5f9; color:#64748b; cursor:default; }
+        .chain-progress { font-size:.75rem; color:#1e40af; margin-top:.15rem; }
+        .chain-history-btn { background:none; border:none; padding:0;
+            font-size:.72rem; font-weight:600; color:#1d4ed8; cursor:pointer;
+            text-decoration:underline; display:inline-flex; align-items:center; gap:.25rem; }
+        .chain-history-btn:hover { color:#1e40af; }
+        .chain-history { grid-column:1 / -1; margin-top:.35rem;
+            border-top:1px dashed var(--gray-300, #cbd5e1); padding-top:.4rem; }
+        .chain-attempt { display:flex; flex-wrap:wrap; align-items:center;
+            gap:.25rem .6rem; font-size:.72rem; color:var(--gray-500, #6b7280);
+            padding:.15rem 0; }
+        .chain-attempt .att-badge { font-size:.65rem; font-weight:600;
+            padding:.05rem .35rem; border-radius:4px; background:#f1f5f9; color:#64748b; }
+        .chain-attempt .att-badge.att-current { background:#dcfce7; color:#166534; }
+        .chain-attempt .att-dl { font-size:.68rem; font-weight:600; color:#047857;
+            background:none; border:none; padding:0; cursor:pointer; text-decoration:underline; }
+        .chain-attempt .att-dl[disabled] { color:#9ca3af; cursor:default; text-decoration:none; }
+
         /* Sidebar account footer: ellipsis, no edge-kissing. */
         .sidebar-footer .user-email { max-width:160px; overflow:hidden;
             text-overflow:ellipsis; white-space:nowrap; }
@@ -5366,9 +5389,365 @@ example.org,Jane Doe</pre>
             }
             // Status filtering is now done server-side via the `status` query param
             // (see loadJobs). Only the "no jobs yet" empty state remains here.
-            jobsList.innerHTML = jobs.map(job => {
+            //
+            // ONE CARD PER UPLOAD: server restarts + auto-resume spawn a new child
+            // job per attempt, so a single uploaded CSV used to fan out into N
+            // near-identical cards with per-attempt numbers. Restart chains on the
+            // page now collapse into a single card (see buildEnrichmentChainUnits);
+            // ungrouped jobs render exactly as before.
+            const units = buildEnrichmentChainUnits(jobs);
+            jobsList.innerHTML = units.map(u => enrichmentJobCardHtml(u.job, u)).join('') + renderEnrichmentPagination();
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Restart-chain grouping (enrichment jobs list only).
+        //
+        // Chain semantics on the API: a job with source_type='restart' resumes
+        // the job in its parent_job_id; only the NEWEST descendant (the "head")
+        // can be running, ancestors are terminal. Each attempt's counters
+        // (processed / emails_found) cover ONLY the rows that attempt itself
+        // processed — carried-over partial rows are re-written into the child's
+        // CSV but never re-counted — so accumulated file progress is the SUM
+        // along the head's parent lineage, and the denominator is the chain
+        // root's deduped total. Pagination/filters can hide parts of a chain:
+        // grouping uses only what is on the page, and an ancestor whose restart
+        // children are all off-page (detectable via restart_count > 0) renders
+        // as a standalone card marked "Superseded" instead of showing actions.
+        // ─────────────────────────────────────────────────────────────────────
+
+        const CHAIN_TERMINAL_STATUSES = ['done', 'failed', 'abandoned', 'cancelled', 'partial'];
+        // Chain rootIds whose "Attempt history" disclosure is expanded
+        // (survives the list re-render that follows every action).
+        const enrichmentChainHistoryOpen = new Set();
+
+        function toggleEnrichmentChainHistory(rootId, btn) {
+            if (enrichmentChainHistoryOpen.has(rootId)) {
+                enrichmentChainHistoryOpen.delete(rootId);
+            } else {
+                enrichmentChainHistoryOpen.add(rootId);
+            }
+            const row = document.getElementById('chain-history-' + rootId);
+            if (row) row.style.display = enrichmentChainHistoryOpen.has(rootId) ? 'block' : 'none';
+            if (btn) {
+                const isOpen = enrichmentChainHistoryOpen.has(rootId);
+                // Preserve the "(N)" count across clicks: the marker glyph is
+                // the button's first text node, the count its last.
+                const count = (btn.textContent.match(/\((\d+)\)/) || [])[0] || '';
+                const label = (isOpen ? '▾' : '▸') + ' Attempt history' + (count ? ' ' + count : '');
+                if (btn.firstChild && btn.firstChild.nodeType === 3) btn.firstChild.nodeValue = label;
+                else btn.textContent = label;
+                btn.setAttribute('aria-expanded', String(isOpen));
+            }
+        }
+
+        function chainBadgeHtml(n) {
+            return '<span class="chain-badge" title="This job was automatically resumed after a server restart. Your results are saved; only remaining rows are processed.">↻ Resumed ' + n + ' times</span>';
+        }
+
+        // Build one render unit per card. Grouped units carry chain overrides
+        // (title/meta/actions-source); singleton units carry a `superseded`
+        // flag when their restart children exist but are hidden by the current
+        // filters/pagination.
+        function buildEnrichmentChainUnits(jobs) {
+            const byId = {};
+            jobs.forEach(j => { byId[j.job_id] = j; });
+
+            // job_id -> topmost ancestor visible on this page (cycle-safe).
+            const rootOf = {};
+            const resolveRoot = (job, depth) => {
+                const id = job.job_id;
+                if (rootOf[id] !== undefined) return rootOf[id];
+                rootOf[id] = id; // provisional; also breaks parent cycles
+                if (job.parent_job_id && byId[job.parent_job_id] && depth < 12) {
+                    rootOf[id] = resolveRoot(byId[job.parent_job_id], depth + 1);
+                }
+                return rootOf[id];
+            };
+            jobs.forEach(j => resolveRoot(j, 0));
+
+            const buckets = {};
+            jobs.forEach(j => {
+                const r = rootOf[j.job_id];
+                (buckets[r] || (buckets[r] = [])).push(j);
+            });
+
+            // SECOND PASS — reunite fragments of a chain whose ROOT is not on
+            // this page. parent links alone split one upload into several
+            // cards whenever the root falls off the page (the Aug-24 hyperke
+            // case: root on page 2, 19 descendants on page 1 → 6 fragments).
+            // A fragment whose top member is a restart PROVABLY has its root
+            // off-page (if the root were on this page the parent link would
+            // already have joined it into one bucket), so restart-topped
+            // fragments sharing (user, original upload filename) merge into
+            // ONE card. Root-topped fragments are never merged with anything
+            // (a same-named root here is a different upload of that file).
+            // The (user, filename) key alone is not proof of same upload —
+            // users habitually re-upload identically named files (4 distinct
+            // FD_new_lead_List.csv uploads exist live) — so candidates must
+            // ALSO be close in age: two fragments of ONE chain are created
+            // within hours (a restart resumes immediately), while separate
+            // uploads of the same name are typically a day or more apart.
+            // Fragments whose newest members are >24h apart are left as
+            // separate cards rather than risk merging two uploads.
+            const FRAGMENT_REUNION_MAX_GAP_MS = 24 * 60 * 60 * 1000;
+            const tsOf = (j) => Date.parse(j.created_at || '') || 0;
+            const fragmentKey = (j) => (j.user_id || '') + ' ' + (j.original_filename || '');
+            const fragGroups = {};
+            Object.keys(buckets).forEach(r => {
+                const members = buckets[r];
+                const top = members.find(m => m.source_type !== 'restart') || members.slice()
+                    .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')))[0];
+                const frag = { r, top, members };
+                if (top.source_type === 'restart' && top.original_filename) {
+                    const k = fragmentKey(top);
+                    (fragGroups[k] || (fragGroups[k] = [])).push(frag);
+                } else {
+                    // Root-topped, or a restart with no upload name to key on:
+                    // always its own card.
+                    fragGroups[r + '|own'] = [frag];
+                }
+            });
+            // Group same-key candidates by the age of their newest member:
+            // candidates land in the same reunion group only when consecutive
+            // newest-members are within the gap window (transitive chaining is
+            // allowed — an attempt resumed at 09:00 and 20:00 of one day is
+            // still one chain even though the ends are >12h apart).
+            const mergedBuckets = {};
+            Object.keys(fragGroups).forEach(k => {
+                const frags = fragGroups[k];
+                if (frags.length < 2) {
+                    mergedBuckets[frags[0].r] = frags[0].members;
+                    return;
+                }
+                // newest member per fragment = the fragment's age anchor.
+                frags.forEach(f => { f.newestTs = Math.max.apply(null, f.members.map(tsOf)); });
+                frags.sort((a, b) => a.newestTs - b.newestTs);
+                const clusters = [[frags[0]]];
+                for (let i = 1; i < frags.length; i++) {
+                    const prev = clusters[clusters.length - 1];
+                    const gap = frags[i].newestTs - prev[prev.length - 1].newestTs;
+                    if (gap <= FRAGMENT_REUNION_MAX_GAP_MS) prev.push(frags[i]);
+                    else clusters.push([frags[i]]);
+                }
+                // Merge each cluster into its OLDEST fragment's bucket (r is
+                // that fragment's top ancestor id, so distinct clusters keep
+                // distinct card ids).
+                clusters.forEach(cl => {
+                    if (cl.length < 2) { mergedBuckets[cl[0].r] = cl[0].members; return; }
+                    cl.sort((a, b) => String(a.top.created_at || '').localeCompare(String(b.top.created_at || '')));
+                    const target = cl[0];
+                    for (let i = 1; i < cl.length; i++) {
+                        target.members = target.members.concat(cl[i].members);
+                    }
+                    mergedBuckets[target.r] = target.members;
+                });
+            });
+
+            // On-page children per parent — a parent with 2+ children means the
+            // chain branched (parallel resume attempts) and progress sums can
+            // only be approximations.
+            const childCount = {};
+            jobs.forEach(j => {
+                if (j.parent_job_id && byId[j.parent_job_id]) {
+                    childCount[j.parent_job_id] = (childCount[j.parent_job_id] || 0) + 1;
+                }
+            });
+
+            const units = [];
+            Object.keys(mergedBuckets).forEach(r => {
+                const members = mergedBuckets[r];
+                if (members.length < 2) {
+                    const job = members[0];
+                    // restart_count > 0 means children exist somewhere; if none
+                    // are on this page they are hidden by filters/pagination and
+                    // this attempt has been superseded by a newer one.
+                    const superseded = (job.restart_count || 0) > 0
+                        && CHAIN_TERMINAL_STATUSES.includes(job.status);
+                    units.push({
+                        job,
+                        superseded,
+                        chainBadge: superseded ? chainBadgeHtml(job.restart_count) : null,
+                        sortKey: String(job.created_at || ''),
+                    });
+                    return;
+                }
+                units.push(buildChainGroupUnit(members, byId, childCount));
+            });
+
+            // Most recent activity first. Singletons keep their existing key
+            // (created_at, i.e. the server's order); groups sort by the HEAD's
+            // updated_at so a resumed upload floats back to the top.
+            units.sort((a, b) => String(b.sortKey).localeCompare(String(a.sortKey)));
+            return units;
+        }
+
+        function buildChainGroupUnit(members, byId, childCount) {
+            const byCreated = members.slice()
+                .sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+            // Identity = the original (non-restart) job when on-page; else the
+            // oldest visible member (true root hidden by filters/pagination).
+            const identity = members.find(m => m.source_type !== 'restart') || byCreated[0];
+            // Head = most recently active member (only the newest attempt runs).
+            const head = members.slice().sort((a, b) =>
+                String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')))[0];
+
+            // Head lineage: head + ancestors via parent links (page-local).
+            // Attempts OUTSIDE the lineage are superseded parallel branches —
+            // their rows were never carried into the head's CSV, so they are
+            // excluded from the progress sum.
+            const lineage = [];
+            let cur = head;
+            let hiddenAncestorBreak = false; // lineage stops at an off-page parent
+            for (let i = 0; cur && i < 30; i++) {
+                lineage.push(cur);
+                if (cur.parent_job_id && !byId[cur.parent_job_id]) hiddenAncestorBreak = true;
+                cur = cur.parent_job_id ? byId[cur.parent_job_id] || null : null;
+            }
+            const headId = head.job_id;
+            const attempts = byCreated.filter(m => m.job_id !== headId);
+
+            // Denominator = the upload's deduped size. The chain ROOT carries it;
+            // when the root is off-page (pagination/filters), the largest total in
+            // the chain is the closest visible proxy — restart totals are
+            // "remaining at start" and never exceed the file size.
+            const maxTotal = members.reduce((mx, m) => Math.max(mx, m.total || 0), 0);
+            const rootOnPage = identity.source_type !== 'restart';
+            let denom = rootOnPage ? (identity.total || maxTotal) : maxTotal;
+            if (!denom) denom = head.total || 0;
+
+            // Numerator = domains processed along the head lineage. Each restart
+            // only skips its DIRECT parent's checkpoints (earlier generations can
+            // be re-processed → overlap), so the sum can exceed the file and is
+            // capped. A break at an off-page parent loses that ancestor's count;
+            // denom − member.total (= rows skipped when that member was created)
+            // is a good estimate for it.
+            let numer = lineage.reduce((s, m) => s + (m.processed || 0), 0);
+            if (hiddenAncestorBreak) {
+                const oldest = lineage[lineage.length - 1];
+                numer += Math.max(0, denom - (oldest.total || 0));
+            }
+            if (numer > denom) numer = denom;
+            const lineageEmails = lineage.reduce((s, m) => s + (m.emails_found || 0), 0);
+
+            // Exact arithmetic is only guaranteed for a complete linear chain:
+            // branch points, off-page members, or a missing root make the
+            // numbers approximate → rendered with "≈". Compare the AGGREGATE
+            // attempt budget (Σ restart_count) against on-page edges
+            // (members - 1). Per-member comparison is wrong under the
+            // root-counted claim bump: every auto-resume increments the ROOT's
+            // counter while the child attaches to the abandoned HEAD, so a
+            // fully-on-page linear chain can show root rc=2 vs 1 child —
+            // a false "continues off-page" (and a wrongly demoted card).
+            const chainContinuesOffPage =
+                members.reduce((s, m) => s + (m.restart_count || 0), 0)
+                > members.length - 1;
+            const approx = hiddenAncestorBreak || !rootOnPage
+                || members.some(m => (childCount[m.job_id] || 0) > 1)
+                || chainContinuesOffPage;
+
+            const pct = denom > 0 ? Math.min(100, Math.round((numer / denom) * 100)) : 0;
+            const prefix = approx ? '≈' : '';
+            const approxNote = approx
+                ? ' Approximate: overlapping restart attempts, or part of the chain is hidden by the current filters.'
+                : '';
+            const chainMeta = {
+                parts: [
+                    new Date(identity.created_at).toLocaleString(),
+                    prefix + numer.toLocaleString() + ' of ' + denom.toLocaleString() + ' domains',
+                    prefix + lineageEmails.toLocaleString() + ' emails',
+                ].concat(approx ? ['(estimated)'] : []),
+                total: denom,
+                emails: lineageEmails,
+            };
+            const chainProgressHtml = '<div class="chain-progress" title="Progress adds up every time this upload was resumed. ≈ means some attempts overlapped, so the number is an estimate.' + approxNote + '">'
+                + '<strong>' + pct + '%</strong> of the uploaded file processed</div>';
+
+            // Restart count: each spawned child incremented its PARENT's
+            // restart_count, so the sum over on-page members is the number of
+            // restart attempts this chain made (never less than members-1).
+            const restarts = Math.max(
+                members.reduce((s, m) => s + (m.restart_count || 0), 0),
+                members.length - 1
+            );
+
+            const identityId = identity.job_id;
+            const isOpen = enrichmentChainHistoryOpen.has(identityId);
+            const historyToggleHtml = attempts.length > 0
+                ? '<button class="chain-history-btn" onclick="toggleEnrichmentChainHistory(\'' + identityId + '\', this)" aria-expanded="' + String(isOpen) + '">' + (isOpen ? '▾' : '▸') + ' Attempt history (' + attempts.length + ')</button>'
+                : '';
+            // History rows, OLDEST FIRST so "Attempt 1" is the first try. The
+            // newest attempt is rendered separately as "Current attempt" (it
+            // drives the card's own status/actions) so its data is always
+            // reachable even when the card itself shows no download action
+            // (e.g. an abandoned head with a CSV on disk but no recorded
+            // partial_output_path). Download visibility uses output_exists —
+            // /recover-partial falls back to outputs/{id}.csv, which is how a
+            // head with an empty partial_output_path still serves 16 MB.
+            const attemptRow = (m, badgeLabel, current) => {
+                const dl = m.output_exists
+                    ? '<button class="att-dl" onclick="downloadEnrichmentPartial(\'' + m.job_id + '\', this)">↓ Download partial</button>'
+                    : '<button class="att-dl" disabled title="No CSV on disk for this attempt">↓ Download partial</button>';
+                return '<div class="chain-attempt">'
+                    + '<span class="att-badge' + (current ? ' att-current' : '') + '">' + badgeLabel + '</span>'
+                    + '<span>' + new Date(m.created_at).toLocaleString() + '</span>'
+                    + '<span class="job-status status-' + m.status + '">' + jobStatusLabel(m.status) + '</span>'
+                    + '<span>' + (m.processed || 0).toLocaleString() + ' rows · ' + (m.emails_found || 0).toLocaleString() + ' emails</span>'
+                    + dl
+                    + '</div>';
+            };
+            const historyRows = attempts.length > 0
+                ? attempts.map((m, i) => attemptRow(m, 'Attempt ' + (i + 1), false))
+                    .concat([attemptRow(head, 'Current attempt', true)])
+                : [];
+            const historyHtml = historyRows.length > 0
+                ? '<div class="chain-history" id="chain-history-' + identityId + '" style="display:' + (isOpen ? 'block' : 'none') + ';">'
+                    + historyRows.join('')
+                    + '</div>'
+                : '';
+
+            // True origin of the upload: the identity may itself be a restart
+            // (root off-page), so prefer any member that still carries a real
+            // origin. 'restart' is not an origin — when no member knows it,
+            // hide the chip rather than show a wrong one.
+            const originMember = members.find(m =>
+                m.source_type === 'csv_upload' || m.source_type === 'google_maps_chain');
+            const resolvedOrigin = originMember ? originMember.source_type : null;
+
+            return {
+                job: head,
+                group: { identity, head, members, attempts, lineage },
+                title: identity.display_filename || identity.filename || head.display_filename || head.filename || 'Job',
+                chainMeta,
+                chainProgressHtml,
+                chainBadge: restarts > 0 ? chainBadgeHtml(restarts) : null,
+                historyToggleHtml,
+                historyHtml,
+                sourceType: resolvedOrigin,
+                // Root-topped bucket whose restarts outnumber its on-page
+                // children: the chain provably continues off-page (a newer
+                // attempt exists that this page doesn't show). Rendering it
+                // as an actionable head would target a STALE ancestor with
+                // Resume/Retry/Stop — demote those, keep the partial download
+                // (the data on disk is real).
+                continuation: rootOnPage && chainContinuesOffPage,
+                sortKey: String(head.updated_at || head.created_at || ''),
+            };
+        }
+
+        // Render ONE enrichment job card. `job` drives status/actions (the chain
+        // HEAD for grouped cards); `ctx` carries the chain-grouping overrides
+        // (title, file-level meta, attempt history) and the `superseded` flag.
+        function enrichmentJobCardHtml(job, ctx) {
+            ctx = ctx || {};
                         // Status display via the shared label map.
                         let statusDisplay = jobStatusLabel(job.status);
+
+                        // HTML-escape a display string (filenames are
+                        // user-controlled at upload time).
+                        const esc = (s) => String(s == null ? '' : s)
+                            .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                            .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+                            .replace(/'/g, '&#39;');
 
                         // Format providers display - show BOTH selected and used side by side
                         // 1. selectedDisplay: what the user selected (from selected_providers)
@@ -5440,7 +5819,15 @@ example.org,Jane Doe</pre>
                                 actions += ' <button class="btn btn-warning btn-sm" data-action="resume" data-job-id="'+job.job_id+'" onclick="resumeEnrichmentJob(\''+job.job_id+'\', this)">↻ Resume</button>';
                             }
                             actions += ' <button class="btn btn-secondary btn-sm" data-action="retry" data-job-id="'+job.job_id+'" onclick="retryEnrichmentJob(\''+job.job_id+'\', this)">Retry</button>';
-                            if (job.partial_output_path) {
+                            // Partial download gate. Grouped cards use
+                            // output_exists: the HEAD's counters/paths cover
+                            // only its slice, and /recover-partial falls back
+                            // to outputs/{id}.csv — so a head with an empty
+                            // partial_output_path can still serve a full CSV
+                            // (the Aug-24 hyperke head served 16.6 MB that
+                            // way). Singletons keep the exact-path gate.
+                            const partialAvailable = ctx.chainMeta ? job.output_exists : job.partial_output_path;
+                            if (partialAvailable) {
                                 actions += ' <button class="btn btn-success btn-sm" onclick="downloadEnrichmentPartial(\''+job.job_id+'\', this)">↓ Download partial</button>';
                             }
                         } else if (job.status === 'partial') {
@@ -5466,11 +5853,14 @@ example.org,Jane Doe</pre>
                         if (job.status === 'done' || job.status === 'partial' || job.status === 'running') {
                             actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleEnrichmentShards(\''+job.job_id+'\', this)">▦ Download in chunks</button>';
                         }
-                        // Show error message for failed/abandoned/cancelled jobs with hover tooltip
+                        // Show error message for failed/abandoned/cancelled jobs with hover tooltip.
+                        // Both the visible text and the title attribute are
+                        // HTML-escaped — job.error is server-controlled text
+                        // and must never reach the DOM as markup.
                         let errorInfo = '';
                         if (job.error && (job.status === 'failed' || job.status === 'abandoned' || job.status === 'cancelled')) {
-                            const fullError = job.error.replace(/'/g, "\\'").replace(/"/g, '\\"');
-                            const shortError = job.error.length > 60 ? job.error.substring(0, 60) + '...' : job.error;
+                            const fullError = esc(job.error);
+                            const shortError = esc(job.error.length > 60 ? job.error.substring(0, 60) + '...' : job.error);
                             errorInfo = '<div class="job-error" title="' + fullError + '">' + shortError + '</div>';
                         }
 
@@ -5506,18 +5896,25 @@ example.org,Jane Doe</pre>
                         // non-empty input. Almost always a silent cascade bug
                         // (the 2026-07-11..13 outage looked exactly like this).
                         // Surfaces the issue instead of letting users waste time
-                        // downloading a 0-byte CSV.
+                        // downloading a 0-byte CSV. For grouped cards, use the
+                        // CHAIN-level numbers (the head's own counters only
+                        // cover its slice of the file).
+                        const _effTotal = ctx.chainMeta ? (ctx.chainMeta.total || 0) : (job.total || 0);
+                        const _effEmails = ctx.chainMeta ? (ctx.chainMeta.emails || 0) : (job.emails_found || 0);
                         let zeroEmailWarning = '';
                         let zeroEmailCardClass = '';
-                        if (job.status === 'done' && (job.total || 0) > 0 && (job.emails_found || 0) === 0) {
+                        if (job.status === 'done' && _effTotal > 0 && _effEmails === 0) {
                             zeroEmailCardClass = ' zero-email-card';
                             zeroEmailWarning = '<div class="zero-email-warning" title="Job completed but produced no data. This is almost always a bug — contact support or retry.">' +
-                                '<strong>⚠ 0 emails found</strong> on a ' + job.total + '-row input. ' +
+                                '<strong>⚠ 0 emails found</strong> on a ' + _effTotal + '-row input. ' +
                                 'Output CSV is likely empty. <span style="text-decoration: underline;">Retry the job or contact support.</span>' +
                                 '</div>';
                         }
 
-                        const metaParts = [
+                        // Meta line: file-level numbers for grouped cards
+                        // (root's upload date + accumulated chain progress),
+                        // per-job numbers otherwise.
+                        const metaParts = ctx.chainMeta ? ctx.chainMeta.parts : [
                             new Date(job.created_at).toLocaleString(),
                             (job.processed||0) + '/' + (job.total||0) + ' rows',
                             (job.emails_found||0) + ' emails',
@@ -5530,6 +5927,12 @@ example.org,Jane Doe</pre>
                             : '<span class="file-chip file-ready" title="Result file is ready">✓ File ready</span>') : '';
 
                         // Source-provenance chip (origin of the enrichment run).
+                        // Grouped cards show the ORIGINAL upload's origin, not
+                        // the head's 'restart'. ctx.sourceType is the resolved
+                        // origin (null when every visible member is a restart
+                        // and the true root is off-page) — in that case hide
+                        // the chip rather than show a wrong origin. Singletons
+                        // fall back to the job's own source_type as before.
                         const _srcMap = {
                             google_maps_chain: { t: '🌐 Google Maps', c: '#1d4ed8', b: '#dbeafe' },
                             csv_upload: { t: '📤 Upload', c: '#475569', b: '#f1f5f9' },
@@ -5537,23 +5940,60 @@ example.org,Jane Doe</pre>
                             search: { t: '🔎 Search', c: '#6b21a8', b: '#f3e8ff' },
                             restart: { t: '↻ Restart', c: '#92400e', b: '#fef3c7' },
                         };
-                        const _src = _srcMap[job.source_type];
-                        const sourceChip = _src ? '<span class="file-chip" style="color:' + _src.c + ';background:' + _src.b + ';" title="Origin: ' + job.source_type + '">' + _src.t + '</span>' : '';
+                        const _srcKey = ctx.group ? ctx.sourceType : (ctx.sourceType || job.source_type);
+                        const _src = _srcKey ? _srcMap[_srcKey] : null;
+                        const sourceChip = _src ? '<span class="file-chip" style="color:' + _src.c + ';background:' + _src.b + ';" title="Origin: ' + _srcKey + '">' + _src.t + '</span>' : '';
+
+                        // A terminal singleton whose restart children are all
+                        // off-page has been superseded by a newer attempt —
+                        // its actions would operate on stale state, so replace
+                        // them with an explanatory badge.
+                        //
+                        // A CONTINUATION card is the same idea for grouped
+                        // cards: a root-topped bucket whose chain provably
+                        // continues off-page (Σrestart_count > on-page
+                        // children). Its head is a stale mid-chain ancestor,
+                        // so Resume/Retry/Stop are removed. The partial
+                        // download STAYS: the CSV on disk for this attempt is
+                        // real data (output_exists gates it — /recover-partial
+                        // falls back to outputs/{id}.csv).
+                        let actionsHtml = actions;
+                        let supersededBadge = '';
+                        if (ctx.superseded) {
+                            // Superseded too keeps its partial download: the CSV
+                            // on disk for THIS attempt is real data the user
+                            // must not lose access to.
+                            const dlPartial = job.output_exists
+                                ? ' <button class="btn btn-success btn-sm" onclick="downloadEnrichmentPartial(\'' + job.job_id + '\', this)">↓ Download partial</button>'
+                                : '';
+                            actionsHtml = dlPartial;
+                            supersededBadge = '<span class="chain-badge superseded" title="A newer attempt of this upload exists but is outside the current filter/page. Clear the filters to see it. The partial download is this attempt\'s own data.">Superseded</span>';
+                        } else if (ctx.continuation) {
+                            const dlPartial = job.output_exists
+                                ? ' <button class="btn btn-success btn-sm" onclick="downloadEnrichmentPartial(\'' + job.job_id + '\', this)">↓ Download partial</button>'
+                                : '';
+                            actionsHtml = dlPartial;
+                            supersededBadge = '<span class="chain-badge superseded" title="This upload continues on another page — a newer attempt exists outside the current filter/page. Go to the next page (or clear filters) to act on it. The partial download below is this attempt\'s own data.">Continued on another page</span>';
+                        }
 
                         return '<div class="job-card' + zeroEmailCardClass + '">'
                             + '<div class="job-info">'
-                            + '<h4>' + (job.display_filename || job.filename || 'Job') + '</h4>'
+                            + '<h4>' + esc(ctx.title || job.display_filename || job.filename || 'Job') + '</h4>'
                             + '<div class="job-meta">' + metaHtml + '</div>'
                             + fileChip
                             + sourceChip
+                            + (ctx.chainBadge || '')
+                            + supersededBadge
+                            + (ctx.chainProgressHtml || '')
+                            + '<div style="margin-top:.2rem;">' + (ctx.historyToggleHtml || '') + '</div>'
                             + '<div class="job-providers" style="font-size: 0.75rem; margin-top: 4px;"><div style="color: #1e40af;"><strong>Selected:</strong> ' + selectedDisplay + '</div><div style="color: #059669;"><strong>Used:</strong> ' + usedDisplay + '</div></div>'
                             + errorInfo + providerErrorsDisplay + zeroEmailWarning
                             + '</div>'
                             + '<div class="job-status-wrap">' + statusBadge + '</div>'
-                            + '<div class="actions">' + actions + '</div>'
+                            + '<div class="actions">' + actionsHtml + '</div>'
+                            + (ctx.historyHtml || '')
                             + '<div class="shard-list" id="shard-list-' + job.job_id + '"></div>'
                             + '</div>';
-                    }).join('') + renderEnrichmentPagination();
         }
 
         // Render the prev/next pagination row for the enrichment jobs list.
@@ -6394,6 +6834,8 @@ example.org,Jane Doe</pre>
         window.downloadEnrichmentShard = downloadEnrichmentShard;
         window.toggleEnrichmentShards = toggleEnrichmentShards;
         window.resumeEnrichmentJob = resumeEnrichmentJob;
+        // Chain-grouped job list ("one card per upload"):
+        window.toggleEnrichmentChainHistory = toggleEnrichmentChainHistory;
         // Scraper Stop + Retry Fresh (were silently broken on click):
         window.cancelScraperJob = cancelScraperJob;
         window.retryScraperJob = retryScraperJob;
