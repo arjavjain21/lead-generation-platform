@@ -40,6 +40,7 @@ from . import smartprospect_client
 from . import getleads_client
 from . import identifier_utils
 from . import company_fallback
+from . import seg
 
 logger = logging.getLogger(__name__)
 
@@ -516,6 +517,9 @@ ENRICHED_COLUMNS = [
     "final_email",
     "final_email_level",
     "final_email_source_path",
+    # seg: appended at END — resume carry-over rows from pre-feature partials get blanks via restval=''
+    "seg_classification",
+    "seg_provider",
 ]
 
 
@@ -3660,6 +3664,29 @@ async def run_pipeline(
         )
         async with audit_lock:
             audit_records.append(audit)
+
+        # SEG pre-pass for this row's result rows: ONE classify call for the
+        # row's domain, stamped BEFORE the email-cache store and the CSV write
+        # below (classification never runs inside the write block — its
+        # flush -> checkpoint -> progress ordering is load-bearing). Sitting
+        # before the cache store means a cached replay (early-return path
+        # above) keeps its seg values instead of degrading to blanks.
+        # Flag off => {} => blank seg columns, zero I/O. Blank domain =>
+        # blank seg columns, no lookup.
+        seg_map: dict[str, Any] = {}
+        if domain:
+            try:
+                seg_map = await seg.classify_domains([domain])
+            except Exception as seg_exc:  # defensive: classify_domains never raises
+                logger.warning(
+                    "seg classify pre-pass failed for %s (%s) — blank seg columns",
+                    domain, type(seg_exc).__name__,
+                )
+                seg_map = {}
+        _seg_entry = seg_map.get(seg.normalize_seg_key(domain)) if domain else None
+        for r in result_rows:
+            r["seg_classification"] = _seg_entry["seg_classification"] if _seg_entry else ""
+            r["seg_provider"] = _seg_entry["seg_provider"] if _seg_entry else ""
 
         # Persist the successful row to the email cache so future runs can
         # skip it. We do this *after* the audit so the audit log always

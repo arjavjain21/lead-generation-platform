@@ -35,6 +35,7 @@ from . import job_store
 from . import identifier_utils
 from . import company_fallback
 from . import fallback_config as fb_cfg
+from . import seg
 from .pipeline import _getleads_dm_snapshot
 
 logger = logging.getLogger(__name__)
@@ -326,6 +327,9 @@ ENRICHED_COLUMNS = [
     "final_email",
     "final_email_level",
     "final_email_source_path",
+    # seg: appended at END — resume carry-over rows from pre-feature partials get blanks via restval=''
+    "seg_classification",
+    "seg_provider",
 ]
 
 
@@ -384,6 +388,8 @@ def _empty_enriched() -> dict[str, Any]:
         "final_email": "",
         "final_email_level": "",
         "final_email_source_path": "",
+        "seg_classification": "",
+        "seg_provider": "",
     }
 
 
@@ -1171,6 +1177,65 @@ async def _merge_by_company_contacts(
     return output_rows
 
 
+def _seg_domain_from_row(row: Optional[dict[str, Any]]) -> str:
+    """Best-effort domain extraction for the SEG pre-pass (Flow 3 LinkedIn
+    flows). Tries the same fields ``_apply_company_fallback_to_output_rows``
+    uses (``domain`` / ``company_domain``) plus the attached ``input_domain``
+    (already normalized by ``attach_input_columns`` in a previous flush) and
+    the raw ``company_website``/``website`` carriers. Returns '' when the row
+    carries no usable domain — the row then gets blank seg columns."""
+    if not isinstance(row, dict):
+        return ""
+    for key in ("domain", "company_domain", "input_domain", "company_website", "website"):
+        val = str(row.get(key, "") or "").strip()
+        if val:
+            return identifier_utils.normalize_domain(val)
+    return ""
+
+
+async def _attach_seg_columns(
+    batch_rows: list[OutputRow],
+    domain_col: Optional[str] = None,
+) -> None:
+    """SEG pre-pass for one completed batch: ONE ``seg.classify_domains``
+    call for the whole batch (it dedupes + caches internally), then stamp
+    ``seg_classification`` / ``seg_provider`` onto each row in place.
+
+    Call this BEFORE ``_flush_incremental_batch`` — classification never runs
+    inside the flush (its flush -> fsync -> checkpoint -> drain ordering is
+    load-bearing). Best-effort: any failure leaves the columns blank ('' via
+    ``_empty_enriched`` / DictWriter ``restval=''``), never breaks enrichment.
+    Flag off => ``classify_domains`` returns ``{}`` => blank columns, zero I/O.
+    Rows with no usable domain get blank seg columns (no lookup).
+
+    Domain source: ``domain_col`` when given (Flow 1 — the input column),
+    else ``_seg_domain_from_row`` (Flow 3 — rows carry ``domain`` /
+    ``company_domain`` / ``input_domain`` when the CSV had one).
+    """
+    if not batch_rows:
+        return
+    if domain_col:
+        domains = [
+            identifier_utils.normalize_domain(str(r.get(domain_col, "") or ""))
+            for r in batch_rows
+        ]
+    else:
+        domains = [_seg_domain_from_row(r) for r in batch_rows]
+    seg_map: dict[str, Any] = {}
+    try:
+        seg_map = await seg.classify_domains(domains)
+    except Exception as seg_exc:  # defensive: classify_domains never raises
+        logger.warning(
+            "seg classify pre-pass failed (%s) — blank seg columns",
+            type(seg_exc).__name__,
+        )
+        seg_map = {}
+    for _r, _d in zip(batch_rows, domains):
+        _v = seg_map.get(seg.normalize_seg_key(_d)) if _d else None
+        _r["seg_classification"] = _v["seg_classification"] if _v else ""
+        _r["seg_provider"] = _v["seg_provider"] if _v else ""
+
+
 async def _apply_company_fallback_to_output_rows(
     blitz_http: httpx.AsyncClient,
     output_rows: list[dict[str, Any]],
@@ -1622,6 +1687,14 @@ async def run_domain_enrichment(
                         )
                         if _dom:
                             done_domains.append(_dom)
+
+            # SEG pre-pass: classify this batch's domains BEFORE the flush
+            # (never inside it — the flush -> fsync -> checkpoint -> drain
+            # ordering is load-bearing). One classify call per batch.
+            # Unconditional on batch_new so the non-incremental final CSV
+            # (pandas path in the runner) carries values too.
+            if batch_new:
+                await _attach_seg_columns(batch_new, domain_col=domain_col)
 
             # Durable snapshot for this batch (incremental persistence). Gated by
             # write_incremental so legacy callers (write_incremental=False) are unchanged.
@@ -2239,6 +2312,13 @@ async def run_linkedin_enrichment(
                     all_output.append(result)
                     batch_new.append(result)
                     done_indices.append(batch_start + i)
+
+            # SEG pre-pass: classify this batch's domains BEFORE the flush
+            # (never inside it — the flush ordering is load-bearing). Rows
+            # without a domain column get blank seg columns. Unconditional on
+            # batch_new so the non-incremental final CSV carries values too.
+            if batch_new:
+                await _attach_seg_columns(batch_new)
 
             # Durable snapshot for this batch (incremental persistence). Gated by
             # write_incremental so legacy callers (write_incremental=False) are unchanged.
@@ -2877,6 +2957,13 @@ async def run_unified_linkedin_enrichment(
                     all_output.extend(result)
                     batch_new.extend(result)
                     done_indices.append(batch_start + i)
+
+            # SEG pre-pass: classify this batch's domains BEFORE the flush
+            # (never inside it — the flush ordering is load-bearing). Rows
+            # without a domain column get blank seg columns. Unconditional on
+            # batch_new so the non-incremental final CSV carries values too.
+            if batch_new:
+                await _attach_seg_columns(batch_new)
 
             # Durable snapshot for this batch (incremental persistence). Gated by
             # write_incremental so legacy callers (write_incremental=False) are unchanged.
