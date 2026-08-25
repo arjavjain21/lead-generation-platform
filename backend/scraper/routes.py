@@ -759,29 +759,17 @@ async def start_job(
         total_tasks=total_tasks,
     )
 
-    _job_signals[job_id] = asyncio.Event()
-    _active_jobs.add(job_id)
-
-    output_path = OUTPUT_DIR / f"{job_id}.csv"
-
-    background_tasks.add_task(
-        _run_job,
-        job_id=job_id,
-        user_id=current_user["user_id"],
-        is_admin=is_admin,
-        query=req.query.strip(),
-        filtered_centers=filtered_centers,
-        api_key=api_key,
-        output_path=output_path,
-        expected_types=req.expected_types or [],
-        cancelled_jobs=_cancelled_jobs,
-    )
-
+    # Queue the job — the dispatcher (scraper/dispatch.py) claims it into
+    # 'running' when a platform-wide concurrency slot frees up. Response
+    # returns immediately with status 'queued'. No runner, event, or memory
+    # is held while waiting (2026-08-24 freeze fix).
     return {
         "job_id": job_id,
         "total_tasks": total_tasks,
         "center_count": len(filtered_centers),
         "warnings": errors,
+        "status": "queued",
+        "message": "Job queued. It will start automatically when a slot frees up.",
     }
 
 
@@ -1357,9 +1345,6 @@ async def resume_scraper_job(
         parent_job_id=job_id
     )
 
-    _job_signals[new_job_id] = asyncio.Event()
-    _active_jobs.add(new_job_id)
-
     # Optionally copy original results
     # Calculate original path dynamically if not in database
     original_path = None
@@ -1420,32 +1405,19 @@ async def resume_scraper_job(
         else:
             logger.warning(f"Original results not found for resume: {original_path}")
 
-    # Get API key
-    api_key = os.getenv("SCRAPER_TECH_KEY")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="SCRAPER_TECH_KEY not configured")
-
-    # Start background job with pending tasks only
-    background_tasks.add_task(
-        _run_job_with_tasks,
-        job_id=new_job_id,
-        user_id=current_user["user_id"],
-        is_admin=current_user.get("is_admin", False),
-        query=original_job["query"],
-        tasks=pending_tasks,
-        api_key=api_key,
-        output_path=output_path,
-        expected_types=resume_expected_types,
-        cancelled_jobs=_cancelled_jobs
-    )
-
-    logger.info("Job %s resumed from %s, %d pending tasks", new_job_id[:8], job_id[:8], len(pending_tasks))
+    # Queue through the dispatcher — same path as fresh jobs. The claimed-job
+    # runner (_launch_claimed_job → _run_job_with_tasks) re-derives the
+    # pending task list from the job chain's checkpoints at claim time, so
+    # nothing is lost between this endpoint returning and the job starting.
+    logger.info("Job %s queued for resume from %s, %d pending tasks", new_job_id[:8], job_id[:8], len(pending_tasks))
 
     return {
         "job_id": new_job_id,
         "resumed_from": job_id,
         "pending_tasks": len(pending_tasks),
-        "skipped_tasks": len(all_tasks) - len(pending_tasks)
+        "skipped_tasks": len(all_tasks) - len(pending_tasks),
+        "status": "queued",
+        "message": "Resume queued. It will start automatically when a slot frees up.",
     }
 
 
@@ -1537,41 +1509,180 @@ async def restart_scraper_job(
         parent_job_id=job_id,  # Link to original job
     )
 
-    _job_signals[new_job_id] = asyncio.Event()
-    _active_jobs.add(new_job_id)
-
-    output_path = OUTPUT_DIR / f"{new_job_id}.csv"
-
-    # Get API key
-    api_key = os.getenv("SCRAPER_TECH_KEY", "")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="SCRAPER_TECH_KEY is not configured on the server.")
-
-    # Start the background job
-    background_tasks.add_task(
-        _run_job,
-        job_id=new_job_id,
-        user_id=current_user["user_id"],
-        is_admin=is_admin,
-        query=query,
-        filtered_centers=filtered_centers,
-        api_key=api_key,
-        output_path=output_path,
-        expected_types=restart_expected_types,
-        cancelled_jobs=_cancelled_jobs,  # Pass cancel tracking
-    )
-
-    logger.info("Scraper job %s restarted by user %s, new job: %s", job_id, current_user.get("user_id"), new_job_id)
+    # Job created above with status='queued' (create_scraper_job default).
+    # The dispatcher claims it when a platform-wide slot frees up; the
+    # claimed-job runner re-derives centers from the regions blob.
+    logger.info("Scraper job %s restarted by user %s, new job: %s (queued)", job_id, current_user.get("user_id"), new_job_id)
     return {
         "job_id": new_job_id,
         "total": total_tasks,
         "restarted_from": job_id,
+        "status": "queued",
+        "message": "Restart queued. It will start automatically when a slot frees up.",
     }
 
 
 # ---------------------------------------------------------------------------
 # Background job runner
 # ---------------------------------------------------------------------------
+
+def _derive_pending_tasks(
+    original_job: dict[str, Any],
+    job_id: str,
+) -> tuple[list[dict[str, Any]], list[tuple[dict[str, Any], int]], list[str]]:
+    """Re-derive (all_centers, pending_tasks, expected_types) for a claimed job.
+
+    Reconstructs the center list from the job's stored regions blob, rebuilds
+    every (center, zoom) task, and subtracts the checkpoints of the whole job
+    chain (walks parent_job_id to the root — same logic as the resume
+    endpoint). Fresh jobs have no checkpoints, so they get every task.
+
+    Returns ([], [], []) only when the config itself is unrecoverable; the
+    caller marks the job failed in that case.
+    """
+    store = job_store.get_store()
+
+    try:
+        regions = json.loads(original_job.get("regions") or "{}")
+    except (ValueError, TypeError):
+        regions = {}
+
+    expected_types = regions.get("expected_types", []) or []
+    centers_kwargs = {k: v for k, v in regions.items() if k != "expected_types"}
+    filtered_centers, errors = centers_module.get_centers_for_job(**centers_kwargs)
+    if errors and not filtered_centers:
+        logger.error("Claimed job %s: centers unrecoverable: %s", job_id[:8], errors)
+        return [], [], expected_types
+    if not filtered_centers:
+        logger.error("Claimed job %s: no centers for regions %s", job_id[:8], list(centers_kwargs.keys()))
+        return [], [], expected_types
+
+    all_tasks = [(center, zoom) for center in filtered_centers for zoom in [10, 11, 12]]
+
+    # Subtract checkpoints across the whole chain (resume semantics).
+    all_checkpoints = []
+    current_job_id = original_job.get("parent_job_id")
+    visited = set()
+    while current_job_id and current_job_id not in visited:
+        visited.add(current_job_id)
+        all_checkpoints.extend(store.get_task_checkpoints(current_job_id))
+        parent_row = store.get_job(current_job_id)
+        if not parent_row:
+            break
+        current_job_id = parent_row.get("parent_job_id")
+
+    completed = {
+        (cp["center_name"], cp["center_state"], cp["zoom"])
+        for cp in all_checkpoints
+    }
+    pending_tasks = [
+        (center, zoom)
+        for center, zoom in all_tasks
+        if (center["name"], center["state"], zoom) not in completed
+    ]
+    logger.info(
+        "Claimed job %s: %d centers, %d/%d tasks pending after %d chain checkpoints",
+        job_id[:8], len(filtered_centers), len(pending_tasks), len(all_tasks), len(completed),
+    )
+    return filtered_centers, pending_tasks, expected_types
+
+
+async def _launch_claimed_job(job_id: str) -> None:
+    """Launch the runner for a job the dispatcher just claimed (queued→running).
+
+    Single funnel for fresh jobs, resumes, restarts, and auto-resume. The job
+    row is already 'running' (the dispatcher's atomic claim did that); this
+    reconstructs the inputs from the DB and hands off to the existing
+    _run_job / _run_job_with_tasks runners, which handle heartbeat, events,
+    checkpoints, partial output, and all terminal statuses.
+
+    Failure safety: any exception here marks the job failed (it is 'running'
+    in the DB and nothing else will ever run it) and logs loudly.
+    """
+    store = job_store.get_store()
+    job = store.get_job(job_id)
+    if not job or job.get("job_type") != "scraper":
+        logger.error("Dispatch: claimed job %s not found / not scraper — releasing", job_id)
+        try:
+            store.set_failed(job_id, "Dispatcher: job row disappeared before launch")
+        except Exception:
+            pass
+        return
+
+    if store.is_job_cancelled(job_id) or job.get("status") == "cancelled":
+        logger.info("Dispatch: claimed job %s is cancelled — not launching", job_id[:8])
+        return
+
+    user_id = job.get("user_id") or ""
+    is_admin = False
+    try:
+        user_row = db.get_db().execute(
+            "SELECT is_admin FROM users WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        is_admin = bool(user_row["is_admin"]) if user_row else False
+    except Exception as adm_err:
+        logger.warning("Dispatch: is_admin lookup failed for %s (%s) — assuming False", job_id[:8], adm_err)
+
+    api_key = os.getenv("SCRAPER_TECH_KEY", "")
+    output_path = OUTPUT_DIR / f"{job_id}.csv"
+
+    try:
+        has_parent = bool(job.get("parent_job_id"))
+        if has_parent:
+            # Resume/restart chain: run only tasks not checkpointed up the chain.
+            _, pending_tasks, expected_types = _derive_pending_tasks(job, job_id)
+            if not pending_tasks:
+                # Everything already done (crash between last checkpoint and
+                # set_done) — finalize from existing output instead of failing.
+                if output_path.exists() and output_path.stat().st_size > 0:
+                    store.set_done(job_id, str(output_path))
+                    logger.info("Dispatch: job %s had no pending tasks — marked done from existing output", job_id[:8])
+                else:
+                    store.set_failed(job_id, "No pending tasks and no output file")
+                return
+            await _run_job_with_tasks(
+                job_id=job_id,
+                user_id=user_id,
+                is_admin=is_admin,
+                query=job.get("query", ""),
+                tasks=pending_tasks,
+                api_key=api_key,
+                output_path=output_path,
+                expected_types=expected_types,
+                cancelled_jobs=_cancelled_jobs,
+            )
+        else:
+            # Fresh job: full center list, no checkpoints to subtract.
+            regions = json.loads(job.get("regions") or "{}")
+            expected_types = regions.get("expected_types", []) or []
+            centers_kwargs = {k: v for k, v in regions.items() if k != "expected_types"}
+            filtered_centers, errors = centers_module.get_centers_for_job(**centers_kwargs)
+            if errors and not filtered_centers:
+                store.set_failed(job_id, f"Centers unrecoverable: {'; '.join(errors)}")
+                return
+            if not filtered_centers:
+                store.set_failed(job_id, "No geographic centers found for the stored region.")
+                return
+            await _run_job(
+                job_id=job_id,
+                user_id=user_id,
+                is_admin=is_admin,
+                query=job.get("query", ""),
+                filtered_centers=filtered_centers,
+                api_key=api_key,
+                output_path=output_path,
+                expected_types=expected_types,
+                cancelled_jobs=_cancelled_jobs,
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.exception("Dispatch: launch failed for job %s", job_id)
+        try:
+            store.set_failed(job_id, f"Dispatcher launch failure: {exc}")
+        except Exception:
+            pass
+
 
 async def _run_job(
     job_id: str,
@@ -1981,7 +2092,7 @@ def cleanup_stale_jobs() -> None:
     for job_id in stale:
         store.set_abandoned(
             job_id,
-            "Job was abandoned: Server restarted or crashed while processing. "
-            "The job was interrupted before completion. Please retry from the beginning."
+            "Job was interrupted by a server restart. Your results so far are saved — "
+            "use Resume/Restart to continue from where it stopped."
         )
         logger.warning("Marked stale scraper job %s as abandoned", job_id)

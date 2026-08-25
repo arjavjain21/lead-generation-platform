@@ -22,6 +22,7 @@ import time
 import sqlite3
 import tempfile
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -35,6 +36,7 @@ from shared import auth, db
 from . import blitz_client
 from . import contacts_client
 from . import job_store
+from .chain_info import chain_attempt_counts, chain_roots_for_jobs
 from . import pipeline
 from . import list_builder
 from . import better_enrich_client
@@ -420,6 +422,8 @@ _active_jobs: set[str] = set()
 _job_signals: dict[str, asyncio.Event] = {}
 # Set of jobs that have been cancelled by user
 _cancelled_jobs: set[str] = set()
+# Per-job dedupe_by_domain flag (memoized) — gates domain-checkpoint WRITES
+_JOB_DEDUPE_CACHE: dict[str, bool] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -3604,6 +3608,23 @@ async def list_enrichment_jobs(
     for job in jobs:
         job["output_exists"] = _job_output_exists(job)
 
+    # Restart-chain metadata so the grouped UI can key chains server-side
+    # (client-side inference from page-local parent_job_id links splits one
+    # upload across pages). Best-effort: on failure the keys are simply
+    # absent and the UI falls back to its own inference.
+    try:
+        if jobs:
+            roots = chain_roots_for_jobs(jobs, store.conn)
+            attempts = chain_attempt_counts(jobs, store.conn)
+            for job in jobs:
+                job_id = job.get("job_id")
+                root_id = roots.get(job_id)
+                if root_id:
+                    job["chain_root_id"] = root_id
+                    job["chain_attempts"] = attempts.get(root_id, 1)
+    except Exception as cie:
+        logger.warning("chain_info augmentation failed: %s", cie)
+
     return {"jobs": jobs, "total": total, "limit": limit, "offset": offset}
 
 
@@ -3946,6 +3967,28 @@ async def enrichment_resume_info(
         checkpoint_count = int(store.get_checkpoint_count(job_id))
     except Exception:
         checkpoint_count = 0
+    # Prefer DOMAIN space when this job has domain checkpoints: positional
+    # indices live in the job's own deduped subset, so `total - index_count`
+    # misreports remaining work; `total - domain_count` is the number the
+    # resume filter actually honors. Absent domain checkpoints (pre-migration
+    # jobs) keep the historical index-based report.
+    # Two guards on that preference (M3):
+    #   * plausibility — the LEGACY pipeline runner (_run_job) checkpoints a
+    #     domain only every 100th row (~1% sample); a handful of domain rows
+    #     on a 10K-row job would report ~99% remaining while the index count
+    #     is the honest number. Only prefer domain space when it covers a
+    #     plausible fraction of the file (> total/200).
+    #   * dedupe OFF — the resume filter deliberately IGNORES domain
+    #     checkpoints for these jobs (C1: domains are not unique per row), so
+    #     reporting in domain space would contradict what a resume does.
+    try:
+        domain_checkpoint_count = int(store.count_domain_checkpoints(job_id))
+    except Exception:
+        domain_checkpoint_count = 0
+    _dedupe_on = bool(job_data.get("dedupe_by_domain", 1))
+    _domain_plausible = total > 0 and domain_checkpoint_count * 200 > total
+    if domain_checkpoint_count > 0 and _domain_plausible and _dedupe_on:
+        checkpoint_count = domain_checkpoint_count
     partial_csv = OUTPUT_DIR / f"{job_id}.csv"
     partial_csv_exists = partial_csv.exists() and partial_csv.stat().st_size > 0
     partial_csv_rows = _count_csv_data_rows(partial_csv) if partial_csv_exists else 0
@@ -3956,6 +3999,7 @@ async def enrichment_resume_info(
         "status": job_data["status"],
         "total": total,
         "checkpoint_count": checkpoint_count,
+        "domain_checkpoint_count": domain_checkpoint_count,
         "partial_csv_exists": partial_csv_exists,
         "partial_csv_rows": partial_csv_rows,
         "emails_found": emails_found,
@@ -4217,6 +4261,19 @@ async def _run_job(
         row_index = e.get("index", 0)
         if row_index % 100 == 0:
             progress_store.write_checkpoint(job_id, row_index)
+            # Domain-keyed checkpoint alongside the index one — resume filters
+            # by domain (indices are per-job subset space). The pipeline emits
+            # an already-normalized domain; '' (no usable domain) is skipped
+            # inside write_domain_checkpoints_batch. Skipped entirely when the
+            # job has dedupe OFF: domain-twin rows must stay independently
+            # resumable, and every reader already ignores these rows for
+            # dedupe=0 jobs (writing them would just be inert data).
+            _domain = str(e.get("domain", "") or "")
+            if _domain and _job_dedupe_on(job_id):
+                try:
+                    progress_store.write_domain_checkpoints_batch(job_id, [_domain])
+                except Exception as dom_ck_err:
+                    logger.warning("Job %s: domain checkpoint write failed: %s", job_id, dom_ck_err)
 
         sig = _job_signals.get(job_id)
         if sig:
@@ -4459,18 +4516,261 @@ async def restart_enrichment_job(
     return await _restart_job_core(job_id, current_user, background_tasks=background_tasks)
 
 
+def _find_active_descendant(job_id: str) -> Optional[dict]:
+    """Find any RUNNING/QUEUED job in the restart-descendant tree of job_id.
+
+    BFS over parent_job_id links, capped at 10 levels. The old guard checked
+    only DIRECT children with active status; when a direct child had itself
+    died and been resumed (child abandoned, grandchild running), the guard
+    passed and a second restart of the same file was allowed — the parallel-
+    branch bug of the Aug 24 hyperke-saas chain.
+    """
+    conn = db.get_db()
+    frontier = [job_id]
+    seen = {job_id}
+    for _ in range(10):
+        if not frontier:
+            break
+        placeholders = ",".join("?" for _ in frontier)
+        rows = conn.execute(
+            f"""SELECT job_id, status, parent_job_id FROM jobs
+                WHERE parent_job_id IN ({placeholders})
+                  AND status IN ('running', 'queued', 'pending')""",
+            frontier,
+        ).fetchall()
+        if rows:
+            return dict(rows[0])
+        rows = conn.execute(
+            f"""SELECT job_id FROM jobs WHERE parent_job_id IN ({placeholders})""",
+            frontier,
+        ).fetchall()
+        frontier = [r["job_id"] for r in rows if r["job_id"] not in seen]
+        seen.update(frontier)
+    return None
+
+
+def _job_dedupe_on(job_id: str) -> bool:
+    """True when the job's ``dedupe_by_domain`` flag is on (the default).
+
+    Domain-keyed checkpoints are only written when domains are unique per
+    row, i.e. when dedupe collapsed twins away. With dedupe OFF, the file may
+    legitimately contain the same domain twice (franchise locations with
+    differing other columns — exactly why the user turned dedupe off); a
+    domain checkpoint would make a later resume silently drop the second twin
+    (C1, 13 live jobs). Memoized per job because the runner's on_progress
+    hook consults it every ~100 rows.
+    """
+    cached = _JOB_DEDUPE_CACHE.get(job_id)
+    if cached is not None:
+        return cached
+    value = True
+    try:
+        row = db.get_db().execute(
+            "SELECT dedupe_by_domain FROM jobs WHERE job_id=?", (job_id,)
+        ).fetchone()
+        if row:
+            value = bool(row["dedupe_by_domain"]) if "dedupe_by_domain" in row.keys() else True
+    except Exception as q_err:
+        logger.warning("Job %s: could not read dedupe_by_domain (%s); assuming on", job_id, q_err)
+    if len(_JOB_DEDUPE_CACHE) > 4096:
+        _JOB_DEDUPE_CACHE.clear()
+    _JOB_DEDUPE_CACHE[job_id] = value
+    return value
+
+
+def _restart_chain_ids(store, job_id: str, max_hops: int = 10) -> list[str]:
+    """Return [job_id, parent, grandparent, ...] up the restart chain.
+
+    The job itself first (its own checkpoints are the primary resume source),
+    then ancestors via parent_job_id. Capped + cycle-guarded. Non-enrichment
+    ancestors (a scraper chain root) are included — the caller filters them.
+    """
+    conn = getattr(store, "conn", None) or db.get_db()
+    chain = [job_id]
+    seen = {job_id}
+    current = job_id
+    for _ in range(max_hops):
+        try:
+            row = conn.execute(
+                "SELECT job_id, job_type, parent_job_id FROM jobs WHERE job_id=?",
+                (current,),
+            ).fetchone()
+        except Exception:
+            break
+        if not row:
+            break
+        keys = row.keys() if hasattr(row, "keys") else []
+        parent_id = row["parent_job_id"] if "parent_job_id" in keys else None
+        if not parent_id or parent_id in seen:
+            break
+        seen.add(parent_id)
+        chain.append(parent_id)
+        current = parent_id
+    return chain
+
+
+def _done_domains_for_chain(
+    store, original_job: dict
+) -> tuple[set[str], list[str], set[str], set[int]]:
+    """Union of domain checkpoints across the WHOLE restart chain.
+
+    Walks the original job + every ancestor (root included). Returns
+    ``(done_domains, legacy_job_ids, orig_processed_indices)`` where:
+
+    * ``done_domains`` — every checkpointed domain found in the chain.
+    * ``legacy_job_ids`` — enrichment chain members with NO domain
+      checkpoints (pre-migration jobs); the caller falls back to today's
+      index-subtraction heuristic for them and warns. Scraper roots are
+      skipped silently (they never have any).
+    * ``orig_processed_indices`` — the ORIGINAL job's own positional index
+      checkpoints, returned alongside so the caller does not have to
+      re-fetch them (it always needs them, for the dedupe-off / blank-domain
+      paths even when domain checkpoints exist).
+
+    A store/DB error reading one member degrades that member to legacy
+    rather than failing the resume.
+    """
+    conn = getattr(store, "conn", None) or db.get_db()
+    done: set[str] = set()
+    legacy: list[str] = []
+    orig_job_id = original_job["job_id"]
+    orig_domains: set[str] = set()
+    orig_indices: set[int] = set()
+    for chain_job_id in _restart_chain_ids(store, orig_job_id):
+        try:
+            row = conn.execute(
+                "SELECT job_type FROM jobs WHERE job_id=?", (chain_job_id,)
+            ).fetchone()
+            if row and "job_type" in row.keys() and row["job_type"] != "enrichment":
+                continue  # scraper chain root — no domain checkpoints by design
+            domains = set(store.get_processed_domains(chain_job_id))
+        except Exception:
+            domains = set()
+        if domains:
+            done |= domains
+            if chain_job_id == orig_job_id:
+                orig_domains = domains
+        elif chain_job_id != orig_job_id:
+            # The original job itself is expected to be legacy pre-migration;
+            # only deeper ancestors earn the louder warning.
+            legacy.append(chain_job_id)
+    try:
+        orig_indices = set(store.get_processed_indices(orig_job_id))
+    except Exception:
+        orig_indices = set()
+    return done, legacy, orig_domains, orig_indices
+
+
+def _resume_remaining_rows(
+    store,
+    original_job: dict,
+    deduped_all: list[dict],
+    domain_col: str,
+    normalize: bool,
+    dedupe: bool = True,
+) -> tuple[list[dict], bool]:
+    """Compute the rows a resume must still process (domain-keyed when possible).
+
+    Preferred semantics — domain-keyed chain union: a row is done when its
+    dedupe-keyed domain (``identifier_utils.domain_checkpoint_key``) appears
+    in ANY chain member's ``job_checkpoints_domains``. Domain identity
+    survives every generation's re-expansion of the file; positional indices
+    do NOT (they live in each job's own deduped SUBSET space — subtracting
+    them from the full file's index space re-enriched already-done domains,
+    the Aug 24 hyperke-saas chain: totals bounced 9524→7374→9424→4124).
+
+    Fallback — when NO chain member has domain checkpoints (pre-migration
+    jobs), keep today's behavior exactly: subtract the original job's index
+    checkpoints from the full deduped range.
+
+    Two hard exceptions to the domain preference:
+
+    * **dedupe OFF (C1)** — the file may legitimately hold the same domain
+      twice with different other columns (that is exactly why the user turned
+      dedupe off, e.g. franchise locations). A domain checkpoint only says
+      twin #1 finished; resuming by domain would silently drop twin #2
+      forever. With dedupe off, ``deduped_all`` IS the file in original
+      order, so the parent index space == full-file space and plain index
+      subtraction is exact — use it.
+    * **blank-domain rows (M1)** — rows with no usable domain key can never
+      be domain-done, so under pure domain semantics every resume re-processes
+      AND re-writes them (``prepend_rows`` already carried their output),
+      duplicating rows in the final CSV and making the "all done"
+      short-circuit unreachable. They are therefore also matched against the
+      original job's own index checkpoints.
+    """
+    job_id = original_job["job_id"]
+    done_domains, legacy, orig_domains, orig_indices = _done_domains_for_chain(
+        store, original_job
+    )
+    if legacy:
+        logger.warning(
+            "Job %s resume: chain members %s predate domain checkpoints — "
+            "falling back to index-space subtraction for them, which may "
+            "duplicate some already-enriched rows",
+            job_id, legacy,
+        )
+
+    if not done_domains:
+        remaining = [row for i, row in enumerate(deduped_all) if i not in orig_indices]
+        return remaining, False
+
+    if not dedupe:
+        # C1: domains are NOT unique per row — index space is exact here
+        # (deduped_all is the file itself) and domain filtering would
+        # permanently drop every domain-twin after the first one completed.
+        logger.info(
+            "Job %s resume: dedupe_by_domain=0 — using exact index-space "
+            "subtraction (%d of %d done), domain checkpoints not applied "
+            "(domains are not unique per row)",
+            job_id, len(orig_indices), len(deduped_all),
+        )
+        return [row for i, row in enumerate(deduped_all) if i not in orig_indices], False
+
+    # Domain semantics. A legacy DIRECT parent still contributes its index
+    # set the way today's code does (approximate: its subset indices read as
+    # full-file positions) before the domain filter runs.
+    legacy_index_only = not orig_domains and bool(orig_indices)
+    remaining: list[dict] = []
+    for i, row in enumerate(deduped_all):
+        key = identifier_utils.domain_checkpoint_key(row.get(domain_col, ""), normalize)
+        if not key:
+            # M1 — blank-domain row: it has no domain identity, so the chain
+            # union can never mark it done. Treat it as done iff THIS job's
+            # own index set covers it, which keeps resume idempotent (its
+            # output already rode in via prepend_rows — re-running it would
+            # duplicate the row) and makes the all-done branch reachable.
+            if i not in orig_indices:
+                remaining.append(row)
+            continue
+        if key in done_domains:
+            continue
+        if legacy_index_only and i in orig_indices:
+            continue
+        remaining.append(row)
+    logger.info(
+        "Job %s resume: domain-keyed skip (%d done domains across chain, "
+        "%d legacy members) -> %d of %d deduped rows remain",
+        job_id, len(done_domains), len(legacy),
+        len(remaining), len(deduped_all),
+    )
+    return remaining, True
+
+
 async def _restart_job_core(
     job_id: str,
     current_user: dict,
     background_tasks: Optional[BackgroundTasks] = None,
     auto: bool = False,
+    claim_already_won: bool = False,
 ):
     """Shared restart logic for the user-facing endpoint and auto-resume.
 
     Single source of truth for resume semantics (partial CSV carry-over,
     checkpoint-space dedupe, cascade/provider preservation). The user-facing
     endpoint is a thin wrapper; the auto-resume worker (shared/auto_resume.py)
-    calls this with ``auto=True`` and no BackgroundTasks (it runs the runner
+    calls this with ``auto=True``, ``claim_already_won=True`` (it won the
+    atomic claim marker first) and no BackgroundTasks (it runs the runner
     as a bare asyncio task instead).
     """
     store = job_store.get_store()
@@ -4489,16 +4789,16 @@ async def _restart_job_core(
         raise HTTPException(status_code=400,
             detail="Only failed, abandoned, cancelled, or partial jobs can be restarted")
 
-    # Prevent duplicate restarts - check if there's already an active restart
-    active_statuses = ("running", "queued", "pending")
-    existing_restart = store.conn.execute(
-        "SELECT job_id, status FROM jobs WHERE parent_job_id = ? AND status IN (?, ?, ?) LIMIT 1",
-        (job_id, active_statuses[0], active_statuses[1], active_statuses[2])
-    ).fetchone()
+    # Prevent duplicate restarts across the WHOLE descendant tree (see
+    # _find_active_descendant): a running grandchild is as much "in progress"
+    # as a running child. The auto-resume path skips this check only when it
+    # has already won the atomic claim (resume_claimed_at) — the claim txn's
+    # NOT EXISTS child check is the authoritative gate there.
+    existing_restart = None if claim_already_won else _find_active_descendant(job_id)
     if existing_restart:
         raise HTTPException(
             status_code=409,
-            detail=f"A restart for this job is already in progress (job_id: {existing_restart['job_id']}, status: {existing_restart['status']}). Please wait for it to complete or cancel it first."
+            detail=f"A restart of this file is already in progress (job_id: {existing_restart['job_id']}, status: {existing_restart['status']}). Please wait for it to complete or cancel it first."
         )
 
     # Read the original CSV file
@@ -4561,6 +4861,14 @@ async def _restart_job_core(
     # from these rows (no duplicates, no dedup needed).
     prepend_rows: list[dict] = []
     prev_output = OUTPUT_DIR / f"{original_job['job_id']}.csv"
+    if not prev_output.exists():
+        # A previous resume already renamed <id>.csv to <id>_partial.csv — a
+        # SECOND restart of the same parent would otherwise carry 0 rows and
+        # silently drop them from the new job's output (Aug 24 chain: job
+        # 28219beb started empty despite 18K banked rows on its parent).
+        renamed = OUTPUT_DIR / f"{original_job['job_id']}_partial.csv"
+        if renamed.exists():
+            prev_output = renamed
     if prev_output.exists() and prev_output.stat().st_size > 0:
         try:
             import csv as _csv
@@ -4573,7 +4881,10 @@ async def _restart_job_core(
 
     # Preserve the previous partial on disk (renamed) and register it as the
     # original job's downloadable partial (UI 'Download Partial' reads partial_output_path).
-    if prev_output.exists():
+    # Skip the rename when we're already reading the renamed partial (second
+    # restart of the same parent) — renaming onto itself raises on some
+    # platforms and would clobber the file we just read.
+    if prev_output.exists() and prev_output.name.endswith("_partial.csv") is False:
         partial_path = OUTPUT_DIR / f"{original_job['job_id']}_partial.csv"
         prev_output.rename(partial_path)
         try:
@@ -4581,6 +4892,11 @@ async def _restart_job_core(
         except Exception as sper:
             logger.warning("Job %s: set_partial_output_path failed: %s", job_id, sper)
         logger.info("Renamed previous output to %s", partial_path)
+    elif prev_output.exists():
+        try:
+            store.set_partial_output_path(job_id, str(prev_output))
+        except Exception as sper:
+            logger.warning("Job %s: set_partial_output_path failed: %s", job_id, sper)
 
     # Parse cascade configuration from JSON
     cascade = None
@@ -4632,16 +4948,28 @@ async def _restart_job_core(
     else:
         deduped_all, deduped_count, skipped_domains = rows, 0, []
 
-    # Filter to unprocessed rows in DEDUPED space (matches checkpoint space).
+    # Filter to unprocessed rows. Preferred: domain-keyed chain union (a
+    # domain done in ANY generation stays done — positional indices are only
+    # valid inside the job that wrote them). Fallback: today's index-space
+    # subtraction when no chain member has domain checkpoints yet.
     total_deduped = len(deduped_all)
-    processed = store.get_processed_indices(original_job['job_id'])
+    deduped_rows, _ = _resume_remaining_rows(
+        store, original_job, deduped_all, domain_col, orig_normalize,
+        dedupe=orig_dedupe,
+    )
+    processed_count = total_deduped - len(deduped_rows)
 
-    if total_deduped > 0 and len(processed) >= total_deduped:
+    if total_deduped > 0 and len(deduped_rows) == 0:
         # Every row was already processed in the prior run (it crash-landed after
         # checkpointing everything but before set_done). Carry the prior partial as
         # the complete result — do NOT re-process, or prepend_rows would duplicate.
         new_job_id = str(uuid.uuid4())
-        store.increment_restart_count(job_id)
+        if not claim_already_won:
+            # Manual restart: bump this job's own counter. Auto-resume already
+            # bumped the chain ROOT inside the claim transaction — bumping the
+            # head here too would double-charge the attempt budget (one
+            # auto-resume = +2, halving ENRICHMENT_AUTO_RESUME_MAX_RESTARTS).
+            store.increment_restart_count(job_id)
         store.create_enrichment_job(
             job_id=new_job_id, user_id=current_user["user_id"], total=total_deduped,
             source_type="restart",
@@ -4667,21 +4995,34 @@ async def _restart_job_core(
         else:
             store.set_failed(new_job_id, "Resume: all rows were processed but no partial output was found.")
             logger.warning("Job %s resume: all rows processed but no prior partial found", job_id)
+        # A child exists now — the claim is honored; clear the marker (see the
+        # main-path comment) so a future abandonment of this job isn't blocked.
+        try:
+            _conn = getattr(store, "conn", None) or db.get_db()
+            _conn.execute(
+                "UPDATE jobs SET resume_claimed_at=NULL, updated_at=? WHERE job_id=? AND resume_claimed_at IS NOT NULL",
+                (datetime.now(timezone.utc).isoformat(), job_id),
+            )
+            _conn.commit()
+        except Exception as _clear_err:
+            logger.warning("Job %s: could not clear resume_claimed_at: %s", job_id, _clear_err)
         return {"job_id": new_job_id, "total": total_deduped, "restarted_from": job_id, "deduped_count": deduped_count}
 
-    unprocessed_indices = [i for i in range(total_deduped) if i not in processed]
-    if unprocessed_indices:
-        deduped_rows = [deduped_all[i] for i in unprocessed_indices]
+    if len(deduped_rows) < total_deduped:
         logger.info("Job %s resuming: %d/%d deduped rows already done, processing %d remaining",
-                    job_id, len(processed), total_deduped, len(deduped_rows))
+                    job_id, processed_count, total_deduped, len(deduped_rows))
     else:
-        # No checkpoints at all (e.g. old job pre-incremental-writer) -> full re-process.
-        deduped_rows = deduped_all
-        logger.info("Job %s: no checkpoints found, full re-process (%d rows)", job_id, total_deduped)
+        logger.info("Job %s: no progress found to skip, full re-process (%d rows)", job_id, total_deduped)
 
-    # Update restart count
+    # Update restart count. Manual restart only: the auto-resume path already
+    # bumped the chain ROOT's restart_count inside its atomic claim txn, and
+    # the budget is root-counted — a second bump here (on head or root) would
+    # double-charge one attempt against ENRICHMENT_AUTO_RESUME_MAX_RESTARTS=2,
+    # turning "try twice" into "try once".
     store = job_store.get_store()
-    new_restart_count = store.increment_restart_count(job_id)
+    new_restart_count = 0
+    if not claim_already_won:
+        new_restart_count = store.increment_restart_count(job_id)
 
     # Create new job
     new_job_id = str(uuid.uuid4())
@@ -4709,6 +5050,22 @@ async def _restart_job_core(
         deduped_rows=deduped_count,
         dedupe_skipped_domains=json.dumps(skipped_domains),
     )
+
+    # The child row now proves the claim was honored (the eligibility re-check
+    # keys on "no child"), so drop the claim marker — otherwise a FUTURE
+    # abandonment of this same job would stay blocked by the stale marker until
+    # the 30-minute stale-claim window elapsed. Best-effort; the child NOT
+    # EXISTS check is the authoritative gate either way.
+    try:
+        conn = getattr(store, "conn", None) or db.get_db()
+        conn.execute(
+            "UPDATE jobs SET resume_claimed_at=NULL, updated_at=? WHERE job_id=? AND resume_claimed_at IS NOT NULL",
+            (datetime.now(timezone.utc).isoformat(), job_id),
+        )
+        conn.commit()
+    except Exception as clear_err:
+        logger.warning("Job %s: could not clear resume_claimed_at after child creation: %s",
+                       job_id, clear_err)
 
     # NOTE: deliberately do NOT pre-seed the new job's checkpoints with original
     # row indices — that was an index-space bug (the new job's total is the filtered
@@ -4819,8 +5176,8 @@ def cleanup_stale_jobs() -> None:
     for job_id in stale:
         store.set_abandoned(
             job_id,
-            "Job was abandoned: Server restarted or crashed while processing. "
-            "The job was interrupted before completion. Please retry from the beginning."
+            "Job was interrupted by a server restart. Your results so far are saved — "
+            "use Resume/Restart to continue from where it stopped."
         )
         logger.warning("Marked stale enrichment job %s as abandoned on startup", job_id)
 
@@ -5312,6 +5669,7 @@ async def _run_domain_enrich_job(
             source=source,
             output_path=output_path,
             write_incremental=True,
+            dedupe_on=_job_dedupe_on(job_id),
             phone_col=phone_col,
             company_name_col=company_name_col,
             existing_email_col=existing_email_col,

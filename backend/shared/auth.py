@@ -22,6 +22,7 @@ import logging
 import os
 import sqlite3
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -42,6 +43,47 @@ _local = threading.local()
 
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_DAYS = 7
+
+# Debounce for last_used_at telemetry writes (RCA 2026-08-24): the UPDATE
+# acquired the SQLite write lock on every successful verification, which —
+# on the event-loop auth paths (MCP middleware) — stalled requests for up
+# to busy_timeout=30s under write contention. last_used_at is display-only
+# telemetry, so writes are coalesced to at most one per interval per key.
+# Per-process dict (not shared across gunicorn workers): each of the N
+# workers may write once per interval per key, and under sparse traffic
+# (a key landing on a different worker each time) the saving approaches
+# 1x — the guarantee is only the per-process upper bound, not a factor.
+# Monotonic clock (immune to NTP/wall-clock jumps).
+_LAST_USED_WRITE_INTERVAL = 60.0  # seconds
+_last_used_write: dict[str, float] = {}
+
+
+def _touch_last_used(key_id: str) -> None:
+    """Debounced best-effort last_used_at UPDATE.
+
+    Telemetry must never fail authentication: a lock timeout here is
+    swallowed and retried on a later call (the debounce marker is only
+    recorded after a successful commit, so a failed write retries on the
+    next verification instead of being suppressed for a full interval).
+    """
+    now = time.monotonic()
+    last = _last_used_write.get(key_id, 0.0)
+    if now - last < _LAST_USED_WRITE_INTERVAL:
+        return
+    # Check-then-act on the dict is not atomic across these statements, so
+    # two threads verifying the same key after a 60s gap can both attempt
+    # the write. Benign under the GIL (duplicate write, never a missed one).
+    try:
+        _conn().execute(
+            "UPDATE api_keys SET last_used_at = ? WHERE key_id = ?",
+            (_now(), key_id),
+        )
+        _conn().commit()
+        _last_used_write[key_id] = now
+    except sqlite3.Error as exc:
+        logger.warning(
+            "last_used_at update failed for key %s (non-fatal): %s", key_id, exc
+        )
 
 
 def _conn() -> sqlite3.Connection:
@@ -227,13 +269,16 @@ def require_admin(
 # Combined JWT + API Key Authentication
 # ---------------------------------------------------------------------------
 
-async def get_current_user_from_api_key(
+def get_current_user_from_api_key(
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
 ) -> dict[str, Any]:
     """
     Authenticate using either JWT token or API key.
 
     Checks X-API-Key header first, then falls back to Bearer token.
+
+    Deliberately a sync ``def`` — FastAPI runs it in its threadpool so the
+    blocking SQLite verification never runs on the event loop.
     """
     # Try API key first
     if x_api_key:
@@ -358,7 +403,8 @@ def verify_api_key(api_key: str) -> Optional[dict[str, Any]]:
     """
     Verify an API key and return the user if valid.
 
-    Also updates the last_used_at timestamp.
+    Also updates the last_used_at timestamp (debounced to at most once per
+    _LAST_USED_WRITE_INTERVAL per key — see its definition for rationale).
     """
     key_hash = _hash_api_key(api_key)
 
@@ -370,12 +416,8 @@ def verify_api_key(api_key: str) -> Optional[dict[str, Any]]:
     if not row:
         return None
 
-    # Update last_used_at
-    _conn().execute(
-        "UPDATE api_keys SET last_used_at = ? WHERE key_id = ?",
-        (_now(), row["key_id"]),
-    )
-    _conn().commit()
+    # last_used_at telemetry (debounced, best-effort — never auth-critical).
+    _touch_last_used(row["key_id"])
 
     # Get user info
     user = get_user_by_id(row["user_id"])

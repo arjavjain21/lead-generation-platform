@@ -57,12 +57,6 @@ def init_db() -> None:
     """
     c = get_db()
 
-    # Migration: Add last_heartbeat column if not exists
-    try:
-        c.execute("SELECT last_heartbeat FROM jobs LIMIT 1")
-    except sqlite3.OperationalError:
-        c.execute("ALTER TABLE jobs ADD COLUMN last_heartbeat TEXT")
-
     c.executescript(
         """
         CREATE TABLE IF NOT EXISTS jobs (
@@ -188,6 +182,24 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_checkpoints_job
             ON job_checkpoints (job_id);
 
+        -- Domain-keyed enrichment checkpoints (2026-08-24). Positional
+        -- job_checkpoints are written in the PARENT job's deduped-subset index
+        -- space, but /restart filters against the FULL re-deduped file — an
+        -- index-space mismatch that re-enriched already-done domains (the
+        -- hyperke-saas chain). Resume now also unions the DONE DOMAINS across
+        -- the whole restart chain. Idempotent CREATE IF NOT EXISTS: existing
+        -- installs get the table on next boot; done jobs' rows are removed by
+        -- cleanup_checkpoints alongside the index rows.
+        CREATE TABLE IF NOT EXISTS job_checkpoints_domains (
+            job_id      TEXT NOT NULL,
+            domain      TEXT NOT NULL,
+            processed_at TEXT NOT NULL,
+            PRIMARY KEY (job_id, domain)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_checkpoints_domain_job
+            ON job_checkpoints_domains (job_id);
+
         CREATE INDEX IF NOT EXISTS idx_phone_enrichments_url
             ON phone_enrichments (linkedin_url);
 
@@ -229,7 +241,15 @@ def init_db() -> None:
         """
     )
 
-    # Safe migrations: add columns to existing jobs table (idempotent)
+    # Safe migrations: add columns to existing jobs table (idempotent).
+    # (job_events/users are created above by the script, or by auth.init_auth_db
+    # / history on an existing install — the script's CREATE IF NOT EXISTS no-ops.)
+    # last_heartbeat must migrate AFTER the CREATE so a FRESH database — where
+    # jobs did not exist before this call — does not crash on the ALTER.
+    try:
+        c.execute("SELECT last_heartbeat FROM jobs LIMIT 1")
+    except sqlite3.OperationalError:
+        c.execute("ALTER TABLE jobs ADD COLUMN last_heartbeat TEXT")
     existing_columns = {row[1] for row in c.execute("PRAGMA table_info(jobs)").fetchall()}
     if "used_providers" not in existing_columns:
         c.execute("ALTER TABLE jobs ADD COLUMN used_providers TEXT DEFAULT ''")
@@ -290,6 +310,14 @@ def init_db() -> None:
     #   'restart'           — resumed/restarted from a prior enrichment job
     if "source_type" not in existing_columns:
         c.execute("ALTER TABLE jobs ADD COLUMN source_type TEXT DEFAULT ''")
+    # Resume claim marker (2026-08-24) — cross-process mutex for enrichment
+    # auto-resume. The 4-worker fan-out bug (hyperke-saas chain, 4 children in
+    # 5ms) happened because the "already has a child?" check and the child
+    # creation were not atomic. The claim transaction sets this timestamp on
+    # the abandoned parent inside BEGIN IMMEDIATE; only the winner proceeds to
+    # build the resume child. NULL = never claimed.
+    if "resume_claimed_at" not in existing_columns:
+        c.execute("ALTER TABLE jobs ADD COLUMN resume_claimed_at TEXT")
 
     c.commit()
 

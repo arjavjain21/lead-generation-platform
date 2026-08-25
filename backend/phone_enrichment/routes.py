@@ -471,7 +471,7 @@ def cleanup_stale_phone_jobs() -> None:
     for jid in stale:
         job_store.set_abandoned(
             jid,
-            "Phone job was abandoned: Server restarted or crashed while processing. "
-            "The job was interrupted before completion. Please retry from the beginning.",
+            "Phone job was interrupted by a server restart. Your results so far are saved — "
+            "use Resume/Restart to continue from where it stopped.",
         )
         logger.warning("Marked stale phone job %s as abandoned on startup", jid)

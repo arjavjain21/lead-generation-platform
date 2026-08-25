@@ -30,6 +30,7 @@ CREATE TABLE jobs (
     parent_job_id TEXT,
     restart_count INTEGER DEFAULT 0,
     is_resumable INTEGER DEFAULT 1,
+    resume_claimed_at TEXT,
     last_heartbeat TEXT,
     created_at TEXT,
     updated_at TEXT,
@@ -272,6 +273,206 @@ class TestWorkerNotifyInterval:
         assert worker_mod.NOTIFY_INTERVAL_SECONDS == 15.0
         monkeypatch.delenv("WORKER_NOTIFY_INTERVAL")
         importlib.reload(worker_mod)
+
+
+# ---------------------------------------------------------------------------
+# Atomic enrichment resume claim (2026-08-24 fan-out fix)
+# ---------------------------------------------------------------------------
+
+class TestEnrichmentClaim:
+    def _claim_with_real_db_path(self, temp_db):
+        """Point shared.db.DB_PATH at the temp file so the claim's dedicated
+        connection reads the same data as the fixture connection."""
+        from pathlib import Path as P
+        import shared.db as db_mod
+        original = db_mod.DB_PATH
+        db_mod.DB_PATH = P(temp_db)
+        return original
+
+    def _restore_db_path(self, original):
+        import shared.db as db_mod
+        db_mod.DB_PATH = original
+
+    def test_only_one_claimant_wins(self, temp_db):
+        """The Aug 24 bug: 4 workers booted together, each saw 'abandoned,
+        no child', each created a resume child (4 children in 5ms). The claim
+        must let exactly one through."""
+        conn = sqlite3.connect(temp_db)
+        conn.row_factory = sqlite3.Row
+        _insert_job(conn, "parent-x", status="abandoned", heartbeat_age_min=5)
+        conn.commit()
+        from shared import auto_resume
+        orig = self._claim_with_real_db_path(temp_db)
+        try:
+            winners = [auto_resume.claim_enrichment_resume_job("parent-x")
+                       for _ in range(4)]  # simulate 4 workers claiming
+            assert winners == [True, False, False, False]
+            row = conn.execute(
+                "SELECT resume_claimed_at FROM jobs WHERE job_id='parent-x'"
+            ).fetchone()
+            assert row["resume_claimed_at"] is not None
+        finally:
+            self._restore_db_path(orig)
+
+    def test_claimed_job_excluded_from_candidates(self, temp_db):
+        """A FRESH claim (younger than RESUME_CLAIM_STALE_MINUTES) keeps the
+        job out of the candidate list — the claim winner is mid-resume."""
+        conn = sqlite3.connect(temp_db)
+        conn.row_factory = sqlite3.Row
+        _insert_job(conn, "claimed-1", status="abandoned", heartbeat_age_min=5)
+        conn.execute(
+            "UPDATE jobs SET resume_claimed_at=? WHERE job_id='claimed-1'",
+            (_iso(datetime.now(timezone.utc) - timedelta(minutes=2)),),
+        )
+        conn.commit()
+        from shared import auto_resume
+        with patch("shared.auto_resume.db") as mock_db:
+            mock_db.get_db.return_value = conn
+            jobs = auto_resume.get_recently_abandoned_resumable_jobs()
+        assert jobs == []
+
+    def test_stale_claim_recovers_candidacy(self, temp_db):
+        """Crash-orphan recovery: a worker died between the claim COMMIT and
+        the child INSERT. Nothing cleared resume_claimed_at, so the job used
+        to be permanently un-auto-resumable. A claim older than
+        RESUME_CLAIM_STALE_MINUTES with no child must make it a candidate
+        again."""
+        conn = sqlite3.connect(temp_db)
+        conn.row_factory = sqlite3.Row
+        _insert_job(conn, "orphan-1", status="abandoned", heartbeat_age_min=5)
+        conn.execute(
+            "UPDATE jobs SET resume_claimed_at=? WHERE job_id='orphan-1'",
+            (_iso(datetime.now(timezone.utc) - timedelta(minutes=45)),),
+        )
+        conn.commit()
+        from shared import auto_resume
+        with patch("shared.auto_resume.db") as mock_db:
+            mock_db.get_db.return_value = conn
+            jobs = auto_resume.get_recently_abandoned_resumable_jobs()
+        assert [j["job_id"] for j in jobs] == ["orphan-1"]
+
+    def test_stale_claim_with_child_stays_excluded(self, temp_db):
+        """A stale claim is NOT a license to re-fan-out: if a child already
+        exists the resume happened, so the job stays out regardless."""
+        conn = sqlite3.connect(temp_db)
+        conn.row_factory = sqlite3.Row
+        _insert_job(conn, "orphan-2", status="abandoned", heartbeat_age_min=5)
+        _insert_job(conn, "child-2", status="done", heartbeat_age_min=60,
+                    parent="orphan-2")
+        conn.execute(
+            "UPDATE jobs SET resume_claimed_at=? WHERE job_id='orphan-2'",
+            (_iso(datetime.now(timezone.utc) - timedelta(minutes=45)),),
+        )
+        conn.commit()
+        from shared import auto_resume
+        with patch("shared.auto_resume.db") as mock_db:
+            mock_db.get_db.return_value = conn
+            jobs = auto_resume.get_recently_abandoned_resumable_jobs()
+        assert jobs == []
+
+    def test_stale_claim_is_reclaimable(self, temp_db):
+        """The claim txn itself must accept a stale claim (candidate query and
+        claim txn agree, or recovery would be cosmetic)."""
+        conn = sqlite3.connect(temp_db)
+        conn.row_factory = sqlite3.Row
+        _insert_job(conn, "orphan-3", status="abandoned", heartbeat_age_min=5)
+        conn.execute(
+            "UPDATE jobs SET resume_claimed_at=? WHERE job_id='orphan-3'",
+            (_iso(datetime.now(timezone.utc) - timedelta(minutes=45)),),
+        )
+        conn.commit()
+        from shared import auto_resume
+        orig = self._claim_with_real_db_path(temp_db)
+        try:
+            assert auto_resume.claim_enrichment_resume_job("orphan-3") is True
+        finally:
+            self._restore_db_path(orig)
+
+    def test_fresh_claim_not_reclaimable(self, temp_db):
+        """The 30-minute window must not weaken the original fan-out guard:
+        a FRESH claim still loses the claim txn."""
+        conn = sqlite3.connect(temp_db)
+        conn.row_factory = sqlite3.Row
+        _insert_job(conn, "claimed-3", status="abandoned", heartbeat_age_min=5)
+        conn.execute(
+            "UPDATE jobs SET resume_claimed_at=? WHERE job_id='claimed-3'",
+            (_iso(datetime.now(timezone.utc) - timedelta(minutes=2)),),
+        )
+        conn.commit()
+        from shared import auto_resume
+        orig = self._claim_with_real_db_path(temp_db)
+        try:
+            assert auto_resume.claim_enrichment_resume_job("claimed-3") is False
+        finally:
+            self._restore_db_path(orig)
+
+    def test_root_counted_attempt_cap(self, temp_db):
+        """Chain cap is counted on the ROOT, not the abandoned row — each
+        generation's child starts restart_count=0, so per-row counting
+        reset every hop (the 22-card ladder)."""
+        conn = sqlite3.connect(temp_db)
+        conn.row_factory = sqlite3.Row
+        # root at cap, abandoned head 2 hops down with restart_count=0
+        _insert_job(conn, "root-c", status="abandoned", heartbeat_age_min=5,
+                    restart_count=2)
+        _insert_job(conn, "mid-c", status="abandoned", heartbeat_age_min=5,
+                    restart_count=0, parent="root-c")
+        _insert_job(conn, "head-c", status="abandoned", heartbeat_age_min=5,
+                    restart_count=0, parent="mid-c")
+        conn.commit()
+        from shared import auto_resume
+        orig = self._claim_with_real_db_path(temp_db)
+        try:
+            assert auto_resume.claim_enrichment_resume_job("head-c") is False
+            # root's count unchanged (claim rolled back)
+            row = conn.execute(
+                "SELECT restart_count FROM jobs WHERE job_id='root-c'"
+            ).fetchone()
+            assert row["restart_count"] == 2
+            # head must remain unclaimed
+            row = conn.execute(
+                "SELECT resume_claimed_at FROM jobs WHERE job_id='head-c'"
+            ).fetchone()
+            assert row["resume_claimed_at"] is None
+        finally:
+            self._restore_db_path(orig)
+
+    def test_claim_bumps_root_and_marks_parent(self, temp_db):
+        conn = sqlite3.connect(temp_db)
+        conn.row_factory = sqlite3.Row
+        _insert_job(conn, "root-d", status="abandoned", heartbeat_age_min=5,
+                    restart_count=0)
+        _insert_job(conn, "head-d", status="abandoned", heartbeat_age_min=5,
+                    restart_count=0, parent="root-d")
+        conn.commit()
+        from shared import auto_resume
+        orig = self._claim_with_real_db_path(temp_db)
+        try:
+            assert auto_resume.claim_enrichment_resume_job("head-d") is True
+            root = conn.execute(
+                "SELECT restart_count FROM jobs WHERE job_id='root-d'"
+            ).fetchone()
+            head = conn.execute(
+                "SELECT resume_claimed_at FROM jobs WHERE job_id='head-d'"
+            ).fetchone()
+            assert root["restart_count"] == 1
+            assert head["resume_claimed_at"] is not None
+        finally:
+            self._restore_db_path(orig)
+
+    def test_job_with_child_not_claimable(self, temp_db):
+        conn = sqlite3.connect(temp_db)
+        conn.row_factory = sqlite3.Row
+        _insert_job(conn, "parent-e", status="abandoned", heartbeat_age_min=5)
+        _insert_job(conn, "child-e", status="done", heartbeat_age_min=60,
+                    parent="parent-e")
+        conn.commit()
+        from shared import auto_resume
+        orig = self._claim_with_real_db_path(temp_db)
+        try:
+            assert auto_resume.claim_enrichment_resume_job("parent-e") is False
+        finally:
+            self._restore_db_path(orig)
 
 
 # ---------------------------------------------------------------------------

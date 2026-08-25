@@ -149,10 +149,7 @@ def dedupe_rows_by_domain(
             kept_rows.append(row)
             continue
 
-        if normalize:
-            key = normalize_domain(raw)
-        else:
-            key = raw.lower()
+        key = domain_checkpoint_key(raw, normalize)
 
         if key in seen:
             deduped_count += 1
@@ -162,6 +159,22 @@ def dedupe_rows_by_domain(
             kept_rows.append(row)
 
     return kept_rows, deduped_count, skipped_domains
+
+
+def domain_checkpoint_key(raw_value: Any, normalize: bool = True) -> str:
+    """Return the domain key used by BOTH dedupe and domain checkpoints.
+
+    One function so the runner's ``job_checkpoints_domains`` writes and the
+    resume filter's done-domain computation can never drift apart (a drift
+    would silently re-enrich already-completed domains). Mirrors the exact
+    keying of ``dedupe_rows_by_domain``: ``normalize_domain()`` when
+    ``normalize`` is on, else raw-stripped-lowercased. Rows whose key is ''
+    (missing/empty/noise) are NOT checkpointed — the caller must skip them.
+    """
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return ""
+    return normalize_domain(raw) if normalize else raw.lower()
 
 
 _LINKEDIN_HOST_RE = re.compile(r"^(?:https?://)?(?:www\.)?linkedin\.com/", re.IGNORECASE)

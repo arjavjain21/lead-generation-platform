@@ -65,18 +65,24 @@ class ScraperJobStore(JobStoreBase):
         return None
 
     def get_stale_running_jobs_by_heartbeat(self) -> list[str]:
-        """Scraper-only stale-job detection.
+        """Scraper-only stale-job detection (RUNNING only — never queued).
 
         Overrides the base query, which is NOT job_type-scoped: without this,
         the scraper reaper would also abandon stale enrichment/phone jobs at
         startup (it runs first in main.py lifespan). Each job type reaps only
         its own.
+
+        'queued' is deliberately excluded: since the dispatcher (2026-08-24),
+        a queued job may legitimately wait behind the concurrency cap for
+        hours with no heartbeat. Reaping it would abandon a healthy backlog.
+        A claimed job always heartbeats within seconds of launch, so
+        running-only detection loses nothing.
         """
         rows = self.conn.execute(
             """SELECT job_id FROM jobs
                WHERE job_type='scraper'
-               AND status IN ('running', 'queued')
-               AND (datetime(last_heartbeat) IS NULL OR datetime(last_heartbeat) < datetime('now', '-2 minutes'))
+               AND status='running'
+               AND datetime(last_heartbeat) < datetime('now', '-2 minutes')
                AND datetime(created_at) < datetime('now', '-3 minutes')"""
         ).fetchall()
         return [r["job_id"] for r in rows]

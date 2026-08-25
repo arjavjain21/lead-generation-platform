@@ -269,10 +269,33 @@ class JobStoreBase:
         return dict(row) if row else None
 
     def delete_job(self, job_id: str) -> bool:
-        """Delete a job by ID. Returns True if deleted, False if not found."""
+        """Delete a job by ID. Returns True if deleted, False if not found.
+
+        Also removes the job's checkpoints (index + domain-keyed). Without
+        this, deleting a chain member left orphan rows in both checkpoint
+        tables; for ``job_checkpoints_domains`` that breaks the resume chain
+        union — the deleted job's domains stayed "done" forever, but its
+        partial CSV (the rows behind those domains) went away with the job,
+        so a resume would skip domains whose output no longer exists.
+        Best-effort: a missing table is tolerated (same as
+        ``cleanup_checkpoints``), and a checkpoint failure never blocks the
+        job deletion itself.
+        """
         cursor = self.conn.execute("DELETE FROM jobs WHERE job_id=?", (job_id,))
         self.conn.commit()
-        return cursor.rowcount > 0
+        deleted = cursor.rowcount > 0
+        if not deleted:
+            return False
+        for table in ("job_checkpoints", "job_checkpoints_domains"):
+            try:
+                self.conn.execute(f"DELETE FROM {table} WHERE job_id=?", (job_id,))
+                self.conn.commit()
+            except sqlite3.OperationalError:
+                pass  # table absent on this DB — nothing to clean
+            except Exception as del_err:
+                logger.warning("delete_job(%s): %s cleanup failed: %s",
+                               job_id, table, del_err)
+        return True
 
     @staticmethod
     def _date_range_conditions(date_from: Optional[str], date_to: Optional[str]):
@@ -673,6 +696,58 @@ class JobStoreBase:
         processed = self.get_processed_indices(job_id)
         return [i for i in range(total_rows) if i not in processed]
 
+    def write_domain_checkpoints_batch(self, job_id: str, domains: list[str]) -> None:
+        """Write domain checkpoints for many completed rows in one transaction.
+
+        Domain-keyed complement to ``write_checkpoints_batch``: positional
+        indices are only meaningful within the writing job's own deduped
+        subset, while the domain survives re-expansion to the full file — so
+        it is the only safe key for cross-generation resume filtering.
+        Idempotent (INSERT OR REPLACE on PRIMARY KEY (job_id, domain)).
+        Callers must pass pre-normalized domains; empty strings are skipped
+        here as a defensive belt (rows without a usable domain have no
+        domain identity to checkpoint — their index checkpoint still covers
+        them within the same job's resume).
+        """
+        cleaned = sorted({d.strip() for d in domains if d and d.strip()})
+        if not cleaned:
+            return
+        now = _now()
+        self.conn.executemany(
+            "INSERT OR REPLACE INTO job_checkpoints_domains (job_id, domain, processed_at) "
+            "VALUES (?, ?, ?)",
+            [(job_id, d, now) for d in cleaned],
+        )
+        self.conn.commit()
+
+    def get_processed_domains(self, job_id: str) -> set[str]:
+        """Return the set of checkpointed (done) domains for a job.
+
+        Missing job / no domain checkpoints → empty set (pre-migration jobs
+        simply have no domain progress to contribute).
+        """
+        try:
+            rows = self.conn.execute(
+                "SELECT domain FROM job_checkpoints_domains WHERE job_id=?",
+                (job_id,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # Table not created yet (fresh test DB without init_db) — treat
+            # as no domain checkpoints rather than crashing the resume path.
+            return set()
+        return {row[0] for row in rows}
+
+    def count_domain_checkpoints(self, job_id: str) -> int:
+        """Count domain checkpoints for a job (resume-info surface)."""
+        try:
+            row = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM job_checkpoints_domains WHERE job_id=?",
+                (job_id,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return 0
+        return row[0] if row else 0
+
     def increment_restart_count(self, job_id: str) -> int:
         """
         Increment the restart count for a job.
@@ -700,18 +775,32 @@ class JobStoreBase:
         """
         Remove all checkpoints for a job (used after job completion).
 
+        Deletes both the positional index checkpoints and the domain-keyed
+        checkpoints (the latter would otherwise grow without bound — done
+        jobs never resume). Domain rows may legitimately be absent (LinkedIn
+        flows, pre-migration jobs), so a missing table is tolerated.
+
         Args:
             job_id: The job identifier
 
         Returns:
-            Number of checkpoints deleted
+            Number of checkpoints deleted (index + domain rows)
         """
         cursor = self.conn.execute(
             "DELETE FROM job_checkpoints WHERE job_id=?",
             (job_id,),
         )
+        deleted = cursor.rowcount or 0
+        try:
+            domain_cursor = self.conn.execute(
+                "DELETE FROM job_checkpoints_domains WHERE job_id=?",
+                (job_id,),
+            )
+            deleted += domain_cursor.rowcount or 0
+        except sqlite3.OperationalError:
+            logger.debug("job_checkpoints_domains absent; skipped domain cleanup for %s", job_id)
         self.conn.commit()
-        return cursor.rowcount
+        return deleted
 
     def prune_old_job_events(self, retention_days: int = 7, batch_size: int = 50000) -> int:
         """Delete job_events for non-running jobs older than retention_days,
