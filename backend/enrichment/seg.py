@@ -68,6 +68,16 @@ def is_seg_enabled() -> bool:
     return os.getenv("ENABLE_SEG_CLASSIFICATION", "false").lower() == "true"
 
 
+def normalize_seg_key(domain: str) -> str:
+    """Raw caller domain -> the normalized key ``classify_domains`` returns.
+
+    Public one-liner so call sites (routes, list_builder, contacts_writer)
+    translate their raw domain into the same key the classifier result dict
+    is keyed by, without each importing a private helper.
+    """
+    return _normalize_for_seg(domain)
+
+
 # ---------------------------------------------------------------------------
 # Signature table — 1:1 port of seg_common.SEG_SIGNATURES.
 # INSERTION ORDER IS PRECEDENCE (dict preserves it): all external_seg
