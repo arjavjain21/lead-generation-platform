@@ -731,6 +731,10 @@
         #page-people .fp-universe-b2b { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #f3e8ff; color: #6b21a8; text-transform: uppercase; letter-spacing: 0.03em; }
         #page-people .fp-universe-saas { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #d1fae5; color: #065f46; text-transform: uppercase; letter-spacing: 0.03em; }
         #page-people .fp-universe-ecom { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #fef3c7; color: #b45309; text-transform: uppercase; letter-spacing: 0.03em; }
+        #page-people .fp-seg-ext { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #fef3c7; color: #b45309; text-transform: uppercase; letter-spacing: 0.03em; }
+        #page-people .fp-seg-none { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #fee2e2; color: #b91c1c; text-transform: uppercase; letter-spacing: 0.03em; }
+        #page-people .fp-seg-direct { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #dbeafe; color: #1e40af; text-transform: uppercase; letter-spacing: 0.03em; }
+        #page-people .fp-seg-other { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #f1f5f9; color: #475569; text-transform: uppercase; letter-spacing: 0.03em; }
         #page-people .fp-empty { text-align: center; padding: 2rem; color: var(--gray-400); font-size: 0.85rem; }
 
         /* Responsive — Find People */
@@ -1875,7 +1879,7 @@
                 <div id="findPeopleExportNote" class="fp-export-note"></div>
                 <div style="overflow-x:auto;">
                     <table class="results-table">
-                        <thead><tr><th>Name</th><th>Title</th><th>Company</th><th>Industry</th><th>Location</th><th>Universe</th><th>Rating</th><th>Email</th></tr></thead>
+                        <thead><tr><th>Name</th><th>Title</th><th>Company</th><th>Industry</th><th>Location</th><th>Universe</th><th>Rating</th><th>Email</th><th>SEG</th></tr></thead>
                         <tbody id="findPeopleBody"></tbody>
                     </table>
                 </div>
@@ -2208,7 +2212,29 @@
                     </div>
                 </div>
             </div>
-            
+
+            <div class="help-section">
+                <h3>SEG Classification</h3>
+                <p style="margin-bottom:1rem;">Two trailing CSV columns tell you what kind of mail server sits in front of each domain, so you can tune sending strategy before you hit a spam filter:</p>
+
+                <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:0.5rem;font-size:0.85rem;margin-bottom:1rem;">
+                    <div><span class="source-tag">seg_classification</span> Gateway verdict (values below)</div>
+                    <div><span class="source-tag">seg_provider</span> Named provider, e.g. "SEG: Proofpoint", "Google"</div>
+                </div>
+
+                <div style="font-size:0.9rem;">
+                    <p><strong>What each <code>seg_classification</code> means and what to do:</strong></p>
+                    <ul>
+                        <li><code>external_seg</code> — Domain is behind a secure email gateway (Proofpoint, Mimecast, Barracuda...). These gateways aggressively filter cold mail; <strong>warm these leads slowly or deprioritize them</strong>.</li>
+                        <li><code>no_email</code> — Domain has no mail records, so any address there is <strong>undeliverable; exclude these from campaigns</strong>.</li>
+                        <li><code>direct_google</code> / <code>direct_microsoft</code> — Standard Google Workspace or Microsoft 365 mail. <strong>Apply your normal sending rules</strong>.</li>
+                        <li><code>other_or_unknown</code> — Self-hosted or unrecognized mail server. Treat as standard sending with normal monitoring.</li>
+                        <li><em>blank</em> — No verdict available for this row (feature off or domain not yet classified).</li>
+                    </ul>
+                    <p style="margin-bottom:0;">This classification is a background domain lookup, not an enrichment provider — it does not affect email finding or job counters.</p>
+                </div>
+            </div>
+
             <div class="help-section">
                 <h3>Input Format Examples</h3>
                 <p><strong>Domain Upload:</strong></p>
@@ -4257,9 +4283,17 @@ example.org,Jane Doe</pre>
                                  : p.lead_universe === 'b2b_agency' ? '<span class="fp-universe-b2b">B2B</span>'
                                  : p.lead_universe === 'saas' ? '<span class="fp-universe-saas">SaaS</span>'
                                  : p.lead_universe === 'ecom' ? '<span class="fp-universe-ecom">E-com</span>' : '';
+                // SEG (secure email gateway) verdict for the person's email domain.
+                // Controlled literals from the backend, but still rendered via escHtml.
+                const seg = String(p.seg_classification || '');
+                const segBadge = seg === 'external_seg' ? '<span class="fp-seg-ext" title="' + escHtml(p.seg_provider) + '">Gateway</span>'
+                               : seg === 'no_email' ? '<span class="fp-seg-none" title="' + escHtml(p.seg_provider) + '">No Email</span>'
+                               : seg === 'direct_google' ? '<span class="fp-seg-direct" title="Google">Google</span>'
+                               : seg === 'direct_microsoft' ? '<span class="fp-seg-direct" title="Microsoft">Microsoft</span>'
+                               : seg === 'other_or_unknown' ? '<span class="fp-seg-other" title="' + escHtml(p.seg_provider) + '">Other</span>' : '—';
                 const ratingHtml = p.rating ? '⭐ ' + p.rating + ' <span style="color:var(--gray-400);font-size:0.7rem">(' + (p.reviews||0) + ')</span>' : '';
                 const tr = document.createElement('tr');
-                tr.innerHTML = '<td>' + escHtml(p.full_name) + '</td><td>' + escHtml(title) + '</td><td>' + escHtml(p.company_name) + '</td><td>' + escHtml(p.industry) + '</td><td>' + escHtml(loc) + '</td><td>' + univBadge + '</td><td>' + ratingHtml + '</td><td>' + escHtml(p.email) + '</td>';
+                tr.innerHTML = '<td>' + escHtml(p.full_name) + '</td><td>' + escHtml(title) + '</td><td>' + escHtml(p.company_name) + '</td><td>' + escHtml(p.industry) + '</td><td>' + escHtml(loc) + '</td><td>' + univBadge + '</td><td>' + ratingHtml + '</td><td>' + escHtml(p.email) + '</td><td>' + segBadge + '</td>';
                 tbody.appendChild(tr);
             });
         }
@@ -4269,8 +4303,8 @@ example.org,Jane Doe</pre>
         document.getElementById('downloadPeopleCsv').addEventListener('click', () => {
             if (!_peopleResults.length) return;
             const hideNoTitle = document.getElementById('findHideNoTitle').checked;
-            const cols = ['full_name','title','company_name','industry','geo_city','geo_state','geo_country','seniority','function','lead_universe','rating','reviews','local_category','email'];
-            const header = ['Full Name','Title','Company','Industry','City','State','Country','Seniority','Function','Universe','Rating','Reviews','Local Category','Email'];
+            const cols = ['full_name','title','company_name','industry','geo_city','geo_state','geo_country','seniority','function','lead_universe','rating','reviews','local_category','email','seg_classification','seg_provider'];
+            const header = ['Full Name','Title','Company','Industry','City','State','Country','Seniority','Function','Universe','Rating','Reviews','Local Category','Email','SEG Classification','SEG Provider'];
             const dataRows = _peopleResults.map(p => {
                 const title = cleanTitle(p);
                 if (hideNoTitle && !title) return null;

@@ -191,9 +191,20 @@ curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/enrich \
     "records_synced": 1,
     "records_skipped": 0,
     "records_failed": 0
-  }
+  },
+  "seg_classification": "direct_google",
+  "seg_provider": "Google"
 }
 ```
+
+**SEG fields (flag-gated, added 2026-08-25).** When the `ENABLE_SEG_CLASSIFICATION` env flag is on, the response carries two additional **top-level** keys classifying the domain's mail server (never inside `contacts[*]`):
+
+| Field | Type | Values |
+| --- | --- | --- |
+| `seg_classification` | string | `external_seg` \| `direct_google` \| `direct_microsoft` \| `other_or_unknown` \| `no_email`, or `""` if the domain could not be classified |
+| `seg_provider` | string | Named provider, e.g. `SEG: Proofpoint`, `SEG: Mimecast`, `Microsoft`, `Google`, `Other / Unknown`, `No Email (no MX)`, `Invalid Domain`, `Free Webmail (gmail.com)` |
+
+When the flag is **off** the keys are **absent** (not null). Guidance for senders: `external_seg` = behind a secure email gateway → warm/deprioritize; `no_email` = undeliverable → exclude; `direct_google`/`direct_microsoft` = standard sending rules.
 
 #### Email source values
 
@@ -224,9 +235,11 @@ For `selected_providers` on GET, pass it as a comma-separated string:
 ?selected_providers=contacts_db,smartprospect
 ```
 
+Same response shape as POST, including the flag-gated top-level `seg_classification` / `seg_provider` keys (see A.1).
+
 ### A.3 Legacy: `GET /api/enrichment/enrich/{domain}`
 
-Older path-style single-domain lookup. Accepts `max_results`, `cascade_json`, `force_provider` as query params. Prefer the POST/GET form above for new integrations.
+Older path-style single-domain lookup. Accepts `max_results`, `cascade_json`, `force_provider` as query params. Prefer the POST/GET form above for new integrations. Also returns the flag-gated top-level `seg_classification` / `seg_provider` keys when `ENABLE_SEG_CLASSIFICATION` is on (same semantics as A.1).
 
 **By-company Contacts DB lookup (added 2026-07-21).** When the `ENABLE_COMPANY_LOOKUP` env flag is `true` (set via the `lead-generation-platform.service` systemd drop-in), this endpoint additionally returns **every person filed under the company in the Contacts DB** — not only those whose email matches the lookup domain — with emails **preserved as stored** (no mailtester re-validation, so `.mil`/`.gov` emails are no longer dropped as "No MX"). These rows carry `email_source: "contacts_db"`, `validation_status: "preserved"`.
 
@@ -253,6 +266,8 @@ When resolving emails, the system queries providers in this order, stopping at t
 | 3 | SmartProspect | 30 RPS | Paid | Self-verifying person-email finder |
 | 4 | WizLeads | 10 RPS | Paid | Catch-all verified email |
 | 5 | BetterEnrich | 10 RPS | Paid | Person + company email fallback |
+
+> **SEG classification is not a cascade provider.** It is a side-channel DNS-over-HTTPS (MX) domain lookup that runs alongside the cascade; it does not count as a provider call for job counters and never affects which cascade step wins. Its DoH lookups do appear in `provider_call_log` under the `seg` provider key for observability.
 
 ### A.5 `selected_providers` (new 2026-07-13)
 
@@ -478,6 +493,15 @@ Returns the enriched CSV for a finished job. Works for `done`, `partial`, and `f
 
 For live in-progress previews see **B.14 `/recover-partial`**; for chunked downloads of very large jobs see **B.16 `/shards`**.
 
+**SEG columns (flag-gated, added 2026-08-25).** When `ENABLE_SEG_CLASSIFICATION` is on, every enrichment job CSV (Flow 1 `domain-enrich`, Flow 3 `by-linkedin-v2` and legacy `by-linkedin`, legacy `by-domains`) ends with two trailing columns:
+
+| Column | Description |
+| --- | --- |
+| `seg_classification` | Domain's mail-server verdict — `external_seg`, `direct_google`, `direct_microsoft`, `other_or_unknown`, or `no_email` (blank while the flag is off) |
+| `seg_provider` | Named provider behind the verdict, e.g. `SEG: Proofpoint`, `Microsoft`, `Google` (blank while the flag is off) |
+
+Sender guidance: `external_seg` → warm/deprioritize (secure email gateway filters cold mail aggressively); `no_email` → exclude (undeliverable); `direct_google`/`direct_microsoft` → standard sending rules.
+
 ### B.10 Download partial CSV: `GET /api/enrichment/jobs/{job_id}/partial-download`
 
 Returns whatever rows have been written so far while the job is still running. Useful for early inspection on long jobs. (For a status-guard-free variant that also works after cancel/failure, prefer **B.14 `/recover-partial`**.)
@@ -678,9 +702,12 @@ curl -s -X POST "https://listbuilding.eagleinfoservice.com/api/enrichment/search
   {"person_id":"...","full_name":"Ken Hejduk","headline":"...","seniority":"head",
    "geo_country":"United States","geo_state":"California","lead_universe":"saas",
    "title":"...","company_name":"Levelpath","industry":"information technology & services",
-   "email":"ken.hejduk@levelpath.com","is_verified":true,"rating":null,"local_category":null}
+   "email":"ken.hejduk@levelpath.com","is_verified":true,"rating":null,"local_category":null,
+   "seg_classification":"external_seg","seg_provider":"SEG: Proofpoint"}
 ]}
 ```
+
+**SEG fields on people rows (flag-gated, added 2026-08-25).** When `ENABLE_SEG_CLASSIFICATION` is on, every row in `people[]` additionally carries `seg_classification` (one of `external_seg` / `direct_google` / `direct_microsoft` / `other_or_unknown` / `no_email`, or `""`) and `seg_provider` (named provider label). The verdict is derived from the person's email domain; rows without an email get `""` for both. When the flag is off the keys are absent.
 
 > **Underlying endpoint (API-key access):** the same search is available directly on the Contacts DB API at `GET https://leadsdatabase.cc/v1/people/search?universe=saas&...` (Bearer `CONTACTS_API_TOKEN`); identical params as a query string.
 
