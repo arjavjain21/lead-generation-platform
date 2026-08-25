@@ -62,6 +62,10 @@ _HOSTS: dict[str, str] = {
     "app.getleads.io": "getleads",
     "validation.hyperke.org": "mailtester",
     "api.scraper.tech": "scraper_tech",
+    # SEG MX classification (enrichment/seg.py): Cloudflare DoH. dns.google
+    # is NOT mapped — this module only calls cloudflare-dns.com, and mapping
+    # an unused host would be dead config.
+    "cloudflare-dns.com": "seg",
 }
 
 # Provider domains to filter OUT of email extraction — these appear in response
@@ -77,6 +81,11 @@ _PROVIDER_OWN_DOMAINS: dict[str, set[str]] = {
     "getleads": {"getleads.io"},
     "mailtester": {"hyperke.org", "validation.hyperke.org"},
     "scraper_tech": {"scraper.tech"},
+    # SEG DoH responses are DNS answers, never provider emails. cloudflare.com
+    # deliberately NOT added: no other provider claims it, but the DoH body
+    # contains no emails anyway and a stray "hostmaster@cloudflare.com" SOA
+    # contact would be DNS metadata, not a real lead. Kept minimal.
+    "seg": {"cloudflare-dns.com"},
 }
 
 # Email regex — simple and permissive. Captures standard emails.

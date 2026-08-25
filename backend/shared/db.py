@@ -238,6 +238,26 @@ def init_db() -> None:
             capacity       REAL NOT NULL,
             refill_per_sec REAL NOT NULL
         );
+
+        -- SEG (Secure Email Gateway) MX classification cache (2026-08-25).
+        -- Written by enrichment/seg.py: one row per normalized domain, both
+        -- contacts-DB hits (source='contacts_db') and DoH scan results
+        -- (source='doh'). Domains no layer could classify are negative-cached
+        -- with seg_classification='' (empty-string sentinel, column is NOT
+        -- NULL but '' is legal) so repeated misses don't re-hit the API/DNS;
+        -- '' rows are re-checked after a 7-day TTL via fetched_at. Idempotent
+        -- CREATE IF NOT EXISTS — no migration of existing tables.
+        CREATE TABLE IF NOT EXISTS domain_seg_cache (
+            domain            TEXT PRIMARY KEY,
+            seg_classification TEXT,
+            seg_provider       TEXT,
+            source             TEXT NOT NULL DEFAULT '',
+            mx_hosts           TEXT,                      -- JSON array text
+            fetched_at         TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_domain_seg_cache_fetched
+            ON domain_seg_cache(fetched_at);
         """
     )
 
