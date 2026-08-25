@@ -120,9 +120,14 @@ def _contacts_seg_handler(
     """Handler for GET {base}/v1/domain/seg returning found/missing."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if calls is not None:
+        # Only GETs are layer-2 lookups; POSTs are map contributions
+        # (they carry no `domains` query param and must not pollute the
+        # layer-2 call journal).
+        if calls is not None and request.method == "GET":
             domains = (request.url.params.get("domains") or "").split(",")
             calls.append(domains)
+        if request.method == "POST":
+            return httpx.Response(201, json={"inserted": [], "skipped_existing": []})
         if status != 200:
             return httpx.Response(status, json={"detail": "not deployed"})
         payload_found = [
