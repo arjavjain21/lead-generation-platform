@@ -45,6 +45,7 @@ from . import getleads_client
 from . import providers
 from . import identifier_utils
 from . import contacts_writer
+from . import seg
 from .raw_contact_collector import RawContactCollector
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -662,6 +663,112 @@ def _strip_internal_fields_from_response(response: Any) -> Any:
         ]
 
     return response
+
+
+# ---------------------------------------------------------------------------
+# SEG (Secure Email Gateway) classification — response hydration
+#
+# Domain-level MX classification surfaced as TOP-LEVEL response keys
+# (`seg_classification`, `seg_provider`) on the single-domain enrich
+# endpoints. Flag-gated by ENABLE_SEG_CLASSIFICATION (default off): when the
+# flag is off the keys are ABSENT, not null — the JSON Response Freeze
+# contract (docs/RESPONSE_SHAPE_BASELINE_2026-07-07.md) promises external
+# consumers byte-for-byte identical JSON while the feature is dark, and
+# absent keys keep that promise exactly. When the flag is ON but the domain
+# could not be classified, both keys are present with "" (blank) values so
+# consumers can distinguish "feature off" from "no verdict" without a probe.
+#
+# NEVER placed inside contacts[*] — `_strip_internal_fields_from_response`
+# pins the per-contact shape and the freeze tests assert it; top-level keys
+# pass through untouched.
+# ---------------------------------------------------------------------------
+
+
+async def _seg_fields_for_domain(domain: str) -> dict[str, str]:
+    """Classify one domain and return the top-level seg response keys.
+
+    Returns {} when the flag is off or the domain is empty/absent (keys
+    absent from the response), else {"seg_classification": ..., "seg_provider": ...}
+    with "" values for an unclassifiable domain. Defensive try/except only —
+    ``seg.classify_domains`` never raises by contract; this guards a future
+    regression from ever blocking an enrichment response.
+    """
+    if not domain:
+        return {}
+    if not seg.is_seg_enabled():
+        return {}
+    try:
+        seg_map = await seg.classify_domains([domain])
+        seg_entry = seg_map.get(seg.normalize_seg_key(domain), {})
+    except Exception:
+        seg_entry = {}
+    return {
+        "seg_classification": str(seg_entry.get("seg_classification", "") or ""),
+        "seg_provider": str(seg_entry.get("seg_provider", "") or ""),
+    }
+
+
+async def _hydrate_people_with_seg(people: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Hydrate /search/employees people rows with per-person seg fields.
+
+    The contacts-DB people payload carries no domain column, so the domain is
+    derived from the person's best email (``email.split('@')[-1]``); people
+    without an email-domain get "" fields rather than being dropped. One
+    batched ``classify_domains`` call covers the whole page.
+
+    Returns NEW person dicts (immutability — the caller's list from the
+    contacts API is never mutated). People rows that are not dicts pass
+    through unchanged. When the flag is off, the input list is returned as-is.
+    """
+    if not people or not seg.is_seg_enabled():
+        return people
+
+    # Derive per-person domains (first-seen order, deduped). The people
+    # payload has no domain column today, so the domain comes from the
+    # person's best email; an explicit `domain` field is preferred if the
+    # contacts API ever adds one. normalize_seg_key is applied to the
+    # DERIVED domain — never to a full address (stage-1 hygiene rejects
+    # emails outright).
+    person_domains: list[Optional[str]] = []
+    unique_domains: list[str] = []
+    seen: set[str] = set()
+    for person in people:
+        if not isinstance(person, dict):
+            person_domains.append(None)
+            continue
+        explicit = str(person.get("domain") or "").strip()
+        email = str(person.get("email") or "").strip()
+        raw_domain = explicit or (email.rsplit("@", 1)[-1] if "@" in email else "")
+        domain = seg.normalize_seg_key(raw_domain) if raw_domain else ""
+        person_domains.append(domain or None)
+        if domain and domain not in seen:
+            seen.add(domain)
+            unique_domains.append(domain)
+
+    # Cap guard: the request model caps limit at 200 (the platform UI uses
+    # <=100), so >500 unique domains on a page cannot occur in practice;
+    # skip classification entirely rather than chunk if it ever does.
+    seg_map: dict[str, dict] = {}
+    if unique_domains and len(unique_domains) <= 500:
+        try:
+            seg_map = await seg.classify_domains(unique_domains)
+        except Exception:
+            seg_map = {}
+
+    # Every dict row gets the keys — a person without a derivable domain
+    # gets blanks — so the row shape is uniform across the page.
+    hydrated: list[dict[str, Any]] = []
+    for person, domain in zip(people, person_domains):
+        if not isinstance(person, dict):
+            hydrated.append(person)
+            continue
+        entry = seg_map.get(domain, {}) if domain else {}
+        hydrated.append({
+            **person,
+            "seg_classification": str(entry.get("seg_classification", "") or ""),
+            "seg_provider": str(entry.get("seg_provider", "") or ""),
+        })
+    return hydrated
 
 
 # ---------------------------------------------------------------------------
@@ -1723,6 +1830,10 @@ async def enrich_single_domain(
         except Exception as bc_err:
             logger.warning("by-company lookup failed for %s: %s", domain, bc_err)
 
+    # SEG MX classification (domain-level, flag-gated; absent when flag off).
+    # `domain` here is already the normalized value (normalize_domain above).
+    seg_fields = await _seg_fields_for_domain(domain)
+
     return _strip_internal_fields_from_response({
         "domain": domain,
         "company_linkedin_url": company_linkedin_url,
@@ -1736,6 +1847,7 @@ async def enrich_single_domain(
             "records_failed": sync_result.get("failed", 0),
             "records_queued": sync_result.get("records_queued", 0),
         },
+        **seg_fields,
     })
 
 
@@ -2599,6 +2711,9 @@ async def unified_enrich(
     # Phase 1c (2026-07-21): by-company augment (flag-gated, additive).
     contacts = await _merge_by_company_into_contacts(contacts, domain, req.force_provider, req.source, limit=req.max_results)
 
+    # SEG MX classification (domain-level, flag-gated; absent when flag off).
+    seg_fields = await _seg_fields_for_domain(domain)
+
     return _strip_internal_fields_from_response({
         "domain": domain,
         "mode": mode,
@@ -2613,6 +2728,7 @@ async def unified_enrich(
             "records_failed": sync_result.get("failed", 0),
             "records_queued": sync_result.get("records_queued", 0),
         },
+        **seg_fields,
     })
 
 
@@ -2991,6 +3107,11 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
             # Record source stats for API-only call
             _record_unified_enrich_stats(contacts, domain, current_user)
 
+            # SEG MX classification (domain-level, flag-gated; absent when
+            # flag off — and always absent for linkedin_only, which has no
+            # domain to classify).
+            seg_fields = await _seg_fields_for_domain(domain)
+
             return _strip_internal_fields_from_response({
                 "domain": domain,
                 "mode": mode,
@@ -3008,6 +3129,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                     "records_failed": sync_result.get("failed", 0),
                     "records_queued": sync_result.get("records_queued", 0),
                 },
+                **seg_fields,
             })
 
 
@@ -3428,6 +3550,9 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
         # Record source stats for API-only call
         _record_unified_enrich_stats(enriched_contacts, domain, current_user)
 
+        # SEG MX classification (domain-level, flag-gated; absent when flag off).
+        seg_fields = await _seg_fields_for_domain(domain)
+
         return _strip_internal_fields_from_response({
             "domain": domain,
             "mode": mode,
@@ -3456,6 +3581,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                 "records_skipped": sync_result.get("skipped", 0),
                 "records_failed": sync_result.get("failed", 0),
             },
+            **seg_fields,
         })
 
     finally:
@@ -5876,11 +6002,15 @@ async def search_employees(
                 offset=req.offset,
             )
             data = result or {}
+            # SEG MX classification per person (flag-gated; verbatim pass-
+            # through when the flag is off — rows are NOT filtered by
+            # _strip_internal_fields_from_response on this endpoint).
+            people = await _hydrate_people_with_seg(data.get("people", []))
             return {
                 "total": data.get("total", 0),
                 "limit": req.limit,
                 "offset": req.offset,
-                "people": data.get("people", []),
+                "people": people,
                 "flow": "people_search",
             }
         except Exception as e:
