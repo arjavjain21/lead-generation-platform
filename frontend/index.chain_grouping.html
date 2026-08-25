@@ -5631,12 +5631,16 @@ example.org,Jane Doe</pre>
 
             // Exact arithmetic is only guaranteed for a complete linear chain:
             // branch points, off-page members, or a missing root make the
-            // numbers approximate → rendered with "≈". A member whose
-            // restart_count exceeds its on-page children PROVABLY has more
-            // descendants off-page (children exist that this page doesn't
-            // show), so the chain continues beyond the page → approximate.
-            const chainContinuesOffPage = members.some(m =>
-                (m.restart_count || 0) > (childCount[m.job_id] || 0));
+            // numbers approximate → rendered with "≈". Compare the AGGREGATE
+            // attempt budget (Σ restart_count) against on-page edges
+            // (members - 1). Per-member comparison is wrong under the
+            // root-counted claim bump: every auto-resume increments the ROOT's
+            // counter while the child attaches to the abandoned HEAD, so a
+            // fully-on-page linear chain can show root rc=2 vs 1 child —
+            // a false "continues off-page" (and a wrongly demoted card).
+            const chainContinuesOffPage =
+                members.reduce((s, m) => s + (m.restart_count || 0), 0)
+                > members.length - 1;
             const approx = hiddenAncestorBreak || !rootOnPage
                 || members.some(m => (childCount[m.job_id] || 0) > 1)
                 || chainContinuesOffPage;

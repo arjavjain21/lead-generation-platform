@@ -140,11 +140,12 @@ def get_recently_abandoned_resumable_jobs() -> list[dict[str, Any]]:
     child INSERT used to leave the job permanently un-auto-resumable (nothing
     ever cleared resume_claimed_at). A claim older than
     RESUME_CLAIM_STALE_MINUTES with still no child is treated as unclaimed.
-    Safe because the claim's BEGIN IMMEDIATE re-check also enforces
-    "NOT EXISTS child": if the original winner is somehow still alive and
-    about to insert the child, it commits first and the re-check bails. The
-    window (30 min) is orders of magnitude longer than the claim->child gap
-    (a CSV read + one INSERT, seconds at most).
+    Safe because the gunicorn arbiter kills a stalled worker at --timeout 900
+    (15 min), well inside the 30-min window, and _restart_job_core's
+    claim->child prefix is one synchronous run with no awaits — so an organic
+    gap cannot straddle the threshold. (See claim_enrichment_resume_job for
+    the full reasoning; a >30-min host-level freeze is the only theoretical
+    bypass and no such mechanism exists here.)
     """
     conn = db.get_db()
     rows = conn.execute(
@@ -223,10 +224,16 @@ def claim_enrichment_resume_job(job_id: str) -> bool:
     child creation. Recovery: a claim is only authoritative for
     RESUME_CLAIM_STALE_MINUTES (30 min) — after that a childless claim is
     treated as unclaimed and the job can be claimed again (the crash-orphan
-    case would otherwise leave the job permanently un-auto-resumable). This
-    is safe under BEGIN IMMEDIATE: the eligibility re-check also requires
-    "no child", so a winner that somehow is still mid-flight commits its
-    child first and the re-claim bails. The marker is also cleared by
+    case would otherwise leave the job permanently un-auto-resumable).
+    Safety of re-claiming rests on the gunicorn arbiter's murder deadline,
+    NOT on the child re-check alone: _restart_job_core has no await before
+    the child INSERT (it is one synchronous run: get_job -> pd.read_csv ->
+    dedupe -> filter -> INSERT), and a worker whose event loop stalls mid-run
+    is killed at --timeout 900 (15 min) — well inside the 30-min window — so
+    an organic claim->child gap cannot straddle the stale threshold. A
+    pathological pause longer than 30 min (SIGSTOP / VM freeze with the
+    arbiter paused too) could in principle let two children be born; no such
+    mechanism exists on this host. The marker is also cleared by
     ``_restart_job_core`` once the child row exists.
 
     The attempt budget lives on the chain ROOT (walk parent_job_id links under

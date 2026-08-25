@@ -4264,9 +4264,12 @@ async def _run_job(
             # Domain-keyed checkpoint alongside the index one — resume filters
             # by domain (indices are per-job subset space). The pipeline emits
             # an already-normalized domain; '' (no usable domain) is skipped
-            # inside write_domain_checkpoints_batch.
+            # inside write_domain_checkpoints_batch. Skipped entirely when the
+            # job has dedupe OFF: domain-twin rows must stay independently
+            # resumable, and every reader already ignores these rows for
+            # dedupe=0 jobs (writing them would just be inert data).
             _domain = str(e.get("domain", "") or "")
-            if _domain:
+            if _domain and _job_dedupe_on(job_id):
                 try:
                     progress_store.write_domain_checkpoints_batch(job_id, [_domain])
                 except Exception as dom_ck_err:
@@ -5666,6 +5669,7 @@ async def _run_domain_enrich_job(
             source=source,
             output_path=output_path,
             write_incremental=True,
+            dedupe_on=_job_dedupe_on(job_id),
             phone_col=phone_col,
             company_name_col=company_name_col,
             existing_email_col=existing_email_col,

@@ -84,8 +84,13 @@ def test_continuation_state_present(html):
     CONTINUATION (badge + demoted actions), not an actionable head."""
     assert "ctx.continuation" in html
     assert "Continued on another page" in html
-    # The off-page proof signal is the same one the Superseded badge uses.
-    assert "(m.restart_count || 0) > (childCount[m.job_id] || 0)" in html
+    # Off-page proof compares the AGGREGATE attempt budget (Σ restart_count)
+    # against on-page edges (members - 1). Per-member comparison breaks under
+    # the root-counted claim bump: auto-resume increments the ROOT's counter
+    # while the child attaches to the HEAD, so a fully-on-page chain can show
+    # rc(root)=2 vs 1 child and would be falsely demoted (Stop button lost).
+    assert "members.reduce((s, m) => s + (m.restart_count || 0), 0)" in html
+    assert "> members.length - 1" in html
 
 
 def test_approx_extended_to_off_page_chains(html):
