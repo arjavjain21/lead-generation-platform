@@ -57,6 +57,11 @@ logger = logging.getLogger(__name__)
 # Feature flag
 # ---------------------------------------------------------------------------
 
+# Strong refs for fire-and-forget contribute tasks so the loop can't GC them
+# mid-flight (and tests can await them deterministically).
+_CONTRIBUTE_TASKS: set[asyncio.Task] = set()
+
+
 def is_seg_enabled() -> bool:
     """True if SEG classification should run.
 
@@ -615,6 +620,26 @@ async def classify_domains(domains: list[str]) -> dict[str, dict]:
         _write_cache(cache_rows)
     except Exception:  # defensive: classification must never fail on cache
         logger.warning("seg cache write failed", exc_info=True)
+
+    # Push platform-computed verdicts back into the contacts-DB canonical map
+    # (fill-gaps-only server-side). Only rows with real DNS evidence (a JSON
+    # mx_hosts list) are contributed — free-webmail/invalid offline verdicts
+    # are derivable DB-side and would be noise. Fire-and-forget: the POST
+    # must never add latency to enrichment.
+    contrib = [
+        {
+            "domain": domain,
+            "classification": classification,
+            "provider": provider,
+            "mx_hosts": json.loads(mx_hosts),
+        }
+        for domain, classification, provider, source, mx_hosts in cache_rows
+        if source == "doh" and mx_hosts and mx_hosts.startswith("[")
+    ]
+    if contrib:
+        task = asyncio.create_task(contribute_to_map(contrib))
+        _CONTRIBUTE_TASKS.add(task)
+        task.add_done_callback(_CONTRIBUTE_TASKS.discard)
     return results
 
 
