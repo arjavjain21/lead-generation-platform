@@ -116,6 +116,7 @@ The primary endpoint for finding contact data for one company or person.
 | `existing_email` | string | No | — | Existing email hint (skips email resolution). |
 | `max_results` | integer | No | 5 | Max contacts to return (1–10). |
 | `titles` | string | No | — | Comma-separated titles filter (e.g., `"CEO,CTO,VP"`). Max 50. |
+| `strict_titles` | boolean | No | true | Strict local title gate: drop contacts that don't match `titles`/`cascade` after provider matching (see A.6). `false` = keep provider fuzzy matches. |
 | `cascade` | array of objects | No | — | Advanced: list of title-filter dicts (see A.7). |
 | `force_provider` | string | No | — | Force a single provider. One of: `contacts_db`, `blitz`, `smartprospect`, `wizleads`, `better_enrich`. Mutually exclusive with `selected_providers`. |
 | `selected_providers` | array of strings | No | — | Restrict cascade to a subset (see A.6). Mutually exclusive with `force_provider`. |
@@ -305,6 +306,32 @@ curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/enrich \
 ```
 Converts to a single-tier cascade requesting only people with those titles.
 
+#### Local strict-title gate (2026-08-26)
+Provider-side title matching is fuzzy — e.g. with `include_headline_search: true`,
+a "President" filter matched "Vice President of Product Management", "Chief Revenue
+Officer", etc. (a production job returned 77% off-ICP contacts this way). The
+platform now **re-applies your titles locally after every discovery step** (Internal
+DB, Blitz waterfall, generic fallbacks) and drops non-matching contacts *before*
+email resolution.
+
+Gate semantics:
+- A title matches when ALL its words match (order-insensitive, synonym-aware:
+  `VP` = `Vice President`, `Founder` = `Co-Founder`, `CEO` = `Chief Executive Officer`…).
+- Compound negations are respected: "President" does **not** match
+  "Vice/Deputy/Past President…".
+- Junior excludes (`assistant`, `intern`, `junior`, `associate`) are overridden by
+  senior signals — "Associate Director" is kept, "Sales Associate" is dropped.
+- Structured signals from the Internal DB (seniority, function) count as matches.
+- The gate is **inert when no titles are supplied** (default cascade requests are
+  never filtered by it).
+
+To opt out (keep provider fuzzy matches for higher volume):
+```json
+{ "titles": "CEO,CTO", "strict_titles": false }
+```
+`strict_titles` (default `true`) is accepted on `/enrich`, `/flows/domain-enrich`,
+and `/by-domains`. The opt-out is persisted with the job, so resume/restart keeps it.
+
 #### Custom cascade (advanced)
 ```json
 {
@@ -382,6 +409,7 @@ curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/flows/doma
     "max_results": 5,
     "providers": ["contacts_db", "blitz", "smartprospect", "wizleads", "better_enrich"],
     "titles": "CEO,CTO",
+    "strict_titles": true,
     "normalize_domains": true,
     "dedupe_by_domain": true
   }'
@@ -402,6 +430,7 @@ curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/flows/doma
 | `company_name_col` | string | No | — | Column with company names. |
 | `existing_email_col` | string | No | — | Column with existing emails. |
 | `titles` | string | No | — | Comma-separated titles filter. |
+| `strict_titles` | boolean | No | true | Strict local title gate: drop contacts that don't match `titles` after provider matching (see A.6). `false` = keep provider fuzzy matches (higher volume, lower precision). |
 | `max_results` | integer | No | 5 | Max contacts per domain. |
 | `providers` | array of strings | No | all enabled | Provider allowlist (same semantics as `selected_providers` on the single-row endpoint). |
 | `normalize_domains` | boolean | No | true | Normalize raw URLs to bare domains. |

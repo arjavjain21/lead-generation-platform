@@ -1632,6 +1632,11 @@
                         <input type="checkbox" id="domain_dedupe_by_domain" checked style="width:16px;height:16px;">
                         <span>Dedupe by domain</span>
                     </label>
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:0.85rem;margin-top:6px;" title="When ON, contacts must match your titles (including synonyms like VP = Vice President) — off-ICP matches from providers are dropped. Turn OFF to keep provider fuzzy matches for higher volume.">
+                        <input type="checkbox" id="domain_strict_titles" checked style="width:16px;height:16px;">
+                        <span>Strict title match</span>
+                        <span style="font-size:0.75rem;color:#64748b;">only keep contacts matching your titles above</span>
+                    </label>
                 </div>
 
                 <!-- Provider Selection -->
@@ -3166,6 +3171,9 @@ example.org,Jane Doe</pre>
             // Read pre-processing flags (default ON via the HTML checked attr)
             const normalizeDomains = document.getElementById('domain_normalize_domains').checked;
             const dedupeByDomain = document.getElementById('domain_dedupe_by_domain').checked;
+            // Strict title gate: drop provider-fuzzy contacts that don't match
+            // the titles field. Inert when no titles are entered.
+            const strictTitles = document.getElementById('domain_strict_titles').checked;
 
             try {
                 const res = await fetch('/api/enrichment/flows/domain-enrich', {
@@ -3186,6 +3194,7 @@ example.org,Jane Doe</pre>
                         normalize_domains: normalizeDomains,
                         dedupe_by_domain: dedupeByDomain,
                         titles: customTitles,
+                        strict_titles: strictTitles,
                         source: outscraperSource
                     })
                 });
