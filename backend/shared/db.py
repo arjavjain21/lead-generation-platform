@@ -258,6 +258,23 @@ def init_db() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_domain_seg_cache_fetched
             ON domain_seg_cache(fetched_at);
+
+        -- Website-scrape nightly sync state (2026-08-26). Single row (id=1)
+        -- holding the incremental watermark (remote terminal completed_at of
+        -- the last fully-pushed batch) plus last-run telemetry. Written ONLY
+        -- by the standalone sync process (enrichment/website_scrape_sync.py);
+        -- the app creates the table and reads it for the UI "data as of"
+        -- display. Idempotent CREATE IF NOT EXISTS — no migration.
+        CREATE TABLE IF NOT EXISTS website_scrape_sync_state (
+            id               INTEGER PRIMARY KEY CHECK (id = 1),
+            watermark        TEXT,
+            last_run_at      TEXT,
+            last_run_status  TEXT,
+            rows_pulled      INTEGER NOT NULL DEFAULT 0,
+            rows_pushed      INTEGER NOT NULL DEFAULT 0,
+            skipped_junk     INTEGER NOT NULL DEFAULT 0,
+            errors           INTEGER NOT NULL DEFAULT 0
+        );
         """
     )
 
