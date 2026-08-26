@@ -36,6 +36,7 @@ from shared import auth, db
 from . import blitz_client
 from . import contacts_client
 from . import job_store
+from . import title_filter
 from .chain_info import chain_attempt_counts, chain_roots_for_jobs
 from . import pipeline
 from . import list_builder
@@ -1431,6 +1432,9 @@ class StartJobRequest(BaseModel):
     first_name_col: Optional[str] = None
     last_name_col: Optional[str] = None
     cascade: Optional[list[dict[str, Any]]] = None
+    titles: Optional[str] = None
+    # strict_titles=False disables the LOCAL title gate (escape hatch).
+    strict_titles: bool = True
     max_results: int = 5
     # Force a specific provider: "contacts_db", "blitz", "better_enrich"
     # If None, uses normal cascade
@@ -1900,6 +1904,11 @@ class UnifiedEnrichRequest(BaseModel):
     cascade: Optional[list[dict]] = None
     # Simple titles: comma-separated list of titles (e.g., "CEO,CTO,HR") - auto-converts to cascade
     titles: Optional[str] = None
+    # strict_titles=False disables the LOCAL title gate (escape hatch for
+    # volume-over-precision: provider-fuzzy matches pass through untouched).
+    # Default True: after every discovery path, contacts must match the
+    # requested titles locally (synonym-aware) or they are dropped.
+    strict_titles: bool = True
     # Force a specific provider: "contacts_db", "blitz", "better_enrich"
     # If None, uses normal cascade
     force_provider: Optional[str] = None
@@ -2025,6 +2034,11 @@ async def unified_enrich(
     # Convert titles to cascade if provided
     if req.titles and not req.cascade:
         req.cascade = _titles_to_cascade(req.titles)
+
+    # strict_titles=False escape hatch: stamp the marker on the cascade so the
+    # local title gate (list_builder + pipeline) is disabled for this request.
+    if req.strict_titles is False and req.cascade:
+        req.cascade = title_filter.mark_cascade_strict_off(req.cascade)
 
     # Validate domain format if provided
     domain = ""
@@ -5433,6 +5447,9 @@ async def enrich_by_domains(
     # Build cascade from titles if provided, otherwise use default
     title_cascade = _titles_to_cascade(req.titles or "")
     cascade = title_cascade if title_cascade else blitz_client.DEFAULT_CASCADE
+    # strict_titles=False escape hatch (persisted so resume keeps the opt-out)
+    if req.strict_titles is False and title_cascade:
+        cascade = title_filter.mark_cascade_strict_off(cascade)
 
     # Read metadata
     metadata_path = UPLOAD_DIR / f"{req.upload_id}.metadata.json"
@@ -5538,6 +5555,11 @@ class ProviderToggleRequest(BaseModel):
     # Enables fuzzy matching against LinkedIn headlines
     # Leave empty for default business titles (Owner, CEO, VP, Director)
     titles: Optional[str] = None
+    # strict_titles=False disables the LOCAL title gate (escape hatch for
+    # volume-over-precision: provider-fuzzy matches pass through untouched).
+    # Default True: contacts must match the requested titles locally
+    # (synonym-aware) after every discovery path, or they are dropped.
+    strict_titles: bool = True
     # Pre-processing flags. Both default ON to preserve existing behavior.
     normalize_domains: bool = True
     dedupe_by_domain: bool = True
@@ -5602,6 +5624,10 @@ async def domain_enrich_with_providers(
     if req.titles and req.titles.strip():
         cascade = _titles_to_cascade(req.titles)
         if cascade:
+            # strict_titles=False escape hatch: stamp the marker into the
+            # persisted cascade so resume/restart preserves the opt-out.
+            if req.strict_titles is False:
+                cascade = title_filter.mark_cascade_strict_off(cascade)
             cascade_json = json.dumps(cascade)
 
     rows = df.fillna("").astype(str).to_dict(orient="records")

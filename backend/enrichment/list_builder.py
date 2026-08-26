@@ -36,6 +36,7 @@ from . import identifier_utils
 from . import company_fallback
 from . import fallback_config as fb_cfg
 from . import seg
+from . import title_filter
 from .pipeline import _getleads_dm_snapshot
 
 logger = logging.getLogger(__name__)
@@ -50,120 +51,20 @@ def _is_company_linkedin_url(url: str) -> bool:
 
 # ---------------------------------------------------------------------------
 # Title-based filtering.
-# Applies the user's `titles` input to the FREE Contacts DB results (it
-# previously reached only the paid Blitz fallback, which is skipped whenever
-# the free lookup returns anyone). Comma-separated titles = OR; words within
+# Canonical implementation lives in ``title_filter.py`` (shared with
+# pipeline.py). It applies the user's `titles` input to EVERY discovery path —
+# Contacts DB results, the paid Blitz waterfall fallback (whose server-side
+# fuzzy matching was returning 77% off-ICP contacts on a 2026-08-25 job), and
+# the no-LinkedIn generic fallback. Comma-separated titles = OR; words within
 # one title = AND. Common abbreviations expanded via synonyms so "CEO" matches
 # "Chief Executive Officer", "VP" matches "Vice President", etc.
 # ---------------------------------------------------------------------------
 
-# Pool size: how many Contacts-DB people to fetch per domain when a title
-# filter is active, so the title matches are present before filtering.
-TITLE_SEARCH_POOL = int(os.getenv("TITLE_SEARCH_POOL", "50"))
+TITLE_SEARCH_POOL = title_filter.TITLE_SEARCH_POOL
 
-_TITLE_SYNONYMS = {
-    "ceo": ("chief executive officer", "chief exec"),
-    "cto": ("chief technology officer", "chief tech"),
-    "cfo": ("chief financial officer",),
-    "coo": ("chief operating officer",),
-    "cmo": ("chief marketing officer",),
-    "cio": ("chief information officer",),
-    "cpo": ("chief product officer",),
-    "vp": ("vice president",),
-    "hr": ("human resources",),
-    "pr": ("public relations",),
-    "it": ("information technology",),
-    "founder": ("co-founder", "cofounder", "founding"),
-    "owner": ("proprietor",),
-    "director": ("dir",),
-    "manager": ("mgr", "management"),
-}
-
-# Tokens that mark a junior/entry-level role; the cascade exclude list usually
-# contains a subset of these (assistant/intern/junior/associate).
-_JUNIOR_EXCLUDE_TOKENS = {
-    "assistant", "intern", "junior", "associate", "entry", "trainee", "graduate",
-}
-
-# Senior / decision-maker signals. If any is present in the title, the junior
-# excludes above are NOT applied — so "Associate General Counsel",
-# "Assistant Director", "Senior Associate", "Associate Partner" are KEPT, while
-# standalone "Sales Associate" / "Intern" / "Junior Developer" are still dropped.
-_SENIOR_INDICATORS = (
-    "chief", "ceo", "cto", "cfo", "coo", "cmo", "cio", "cpo", "president",
-    "vp", "director", "partner", "principal", "professor", "dean", "counsel",
-    "general", "head", "founder", "owner", "manager", "lead", "senior",
-    "chairman", "chair",
-)
-
-
-def _title_word_variants(word: str) -> list[str]:
-    """Lowercase word plus common synonym expansions for substring matching."""
-    w = (word or "").lower().strip()
-    if not w:
-        return []
-    return [w, *_TITLE_SYNONYMS.get(w, ())]
-
-
-def _hay_has_word(hay: str, word: str) -> bool:
-    return any(v and v in hay for v in _title_word_variants(word))
-
-
-def _person_matches_titles(
-    title: str, headline: str, include_titles: list[str], exclude_titles: list[str],
-    seniority: str = "", function: str = "",
-) -> bool:
-    """True if a contact matches the title filter. Matches against title +
-    headline + seniority + function. ``seniority``/``function`` are structured
-    signals from the Contacts DB (e.g. seniority 'vp', function 'sales'), so
-    'VP' matches seniority 'vp' and 'Sales' matches function 'sales' even when
-    the free-text headline omits the word.
-
-    - exclude: if ANY exclude token has a matching word -> drop.
-    - include: a token matches when ALL its words match (comma = OR between tokens).
-    - No include list -> keep (subject to exclude).
-    """
-    hay = f"{title or ''} {headline or ''} {seniority or ''} {function or ''}".lower()
-    if not hay.strip():
-        return False
-    # Junior-level excludes are overridden when the title carries a senior/
-    # decision-maker signal (keep "Associate General Counsel", "Assistant
-    # Director", "Senior Associate"; drop standalone "Sales Associate"/"Intern").
-    has_senior = any(_hay_has_word(hay, s) for s in _SENIOR_INDICATORS)
-    for ex in exclude_titles or []:
-        ex_words = ex.lower().split()
-        if ex_words and ex_words[0] in _JUNIOR_EXCLUDE_TOKENS and has_senior:
-            continue
-        if any(_hay_has_word(hay, w) for w in ex_words):
-            return False
-    if not include_titles:
-        return True
-    for inc in include_titles or []:
-        words = inc.lower().split()
-        if words and all(_hay_has_word(hay, w) for w in words):
-            return True
-    return False
-
-
-def _parse_cascade_titles(cascade_config) -> tuple[list[str], list[str]]:
-    """Extract (include_titles, exclude_titles) from a cascade_config JSON string
-    produced by routes._titles_to_cascade. Returns ([], []) when absent -> no filtering."""
-    if not cascade_config:
-        return [], []
-    try:
-        cascade = json.loads(cascade_config) if isinstance(cascade_config, str) else cascade_config
-    except Exception:
-        return [], []
-    if not isinstance(cascade, list):
-        return [], []
-    include: list[str] = []
-    exclude: list[str] = []
-    for tier in cascade:
-        if not isinstance(tier, dict):
-            continue
-        include += [str(t).strip() for t in (tier.get("include_title") or []) if str(t).strip()]
-        exclude += [str(t).strip() for t in (tier.get("exclude_title") or []) if str(t).strip()]
-    return include, list(dict.fromkeys(exclude))
+# Aliases kept so existing call sites (and tests) continue to work.
+_person_matches_titles = title_filter.person_matches_titles
+_parse_cascade_titles = title_filter.parse_cascade_titles
 
 
 def _is_personal_linkedin_url(url: str) -> bool:
@@ -765,9 +666,16 @@ async def _enrich_single_domain(
     if not email_semaphore:
         email_semaphore = asyncio.Semaphore(LINKEDIN_CONCURRENCY)
 
-    # Title filter (from cascade_config): applies to the FREE Contacts DB
-    # results, not only the paid Blitz fallback. Empty -> no filtering (today's behavior).
-    include_titles, exclude_titles = _parse_cascade_titles(cascade_config)
+    # Title filter (from cascade_config): applies to EVERY discovery path —
+    # Contacts DB results, the paid Blitz waterfall fallback, and the
+    # no-LinkedIn generic fallback. Empty -> no filtering (today's behavior).
+    # ``strict_titles: False`` stamped in the cascade (request escape hatch)
+    # disables the gate entirely.
+    include_titles, exclude_titles = title_filter.gate_title_filter(
+        strict_titles=not title_filter.cascade_config_allows_strict_off(cascade_config),
+        cascade_config=cascade_config,
+        default_cascade=blitz_client.DEFAULT_CASCADE,
+    )
     title_filter_active = bool(include_titles or exclude_titles)
 
     output_rows = []
@@ -813,8 +721,14 @@ async def _enrich_single_domain(
                 # user-selected ``max_decision_makers``. Use the user cap
                 # so the audit capture and the user-facing CSV agree on
                 # how many records the provider returned for this domain.
+                # With a title filter active, widen the pool the same way
+                # Step 2 does so matches survive the local gate below.
+                _gc_limit = (
+                    max(max_decision_makers, TITLE_SEARCH_POOL)
+                    if title_filter_active else max_decision_makers
+                )
                 contacts = await contacts_client.company_contacts_enriched(
-                    contacts_http, domain, limit=max_decision_makers
+                    contacts_http, domain, limit=_gc_limit
                 )
                 if contacts and len(contacts) > 0:
                     # Phase 1: capture every contact before any filtering.
@@ -829,8 +743,15 @@ async def _enrich_single_domain(
                                 )
                             except Exception:
                                 pass
-                    # Extract any emails found
+                    # Extract any emails found (subject to the local title
+                    # gate — generic fallback must respect the ICP too).
                     for contact in contacts:
+                        if title_filter_active and not _person_matches_titles(
+                            contact.get("title", ""), contact.get("headline", ""),
+                            include_titles, exclude_titles,
+                            contact.get("seniority", ""), contact.get("function", ""),
+                        ):
+                            continue
                         email = contact.get("email", "")
                         if email and "@" in email:
                             row = {**base_row, **_empty_enriched()}
@@ -931,6 +852,23 @@ async def _enrich_single_domain(
                             )
                         except Exception:
                             pass
+                # LOCAL TITLE GATE: Blitz's server-side matching is fuzzy
+                # (include_headline_search=True + substring tiers), so e.g.
+                # "President" pulls in "Vice President of Product Management".
+                # Re-apply the user's titles locally and drop non-matches
+                # BEFORE email resolution (which then only spends provider
+                # credits on people the user actually asked for).
+                if title_filter_active:
+                    _persons_before = len(persons)
+                    persons, _dropped = title_filter.filter_blitz_persons(
+                        persons, include_titles, exclude_titles,
+                        _current_title_fn=_current_title,
+                    )
+                    if _dropped:
+                        logger.info(
+                            "Title gate (blitz waterfall) %s: dropped %d/%d off-ICP",
+                            domain, _dropped, _persons_before,
+                        )
                 logger.debug("Using Blitz for %d decision makers", len(persons))
             except Exception as e:
                 logger.debug("Blitz waterfall search failed: %s", e)
@@ -1118,7 +1056,11 @@ async def _merge_by_company_contacts(
         return output_rows
     if os.getenv("ENABLE_COMPANY_LOOKUP", "").strip().lower() not in ("1", "true", "yes"):
         return output_rows
-    include_titles, exclude_titles = _parse_cascade_titles(cascade_config)
+    include_titles, exclude_titles = title_filter.gate_title_filter(
+        strict_titles=not title_filter.cascade_config_allows_strict_off(cascade_config),
+        cascade_config=cascade_config,
+        default_cascade=blitz_client.DEFAULT_CASCADE,
+    )
     title_filter_active = bool(include_titles or exclude_titles)
     _bc_limit = max(limit, TITLE_SEARCH_POOL) if title_filter_active else limit
     try:
