@@ -268,6 +268,7 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS website_scrape_sync_state (
             id               INTEGER PRIMARY KEY CHECK (id = 1),
             watermark        TEXT,
+            watermark_id     INTEGER,
             last_run_at      TEXT,
             last_run_status  TEXT,
             rows_pulled      INTEGER NOT NULL DEFAULT 0,
