@@ -33,11 +33,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import csv
+import io
 import json
 import logging
 import os
 import sqlite3
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -64,6 +65,23 @@ _REMOTE_DB = "email_enrichment"
 _REMOTE_USER = "leadgen_sync"
 _REMOTE_HOST_DB = "127.0.0.1"
 
+# Postgres text render of timestamptz in ISO DateStyle, e.g.
+# '2026-08-06 23:22:17.962021+00'. Validating the watermark against this
+# shape before SQL interpolation is both an injection guard and a
+# mixed-format monotonicity guard.
+_WATERMARK_RE = None  # compiled lazily in _valid_watermark()
+
+
+def _valid_watermark(watermark: str) -> bool:
+    import re
+
+    global _WATERMARK_RE
+    if _WATERMARK_RE is None:
+        _WATERMARK_RE = re.compile(
+            r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?([+-]\d{2}(:?\d{2})?)?$"
+        )
+    return bool(_WATERMARK_RE.match(watermark))
+
 
 class LoudFailure(Exception):
     """Mirrors contacts_writer.LoudFailure abort semantics (outbox down)."""
@@ -80,6 +98,7 @@ def init_state_table(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS {STATE_TABLE} (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             watermark TEXT,
+            watermark_id INTEGER,
             last_run_at TEXT,
             last_run_status TEXT,
             rows_pulled INTEGER NOT NULL DEFAULT 0,
@@ -89,6 +108,10 @@ def init_state_table(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # Composite-watermark migration for pre-existing single-column installs.
+    cols = {row[1] for row in conn.execute(f"PRAGMA table_info({STATE_TABLE})")}
+    if "watermark_id" not in cols:
+        conn.execute(f"ALTER TABLE {STATE_TABLE} ADD COLUMN watermark_id INTEGER")
     conn.execute(f"INSERT OR IGNORE INTO {STATE_TABLE} (id) VALUES (1)")
     conn.commit()
 
@@ -97,11 +120,14 @@ class SyncStateStore:
     def __init__(self, conn: sqlite3.Connection):
         self._conn = conn
 
-    def get_watermark(self) -> Optional[str]:
+    def get_watermark(self) -> Optional[tuple[str, int]]:
+        """Composite watermark (completed_at text, remote row id)."""
         row = self._conn.execute(
-            f"SELECT watermark FROM {STATE_TABLE} WHERE id=1"
+            f"SELECT watermark, watermark_id FROM {STATE_TABLE} WHERE id=1"
         ).fetchone()
-        return row[0] if row and row[0] else None
+        if not row or not row[0]:
+            return None
+        return (row[0], row[1] or 0)
 
     def get_state(self) -> dict[str, Any]:
         cursor = self._conn.execute(f"SELECT * FROM {STATE_TABLE} WHERE id=1")
@@ -109,15 +135,16 @@ class SyncStateStore:
         cols = [d[0] for d in cursor.description]
         return dict(zip(cols, row))
 
-    def set_watermark(self, watermark: str, rows_pulled: int, rows_pushed: int) -> None:
-        """Monotonic: never regresses. Lexicographic compare is valid for the
-        single canonical ISO-8601 format remote completed_at emits."""
+    def set_watermark(self, watermark: str, watermark_id: int, rows_pulled: int, rows_pushed: int) -> None:
+        """Monotonic on the (ts, id) pair: never regresses. Lexicographic ts
+        compare is valid because the format is validated before storage."""
         current = self.get_watermark()
-        if current is not None and watermark <= current:
-            return
+        if current is not None:
+            if (watermark, watermark_id) <= current:
+                return
         self._conn.execute(
-            f"UPDATE {STATE_TABLE} SET watermark=?, rows_pulled=?, rows_pushed=? WHERE id=1",
-            (watermark, rows_pulled, rows_pushed),
+            f"UPDATE {STATE_TABLE} SET watermark=?, watermark_id=?, rows_pulled=?, rows_pushed=? WHERE id=1",
+            (watermark, watermark_id, rows_pulled, rows_pushed),
         )
         self._conn.commit()
 
@@ -148,20 +175,29 @@ def build_remote_psql_command(sql: str) -> list[str]:
     """
     remote = (
         f"psql -h {_REMOTE_HOST_DB} -U {_REMOTE_USER} -d {_REMOTE_DB} "
-        "--no-psqlrc --quiet -A -F $'\\t' -t -v ON_ERROR_STOP=1"
+        "--no-psqlrc --quiet --csv -t -v ON_ERROR_STOP=1"
     )
     return ["ssh", DEFAULT_HOST_ALIAS, "--", remote]
 
 
-def build_pull_query(watermark: Optional[str], limit: int) -> str:
+def build_pull_query(watermark: Optional[tuple[str, int]], limit: int) -> str:
     """Keyset-paginated pull of terminal rows, oldest first so the watermark
-    advances monotonically. Reads ONLY email_enrichment — the gmaps_places
-    enrichment happens in a second, PK-keyed query (build_gmaps_query); joining
-    them remotely forces a double seq-scan over 2.4M+2.4M rows (measured:
-    times out)."""
-    predicate = ""
+    advances monotonically. Composite (completed_at, id) keyset — a ts-only
+    anchor re-pulls the boundary tie-group every batch, and a bulk-completed
+    tie-group larger than the batch size loops forever (review 2026-08-26).
+    NULL completed_at rows are excluded: pulling one would poison the
+    watermark. Reads ONLY email_enrichment — gmaps enrichment is a second,
+    chunked query (the remote LEFT JOIN seq-scanned 2.4M+2.4M rows)."""
+    predicate = "AND completed_at IS NOT NULL"
     if watermark:
-        predicate = f"AND (completed_at, id) > ('{watermark}', 0)"
+        ts, row_id = watermark
+        if not _valid_watermark(ts):
+            raise ValueError(f"invalid watermark shape: {ts!r}")
+        escaped = ts.replace("'", "''")
+        predicate = (
+            f"AND completed_at IS NOT NULL "
+            f"AND (completed_at, id) > ('{escaped}', {int(row_id)})"
+        )
     return f"""
 SELECT id, domain, email, email_class, email_type, email_confidence,
        email_shared_nd, status, business_name, page_title, industry,
@@ -192,8 +228,13 @@ WHERE website IS NOT NULL
 def _remote_psql_prefix() -> str:
     return (
         f"psql -h {_REMOTE_HOST_DB} -U {_REMOTE_USER} -d {_REMOTE_DB} "
-        "--no-psqlrc --quiet -A -F $'\\t' -t -v ON_ERROR_STOP=1"
+        "--no-psqlrc --quiet --csv -t -v ON_ERROR_STOP=1"
     )
+
+
+def parse_csv_output(output: str) -> list[list[str]]:
+    """Parse psql --csv output with the csv module (tab/newline/quote-safe)."""
+    return [row for row in csv.reader(io.StringIO(output)) if row]
 
 
 _PULL_COLUMNS = (
@@ -303,20 +344,18 @@ async def _run_remote_psql(sql: str, timeout_s: int) -> str:
 
 def make_ssh_pull(
     host_alias: str = DEFAULT_HOST_ALIAS, timeout_s: int = DEFAULT_TIMEOUT_S
-) -> Callable[[Optional[str], int], Any]:
+) -> Callable[[Optional[tuple[str, int]], int], Any]:
     """Build the real pull callable: phase 1 pulls the email_enrichment batch;
     phase 2 enriches with gmaps data via a website-keyed IN-list query. The old
     single-query LEFT JOIN forced a double seq-scan (measured: >5 min for a
     1K batch); two indexed queries return in ~2s."""
 
-    async def _pull(watermark: Optional[str], limit: int) -> list[dict[str, Any]]:
+    async def _pull(
+        watermark: Optional[tuple[str, int]], limit: int
+    ) -> list[dict[str, Any]]:
         main_sql = build_pull_query(watermark, limit)
         stdout = await _run_remote_psql(main_sql, timeout_s)
-        rows = [
-            parse_pull_row(line.split("\t"))
-            for line in stdout.splitlines()
-            if line.strip()
-        ]
+        rows = [parse_pull_row(fields) for fields in parse_csv_output(stdout)]
 
         domains = sorted({row["domain"] for row in rows if row.get("domain")})
         if not domains:
@@ -329,10 +368,8 @@ def make_ssh_pull(
             chunk = domains[start : start + chunk_size]
             gmaps_sql = build_gmaps_query(chunk)
             gmaps_out = await _run_remote_psql(gmaps_sql, timeout_s)
-            for line in gmaps_out.splitlines():
-                if not line.strip():
-                    continue
-                website, payload = parse_gmaps_row(line.split("\t"))
+            for fields in parse_csv_output(gmaps_out):
+                website, payload = parse_gmaps_row(fields)
                 key = _strip_www(website)
                 # First match wins (franchise branches share websites).
                 if key and key not in gmaps_by_domain:
@@ -363,10 +400,13 @@ def make_writer_push() -> Callable[[list[dict[str, Any]], Optional[str]], Any]:
 
 
 def compute_throttle_sleep(batch_size: int, rps: float) -> float:
-    """Seconds to sleep after pushing a batch to hold ~rps overall."""
+    """Seconds to sleep AFTER a batch finishes so the OVERALL rate (push time
+    + sleep) holds ~rps. Not capped at 1s — the old cap made 500@40rps sleep
+    1s instead of 12.5s, so a standalone sync ran at the writer's raw 75rps,
+    triple the intended protection (review 2026-08-26)."""
     if rps <= 0:
         return 0.0
-    return max(0.0, min(1.0, batch_size / rps))
+    return max(0.0, batch_size / rps)
 
 
 # ---------------------------------------------------------------------------
@@ -420,6 +460,7 @@ async def run_sync(
     rows_pulled = 0
     rows_pushed = 0
     rows_failed = 0
+    rows_queued = 0
     skipped_junk = 0
     batches = 0
 
@@ -442,34 +483,47 @@ async def run_sync(
 
         rows_pulled += len(rows)
         if payloads and not dry_run:
+            batch_start = time.monotonic()
             result = await push(payloads, job_id=job_id)
             summary = result.to_dict() if hasattr(result, "to_dict") else {}
             rows_pushed += summary.get("inserted", 0) + summary.get("updated", 0) + summary.get("skipped", 0)
             rows_failed += summary.get("failed", 0)
+            rows_queued += summary.get("queued_for_retry", 0) + summary.get("queued", 0)
             batches += 1
-            await asyncio.sleep(compute_throttle_sleep(len(payloads), throttle_rps))
+            # Throttle to the target rate accounting for time already spent
+            # pushing (the writer's own limiter may have been slower/faster).
+            target = len(payloads) / throttle_rps if throttle_rps > 0 else 0.0
+            remaining = target - (time.monotonic() - batch_start)
+            if remaining > 0:
+                await asyncio.sleep(remaining)
         elif dry_run:
             batches += 1
 
-        # Advance watermark to this batch's last row so the next pull keysets
-        # past it. On dry-run we deliberately do NOT persist.
-        watermark = rows[-1]["completed_at"]
+        # Advance the composite watermark to this batch's last row so the
+        # next pull keysets strictly past it. On dry-run we deliberately do
+        # NOT persist.
+        last = rows[-1]
+        if not last.get("completed_at"):
+            raise RuntimeError("pulled row with NULL completed_at despite query guard")
+        watermark = (last["completed_at"], int(last["id"] or 0))
         if not dry_run:
-            store.set_watermark(watermark, rows_pulled=rows_pulled, rows_pushed=rows_pushed)
+            store.set_watermark(
+                watermark[0], watermark[1], rows_pulled=rows_pulled, rows_pushed=rows_pushed
+            )
 
         if limit is not None and rows_pulled >= limit:
             break
         if len(rows) < fetch:
             break
 
-    status = "success" if rows_failed == 0 else "partial"
+    status = "success" if rows_failed == 0 and rows_queued == 0 else "partial"
     if not dry_run:
         store.record_run(
             status=status,
             rows_pulled=rows_pulled,
             rows_pushed=rows_pushed,
             skipped_junk=skipped_junk,
-            errors=rows_failed,
+            errors=rows_failed + rows_queued,
         )
     return {
         "status": status,
@@ -478,9 +532,10 @@ async def run_sync(
         "curated": rows_pulled - skipped_junk,
         "rows_pushed": rows_pushed,
         "rows_failed": rows_failed,
+        "rows_queued": rows_queued,
         "skipped_junk": skipped_junk,
         "batches": batches,
-        "watermark": watermark if dry_run else store.get_watermark(),
+        "watermark": (watermark if dry_run else store.get_watermark()),
     }
 
 
@@ -519,17 +574,32 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     store = open_state_store()
-    result = asyncio.run(
-        run_sync(
-            enabled=True,  # CLI already gated above
-            dry_run=args.dry_run,
-            limit=args.limit,
-            batch_size=args.batch_size,
-            store=store,
+    try:
+        result = asyncio.run(
+            run_sync(
+                enabled=True,  # CLI already gated above
+                dry_run=args.dry_run,
+                limit=args.limit,
+                batch_size=args.batch_size,
+                store=store,
+            )
         )
-    )
+    except Exception as exc:  # noqa: BLE001 — record the crash, then re-raise
+        if not args.dry_run:
+            try:
+                store.record_run(
+                    status=f"error: {type(exc).__name__}",
+                    rows_pulled=0,
+                    rows_pushed=0,
+                    skipped_junk=0,
+                    errors=1,
+                )
+            except Exception:  # noqa: S110 — never mask the original error
+                pass
+        raise
     print(json.dumps(result, indent=2))
-    return 0 if result.get("status") in ("success", "partial") else 1
+    # partial → nonzero so systemd/journal alerting sees degraded runs.
+    return 0 if result.get("status") == "success" else 1
 
 
 if __name__ == "__main__":  # pragma: no cover

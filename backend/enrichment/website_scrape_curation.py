@@ -271,6 +271,10 @@ def build_named_contact_payloads(curated: CuratedRow, job_id: str) -> list[dict[
                 "dm_title": contact["title"],
                 "email_type": "work",
                 "source_path": "website_scrape_sync",
+                # company_industry feeds lead_universe classification in
+                # _write_person_payload (classify_industry) — the plan's
+                # "industry → lead universe" mapping (review 2026-08-26).
+                "company_industry": curated.industry or "",
                 "custom_fields": {"source": SOURCE_TAG},
                 "provider_metadata": {"job_id": job_id, "kind": "website_scrape"},
                 "row_index": index + 1,

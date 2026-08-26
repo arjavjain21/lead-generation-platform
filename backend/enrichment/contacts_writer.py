@@ -665,6 +665,15 @@ async def _write_company_payload(
     if ce_source_path:
         body["source_path"] = ce_source_path
 
+    # Firmographics the PersonUpsertRequest has no first-class field for
+    # travel via custom_fields (merged into the record server-side — same
+    # catch-all the person path uses ~L569-576). Without this the entire
+    # gmaps/phone/location enrichment silently never reached the DB
+    # (found in review 2026-08-26).
+    custom: dict[str, Any] = dict(payload.get("custom_fields") or {})
+    if custom:
+        body["custom_fields"] = custom
+
     lineage: dict[str, Any] = {
         "kind": "company_email",
     }
