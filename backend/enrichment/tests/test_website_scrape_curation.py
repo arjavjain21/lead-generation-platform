@@ -54,6 +54,7 @@ _WRITER_COMPANY_KEYS = {
     "custom_fields",
     "row_index",
     "provider_metadata",
+    "source_name",
 }
 
 _WRITER_PERSON_KEYS = {
@@ -84,6 +85,7 @@ _WRITER_PERSON_KEYS = {
     "custom_fields",
     "row_index",
     "provider_metadata",
+    "source_name",
 }
 
 
