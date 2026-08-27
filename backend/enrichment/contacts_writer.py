@@ -575,6 +575,14 @@ async def _write_person_payload(
     if custom:
         body["custom_fields"] = custom
 
+    # Optional provenance override (contacts-api 2026-08-27): populates
+    # core.source_row.source_name so the by-domain source=/exclude_source=
+    # lookup filters can match this cohort (e.g. 'website_scrape'). Omitted
+    # when the caller doesn't set it — the API defaults to 'api_upsert'.
+    payload_source = (payload.get("source_name") or "").strip()
+    if payload_source:
+        body["source_name"] = payload_source
+
     # Job lineage (kept compact)
     lineage: dict[str, Any] = {}
     if job_id:
@@ -673,6 +681,12 @@ async def _write_company_payload(
     custom: dict[str, Any] = dict(payload.get("custom_fields") or {})
     if custom:
         body["custom_fields"] = custom
+
+    # Optional provenance override (contacts-api 2026-08-27) — see the
+    # person-path comment above; same semantics for company payloads.
+    payload_source = (payload.get("source_name") or "").strip()
+    if payload_source:
+        body["source_name"] = payload_source
 
     lineage: dict[str, Any] = {
         "kind": "company_email",

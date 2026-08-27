@@ -1036,6 +1036,7 @@ async def _merge_by_company_contacts(
     base_row: dict[str, Any],
     force_provider: Optional[str],
     source: Optional[str] = None,
+    source_include: Optional[str] = None,
     limit: int = 25,
     cascade_config: Optional[str] = None,
 ) -> list[dict[str, Any]]:
@@ -1048,10 +1049,18 @@ async def _merge_by_company_contacts(
     no data loss). Tagged dm_email_source="contacts_db_by_company" so they're
     distinguishable in the CSV.
 
-    Phase 2 (2026-07-22): optional ``source`` (e.g. "outscraper") narrows the
-    internal-DB lookup to contacts tagged with that source only. ``None`` →
-    all sources (today's behavior — no regression).
+    Phase 2 (2026-07-22): optional ``source`` EXCLUDES contacts tagged with
+    that source from the by-company lookup (the UI's include-outscraper
+    checkbox sends exclude when unchecked — semantics preserved here).
+    ``None`` → all sources.
+
+    Website-scrape (2026-08-27): ``source_include`` is the include-side
+    filter — only contacts whose core.source_row.source_name matches are
+    returned. Powers website_only mode (source_include="website_scrape").
+    Setting both filters is a caller bug → ValueError.
     """
+    if source and source_include:
+        raise ValueError("source (exclude) and source_include are mutually exclusive")
     if force_provider:
         return output_rows
     if os.getenv("ENABLE_COMPANY_LOOKUP", "").strip().lower() not in ("1", "true", "yes"):
@@ -1065,7 +1074,11 @@ async def _merge_by_company_contacts(
     _bc_limit = max(limit, TITLE_SEARCH_POOL) if title_filter_active else limit
     try:
         by_company = await contacts_client.company_persons_by_domain(
-            contacts_http, domain, limit=_bc_limit, exclude_source=source
+            contacts_http,
+            domain,
+            limit=_bc_limit,
+            exclude_source=source,
+            source=source_include,
         )
     except Exception as e:
         logger.debug("by-company lookup failed for %s: %s", domain, e)
@@ -1253,6 +1266,7 @@ async def run_domain_enrichment(
     cascade_config: Optional[str] = None,  # NEW: JSON cascade config from job store
     collector: Optional[Any] = None,  # RawContactCollector; Phase 1 capture
     source: Optional[str] = None,  # Phase 2: filter by-company Contacts DB lookup by source ("outscraper")
+    website_only: bool = False,  # 2026-08-27: website-scrape-only mode — by-company lookup filtered to source_name='website_scrape', ZERO paid providers/fallbacks/mailtester
     # --- Incremental persistence (partial-download + resume) ---
     output_path: Optional[Path] = None,
     write_incremental: bool = False,
@@ -1376,7 +1390,19 @@ async def run_domain_enrichment(
             if _is_company_linkedin_url(_li_val):
                 company_linkedin_url_raw = _li_val
 
-        if company_linkedin_url_raw:
+        if website_only:
+            # Website-scrape-only mode (2026-08-27): read existing DB data
+            # exclusively — by-company lookup filtered to the website_scrape
+            # cohort, emails preserved as stored. NO cascade, NO paid
+            # providers, NO company fallback, NO mailtester. A company
+            # LinkedIn URL in the CSV is ignored in this mode (the by-company
+            # lookup is domain-keyed; the company-URL path is Blitz-first).
+            result = await _merge_by_company_contacts(
+                contacts_http, [], domain, row, force_provider=None,
+                source_include="website_scrape", limit=max_decision_makers,
+                cascade_config=cascade_config,
+            )
+        elif company_linkedin_url_raw:
             company_linkedin_url = identifier_utils.normalize_linkedin_url(company_linkedin_url_raw)
             # Short-circuit: use the company-URL orchestrator directly
             result = await _enrich_by_company_linkedin(
@@ -1452,7 +1478,8 @@ async def run_domain_enrichment(
         # Company/page-level fallback (BetterEnrich Facebook + company
         # email). Runs once per domain; applied to all output rows
         # that lack a person-level email. Mirrors run_pipeline wiring.
-        if domain:
+        # Skipped entirely in website_only mode (paid provider).
+        if domain and not website_only:
             row_facebook_url = str(row.get("facebook_url", "") or row.get("facebook", "") or "").strip()
             domain_dedupe = company_fallback.CompanyFallbackDedupe()
             await _apply_company_fallback_to_output_rows(

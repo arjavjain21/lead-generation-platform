@@ -348,6 +348,12 @@ def init_db() -> None:
     #   'restart'           — resumed/restarted from a prior enrichment job
     if "source_type" not in existing_columns:
         c.execute("ALTER TABLE jobs ADD COLUMN source_type TEXT DEFAULT ''")
+    # Website-only mode flag (2026-08-27) — Flow 1 jobs run with
+    # website_only=True read exclusively from the website_scrape cohort in the
+    # Contacts DB (zero paid providers). Persisted so restarts/resumes keep
+    # the mode; '0'/NULL = normal cascade (today's behavior).
+    if "website_only" not in existing_columns:
+        c.execute("ALTER TABLE jobs ADD COLUMN website_only INTEGER DEFAULT 0")
     # Resume claim marker (2026-08-24) — cross-process mutex for enrichment
     # auto-resume. The 4-worker fan-out bug (hyperke-saas chain, 4 children in
     # 5ms) happened because the "already has a child?" check and the child

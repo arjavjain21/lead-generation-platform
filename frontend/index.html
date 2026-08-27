@@ -1679,6 +1679,12 @@
                             <label style="font-weight:600;cursor:pointer;">Outscraper (Google Maps)</label>
                             <span style="font-size:0.75rem;color:#64748b;">Include Google-Maps/outscraper-sourced contacts (uncheck to exclude)</span>
                         </div>
+                        <div style="display:flex;align-items:center;gap:8px; margin-top:10px; padding-top:10px; border-top:1px dashed #e2e8f0;">
+                            <input type="checkbox" id="website_data_only" style="width:16px;height:16px;cursor:pointer;">
+                            <label style="font-weight:600;cursor:pointer;">Website data only</label>
+                            <span style="font-size:0.75rem;color:#64748b;">Reads ONLY website-scraper contacts already in the database (up to 24h old). No providers run, no new scraping is started — <a href="https://webscraper.eagleinfoservice.com" target="_blank" rel="noopener">submit new sites at webscraper.eagleinfoservice.com</a>.</span>
+                        </div>
+                        <div id="website_data_status" style="display:none;font-size:0.75rem;color:#64748b;margin-top:4px;padding-left:24px;"></div>
                     </div>
                 </div>
 
@@ -2749,6 +2755,59 @@ example.org,Jane Doe</pre>
             handleHashChange();
         });
 
+        // Website-only mode toggle (2026-08-27): grey out provider checkboxes
+        // while ON (they're ignored server-side) and surface the sync's
+        // "data as of" freshness so users know what they're querying.
+        (function initWebsiteOnlyToggle() {
+            const wsOnly = document.getElementById('website_data_only');
+            const statusEl = document.getElementById('website_data_status');
+            if (!wsOnly || !statusEl) return;
+
+            const providerBoxes = [
+                'provider_blitz', 'provider_getleads', 'provider_smartprospect',
+                'provider_wizleads', 'provider_better_enrich', 'provider_outscraper',
+            ].map(id => document.getElementById(id)).filter(Boolean);
+
+            function applyGrey() {
+                providerBoxes.forEach(box => {
+                    box.disabled = wsOnly.checked;
+                    box.parentElement.style.opacity = wsOnly.checked ? '0.45' : '1';
+                });
+            }
+
+            async function loadStatus() {
+                statusEl.style.display = 'block';
+                try {
+                    const tok = localStorage.getItem('token');
+                    const res = await fetch('/api/enrichment/website-scrape/status', {
+                        headers: { 'Authorization': 'Bearer ' + tok }
+                    });
+                    if (!res.ok) throw new Error('status ' + res.status);
+                    const s = await res.json();
+                    if (s.watermark && s.watermark.completed_at) {
+                        const asOf = new Date(s.watermark.completed_at.replace(' ', 'T'));
+                        statusEl.textContent = s.synced_within_hours
+                            ? 'Website data as of ' + asOf.toISOString().slice(0, 16).replace('T', ' ') + ' UTC'
+                            : '⚠ Website data last synced ' + asOf.toISOString().slice(0, 10) + ' — older than ' + s.fresh_hours + 'h. Newer sites may be missing.';
+                    } else {
+                        statusEl.textContent = 'Website-scrape sync has not run yet — no website data available yet.';
+                    }
+                } catch (e) {
+                    statusEl.textContent = 'Website data availability unknown.';
+                }
+            }
+
+            wsOnly.addEventListener('change', () => {
+                applyGrey();
+                if (wsOnly.checked) {
+                    loadStatus();
+                } else {
+                    statusEl.style.display = 'none';
+                }
+            });
+            applyGrey();
+        })();
+
         // Keyboard accessibility for div-based clickables (upload zones + flow cards).
         // One global delegated handler: Enter/Space triggers the existing click handler.
         document.addEventListener('keydown', (e) => {
@@ -3168,6 +3227,11 @@ example.org,Jane Doe</pre>
             // = all sources (today's behavior); checked (default) = include outscraper; unchecked = exclude.
             const outscraperSource = document.getElementById('provider_outscraper').checked ? null : 'outscraper';
 
+            // Website-only mode (2026-08-27): when ON the run reads ONLY the
+            // website_scrape cohort already synced into the Contacts DB — the
+            // provider checkboxes are ignored (and greyed out upstream).
+            const websiteOnly = document.getElementById('website_data_only').checked;
+
             // Read pre-processing flags (default ON via the HTML checked attr)
             const normalizeDomains = document.getElementById('domain_normalize_domains').checked;
             const dedupeByDomain = document.getElementById('domain_dedupe_by_domain').checked;
@@ -3195,7 +3259,8 @@ example.org,Jane Doe</pre>
                         dedupe_by_domain: dedupeByDomain,
                         titles: customTitles,
                         strict_titles: strictTitles,
-                        source: outscraperSource
+                        source: outscraperSource,
+                        website_only: websiteOnly
                     })
                 });
 

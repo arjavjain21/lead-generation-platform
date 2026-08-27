@@ -235,6 +235,10 @@ def build_company_payload(curated: CuratedRow, job_id: str) -> dict[str, Any]:
         "company_email_verified": "no",
         "company_email_type": "work",
         "source_path": "website_scrape_sync",
+        # Populates core.source_row.source_name server-side (contacts-api
+        # optional field, 2026-08-27) so the by-domain source= lookup filter
+        # matches this cohort.
+        "source_name": SOURCE_TAG,
         "custom_fields": _company_custom_fields(curated),
         "provider_metadata": {"job_id": job_id, "kind": "website_scrape"},
         "row_index": 0,
@@ -275,6 +279,7 @@ def build_named_contact_payloads(curated: CuratedRow, job_id: str) -> list[dict[
                 # _write_person_payload (classify_industry) — the plan's
                 # "industry → lead universe" mapping (review 2026-08-26).
                 "company_industry": curated.industry or "",
+                "source_name": SOURCE_TAG,
                 "custom_fields": {"source": SOURCE_TAG},
                 "provider_metadata": {"job_id": job_id, "kind": "website_scrape"},
                 "row_index": index + 1,

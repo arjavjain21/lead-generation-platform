@@ -217,6 +217,15 @@ ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
 
 # Optional (email notifications)
 SMTP_SERVER, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SENDER_EMAIL, DEFAULT_RECIPIENT
+
+# Website-scrape nightly sync (webscraper.eagleinfoservice.com → Contacts DB, tag 'website_scrape')
+# Standalone systemd service lead-gen-website-scrape-sync.{service,timer} (installed, enable to activate).
+# SSH alias 'webscraper-vps' (key auth) + SELECT-only role 'leadgen_sync' on the remote — no DB secrets here.
+WEBSITE_SCRAPE_SYNC_ENABLED=false
+WEBSITE_SCRAPE_BATCH_SIZE=500
+WEBSITE_SCRAPE_SYNC_RPS=40
+WEBSITE_SCRAPE_SHARED_ND_CAP=20
+WEBSITE_SCRAPE_TIMEOUT_S=300
 ```
 
 ## PostgreSQL Companion Database

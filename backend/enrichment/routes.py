@@ -793,6 +793,78 @@ async def get_enrichment_providers(
 
 
 # ---------------------------------------------------------------------------
+# Website-scrape sync status (Phase 3 UI "data as of" + freshness flag)
+# ---------------------------------------------------------------------------
+
+_WEBSITE_SCRAPE_FRESH_HOURS = 48.0
+
+
+def _website_scrape_status_payload(store: Any) -> dict[str, Any]:
+    """Build the /website-scrape/status response from the sync state store.
+
+    Pure read — safe to call with any SyncStateStore (tests pass a temp one).
+    """
+    from datetime import datetime, timezone
+
+    watermark = store.get_watermark()
+    state = store.get_state()
+    last_run_at = state.get("last_run_at")
+
+    synced_within_hours = False
+    if watermark:
+        try:
+            # last_run_at is SQLite datetime('now') → 'YYYY-MM-DD HH:MM:SS' UTC
+            dt = datetime.strptime(str(last_run_at), "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=timezone.utc
+            )
+            age_h = (datetime.now(timezone.utc) - dt).total_seconds() / 3600.0
+            synced_within_hours = age_h <= _WEBSITE_SCRAPE_FRESH_HOURS
+        except (TypeError, ValueError):
+            synced_within_hours = False
+
+    return {
+        "enabled": os.getenv("WEBSITE_SCRAPE_SYNC_ENABLED", "false").lower() == "true",
+        "source_tag": "website_scrape",
+        "watermark": (
+            {"completed_at": watermark[0], "row_id": watermark[1]} if watermark else None
+        ),
+        "last_run": {
+            "at": last_run_at,
+            "status": state.get("last_run_status"),
+            "rows_pulled": state.get("rows_pulled", 0),
+            "rows_pushed": state.get("rows_pushed", 0),
+            "skipped_junk": state.get("skipped_junk", 0),
+            "errors": state.get("errors", 0),
+        },
+        "fresh_hours": _WEBSITE_SCRAPE_FRESH_HOURS,
+        "synced_within_hours": synced_within_hours,
+    }
+
+
+@router.get("/website-scrape/status")
+async def website_scrape_status(
+    current_user: dict = Depends(auth.get_current_user),
+):
+    """Website-scrape nightly-sync status — powers the Flow 1 'Website data
+    only' toggle's 'data as of' display and freshness warning."""
+    from . import website_scrape_sync as wss
+
+    try:
+        store = wss.open_state_store()
+        return _website_scrape_status_payload(store)
+    except Exception as exc:  # noqa: BLE001 — degrade gracefully in the UI
+        logger.warning("website-scrape status read failed: %s", exc)
+        return {
+            "enabled": os.getenv("WEBSITE_SCRAPE_SYNC_ENABLED", "false").lower() == "true",
+            "source_tag": "website_scrape",
+            "watermark": None,
+            "last_run": None,
+            "fresh_hours": _WEBSITE_SCRAPE_FRESH_HOURS,
+            "synced_within_hours": False,
+        }
+
+
+# ---------------------------------------------------------------------------
 # In-API documentation (mirror of docs/LIST_BUILDING_API_2026-07-05.md)
 # ---------------------------------------------------------------------------
 
@@ -5230,6 +5302,7 @@ async def _restart_job_core(
         max_results=original_job.get('max_results', 5),
         selected_providers=selected_providers,
         normalize_domains=orig_normalize,
+        website_only=bool(original_job.get('website_only')),
         prepend_rows=prepend_rows,
     )
 
@@ -5569,6 +5642,11 @@ class ProviderToggleRequest(BaseModel):
     # behavior — no regression). NOT a cascade provider; ignored by the paid
     # waterfall.
     source: Optional[str] = None
+    # Website-only mode (2026-08-27): read exclusively from the website_scrape
+    # cohort already synced into the Contacts DB. ZERO paid providers, no
+    # company fallback, no mailtester — emails preserved as stored. Data is as
+    # fresh as the last nightly sync (see /api/enrichment/website-scrape/status).
+    website_only: bool = False
     # Scraper.tech provenance fix: tag all enriched leads with this universe
     # (e.g., 'local_business') so write-back carries the origin forward.
     lead_universe: Optional[str] = None
@@ -5691,6 +5769,7 @@ async def domain_enrich_with_providers(
         dedupe_by_domain=req.dedupe_by_domain,
         deduped_rows=deduped_count,
         dedupe_skipped_domains=json.dumps(skipped_domains),
+        website_only=req.website_only,
     )
 
     _job_signals[job_id] = asyncio.Event()
@@ -5713,6 +5792,7 @@ async def domain_enrich_with_providers(
         selected_providers=req.providers,
         normalize_domains=req.normalize_domains,
         source=req.source,
+        website_only=req.website_only,
     )
 
     return {
@@ -5739,6 +5819,7 @@ async def _run_domain_enrich_job(
     selected_providers: Optional[list[str]] = None,
     normalize_domains: bool = True,
     source: Optional[str] = None,
+    website_only: bool = False,
     prepend_rows: Optional[list[dict]] = None,
 ):
     """Background task to run domain enrichment using list_builder."""
@@ -5819,6 +5900,7 @@ async def _run_domain_enrich_job(
             company_linkedin_col=company_linkedin_col,
             linkedin_url_col=linkedin_url_col,
             source=source,
+            website_only=website_only,
             output_path=output_path,
             write_incremental=True,
             dedupe_on=_job_dedupe_on(job_id),
