@@ -881,6 +881,9 @@ curl -X POST https://listbuilding.eagleinfoservice.com/api/scraper/jobs \
 | `GET /api/scraper/jobs/{id}/stream` | JWT via header **or** `?token=...` query | SSE progress stream |
 | `GET /api/scraper/jobs/{id}/download` | JWT **or** API key | Full CSV for finished/stopped/failed/cancelled/abandoned jobs |
 | `GET /api/scraper/jobs/{id}/partial-download` | JWT **or** API key | CSV of rows collected so far while job is still running |
+| `GET /api/scraper/jobs/{id}/partial-progress` | JWT **or** API key | Progress metadata (rows_on_disk, pct_complete, shard_size) |
+| `GET /api/scraper/jobs/{id}/shards` | JWT **or** API key | List virtual 10,000-row download shards |
+| `GET /api/scraper/jobs/{job_id}/shard/{shard}` (`{id}/{shard}` in this table) | JWT **or** API key | Stream one CSV shard |
 | `POST /api/scraper/jobs/{id}/cancel` | JWT | Cancel a queued or running job |
 | `POST /api/scraper/jobs/{id}/restart` | JWT | Restart a failed/abandoned/cancelled/stopped job from scratch (new `job_id`) |
 
@@ -1013,6 +1016,166 @@ For a bulk CSV enrichment job with no contention, expect **30–110 rows per min
 
 ---
 
+## Section H: External Scraper API (API-key surface)
+
+`/api/external/scraper/*` — the API-key-first surface for external clients (Clay, scripts, MCP wrappers) to drive the Google Maps scraper exactly like the UI: create jobs, poll progress, fetch places as JSON. Everything reuses the UI pipeline (dispatcher caps, 90-day cache, CSV outputs) with the same guardrails.
+
+### H.1 Authentication & envelope
+
+- **Auth:** `X-API-Key: lgp_...` (recommended) or `Authorization: Bearer <jwt|lgp_...>` — same dependency as the rest of the API-key surface (`auth.get_current_user_with_api_key`). **Every** key works; no separate scope.
+- **Envelope — ALL responses (success and error):**
+  ```json
+  {"success": true, "data": {...}, "error": null, "meta": {"total": 9821, "limit": 100, "offset": 0}}
+  ```
+- **Error shape** (with matching HTTP status):
+  ```json
+  {"success": false, "data": null, "meta": null,
+   "error": {"status": 409, "code": "not_ready", "message": "...", "job_status": "running", "retry_after": 30}}
+  ```
+  `retry_after` also appears as a `Retry-After` header when set.
+
+| Code | HTTP | Meaning |
+|---|---|---|
+| `unauthenticated` | 401 | Missing/invalid key or token |
+| `access_denied` | 403 | Not the job owner (admins bypass) |
+| `not_found` | 404 | Job doesn't exist / wrong type |
+| `results_not_available` | 404 | Terminal job but no CSV on disk |
+| `not_ready` | 409 | Job still queued/running — poll status |
+| `no_query` / `no_centers` / `not_cancellable` / `invalid_fields` | 400 | Bad request (invalid_fields lists valid names) |
+| `task_limit_exceeded` / `validation_error` | 422 | Above `MAX_EXTERNAL_SCRAPER_TASKS` (non-admin) / pydantic validation |
+| `quota_exceeded` | 429 | Daily 50K task budget exceeded (`resets_at` included) |
+| `database_busy` | 503 | SQLite lock — retry (`Retry-After: 3`) |
+| `scraper_not_configured` | 500 | `SCRAPER_TECH_KEY` unset server-side |
+
+### H.2 Request model (shared by /estimate, /cache, /jobs)
+
+```json
+{
+  "query": "coffee shop",         // required, 1-200 chars
+  "mode": "cities",               // all | states | cities | zips (US) | centers (non-US)
+  "country": "us",                // ISO-2; any supported scraper country
+  "states": [],                   // mode=states
+  "cities": ["Austin"],           // mode=cities
+  "zips": [],                     // mode=zips (US 5-digit)
+  "center_ids": [],               // mode=centers (non-US) — ORDER matters for cache identity
+  "expected_types": [],           // Google Maps type filter
+  "prefer_cache": true            // /jobs only — short-circuit on a full cache hit
+}
+```
+Bounds: states ≤ 60, cities ≤ 1000, zips/center_ids ≤ 5000, expected_types ≤ 20.
+
+### H.3 `POST /api/external/scraper/estimate` — dry run
+
+Returns centers + task count (**always centers × 3 zooms [10,11,12]** — matches what execution runs and what quota bills; the legacy `/api/scraper/regions/estimate` reports ×1 for zips, which is a known inconsistency), quota status, and a **read-only cache preview** (does not touch cache analytics).
+
+```bash
+curl -X POST https://listbuilding.eagleinfoservice.com/api/external/scraper/estimate \
+  -H "X-API-Key: lgp_YOUR_KEY" -H "Content-Type: application/json" \
+  -d '{"query":"coffee shop","mode":"cities","cities":["Austin"],"country":"us"}'
+```
+```json
+{"success":true,"data":{
+  "query":"coffee shop","country":"us","mode":"cities",
+  "center_count":30,"task_count":90,"task_basis":"centers_x_3_zooms","warnings":[],
+  "cache":{"cached":false},
+  "quota":{"limit":50000,"used":1200,"remaining":48800,"resets_at":"...","is_admin":false,"external_task_limit":15000},
+  "can_proceed":true,"quota_message":null},
+ "error":null,"meta":null}
+```
+
+### H.4 `POST /api/external/scraper/cache` — instant (free) cache query
+
+Full hit → metadata + inline rows (free, no scraper.tech cost, no job, no quota). Miss → fresh-run task estimate. **A hit whose backing file was deleted is still a 200** with `file_available: false` — decide whether to re-scrape.
+
+Query params: `offset` (≥0), `limit` (1–1000), `fields` (comma-separated column names, or `compact`).
+
+Hit: `{"cached":true,"cache_id":"...","total_results":9821,"is_partial":false,"percentage_complete":100.0,"days_remaining":78,"file_available":true,"rows_available":9821,"fields":["name","phone"],"rows":[...]}` + `meta.total`.
+
+Miss: `{"cached":false,"fresh_task_estimate":90,"hint":"POST /api/external/scraper/jobs to run a fresh scrape."}`
+
+### H.5 `POST /api/external/scraper/jobs` — create (cache-first)
+
+`prefer_cache: true` (default): a **full** cache hit returns `{"created":false,"served_from_cache":true,"cache":{...},"rows_available":N,"links":{...}}` — **no job row, no quota consumed**. Partial hits fall through to a fresh job.
+
+Fresh creation guards (in order): query → centers → cache → `MAX_EXTERNAL_SCRAPER_TASKS` cap (non-admin, 422) → daily 50K quota pre-check (429) → insert as `queued`.
+
+```json
+{"success":true,"data":{
+  "created":true,"job_id":"<uuid>","status":"queued",
+  "total_tasks":90,"center_count":30,"warnings":[],
+  "display_name":"[API] coffee shop",
+  "quota":{...},"suggested_poll_seconds":10,
+  "links":{"status":"/api/external/scraper/jobs/<uuid>",
+           "results":"/api/external/scraper/jobs/<uuid>/results",
+           "csv":"/api/scraper/jobs/<uuid>/download",
+           "cancel":"/api/external/scraper/jobs/<uuid>/cancel"}},
+ "error":null,"meta":null}
+```
+The job executes through the normal dispatcher (max 6 platform-wide / 2 per worker; FIFO). Jobs are tagged `display_name="[API] ..."` (or `[MCP]` via the MCP tools) in the UI job list.
+
+### H.6 `GET /api/external/scraper/jobs` & `GET /api/external/scraper/jobs/{job_id}`
+
+List: `?limit=1-200&offset=&status=` — own jobs (admins see all), envelope `meta`.
+
+Status detail (curated projection — internal columns like `user_id`/`output_path` are never exposed):
+```json
+{"job_id":"...","query":"coffee shop","display_name":"[API] coffee shop","status":"running",
+ "total_tasks":90,"done_tasks":12,"result_count":118,"file_available":true,
+ "progress":{"done_tasks":12,"total_tasks":90,"pct_complete":13.3},
+ "rows_on_disk":118,"error":null,"queue_position":0,
+ "regions":{"mode":"cities","country":"us","cities":["Austin"],...},
+ "timestamps":{"created_at":"...","updated_at":"...","cancelled_at":null},
+ "suggested_poll_seconds":10,"links":{...}}
+```
+
+**Honest semantics:** `done_tasks` counts *attempted* tasks (a failed scraper.tech call is still checkpointed and counted — a `done` job may contain missed tasks). `rows_on_disk` (live CSV row count) is the authoritative result count, especially on resumed jobs where `result_count` can drift. `queue_position` is 0-based among queued jobs. There is no `started_at`/`finished_at` — use the timestamps shown.
+
+### H.7 `GET /api/external/scraper/jobs/{job_id}/results` — JSON rows
+
+Terminal jobs only (`done|failed|abandoned|cancelled|stopped`); otherwise **409 `not_ready`** + `Retry-After`. Params: `offset`, `limit` (1–1000), `fields` (comma-separated of the 34 CSV columns, or `compact` for the 13-column default used by MCP).
+
+```json
+{"success":true,"data":{"job_id":"...","status":"done","total_rows":4521,
+  "fields":["name","phone","website"],
+  "rows":[{"name":"Blue Bottle Coffee","phone":"+1 512-...","website":"https://..."}]},
+ "error":null,"meta":{"total":4521,"limit":100,"offset":0}}
+```
+The 34 columns match the scraper CSV exactly (`name, category_name, full_address, city, city_state, phone, website, rating, review_count, place_link, place_id, latitude, longitude, ...` — full list in §D.8). For bulk, use the CSV link instead.
+
+### H.8 `POST /api/external/scraper/jobs/{job_id}/cancel` & `GET /api/external/scraper/quota`
+
+Cancel works on `queued|running` jobs (shared cancel core with the UI — partial results are preserved and cached). Quota returns `{limit, used, remaining, resets_at, is_admin, external_task_limit}` (admins: nulls + no cap).
+
+### H.9 The 5 MCP action tools (same pipeline over MCP)
+
+The ListBuilding MCP at `/mcp` now includes **action tools** alongside the read-only docs oracle (kill-switch `ENABLE_MCP_SCRAPER_TOOLS`, default on):
+
+| Tool | What it does |
+|---|---|
+| `scrape_local_businesses` | Estimate (`dry_run=true` **default**) or create a job (`dry_run=false`); `prefer_cache=true` default |
+| `get_scrape_job_status` | Poll progress/queue position |
+| `get_scrape_job_results` | JSON rows, `limit` ≤ 200, compact fields by default |
+| `check_scrape_cache` | Cache hit check + sample rows |
+| `cancel_scrape_job` | Cancel queued/running |
+
+Tools share the exact HTTP `impl_*` code path — ownership, quota, and task caps are identical. Identity comes from the same `lgp_` key used to connect the MCP server. `dry_run=true` by default means an LLM cannot accidentally commit thousands of scraper.tech tasks.
+
+### H.10 Rate limiting & cost guardrails
+
+- nginx per-IP tourniquet on `/api/external/` (429 with JSON body on excess).
+- Per-create task cap: `MAX_EXTERNAL_SCRAPER_TASKS` (default 15,000; admins exempt). A US-wide `mode=all` job is ~88,638 tasks — external non-admins must narrow geography (the error carries the limit and the actual count).
+- Daily quota: same 50K/day per-user task budget the UI enforces (429 at creation, UTC-midnight reset).
+- Cache hits are free — always check `POST /cache` (or `prefer_cache`) before paying for a fresh scrape.
+- `center_ids` **order affects cache identity** (it feeds the region signature) — send the same order for cache hits.
+
+### H.11 Notes for integrators
+
+- SSE streams are **JWT-only** — external API-key clients should poll `GET /jobs/{job_id}` (hence `suggested_poll_seconds`). `/api/external/*` adds no SSE.
+- The MCP tools never expose SSE; they return complete JSON payloads.
+- Example flow: `POST /cache` (free?) → miss → `POST /estimate` (optional) → `POST /jobs` → poll `GET /jobs/{id}` every `suggested_poll_seconds` → `GET /jobs/{id}/results?fields=compact&limit=1000` pages → CSV link for bulk.
+
+---
+
 ## Section G: UI Features Summary
 
 The platform's UI lives at `https://listbuilding.eagleinfoservice.com/`. Sidebar pages:
@@ -1119,6 +1282,7 @@ Plain-text message about daily quota. No `Retry-After` header.
 
 | Date | Change |
 | --- | --- |
+| 2026-08-30 | **Section H added — External Scraper API** (`/api/external/scraper/*`, API-key auth, `{success,data,error,meta}` envelope): estimate, cache (free instant hits), job create/list/status/results (JSON rows)/cancel, quota. 5 MCP **action tools** added to the ListBuilding MCP (Section H.9; `scrape_local_businesses` defaults to dry_run). Scraper shard/partial endpoints added to D.4 table. |
 | 2026-07-24 | Documented crash-safety model + resume/recovery endpoints: `/resume-info` (B.13), `/recover-partial` (B.14), `/shards` (B.15), `/shard/{shard}` (B.16). Updated `/download` (B.9) and `/restart` (B.11) to reflect partial/failed support and true-resume behavior. |
 | 2026-07-16 | Full API reference published. Added: phone enrichment, scraper, helper endpoints, auth matrix, rate limits, UI features, error reference. |
 | 2026-07-13 | `selected_providers` parameter added to `/api/enrichment/enrich`. Fail-loud guards prevent silent 0-email jobs. UI warning banner added. |
