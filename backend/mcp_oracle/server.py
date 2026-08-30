@@ -6,6 +6,8 @@ and Prompts land in Phases 2–4.
 
 from __future__ import annotations
 
+import os
+
 from mcp.server.fastmcp import FastMCP
 
 # stateless_http=True is required for multi-worker gunicorn deployment.
@@ -34,6 +36,12 @@ mcp.settings.transport_security.enable_dns_rebinding_protection = False
 from . import resources  # noqa: F401, E402 — registers resources on mcp
 from . import tools      # noqa: F401, E402 — registers tools on mcp
 from . import prompts    # noqa: F401, E402 — registers prompts on mcp
+
+# Scraper ACTION tools (write-capable, unlike the read-only oracle above).
+# Gated SEPARATELY from ENABLE_MCP_ORACLE so read-only discovery stays up if
+# the action tools ever need an emergency disable.
+if os.environ.get("ENABLE_MCP_SCRAPER_TOOLS", "true").lower() == "true":
+    from . import scraper_actions  # noqa: F401, E402 — registers action tools on mcp
 
 
 @mcp.resource("health://status")
