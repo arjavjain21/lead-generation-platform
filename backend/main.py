@@ -22,10 +22,16 @@ import pandas as pd
 import sqlite3
 from dotenv import load_dotenv
 from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import (
+    http_exception_handler,
+    request_validation_exception_handler,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from shared import auth, db
 from shared.job_store_base import JobStoreBase
@@ -87,6 +93,67 @@ async def global_exception_handler(_request: Request, exc: Exception):
         status_code=500,
         content={"detail": str(exc) or "Internal server error"},
     )
+
+
+# ---------------------------------------------------------------------------
+# /api/external/* error envelope — path-scoped so every other route keeps the
+# default {"detail": ...} body byte-identical. External integrators get a
+# structured {success:false, error:{code, message, ...}} contract instead.
+# ---------------------------------------------------------------------------
+
+async def external_error_handler(request: Request, exc: "ExternalError"):
+    """scraper.external_helpers.ExternalError → envelope (or plain detail
+    outside /api/external/*)."""
+    if request.url.path.startswith("/api/external/"):
+        headers = (
+            {"Retry-After": str(exc.retry_after)}
+            if exc.retry_after is not None else None
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"success": False,
+                     "error": {"status": exc.status_code, "code": exc.code,
+                               "message": exc.message, **exc.extra},
+                     "data": None, "meta": None},
+            headers=headers,
+        )
+    # Raised outside the external namespace (shouldn't happen) — degrade to
+    # the platform-standard detail shape.
+    return JSONResponse(status_code=exc.status_code,
+                        content={"detail": exc.message})
+
+
+async def external_http_exception_handler(request: Request, exc: StarletteHTTPException):
+    if request.url.path.startswith("/api/external/"):
+        detail = (
+            exc.detail
+            if isinstance(exc.detail, dict)
+            else {"code": "error", "message": str(exc.detail)}
+        )
+        headers = (
+            {"Retry-After": str(detail["retry_after"])}
+            if isinstance(detail, dict) and detail.get("retry_after") is not None
+            else None
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"success": False, "error": {"status": exc.status_code, **detail},
+                     "data": None, "meta": None},
+            headers=headers,
+        )
+    return await http_exception_handler(request, exc)
+
+
+async def external_validation_exception_handler(request: Request, exc: RequestValidationError):
+    if request.url.path.startswith("/api/external/"):
+        return JSONResponse(
+            status_code=422,
+            content={"success": False,
+                     "error": {"status": 422, "code": "validation_error",
+                               "message": "Request validation failed.", "errors": exc.errors()},
+                     "data": None, "meta": None},
+        )
+    return await request_validation_exception_handler(request, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +319,16 @@ app = FastAPI(title="Lead Generation Platform", lifespan=lifespan)
 # Register exception handlers on the parent app
 app.add_exception_handler(sqlite3.OperationalError, sqlite_locked_handler)
 app.add_exception_handler(Exception, global_exception_handler)
+# Path-scoped /api/external/* error envelope (registered AFTER the global
+# Exception handler so FastAPI's more-specific StarletteHTTPException /
+# RequestValidationError dispatch still reaches these first).
+app.add_exception_handler(StarletteHTTPException, external_http_exception_handler)
+app.add_exception_handler(RequestValidationError, external_validation_exception_handler)
+
+# ExternalError (raised by scraper/external_helpers.py impl_* functions) →
+# envelope. Imported late to avoid circulars at module top.
+from scraper.external_helpers import ExternalError  # noqa: E402
+app.add_exception_handler(ExternalError, external_error_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -271,6 +348,13 @@ if _MCP_ENABLED:
 app.include_router(scraper_routes.router, tags=["scraper"])
 app.include_router(enrichment_routes.router, tags=["enrichment"])
 app.include_router(phone_enrichment_routes.router, tags=["phone_enrichment"])
+
+# External scraper API (/api/external/scraper/*) — additive surface for
+# API-key clients. Kill-switch: ENABLE_EXTERNAL_SCRAPER_API=false omits it.
+if os.environ.get("ENABLE_EXTERNAL_SCRAPER_API", "true").lower() == "true":
+    from scraper import external_routes as scraper_external_routes
+    app.include_router(scraper_external_routes.router, tags=["external-scraper"])
+    logger.info("External scraper API enabled at /api/external/scraper")
 
 # Create a shared router for common endpoints
 shared_router = APIRouter(prefix="/api", tags=["shared"])
