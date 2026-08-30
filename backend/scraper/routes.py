@@ -1168,12 +1168,11 @@ async def sync_scraper_job_to_contacts(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/jobs/{job_id}/cancel")
-async def cancel_scraper_job(
-    job_id: str,
-    current_user: dict = Depends(auth.get_current_user),
-):
-    """Cancel a running or queued scraper job."""
+def _cancel_scraper_job_core(job_id: str, current_user: dict) -> dict:
+    """Shared cancel core: ownership + status validation, store.set_cancelled,
+    in-process cancel/active set maintenance, SSE wake. Returns the response
+    dict. Used by /api/scraper/jobs/{id}/cancel and the external/MCP cancel
+    paths — behavior identical to the original inline handler."""
     store = job_store.get_store()
     job = store.get_job(job_id)
 
@@ -1202,6 +1201,15 @@ async def cancel_scraper_job(
 
     logger.info("Scraper job %s cancelled by user %s", job_id, current_user.get("user_id"))
     return {"ok": True, "message": "Job cancelled successfully"}
+
+
+@router.post("/jobs/{job_id}/cancel")
+async def cancel_scraper_job(
+    job_id: str,
+    current_user: dict = Depends(auth.get_current_user),
+):
+    """Cancel a running or queued scraper job."""
+    return _cancel_scraper_job_core(job_id, current_user)
 
 
 @router.get("/jobs/{job_id}/resume-info")
