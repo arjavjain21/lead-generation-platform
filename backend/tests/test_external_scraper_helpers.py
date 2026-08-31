@@ -45,13 +45,13 @@ from shared import db  # noqa: E402
 # ---------------------------------------------------------------------------
 
 def _req(**kw):
-    base = {"query": "coffee shop", "mode": "cities", "country": "us", "cities": ["Austin"]}
+    base = {"query": "zz-ext-test q", "mode": "cities", "country": "us", "cities": ["Austin"]}
     base.update(kw)
     return ext.ExternalScrapeRequest(**base)
 
 
 def _create_req(**kw):
-    base = {"query": "coffee shop", "mode": "cities", "country": "us", "cities": ["Austin"]}
+    base = {"query": "zz-ext-test q", "mode": "cities", "country": "us", "cities": ["Austin"]}
     base.update(kw)
     return ext.CreateJobRequest(**base)
 
@@ -76,7 +76,7 @@ def _insert_scraper_job(conn, job_id, user_id, status="running",
     conn.execute(
         "INSERT INTO jobs (job_id, user_id, job_type, status, query, regions, "
         "total_tasks, done_tasks, result_count, created_at, updated_at) "
-        "VALUES (?, ?, 'scraper', ?, 'coffee shop', ?, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, 'scraper', ?, 'zz-ext-test q', ?, ?, ?, ?, ?, ?)",
         (job_id, user_id, status, regions, total_tasks, done_tasks, result_count, iso, iso),
     )
     conn.commit()
@@ -105,7 +105,7 @@ def _write_csv(path: Path, n: int, cols=None) -> None:
 
 
 def _insert_cache_row(conn, cache_id, result_path, total_results=10, is_partial=0,
-                      pct=100.0, query="coffee shop"):
+                      pct=100.0, query="zz-ext-test q"):
     now = datetime.now(timezone.utc)
     conn.execute(
         "INSERT OR REPLACE INTO scraped_cache "
@@ -203,11 +203,11 @@ class TestPeekCache:
         region_sig = cache_module.generate_region_signature(regions)
         zoom_sig = cache_module.generate_zoom_signature([10, 11, 12])
         types_sig = cache_module.generate_expected_types_signature(None)
-        cache_id = cache_module.generate_cache_id("coffee shop", region_sig, zoom_sig, types_sig)
+        cache_id = cache_module.generate_cache_id("zz-ext-test q", region_sig, zoom_sig, types_sig)
         _insert_cache_row(conn, cache_id, csv_path)
         stats_before = _cache_stats_count(conn)
 
-        entry = ext.peek_cache("coffee shop", regions, [10, 11, 12], None)
+        entry = ext.peek_cache("zz-ext-test q", regions, [10, 11, 12], None)
 
         assert entry is not None
         assert entry["cache_id"] == cache_id
@@ -225,25 +225,29 @@ class TestPeekCache:
                    "zips": [], "center_ids": []}
         region_sig = cache_module.generate_region_signature(regions)
         cache_id = cache_module.generate_cache_id(
-            "expired q", region_sig,
+            "zz-ext-test expired", region_sig,
             cache_module.generate_zoom_signature([10, 11, 12]),
             cache_module.generate_expected_types_signature(None),
         )
         now = datetime.now(timezone.utc)
-        conn.execute(
-            "INSERT OR REPLACE INTO scraped_cache "
-            "(cache_id, job_id, user_id, query, region_signature, regions, zoom_signature, "
-            "expected_types_signature, status, result_file_path, checksum, total_results, "
-            "created_at, updated_at, expires_at, last_accessed_at, access_count, "
-            "is_partial, percentage_complete) "
-            "VALUES (?, 'j', 'u', 'expired q', 'sig', '{}', 'zsig', 'tsig', 'active', "
-            "?, 'chk', 5, ?, ?, ?, ?, 1, 0, 100.0)",
-            (cache_id, str(csv_path), (now - timedelta(days=100)).isoformat(),
-             (now - timedelta(days=100)).isoformat(), (now - timedelta(days=10)).isoformat(),
-             now.isoformat()),
-        )
-        conn.commit()
-        assert ext.peek_cache("expired q", regions, [10, 11, 12], None) is None
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO scraped_cache "
+                "(cache_id, job_id, user_id, query, region_signature, regions, zoom_signature, "
+                "expected_types_signature, status, result_file_path, checksum, total_results, "
+                "created_at, updated_at, expires_at, last_accessed_at, access_count, "
+                "is_partial, percentage_complete) "
+                "VALUES (?, 'j', 'u', 'zz-ext-test expired', 'sig', '{}', 'zsig', 'tsig', 'active', "
+                "?, 'chk', 5, ?, ?, ?, ?, 1, 0, 100.0)",
+                (cache_id, str(csv_path), (now - timedelta(days=100)).isoformat(),
+                 (now - timedelta(days=100)).isoformat(), (now - timedelta(days=10)).isoformat(),
+                 now.isoformat()),
+            )
+            conn.commit()
+            assert ext.peek_cache("zz-ext-test expired", regions, [10, 11, 12], None) is None
+        finally:
+            conn.execute("DELETE FROM scraped_cache WHERE cache_id = ?", (cache_id,))
+            conn.commit()
 
     def test_accepts_regions_as_json_string(self, conn, tmp_path):
         csv_path = tmp_path / "j.csv"
@@ -252,14 +256,20 @@ class TestPeekCache:
                    "zips": [], "center_ids": []}
         region_sig = cache_module.generate_region_signature(regions)
         cache_id = cache_module.generate_cache_id(
-            "jsonstr q", region_sig,
+            "zz-ext-test jsonstr", region_sig,
             cache_module.generate_zoom_signature([10, 11, 12]),
             cache_module.generate_expected_types_signature(None),
         )
-        _insert_cache_row(conn, cache_id, csv_path, query="jsonstr q")
-        # Pass a JSON string (form get_job() returns) — must still hit
-        found = ext.peek_cache("jsonstr q", __import__("json").dumps(regions), [10, 11, 12], None)
-        assert found is not None and found["cache_id"] == cache_id
+        try:
+            _insert_cache_row(conn, cache_id, csv_path, query="zz-ext-test jsonstr")
+            # Pass a JSON string (form get_job() returns) — must still hit
+            found = ext.peek_cache(
+                "zz-ext-test jsonstr", __import__("json").dumps(regions), [10, 11, 12], None
+            )
+            assert found is not None and found["cache_id"] == cache_id
+        finally:
+            conn.execute("DELETE FROM scraped_cache WHERE cache_id = ?", (cache_id,))
+            conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -499,7 +509,7 @@ class TestImplCreateJob:
                    "zips": [], "center_ids": []}
         region_sig = cache_module.generate_region_signature(regions)
         cache_id = cache_module.generate_cache_id(
-            "coffee shop", region_sig,
+            "zz-ext-test q", region_sig,
             cache_module.generate_zoom_signature([10, 11, 12]),
             cache_module.generate_expected_types_signature(None),
         )
@@ -526,7 +536,7 @@ class TestImplCreateJob:
                    "zips": [], "center_ids": []}
         region_sig = cache_module.generate_region_signature(regions)
         cache_id = cache_module.generate_cache_id(
-            "coffee shop", region_sig,
+            "zz-ext-test q", region_sig,
             cache_module.generate_zoom_signature([10, 11, 12]),
             cache_module.generate_expected_types_signature(None),
         )
@@ -698,7 +708,7 @@ class TestImplEstimate:
                    "zips": [], "center_ids": []}
         region_sig = cache_module.generate_region_signature(regions)
         cache_id = cache_module.generate_cache_id(
-            "coffee shop", region_sig,
+            "zz-ext-test q", region_sig,
             cache_module.generate_zoom_signature([10, 11, 12]),
             cache_module.generate_expected_types_signature(None),
         )

@@ -76,7 +76,7 @@ def _mk_job(conn, job_id, user_id, status="running", total_tasks=9, done_tasks=3
     conn.execute(
         "INSERT INTO jobs (job_id, user_id, job_type, status, query, regions, total_tasks, "
         "done_tasks, result_count, output_path, created_at, updated_at) "
-        "VALUES (?, ?, 'scraper', ?, 'coffee shop', ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, 'scraper', ?, 'zz-ext-test q', ?, ?, ?, ?, ?, ?, ?)",
         (job_id, user_id, status, regions, total_tasks, done_tasks, result_count,
          output_path, iso, iso),
     )
@@ -96,7 +96,7 @@ def _cleanup(conn, *job_ids, user_ids=()):
         conn.rollback()
 
 
-def _mk_cache_row(conn, cache_id, result_path, total_results=5, query="coffee shop",
+def _mk_cache_row(conn, cache_id, result_path, total_results=5, query="zz-ext-test q",
                   is_partial=0, pct=100.0):
     now = datetime.now(timezone.utc)
     conn.execute(
@@ -128,7 +128,7 @@ REGIONS_AUSTIN = {"mode": "cities", "country": "us", "states": [], "cities": ["A
 
 def _austin_cache_id():
     return cache_module.generate_cache_id(
-        "coffee shop",
+        "zz-ext-test q",
         cache_module.generate_region_signature(REGIONS_AUSTIN),
         cache_module.generate_zoom_signature([10, 11, 12]),
         cache_module.generate_expected_types_signature(None),
@@ -277,7 +277,7 @@ class TestCreateJob:
         job_id = None
         try:
             r = client.post("/api/external/scraper/jobs", json={
-                "query": "coffee shop", "mode": "cities", "country": "us",
+                "query": "zz-ext-test q", "mode": "cities", "country": "us",
                 "cities": ["Austin"], "prefer_cache": False,
             })
             assert r.status_code == 200
@@ -306,7 +306,7 @@ class TestCreateJob:
             before = conn.execute(
                 "SELECT COUNT(*) AS n FROM jobs WHERE job_type='scraper'").fetchone()["n"]
             r = client.post("/api/external/scraper/jobs", json={
-                "query": "coffee shop", "mode": "cities", "country": "us",
+                "query": "zz-ext-test q", "mode": "cities", "country": "us",
                 "cities": ["Austin"], "prefer_cache": True,
             })
             after = conn.execute(
@@ -330,7 +330,7 @@ class TestCreateJob:
         try:
             with mock.patch.dict(os.environ, {"MAX_EXTERNAL_SCRAPER_TASKS": "1"}):
                 r = client.post("/api/external/scraper/jobs", json={
-                    "query": "coffee shop", "mode": "cities", "country": "us",
+                    "query": "zz-ext-test q", "mode": "cities", "country": "us",
                     "cities": ["Austin"], "prefer_cache": False,
                 })
             assert r.status_code == 422
@@ -349,7 +349,7 @@ class TestCreateJob:
             with mock.patch.object(ext.db, "check_daily_request_limit",
                                    return_value=(False, "Daily limit exceeded.")):
                 r = client.post("/api/external/scraper/jobs", json={
-                    "query": "coffee shop", "mode": "cities", "country": "us",
+                    "query": "zz-ext-test q", "mode": "cities", "country": "us",
                     "cities": ["Austin"], "prefer_cache": False,
                 })
             assert r.status_code == 429
@@ -367,7 +367,7 @@ class TestCreateJob:
         try:
             with mock.patch.dict(os.environ, {"SCRAPER_TECH_KEY": ""}):
                 r = client.post("/api/external/scraper/jobs", json={
-                    "query": "coffee shop", "mode": "cities", "country": "us",
+                    "query": "zz-ext-test q", "mode": "cities", "country": "us",
                     "cities": ["Austin"], "prefer_cache": False,
                 })
             assert r.status_code == 500
@@ -619,7 +619,7 @@ class TestEstimateAndCache:
         main.app.dependency_overrides.update(_override(OWNER))
         try:
             r = client.post("/api/external/scraper/estimate", json={
-                "query": "coffee shop", "mode": "cities", "country": "us",
+                "query": "zz-ext-test q", "mode": "cities", "country": "us",
                 "cities": ["Austin"],
             })
             assert r.status_code == 200
@@ -640,7 +640,7 @@ class TestEstimateAndCache:
         main.app.dependency_overrides.update(_override(OWNER))
         try:
             r = client.post("/api/external/scraper/cache?limit=2", json={
-                "query": "coffee shop", "mode": "cities", "country": "us",
+                "query": "zz-ext-test q", "mode": "cities", "country": "us",
                 "cities": ["Austin"],
             })
             assert r.status_code == 200
@@ -663,7 +663,7 @@ class TestEstimateAndCache:
         main.app.dependency_overrides.update(_override(OWNER))
         try:
             r = client.post("/api/external/scraper/cache", json={
-                "query": "coffee shop", "mode": "cities", "country": "us",
+                "query": "zz-ext-test q", "mode": "cities", "country": "us",
                 "cities": ["Austin"],
             })
             assert r.status_code == 200
