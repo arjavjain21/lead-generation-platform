@@ -48,12 +48,19 @@ _INTENT_KEYWORDS: dict[str, list[str]] = {
     "number": ["/api/phone-enrichment/jobs"],
 
     # Scraper
-    "scrape": ["/api/scraper/jobs"],
-    "business": ["/api/scraper/jobs"],
-    "google maps": ["/api/scraper/jobs"],
-    "places": ["/api/scraper/jobs"],
-    "restaurant": ["/api/scraper/jobs"],
-    "store": ["/api/scraper/jobs"],
+    "scrape": ["/api/scraper/jobs", "/api/external/scraper/jobs"],
+    "business": ["/api/scraper/jobs", "/api/external/scraper/jobs"],
+    "google maps": ["/api/scraper/jobs", "/api/external/scraper/jobs"],
+    "places": ["/api/scraper/jobs", "/api/external/scraper/jobs"],
+    "restaurant": ["/api/scraper/jobs", "/api/external/scraper/jobs"],
+    "store": ["/api/scraper/jobs", "/api/external/scraper/jobs"],
+    # Scraper — external API-key surface (HTTP + MCP action tools)
+    "scrape local": ["/api/external/scraper/jobs"],
+    "maps scraper": ["/api/external/scraper/jobs"],
+    "places api": ["/api/external/scraper/jobs"],
+    "scrape estimate": ["/api/external/scraper/estimate"],
+    "cache check": ["/api/external/scraper/cache"],
+    "scrape results": ["/api/external/scraper/jobs/{job_id}/results"],
 
     # Job management
     "job status": ["/api/enrichment/jobs/{job_id}", "/api/scraper/jobs/{job_id}"],

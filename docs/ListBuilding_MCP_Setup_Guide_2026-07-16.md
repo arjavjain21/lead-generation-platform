@@ -108,11 +108,14 @@ Resources are data the MCP serves on demand. They always reflect the current sta
 | `providers://status` | Live provider cascade — which providers are enabled right now |
 | `schemas://{model_name}` | JSON schema for any request model (e.g., `schemas://UnifiedEnrichRequest`) |
 
-### Tools (8) — Ask questions, get answers
+### Tools (8 docs + 5 actions) — Ask questions, get answers, run scrapes
 
-Tools are functions Claude Code can call to answer your questions.
+Tools are functions Claude Code can call. The first 8 are the **read-only docs oracle**; the last 5 are
+**scraper action tools** (added 2026-08-30) that actually drive the Google Maps scraper pipeline — same
+guardrails as the HTTP API (your key's ownership, 50K/day quota, per-job task cap), gated server-side by
+`ENABLE_MCP_SCRAPER_TOOLS`.
 
-| Tool | What it answers |
+| Tool | What it answers / does |
 |---|---|
 | `find_endpoint_for_intent` | "I want to enrich a domain" → best endpoints ranked by relevance |
 | `get_endpoint_details` | Full parameters, response shape, error codes for one endpoint |
@@ -122,6 +125,16 @@ Tools are functions Claude Code can call to answer your questions.
 | `get_quota_guide` | Quota limits, reset schedule, cost-reduction tips |
 | `compare_enrichment_modes` | Difference between `domain_only`, `linkedin_only`, `enhanced` |
 | `validate_request` | "Is this JSON payload valid for `/api/enrichment/enrich`?" |
+| `scrape_local_businesses` | ⚡ **Action.** Estimate (`dry_run=true` is the DEFAULT — nothing is created) or create (`dry_run=false`) a Google Maps scrape job. `prefer_cache=true` serves free cached data when available |
+| `get_scrape_job_status` | ⚡ **Action.** Poll a job: progress %, rows on disk, queue position, links |
+| `get_scrape_job_results` | ⚡ **Action.** JSON rows from a finished job (≤200/call, compact fields by default) |
+| `check_scrape_cache` | ⚡ **Action.** Is this exact scrape already cached (free, instant)? Includes sample rows |
+| `cancel_scrape_job` | ⚡ **Action.** Cancel a queued/running job; partial results are kept |
+
+> **Cost safety:** `scrape_local_businesses` defaults to `dry_run=true`, so a model can't accidentally
+> commit thousands of paid scraper.tech tasks — the dry-run response shows the task count and quota impact,
+> and you explicitly set `dry_run=false` to proceed. Non-admin jobs above `MAX_EXTERNAL_SCRAPER_TASKS`
+> (default 15,000 tasks ≈ 5,000 centers) are rejected with a clear error.
 
 ### Prompts (6) — Guided templates for common tasks
 

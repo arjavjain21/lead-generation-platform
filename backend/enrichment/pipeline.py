@@ -40,6 +40,8 @@ from . import smartprospect_client
 from . import getleads_client
 from . import identifier_utils
 from . import company_fallback
+from . import seg
+from . import title_filter
 
 logger = logging.getLogger(__name__)
 
@@ -516,6 +518,9 @@ ENRICHED_COLUMNS = [
     "final_email",
     "final_email_level",
     "final_email_source_path",
+    # seg: appended at END — resume carry-over rows from pre-feature partials get blanks via restval=''
+    "seg_classification",
+    "seg_provider",
 ]
 
 
@@ -2858,6 +2863,19 @@ async def _enrich_domain(
     persons: list[dict[str, Any]] = []
     contacts_db_quality_met = False
 
+    # Local title gate (parity with list_builder): when the request carried
+    # titles (cascade with include/exclude), EVERY discovery path — Contacts
+    # DB, the Blitz waterfall — is re-filtered locally so the response only
+    # contains people the user actually asked for. Providers match fuzzily
+    # server-side ("President" → "Vice President of Product Management").
+    # ``strict_titles: False`` in the cascade disables the gate.
+    _tf_strict = not title_filter.cascade_config_allows_strict_off(cascade)
+    include_titles, exclude_titles = title_filter.gate_title_filter(
+        strict_titles=_tf_strict, cascade_config=cascade,
+        default_cascade=blitz_client.DEFAULT_CASCADE,
+    )
+    title_filter_active = bool(include_titles or exclude_titles)
+
     skip_contacts = _should_skip_provider("contacts_db", force_provider)
     logger.info("Step 2: force_provider=%s, use_custom_cascade=%s, skip_contacts=%s",
                 force_provider, use_custom_cascade, skip_contacts)
@@ -2869,8 +2887,12 @@ async def _enrich_domain(
             # Try Contacts DB first
             _record("contacts_db")
             try:
+                _cd_limit = (
+                    max(max_results, title_filter.TITLE_SEARCH_POOL)
+                    if title_filter_active else max_results
+                )
                 contacts_contacts = await contacts_client.company_contacts_enriched(
-                    contacts_http, domain, limit=max_results
+                    contacts_http, domain, limit=_cd_limit
                 )
                 if contacts_contacts and len(contacts_contacts) > 0:
                     # Phase 1: capture every Contacts DB contact BEFORE the
@@ -2895,9 +2917,20 @@ async def _enrich_domain(
                     # Quality check: need at least 1 decision maker AND 1 email
                     emails_count = sum(1 for c in contacts_contacts if c.get("email"))
                     if len(contacts_contacts) >= 1 and emails_count >= 1:
-                        # Convert Contacts DB format to Blitz format for compatibility
+                        # Convert Contacts DB format to Blitz format for compatibility.
+                        # Local title gate: skip contacts that don't match the
+                        # user's requested titles (title+headline+seniority+
+                        # function, synonym-aware).
                         persons = []
-                        for contact in contacts_contacts[:max_results]:
+                        for contact in contacts_contacts:
+                            if title_filter_active and not title_filter.person_matches_titles(
+                                contact.get("title", ""), contact.get("headline", ""),
+                                include_titles, exclude_titles,
+                                contact.get("seniority", ""), contact.get("function", ""),
+                            ):
+                                continue
+                            if len(persons) >= max_results:
+                                break
                             person_dict = {
                                 "person": {
                                     "title": contact.get("title", ""),  # Preserve title field
@@ -2916,7 +2949,15 @@ async def _enrich_domain(
                             }
                             persons.append(person_dict)
 
-                        contacts_db_quality_met = True
+                        # Quality met only when at least one person SURVIVED
+                        # the title gate; otherwise fall through to Blitz.
+                        if persons:
+                            contacts_db_quality_met = True
+                        else:
+                            logger.info(
+                                "Title gate dropped all %d Contacts DB people for %s — falling back to Blitz",
+                                len(contacts_contacts), domain,
+                            )
                         logger.debug("Using Contacts DB for %d decision makers from %s", len(persons), domain)
             except Exception as e:
                 _record_company_error("contacts_db", "company_contacts_enriched", str(e))
@@ -2930,6 +2971,19 @@ async def _enrich_domain(
                     blitz_http, company_linkedin_url, cascade, max_results
                 )
                 persons = icp_result.get("results", [])
+                # Local title gate: drop Blitz-fuzzy matches that don't match
+                # the user's requested titles before email resolution.
+                if title_filter_active and persons:
+                    _persons_before = len(persons)
+                    persons, _dropped = title_filter.filter_blitz_persons(
+                        persons, include_titles, exclude_titles,
+                        _current_title_fn=_current_title,
+                    )
+                    if _dropped:
+                        logger.info(
+                            "Title gate (blitz waterfall) %s: dropped %d/%d off-ICP",
+                            domain, _dropped, _persons_before,
+                        )
                 # Phase 1: capture every Blitz contact. Blitz already
                 # truncated server-side to ``max_results``; we keep all of
                 # them in the audit surface even if the cascade later
@@ -3660,6 +3714,29 @@ async def run_pipeline(
         )
         async with audit_lock:
             audit_records.append(audit)
+
+        # SEG pre-pass for this row's result rows: ONE classify call for the
+        # row's domain, stamped BEFORE the email-cache store and the CSV write
+        # below (classification never runs inside the write block — its
+        # flush -> checkpoint -> progress ordering is load-bearing). Sitting
+        # before the cache store means a cached replay (early-return path
+        # above) keeps its seg values instead of degrading to blanks.
+        # Flag off => {} => blank seg columns, zero I/O. Blank domain =>
+        # blank seg columns, no lookup.
+        seg_map: dict[str, Any] = {}
+        if domain:
+            try:
+                seg_map = await seg.classify_domains([domain])
+            except Exception as seg_exc:  # defensive: classify_domains never raises
+                logger.warning(
+                    "seg classify pre-pass failed for %s (%s) — blank seg columns",
+                    domain, type(seg_exc).__name__,
+                )
+                seg_map = {}
+        _seg_entry = seg_map.get(seg.normalize_seg_key(domain)) if domain else None
+        for r in result_rows:
+            r["seg_classification"] = _seg_entry["seg_classification"] if _seg_entry else ""
+            r["seg_provider"] = _seg_entry["seg_provider"] if _seg_entry else ""
 
         # Persist the successful row to the email cache so future runs can
         # skip it. We do this *after* the audit so the audit log always

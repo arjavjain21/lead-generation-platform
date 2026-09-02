@@ -238,6 +238,44 @@ def init_db() -> None:
             capacity       REAL NOT NULL,
             refill_per_sec REAL NOT NULL
         );
+
+        -- SEG (Secure Email Gateway) MX classification cache (2026-08-25).
+        -- Written by enrichment/seg.py: one row per normalized domain, both
+        -- contacts-DB hits (source='contacts_db') and DoH scan results
+        -- (source='doh'). Domains no layer could classify are negative-cached
+        -- with seg_classification='' (empty-string sentinel, column is NOT
+        -- NULL but '' is legal) so repeated misses don't re-hit the API/DNS;
+        -- '' rows are re-checked after a 7-day TTL via fetched_at. Idempotent
+        -- CREATE IF NOT EXISTS — no migration of existing tables.
+        CREATE TABLE IF NOT EXISTS domain_seg_cache (
+            domain            TEXT PRIMARY KEY,
+            seg_classification TEXT,
+            seg_provider       TEXT,
+            source             TEXT NOT NULL DEFAULT '',
+            mx_hosts           TEXT,                      -- JSON array text
+            fetched_at         TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_domain_seg_cache_fetched
+            ON domain_seg_cache(fetched_at);
+
+        -- Website-scrape nightly sync state (2026-08-26). Single row (id=1)
+        -- holding the incremental watermark (remote terminal completed_at of
+        -- the last fully-pushed batch) plus last-run telemetry. Written ONLY
+        -- by the standalone sync process (enrichment/website_scrape_sync.py);
+        -- the app creates the table and reads it for the UI "data as of"
+        -- display. Idempotent CREATE IF NOT EXISTS — no migration.
+        CREATE TABLE IF NOT EXISTS website_scrape_sync_state (
+            id               INTEGER PRIMARY KEY CHECK (id = 1),
+            watermark        TEXT,
+            watermark_id     INTEGER,
+            last_run_at      TEXT,
+            last_run_status  TEXT,
+            rows_pulled      INTEGER NOT NULL DEFAULT 0,
+            rows_pushed      INTEGER NOT NULL DEFAULT 0,
+            skipped_junk     INTEGER NOT NULL DEFAULT 0,
+            errors           INTEGER NOT NULL DEFAULT 0
+        );
         """
     )
 
@@ -310,6 +348,12 @@ def init_db() -> None:
     #   'restart'           — resumed/restarted from a prior enrichment job
     if "source_type" not in existing_columns:
         c.execute("ALTER TABLE jobs ADD COLUMN source_type TEXT DEFAULT ''")
+    # Website-only mode flag (2026-08-27) — Flow 1 jobs run with
+    # website_only=True read exclusively from the website_scrape cohort in the
+    # Contacts DB (zero paid providers). Persisted so restarts/resumes keep
+    # the mode; '0'/NULL = normal cascade (today's behavior).
+    if "website_only" not in existing_columns:
+        c.execute("ALTER TABLE jobs ADD COLUMN website_only INTEGER DEFAULT 0")
     # Resume claim marker (2026-08-24) — cross-process mutex for enrichment
     # auto-resume. The 4-worker fan-out bug (hyperke-saas chain, 4 children in
     # 5ms) happened because the "already has a child?" check and the child

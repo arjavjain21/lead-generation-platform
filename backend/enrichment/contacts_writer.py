@@ -98,6 +98,31 @@ def classify_industry(industry: str) -> str:
     return ""
 
 
+# Phase 2 (full capture): firmographic attributes with no dedicated
+# PersonUpsertRequest field travel via custom_fields (merged into
+# core.person.custom_fields JSONB by the Contacts DB — the only
+# server-persisted catch-all). Tuples are (custom_fields_key, payload_key):
+# the FIRST element is the key written into custom_fields, the SECOND the
+# payload key read from the enrichment row. Each entry only lands when the
+# payload value is non-empty, so existing records are never blanked and a
+# caller-supplied custom_fields entry is never overwritten with ''.
+# seg_classification / seg_provider (2026-08-25) carry the platform's SEG
+# (MX gateway) verdict — belt-and-suspenders for the contacts DB's own 6h
+# domain-map cron, which populates the canonical core.email.seg_* columns.
+_FIRMOGRAPHIC_CUSTOM_FIELDS: tuple[tuple[str, str], ...] = (
+    ("headline", "dm_headline"),
+    ("industry", "company_industry"),
+    ("employee_count", "company_employee_count"),
+    ("revenue", "company_revenue"),
+    ("city", "dm_location_city"),
+    ("country", "dm_location_country"),
+    ("linkedin_connections", "dm_linkedin_connections"),
+    ("email_last_verified_at", "dm_email_last_verified_at"),
+    ("seg_classification", "seg_classification"),
+    ("seg_provider", "seg_provider"),
+)
+
+
 # Local module; keep import lazy in functions to avoid circulars during
 # package init (contacts_writer is imported by routes which imports many things).
 try:
@@ -119,6 +144,7 @@ except ImportError:  # pragma: no cover - fallback for direct script run
 
 from shared import db
 from . import contacts_client as _contacts_client
+from . import seg
 
 logger = logging.getLogger(__name__)
 
@@ -303,6 +329,46 @@ def _domain_from_email(email: str) -> str:
     return email.split("@", 1)[1].strip().lower()
 
 
+def _apply_seg_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    """Decorate ``payload`` in place with SEG verdict keys (when derivable).
+
+    Belt-and-suspenders for the contacts DB's own domain-map cron: the
+    canonical ``core.email.seg_classification`` columns are populated
+    server-side, but a platform-side verdict rides along via custom_fields
+    when we already know it. Lookup is cache-only (``domain_seg_cache``) —
+    NO network, NO DNS, and a strict no-op when the flag is off, when the
+    payload carries no domain, or on a cache miss (the row simply gets no
+    seg custom_fields). A payload that already carries a verdict (upstream
+    flows may set it) always wins — explicit > derived, same precedence as
+    ``lead_universe`` above.
+    """
+    if payload.get("seg_classification") or payload.get("seg_provider"):
+        return payload
+    if not seg.is_seg_enabled():
+        return payload
+    domain = _normalize_domain(
+        payload.get("normalized_domain")
+        or payload.get("domain")
+        or payload.get("website")
+        or _domain_from_email(payload.get("dm_email") or payload.get("company_email") or "")
+    )
+    if not domain:
+        return payload
+    try:
+        entry = seg.get_seg_for_domains_sync([domain]).get(seg.normalize_seg_key(domain))
+    except Exception:
+        return payload
+    if not entry:
+        return payload
+    classification = str(entry.get("seg_classification") or "").strip()
+    provider = str(entry.get("seg_provider") or "").strip()
+    if classification:
+        payload["seg_classification"] = classification
+    if provider:
+        payload["seg_provider"] = provider
+    return payload
+
+
 # ---------------------------------------------------------------------------
 # Single-row write
 # ---------------------------------------------------------------------------
@@ -363,6 +429,9 @@ async def write_enrichment_result(
         own_client = True
 
     try:
+        # SEG (MX gateway) verdict — cache-only lookup, mutates nothing when
+        # the flag is off / the cache misses / the payload already carries one.
+        _apply_seg_fields(payload)
         person_status = await _write_person_payload(client, payload, job_id, row_index)
         company_status = await _write_company_payload(client, payload, job_id, row_index)
         return _combine_status(person_status, company_status)
@@ -495,17 +564,8 @@ async def _write_person_payload(
     # core.person.custom_fields JSONB by the Contacts DB — the only
     # server-persisted catch-all). Each key only when non-empty so existing
     # records are never blanked, and never overwrites a caller-supplied
-    # custom_fields entry with an empty value.
-    _FIRMOGRAPHIC_CUSTOM_FIELDS: tuple[tuple[str, str], ...] = (
-        ("headline", "dm_headline"),
-        ("industry", "company_industry"),
-        ("employee_count", "company_employee_count"),
-        ("revenue", "company_revenue"),
-        ("city", "dm_location_city"),
-        ("country", "dm_location_country"),
-        ("linkedin_connections", "dm_linkedin_connections"),
-        ("email_last_verified_at", "dm_email_last_verified_at"),
-    )
+    # custom_fields entry with an empty value. Hoisted to module scope
+    # (``_FIRMOGRAPHIC_CUSTOM_FIELDS``) so the contract is assertable.
     custom: dict[str, Any] = dict(payload.get("custom_fields") or {})
     for cf_key, payload_key in _FIRMOGRAPHIC_CUSTOM_FIELDS:
         raw_value = payload.get(payload_key)
@@ -514,6 +574,14 @@ async def _write_person_payload(
             custom[cf_key] = value
     if custom:
         body["custom_fields"] = custom
+
+    # Optional provenance override (contacts-api 2026-08-27): populates
+    # core.source_row.source_name so the by-domain source=/exclude_source=
+    # lookup filters can match this cohort (e.g. 'website_scrape'). Omitted
+    # when the caller doesn't set it — the API defaults to 'api_upsert'.
+    payload_source = (payload.get("source_name") or "").strip()
+    if payload_source:
+        body["source_name"] = payload_source
 
     # Job lineage (kept compact)
     lineage: dict[str, Any] = {}
@@ -604,6 +672,21 @@ async def _write_company_payload(
     ce_source_path = (payload.get("company_email_source_path") or payload.get("source_path") or "").strip()
     if ce_source_path:
         body["source_path"] = ce_source_path
+
+    # Firmographics the PersonUpsertRequest has no first-class field for
+    # travel via custom_fields (merged into the record server-side — same
+    # catch-all the person path uses ~L569-576). Without this the entire
+    # gmaps/phone/location enrichment silently never reached the DB
+    # (found in review 2026-08-26).
+    custom: dict[str, Any] = dict(payload.get("custom_fields") or {})
+    if custom:
+        body["custom_fields"] = custom
+
+    # Optional provenance override (contacts-api 2026-08-27) — see the
+    # person-path comment above; same semantics for company payloads.
+    payload_source = (payload.get("source_name") or "").strip()
+    if payload_source:
+        body["source_name"] = payload_source
 
     lineage: dict[str, Any] = {
         "kind": "company_email",
@@ -909,6 +992,9 @@ async def write_enrichment_result_batch(
     async with httpx.AsyncClient(timeout=30.0) as client:
         for p in payloads:
             try:
+                # Same SEG decoration as the single-row path (defensive
+                # read via .get; upstream flows may have set it already).
+                _apply_seg_fields(p)
                 status = await write_enrichment_result(
                     p, client=client, job_id=job_id, row_index=p.get("row_index")
                 )

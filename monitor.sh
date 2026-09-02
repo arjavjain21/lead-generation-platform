@@ -255,6 +255,43 @@ check_stale_jobs() {
 # API Error Monitoring
 ###############################################################################
 
+
+check_website_scrape_sync() {
+  log_info "Checking website-scrape sync freshness..."
+
+  local db="/var/www/lead-generation-platform/backend/data/jobs.db"
+  [ -f "$db" ] || { log_info "  jobs.db not found — skipping"; return 0; }
+
+  local last_run=$(sqlite3 "$db" "SELECT last_run_at FROM website_scrape_sync_state WHERE id=1;" 2>/dev/null)
+  local status=$(sqlite3 "$db" "SELECT last_run_status FROM website_scrape_sync_state WHERE id=1;" 2>/dev/null)
+  local enabled=$(systemctl is-enabled lead-gen-website-scrape-sync.timer 2>/dev/null || echo "disabled")
+
+  if [ "$enabled" != "enabled" ]; then
+    log_info "  website-scrape sync timer disabled (pre-go-live) — OK"
+    return 0
+  fi
+
+  if [ -z "$last_run" ]; then
+    log_warn "  website-scrape sync timer enabled but NEVER ran"
+    return 1
+  fi
+
+  local age_hours=$(sqlite3 "$db" "SELECT CAST((julianday('now') - julianday(last_run_at)) * 24 AS INTEGER) FROM website_scrape_sync_state WHERE id=1;" 2>/dev/null)
+  [ -z "$age_hours" ] && age_hours=999
+
+  log_info "  last run: $last_run (status: ${status:-unknown}, age: ${age_hours}h)"
+
+  if echo "$status" | grep -qi "^error"; then
+    log_error "  website-scrape sync last run FAILED: $status"
+    return 1
+  fi
+  if [ "$age_hours" -gt 48 ]; then
+    log_warn "  website-scrape sync is STALE (${age_hours}h > 48h) — website-only data outdated"
+    return 1
+  fi
+  return 0
+}
+
 check_api_errors() {
   log_info "Checking for API errors in logs..."
 
@@ -367,6 +404,11 @@ main() {
   # Check API errors
   if [ "$CHECK_DISK_ONLY" = false ]; then
     check_api_errors || exit_code=$?
+  fi
+
+  # Check website-scrape sync freshness
+  if [ "$CHECK_DISK_ONLY" = false ]; then
+    check_website_scrape_sync || exit_code=$?
   fi
 
   log_info "=========================================="

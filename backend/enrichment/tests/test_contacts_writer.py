@@ -395,7 +395,32 @@ class TestRetryOutboxDuplicateHandling(unittest.TestCase):
 
     Pre-fix: the broken duplicate check marked these rows 'failed' with
     attempt_count=0, leaving noise in the outbox forever.
+
+    Isolation: runs against a temp DB via the shared.db.DB_PATH monkeypatch
+    pattern (mirrors enrichment/tests/test_seg_writeback.py::temp_db).
+    Before this fixture the test inserted its row into the LIVE outbox,
+    where retry_outbox's `ORDER BY next_retry_at ASC LIMIT batch` let
+    production pending rows crowd the test row out of the batch — the
+    test failed whenever the prod outbox had >=batch_size older rows.
     """
+
+    def setUp(self):
+        import tempfile, pathlib
+        from shared import db as shared_db
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._orig_path = shared_db.DB_PATH
+        shared_db.DB_PATH = pathlib.Path(self._tmpdir.name) / "outbox_test.db"
+        shared_db._local.conn = None
+        shared_db.init_db()
+        self._shared_db = shared_db
+
+    def tearDown(self):
+        conn = getattr(self._shared_db._local, "conn", None)
+        if conn is not None:
+            conn.close()
+            self._shared_db._local.conn = None
+        self._shared_db.DB_PATH = self._orig_path
+        self._tmpdir.cleanup()
 
     def test_duplicate_response_deletes_outbox_row(self):
         async def runner():

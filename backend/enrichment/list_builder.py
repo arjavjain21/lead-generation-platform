@@ -35,6 +35,8 @@ from . import job_store
 from . import identifier_utils
 from . import company_fallback
 from . import fallback_config as fb_cfg
+from . import seg
+from . import title_filter
 from .pipeline import _getleads_dm_snapshot
 
 logger = logging.getLogger(__name__)
@@ -49,120 +51,20 @@ def _is_company_linkedin_url(url: str) -> bool:
 
 # ---------------------------------------------------------------------------
 # Title-based filtering.
-# Applies the user's `titles` input to the FREE Contacts DB results (it
-# previously reached only the paid Blitz fallback, which is skipped whenever
-# the free lookup returns anyone). Comma-separated titles = OR; words within
+# Canonical implementation lives in ``title_filter.py`` (shared with
+# pipeline.py). It applies the user's `titles` input to EVERY discovery path —
+# Contacts DB results, the paid Blitz waterfall fallback (whose server-side
+# fuzzy matching was returning 77% off-ICP contacts on a 2026-08-25 job), and
+# the no-LinkedIn generic fallback. Comma-separated titles = OR; words within
 # one title = AND. Common abbreviations expanded via synonyms so "CEO" matches
 # "Chief Executive Officer", "VP" matches "Vice President", etc.
 # ---------------------------------------------------------------------------
 
-# Pool size: how many Contacts-DB people to fetch per domain when a title
-# filter is active, so the title matches are present before filtering.
-TITLE_SEARCH_POOL = int(os.getenv("TITLE_SEARCH_POOL", "50"))
+TITLE_SEARCH_POOL = title_filter.TITLE_SEARCH_POOL
 
-_TITLE_SYNONYMS = {
-    "ceo": ("chief executive officer", "chief exec"),
-    "cto": ("chief technology officer", "chief tech"),
-    "cfo": ("chief financial officer",),
-    "coo": ("chief operating officer",),
-    "cmo": ("chief marketing officer",),
-    "cio": ("chief information officer",),
-    "cpo": ("chief product officer",),
-    "vp": ("vice president",),
-    "hr": ("human resources",),
-    "pr": ("public relations",),
-    "it": ("information technology",),
-    "founder": ("co-founder", "cofounder", "founding"),
-    "owner": ("proprietor",),
-    "director": ("dir",),
-    "manager": ("mgr", "management"),
-}
-
-# Tokens that mark a junior/entry-level role; the cascade exclude list usually
-# contains a subset of these (assistant/intern/junior/associate).
-_JUNIOR_EXCLUDE_TOKENS = {
-    "assistant", "intern", "junior", "associate", "entry", "trainee", "graduate",
-}
-
-# Senior / decision-maker signals. If any is present in the title, the junior
-# excludes above are NOT applied — so "Associate General Counsel",
-# "Assistant Director", "Senior Associate", "Associate Partner" are KEPT, while
-# standalone "Sales Associate" / "Intern" / "Junior Developer" are still dropped.
-_SENIOR_INDICATORS = (
-    "chief", "ceo", "cto", "cfo", "coo", "cmo", "cio", "cpo", "president",
-    "vp", "director", "partner", "principal", "professor", "dean", "counsel",
-    "general", "head", "founder", "owner", "manager", "lead", "senior",
-    "chairman", "chair",
-)
-
-
-def _title_word_variants(word: str) -> list[str]:
-    """Lowercase word plus common synonym expansions for substring matching."""
-    w = (word or "").lower().strip()
-    if not w:
-        return []
-    return [w, *_TITLE_SYNONYMS.get(w, ())]
-
-
-def _hay_has_word(hay: str, word: str) -> bool:
-    return any(v and v in hay for v in _title_word_variants(word))
-
-
-def _person_matches_titles(
-    title: str, headline: str, include_titles: list[str], exclude_titles: list[str],
-    seniority: str = "", function: str = "",
-) -> bool:
-    """True if a contact matches the title filter. Matches against title +
-    headline + seniority + function. ``seniority``/``function`` are structured
-    signals from the Contacts DB (e.g. seniority 'vp', function 'sales'), so
-    'VP' matches seniority 'vp' and 'Sales' matches function 'sales' even when
-    the free-text headline omits the word.
-
-    - exclude: if ANY exclude token has a matching word -> drop.
-    - include: a token matches when ALL its words match (comma = OR between tokens).
-    - No include list -> keep (subject to exclude).
-    """
-    hay = f"{title or ''} {headline or ''} {seniority or ''} {function or ''}".lower()
-    if not hay.strip():
-        return False
-    # Junior-level excludes are overridden when the title carries a senior/
-    # decision-maker signal (keep "Associate General Counsel", "Assistant
-    # Director", "Senior Associate"; drop standalone "Sales Associate"/"Intern").
-    has_senior = any(_hay_has_word(hay, s) for s in _SENIOR_INDICATORS)
-    for ex in exclude_titles or []:
-        ex_words = ex.lower().split()
-        if ex_words and ex_words[0] in _JUNIOR_EXCLUDE_TOKENS and has_senior:
-            continue
-        if any(_hay_has_word(hay, w) for w in ex_words):
-            return False
-    if not include_titles:
-        return True
-    for inc in include_titles or []:
-        words = inc.lower().split()
-        if words and all(_hay_has_word(hay, w) for w in words):
-            return True
-    return False
-
-
-def _parse_cascade_titles(cascade_config) -> tuple[list[str], list[str]]:
-    """Extract (include_titles, exclude_titles) from a cascade_config JSON string
-    produced by routes._titles_to_cascade. Returns ([], []) when absent -> no filtering."""
-    if not cascade_config:
-        return [], []
-    try:
-        cascade = json.loads(cascade_config) if isinstance(cascade_config, str) else cascade_config
-    except Exception:
-        return [], []
-    if not isinstance(cascade, list):
-        return [], []
-    include: list[str] = []
-    exclude: list[str] = []
-    for tier in cascade:
-        if not isinstance(tier, dict):
-            continue
-        include += [str(t).strip() for t in (tier.get("include_title") or []) if str(t).strip()]
-        exclude += [str(t).strip() for t in (tier.get("exclude_title") or []) if str(t).strip()]
-    return include, list(dict.fromkeys(exclude))
+# Aliases kept so existing call sites (and tests) continue to work.
+_person_matches_titles = title_filter.person_matches_titles
+_parse_cascade_titles = title_filter.parse_cascade_titles
 
 
 def _is_personal_linkedin_url(url: str) -> bool:
@@ -326,6 +228,9 @@ ENRICHED_COLUMNS = [
     "final_email",
     "final_email_level",
     "final_email_source_path",
+    # seg: appended at END — resume carry-over rows from pre-feature partials get blanks via restval=''
+    "seg_classification",
+    "seg_provider",
 ]
 
 
@@ -384,6 +289,8 @@ def _empty_enriched() -> dict[str, Any]:
         "final_email": "",
         "final_email_level": "",
         "final_email_source_path": "",
+        "seg_classification": "",
+        "seg_provider": "",
     }
 
 
@@ -759,9 +666,16 @@ async def _enrich_single_domain(
     if not email_semaphore:
         email_semaphore = asyncio.Semaphore(LINKEDIN_CONCURRENCY)
 
-    # Title filter (from cascade_config): applies to the FREE Contacts DB
-    # results, not only the paid Blitz fallback. Empty -> no filtering (today's behavior).
-    include_titles, exclude_titles = _parse_cascade_titles(cascade_config)
+    # Title filter (from cascade_config): applies to EVERY discovery path —
+    # Contacts DB results, the paid Blitz waterfall fallback, and the
+    # no-LinkedIn generic fallback. Empty -> no filtering (today's behavior).
+    # ``strict_titles: False`` stamped in the cascade (request escape hatch)
+    # disables the gate entirely.
+    include_titles, exclude_titles = title_filter.gate_title_filter(
+        strict_titles=not title_filter.cascade_config_allows_strict_off(cascade_config),
+        cascade_config=cascade_config,
+        default_cascade=blitz_client.DEFAULT_CASCADE,
+    )
     title_filter_active = bool(include_titles or exclude_titles)
 
     output_rows = []
@@ -807,8 +721,14 @@ async def _enrich_single_domain(
                 # user-selected ``max_decision_makers``. Use the user cap
                 # so the audit capture and the user-facing CSV agree on
                 # how many records the provider returned for this domain.
+                # With a title filter active, widen the pool the same way
+                # Step 2 does so matches survive the local gate below.
+                _gc_limit = (
+                    max(max_decision_makers, TITLE_SEARCH_POOL)
+                    if title_filter_active else max_decision_makers
+                )
                 contacts = await contacts_client.company_contacts_enriched(
-                    contacts_http, domain, limit=max_decision_makers
+                    contacts_http, domain, limit=_gc_limit
                 )
                 if contacts and len(contacts) > 0:
                     # Phase 1: capture every contact before any filtering.
@@ -823,8 +743,15 @@ async def _enrich_single_domain(
                                 )
                             except Exception:
                                 pass
-                    # Extract any emails found
+                    # Extract any emails found (subject to the local title
+                    # gate — generic fallback must respect the ICP too).
                     for contact in contacts:
+                        if title_filter_active and not _person_matches_titles(
+                            contact.get("title", ""), contact.get("headline", ""),
+                            include_titles, exclude_titles,
+                            contact.get("seniority", ""), contact.get("function", ""),
+                        ):
+                            continue
                         email = contact.get("email", "")
                         if email and "@" in email:
                             row = {**base_row, **_empty_enriched()}
@@ -925,6 +852,23 @@ async def _enrich_single_domain(
                             )
                         except Exception:
                             pass
+                # LOCAL TITLE GATE: Blitz's server-side matching is fuzzy
+                # (include_headline_search=True + substring tiers), so e.g.
+                # "President" pulls in "Vice President of Product Management".
+                # Re-apply the user's titles locally and drop non-matches
+                # BEFORE email resolution (which then only spends provider
+                # credits on people the user actually asked for).
+                if title_filter_active:
+                    _persons_before = len(persons)
+                    persons, _dropped = title_filter.filter_blitz_persons(
+                        persons, include_titles, exclude_titles,
+                        _current_title_fn=_current_title,
+                    )
+                    if _dropped:
+                        logger.info(
+                            "Title gate (blitz waterfall) %s: dropped %d/%d off-ICP",
+                            domain, _dropped, _persons_before,
+                        )
                 logger.debug("Using Blitz for %d decision makers", len(persons))
             except Exception as e:
                 logger.debug("Blitz waterfall search failed: %s", e)
@@ -1092,6 +1036,7 @@ async def _merge_by_company_contacts(
     base_row: dict[str, Any],
     force_provider: Optional[str],
     source: Optional[str] = None,
+    source_include: Optional[str] = None,
     limit: int = 25,
     cascade_config: Optional[str] = None,
 ) -> list[dict[str, Any]]:
@@ -1104,20 +1049,36 @@ async def _merge_by_company_contacts(
     no data loss). Tagged dm_email_source="contacts_db_by_company" so they're
     distinguishable in the CSV.
 
-    Phase 2 (2026-07-22): optional ``source`` (e.g. "outscraper") narrows the
-    internal-DB lookup to contacts tagged with that source only. ``None`` →
-    all sources (today's behavior — no regression).
+    Phase 2 (2026-07-22): optional ``source`` EXCLUDES contacts tagged with
+    that source from the by-company lookup (the UI's include-outscraper
+    checkbox sends exclude when unchecked — semantics preserved here).
+    ``None`` → all sources.
+
+    Website-scrape (2026-08-27): ``source_include`` is the include-side
+    filter — only contacts whose core.source_row.source_name matches are
+    returned. Powers website_only mode (source_include="website_scrape").
+    Setting both filters is a caller bug → ValueError.
     """
+    if source and source_include:
+        raise ValueError("source (exclude) and source_include are mutually exclusive")
     if force_provider:
         return output_rows
     if os.getenv("ENABLE_COMPANY_LOOKUP", "").strip().lower() not in ("1", "true", "yes"):
         return output_rows
-    include_titles, exclude_titles = _parse_cascade_titles(cascade_config)
+    include_titles, exclude_titles = title_filter.gate_title_filter(
+        strict_titles=not title_filter.cascade_config_allows_strict_off(cascade_config),
+        cascade_config=cascade_config,
+        default_cascade=blitz_client.DEFAULT_CASCADE,
+    )
     title_filter_active = bool(include_titles or exclude_titles)
     _bc_limit = max(limit, TITLE_SEARCH_POOL) if title_filter_active else limit
     try:
         by_company = await contacts_client.company_persons_by_domain(
-            contacts_http, domain, limit=_bc_limit, exclude_source=source
+            contacts_http,
+            domain,
+            limit=_bc_limit,
+            exclude_source=source,
+            source=source_include,
         )
     except Exception as e:
         logger.debug("by-company lookup failed for %s: %s", domain, e)
@@ -1169,6 +1130,65 @@ async def _merge_by_company_contacts(
         row["row_status"] = STATUS_ENRICHED if em else STATUS_NO_CONTACTS
         output_rows.append(row)
     return output_rows
+
+
+def _seg_domain_from_row(row: Optional[dict[str, Any]]) -> str:
+    """Best-effort domain extraction for the SEG pre-pass (Flow 3 LinkedIn
+    flows). Tries the same fields ``_apply_company_fallback_to_output_rows``
+    uses (``domain`` / ``company_domain``) plus the attached ``input_domain``
+    (already normalized by ``attach_input_columns`` in a previous flush) and
+    the raw ``company_website``/``website`` carriers. Returns '' when the row
+    carries no usable domain — the row then gets blank seg columns."""
+    if not isinstance(row, dict):
+        return ""
+    for key in ("domain", "company_domain", "input_domain", "company_website", "website"):
+        val = str(row.get(key, "") or "").strip()
+        if val:
+            return identifier_utils.normalize_domain(val)
+    return ""
+
+
+async def _attach_seg_columns(
+    batch_rows: list[OutputRow],
+    domain_col: Optional[str] = None,
+) -> None:
+    """SEG pre-pass for one completed batch: ONE ``seg.classify_domains``
+    call for the whole batch (it dedupes + caches internally), then stamp
+    ``seg_classification`` / ``seg_provider`` onto each row in place.
+
+    Call this BEFORE ``_flush_incremental_batch`` — classification never runs
+    inside the flush (its flush -> fsync -> checkpoint -> drain ordering is
+    load-bearing). Best-effort: any failure leaves the columns blank ('' via
+    ``_empty_enriched`` / DictWriter ``restval=''``), never breaks enrichment.
+    Flag off => ``classify_domains`` returns ``{}`` => blank columns, zero I/O.
+    Rows with no usable domain get blank seg columns (no lookup).
+
+    Domain source: ``domain_col`` when given (Flow 1 — the input column),
+    else ``_seg_domain_from_row`` (Flow 3 — rows carry ``domain`` /
+    ``company_domain`` / ``input_domain`` when the CSV had one).
+    """
+    if not batch_rows:
+        return
+    if domain_col:
+        domains = [
+            identifier_utils.normalize_domain(str(r.get(domain_col, "") or ""))
+            for r in batch_rows
+        ]
+    else:
+        domains = [_seg_domain_from_row(r) for r in batch_rows]
+    seg_map: dict[str, Any] = {}
+    try:
+        seg_map = await seg.classify_domains(domains)
+    except Exception as seg_exc:  # defensive: classify_domains never raises
+        logger.warning(
+            "seg classify pre-pass failed (%s) — blank seg columns",
+            type(seg_exc).__name__,
+        )
+        seg_map = {}
+    for _r, _d in zip(batch_rows, domains):
+        _v = seg_map.get(seg.normalize_seg_key(_d)) if _d else None
+        _r["seg_classification"] = _v["seg_classification"] if _v else ""
+        _r["seg_provider"] = _v["seg_provider"] if _v else ""
 
 
 async def _apply_company_fallback_to_output_rows(
@@ -1246,6 +1266,7 @@ async def run_domain_enrichment(
     cascade_config: Optional[str] = None,  # NEW: JSON cascade config from job store
     collector: Optional[Any] = None,  # RawContactCollector; Phase 1 capture
     source: Optional[str] = None,  # Phase 2: filter by-company Contacts DB lookup by source ("outscraper")
+    website_only: bool = False,  # 2026-08-27: website-scrape-only mode — by-company lookup filtered to source_name='website_scrape', ZERO paid providers/fallbacks/mailtester
     # --- Incremental persistence (partial-download + resume) ---
     output_path: Optional[Path] = None,
     write_incremental: bool = False,
@@ -1369,7 +1390,19 @@ async def run_domain_enrichment(
             if _is_company_linkedin_url(_li_val):
                 company_linkedin_url_raw = _li_val
 
-        if company_linkedin_url_raw:
+        if website_only:
+            # Website-scrape-only mode (2026-08-27): read existing DB data
+            # exclusively — by-company lookup filtered to the website_scrape
+            # cohort, emails preserved as stored. NO cascade, NO paid
+            # providers, NO company fallback, NO mailtester. A company
+            # LinkedIn URL in the CSV is ignored in this mode (the by-company
+            # lookup is domain-keyed; the company-URL path is Blitz-first).
+            result = await _merge_by_company_contacts(
+                contacts_http, [], domain, row, force_provider=None,
+                source_include="website_scrape", limit=max_decision_makers,
+                cascade_config=cascade_config,
+            )
+        elif company_linkedin_url_raw:
             company_linkedin_url = identifier_utils.normalize_linkedin_url(company_linkedin_url_raw)
             # Short-circuit: use the company-URL orchestrator directly
             result = await _enrich_by_company_linkedin(
@@ -1445,7 +1478,8 @@ async def run_domain_enrichment(
         # Company/page-level fallback (BetterEnrich Facebook + company
         # email). Runs once per domain; applied to all output rows
         # that lack a person-level email. Mirrors run_pipeline wiring.
-        if domain:
+        # Skipped entirely in website_only mode (paid provider).
+        if domain and not website_only:
             row_facebook_url = str(row.get("facebook_url", "") or row.get("facebook", "") or "").strip()
             domain_dedupe = company_fallback.CompanyFallbackDedupe()
             await _apply_company_fallback_to_output_rows(
@@ -1622,6 +1656,14 @@ async def run_domain_enrichment(
                         )
                         if _dom:
                             done_domains.append(_dom)
+
+            # SEG pre-pass: classify this batch's domains BEFORE the flush
+            # (never inside it — the flush -> fsync -> checkpoint -> drain
+            # ordering is load-bearing). One classify call per batch.
+            # Unconditional on batch_new so the non-incremental final CSV
+            # (pandas path in the runner) carries values too.
+            if batch_new:
+                await _attach_seg_columns(batch_new, domain_col=domain_col)
 
             # Durable snapshot for this batch (incremental persistence). Gated by
             # write_incremental so legacy callers (write_incremental=False) are unchanged.
@@ -2239,6 +2281,13 @@ async def run_linkedin_enrichment(
                     all_output.append(result)
                     batch_new.append(result)
                     done_indices.append(batch_start + i)
+
+            # SEG pre-pass: classify this batch's domains BEFORE the flush
+            # (never inside it — the flush ordering is load-bearing). Rows
+            # without a domain column get blank seg columns. Unconditional on
+            # batch_new so the non-incremental final CSV carries values too.
+            if batch_new:
+                await _attach_seg_columns(batch_new)
 
             # Durable snapshot for this batch (incremental persistence). Gated by
             # write_incremental so legacy callers (write_incremental=False) are unchanged.
@@ -2877,6 +2926,13 @@ async def run_unified_linkedin_enrichment(
                     all_output.extend(result)
                     batch_new.extend(result)
                     done_indices.append(batch_start + i)
+
+            # SEG pre-pass: classify this batch's domains BEFORE the flush
+            # (never inside it — the flush ordering is load-bearing). Rows
+            # without a domain column get blank seg columns. Unconditional on
+            # batch_new so the non-incremental final CSV carries values too.
+            if batch_new:
+                await _attach_seg_columns(batch_new)
 
             # Durable snapshot for this batch (incremental persistence). Gated by
             # write_incremental so legacy callers (write_incremental=False) are unchanged.

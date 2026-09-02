@@ -36,6 +36,7 @@ from shared import auth, db
 from . import blitz_client
 from . import contacts_client
 from . import job_store
+from . import title_filter
 from .chain_info import chain_attempt_counts, chain_roots_for_jobs
 from . import pipeline
 from . import list_builder
@@ -45,6 +46,7 @@ from . import getleads_client
 from . import providers
 from . import identifier_utils
 from . import contacts_writer
+from . import seg
 from .raw_contact_collector import RawContactCollector
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -665,6 +667,112 @@ def _strip_internal_fields_from_response(response: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# SEG (Secure Email Gateway) classification — response hydration
+#
+# Domain-level MX classification surfaced as TOP-LEVEL response keys
+# (`seg_classification`, `seg_provider`) on the single-domain enrich
+# endpoints. Flag-gated by ENABLE_SEG_CLASSIFICATION (default off): when the
+# flag is off the keys are ABSENT, not null — the JSON Response Freeze
+# contract (docs/RESPONSE_SHAPE_BASELINE_2026-07-07.md) promises external
+# consumers byte-for-byte identical JSON while the feature is dark, and
+# absent keys keep that promise exactly. When the flag is ON but the domain
+# could not be classified, both keys are present with "" (blank) values so
+# consumers can distinguish "feature off" from "no verdict" without a probe.
+#
+# NEVER placed inside contacts[*] — `_strip_internal_fields_from_response`
+# pins the per-contact shape and the freeze tests assert it; top-level keys
+# pass through untouched.
+# ---------------------------------------------------------------------------
+
+
+async def _seg_fields_for_domain(domain: str) -> dict[str, str]:
+    """Classify one domain and return the top-level seg response keys.
+
+    Returns {} when the flag is off or the domain is empty/absent (keys
+    absent from the response), else {"seg_classification": ..., "seg_provider": ...}
+    with "" values for an unclassifiable domain. Defensive try/except only —
+    ``seg.classify_domains`` never raises by contract; this guards a future
+    regression from ever blocking an enrichment response.
+    """
+    if not domain:
+        return {}
+    if not seg.is_seg_enabled():
+        return {}
+    try:
+        seg_map = await seg.classify_domains([domain])
+        seg_entry = seg_map.get(seg.normalize_seg_key(domain), {})
+    except Exception:
+        seg_entry = {}
+    return {
+        "seg_classification": str(seg_entry.get("seg_classification", "") or ""),
+        "seg_provider": str(seg_entry.get("seg_provider", "") or ""),
+    }
+
+
+async def _hydrate_people_with_seg(people: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Hydrate /search/employees people rows with per-person seg fields.
+
+    The contacts-DB people payload carries no domain column, so the domain is
+    derived from the person's best email (``email.split('@')[-1]``); people
+    without an email-domain get "" fields rather than being dropped. One
+    batched ``classify_domains`` call covers the whole page.
+
+    Returns NEW person dicts (immutability — the caller's list from the
+    contacts API is never mutated). People rows that are not dicts pass
+    through unchanged. When the flag is off, the input list is returned as-is.
+    """
+    if not people or not seg.is_seg_enabled():
+        return people
+
+    # Derive per-person domains (first-seen order, deduped). The people
+    # payload has no domain column today, so the domain comes from the
+    # person's best email; an explicit `domain` field is preferred if the
+    # contacts API ever adds one. normalize_seg_key is applied to the
+    # DERIVED domain — never to a full address (stage-1 hygiene rejects
+    # emails outright).
+    person_domains: list[Optional[str]] = []
+    unique_domains: list[str] = []
+    seen: set[str] = set()
+    for person in people:
+        if not isinstance(person, dict):
+            person_domains.append(None)
+            continue
+        explicit = str(person.get("domain") or "").strip()
+        email = str(person.get("email") or "").strip()
+        raw_domain = explicit or (email.rsplit("@", 1)[-1] if "@" in email else "")
+        domain = seg.normalize_seg_key(raw_domain) if raw_domain else ""
+        person_domains.append(domain or None)
+        if domain and domain not in seen:
+            seen.add(domain)
+            unique_domains.append(domain)
+
+    # Cap guard: the request model caps limit at 200 (the platform UI uses
+    # <=100), so >500 unique domains on a page cannot occur in practice;
+    # skip classification entirely rather than chunk if it ever does.
+    seg_map: dict[str, dict] = {}
+    if unique_domains and len(unique_domains) <= 500:
+        try:
+            seg_map = await seg.classify_domains(unique_domains)
+        except Exception:
+            seg_map = {}
+
+    # Every dict row gets the keys — a person without a derivable domain
+    # gets blanks — so the row shape is uniform across the page.
+    hydrated: list[dict[str, Any]] = []
+    for person, domain in zip(people, person_domains):
+        if not isinstance(person, dict):
+            hydrated.append(person)
+            continue
+        entry = seg_map.get(domain, {}) if domain else {}
+        hydrated.append({
+            **person,
+            "seg_classification": str(entry.get("seg_classification", "") or ""),
+            "seg_provider": str(entry.get("seg_provider", "") or ""),
+        })
+    return hydrated
+
+
+# ---------------------------------------------------------------------------
 # Enrichment Providers
 # ---------------------------------------------------------------------------
 
@@ -682,6 +790,78 @@ async def get_enrichment_providers(
         {"providers": ["contacts_db", "blitz", "better_enrich"]}
     """
     return {"providers": providers.get_enabled_providers()}
+
+
+# ---------------------------------------------------------------------------
+# Website-scrape sync status (Phase 3 UI "data as of" + freshness flag)
+# ---------------------------------------------------------------------------
+
+_WEBSITE_SCRAPE_FRESH_HOURS = 48.0
+
+
+def _website_scrape_status_payload(store: Any) -> dict[str, Any]:
+    """Build the /website-scrape/status response from the sync state store.
+
+    Pure read — safe to call with any SyncStateStore (tests pass a temp one).
+    """
+    from datetime import datetime, timezone
+
+    watermark = store.get_watermark()
+    state = store.get_state()
+    last_run_at = state.get("last_run_at")
+
+    synced_within_hours = False
+    if watermark:
+        try:
+            # last_run_at is SQLite datetime('now') → 'YYYY-MM-DD HH:MM:SS' UTC
+            dt = datetime.strptime(str(last_run_at), "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=timezone.utc
+            )
+            age_h = (datetime.now(timezone.utc) - dt).total_seconds() / 3600.0
+            synced_within_hours = age_h <= _WEBSITE_SCRAPE_FRESH_HOURS
+        except (TypeError, ValueError):
+            synced_within_hours = False
+
+    return {
+        "enabled": os.getenv("WEBSITE_SCRAPE_SYNC_ENABLED", "false").lower() == "true",
+        "source_tag": "website_scrape",
+        "watermark": (
+            {"completed_at": watermark[0], "row_id": watermark[1]} if watermark else None
+        ),
+        "last_run": {
+            "at": last_run_at,
+            "status": state.get("last_run_status"),
+            "rows_pulled": state.get("rows_pulled", 0),
+            "rows_pushed": state.get("rows_pushed", 0),
+            "skipped_junk": state.get("skipped_junk", 0),
+            "errors": state.get("errors", 0),
+        },
+        "fresh_hours": _WEBSITE_SCRAPE_FRESH_HOURS,
+        "synced_within_hours": synced_within_hours,
+    }
+
+
+@router.get("/website-scrape/status")
+async def website_scrape_status(
+    current_user: dict = Depends(auth.get_current_user),
+):
+    """Website-scrape nightly-sync status — powers the Flow 1 'Website data
+    only' toggle's 'data as of' display and freshness warning."""
+    from . import website_scrape_sync as wss
+
+    try:
+        store = wss.open_state_store()
+        return _website_scrape_status_payload(store)
+    except Exception as exc:  # noqa: BLE001 — degrade gracefully in the UI
+        logger.warning("website-scrape status read failed: %s", exc)
+        return {
+            "enabled": os.getenv("WEBSITE_SCRAPE_SYNC_ENABLED", "false").lower() == "true",
+            "source_tag": "website_scrape",
+            "watermark": None,
+            "last_run": None,
+            "fresh_hours": _WEBSITE_SCRAPE_FRESH_HOURS,
+            "synced_within_hours": False,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -1324,6 +1504,9 @@ class StartJobRequest(BaseModel):
     first_name_col: Optional[str] = None
     last_name_col: Optional[str] = None
     cascade: Optional[list[dict[str, Any]]] = None
+    titles: Optional[str] = None
+    # strict_titles=False disables the LOCAL title gate (escape hatch).
+    strict_titles: bool = True
     max_results: int = 5
     # Force a specific provider: "contacts_db", "blitz", "better_enrich"
     # If None, uses normal cascade
@@ -1723,6 +1906,10 @@ async def enrich_single_domain(
         except Exception as bc_err:
             logger.warning("by-company lookup failed for %s: %s", domain, bc_err)
 
+    # SEG MX classification (domain-level, flag-gated; absent when flag off).
+    # `domain` here is already the normalized value (normalize_domain above).
+    seg_fields = await _seg_fields_for_domain(domain)
+
     return _strip_internal_fields_from_response({
         "domain": domain,
         "company_linkedin_url": company_linkedin_url,
@@ -1736,6 +1923,7 @@ async def enrich_single_domain(
             "records_failed": sync_result.get("failed", 0),
             "records_queued": sync_result.get("records_queued", 0),
         },
+        **seg_fields,
     })
 
 
@@ -1788,6 +1976,11 @@ class UnifiedEnrichRequest(BaseModel):
     cascade: Optional[list[dict]] = None
     # Simple titles: comma-separated list of titles (e.g., "CEO,CTO,HR") - auto-converts to cascade
     titles: Optional[str] = None
+    # strict_titles=False disables the LOCAL title gate (escape hatch for
+    # volume-over-precision: provider-fuzzy matches pass through untouched).
+    # Default True: after every discovery path, contacts must match the
+    # requested titles locally (synonym-aware) or they are dropped.
+    strict_titles: bool = True
     # Force a specific provider: "contacts_db", "blitz", "better_enrich"
     # If None, uses normal cascade
     force_provider: Optional[str] = None
@@ -1913,6 +2106,11 @@ async def unified_enrich(
     # Convert titles to cascade if provided
     if req.titles and not req.cascade:
         req.cascade = _titles_to_cascade(req.titles)
+
+    # strict_titles=False escape hatch: stamp the marker on the cascade so the
+    # local title gate (list_builder + pipeline) is disabled for this request.
+    if req.strict_titles is False and req.cascade:
+        req.cascade = title_filter.mark_cascade_strict_off(req.cascade)
 
     # Validate domain format if provided
     domain = ""
@@ -2599,6 +2797,9 @@ async def unified_enrich(
     # Phase 1c (2026-07-21): by-company augment (flag-gated, additive).
     contacts = await _merge_by_company_into_contacts(contacts, domain, req.force_provider, req.source, limit=req.max_results)
 
+    # SEG MX classification (domain-level, flag-gated; absent when flag off).
+    seg_fields = await _seg_fields_for_domain(domain)
+
     return _strip_internal_fields_from_response({
         "domain": domain,
         "mode": mode,
@@ -2613,6 +2814,7 @@ async def unified_enrich(
             "records_failed": sync_result.get("failed", 0),
             "records_queued": sync_result.get("records_queued", 0),
         },
+        **seg_fields,
     })
 
 
@@ -2991,6 +3193,11 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
             # Record source stats for API-only call
             _record_unified_enrich_stats(contacts, domain, current_user)
 
+            # SEG MX classification (domain-level, flag-gated; absent when
+            # flag off — and always absent for linkedin_only, which has no
+            # domain to classify).
+            seg_fields = await _seg_fields_for_domain(domain)
+
             return _strip_internal_fields_from_response({
                 "domain": domain,
                 "mode": mode,
@@ -3008,6 +3215,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                     "records_failed": sync_result.get("failed", 0),
                     "records_queued": sync_result.get("records_queued", 0),
                 },
+                **seg_fields,
             })
 
 
@@ -3428,6 +3636,9 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
         # Record source stats for API-only call
         _record_unified_enrich_stats(enriched_contacts, domain, current_user)
 
+        # SEG MX classification (domain-level, flag-gated; absent when flag off).
+        seg_fields = await _seg_fields_for_domain(domain)
+
         return _strip_internal_fields_from_response({
             "domain": domain,
             "mode": mode,
@@ -3456,6 +3667,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                 "records_skipped": sync_result.get("skipped", 0),
                 "records_failed": sync_result.get("failed", 0),
             },
+            **seg_fields,
         })
 
     finally:
@@ -5090,6 +5302,7 @@ async def _restart_job_core(
         max_results=original_job.get('max_results', 5),
         selected_providers=selected_providers,
         normalize_domains=orig_normalize,
+        website_only=bool(original_job.get('website_only')),
         prepend_rows=prepend_rows,
     )
 
@@ -5307,6 +5520,9 @@ async def enrich_by_domains(
     # Build cascade from titles if provided, otherwise use default
     title_cascade = _titles_to_cascade(req.titles or "")
     cascade = title_cascade if title_cascade else blitz_client.DEFAULT_CASCADE
+    # strict_titles=False escape hatch (persisted so resume keeps the opt-out)
+    if req.strict_titles is False and title_cascade:
+        cascade = title_filter.mark_cascade_strict_off(cascade)
 
     # Read metadata
     metadata_path = UPLOAD_DIR / f"{req.upload_id}.metadata.json"
@@ -5412,6 +5628,11 @@ class ProviderToggleRequest(BaseModel):
     # Enables fuzzy matching against LinkedIn headlines
     # Leave empty for default business titles (Owner, CEO, VP, Director)
     titles: Optional[str] = None
+    # strict_titles=False disables the LOCAL title gate (escape hatch for
+    # volume-over-precision: provider-fuzzy matches pass through untouched).
+    # Default True: contacts must match the requested titles locally
+    # (synonym-aware) after every discovery path, or they are dropped.
+    strict_titles: bool = True
     # Pre-processing flags. Both default ON to preserve existing behavior.
     normalize_domains: bool = True
     dedupe_by_domain: bool = True
@@ -5421,6 +5642,11 @@ class ProviderToggleRequest(BaseModel):
     # behavior — no regression). NOT a cascade provider; ignored by the paid
     # waterfall.
     source: Optional[str] = None
+    # Website-only mode (2026-08-27): read exclusively from the website_scrape
+    # cohort already synced into the Contacts DB. ZERO paid providers, no
+    # company fallback, no mailtester — emails preserved as stored. Data is as
+    # fresh as the last nightly sync (see /api/enrichment/website-scrape/status).
+    website_only: bool = False
     # Scraper.tech provenance fix: tag all enriched leads with this universe
     # (e.g., 'local_business') so write-back carries the origin forward.
     lead_universe: Optional[str] = None
@@ -5476,6 +5702,10 @@ async def domain_enrich_with_providers(
     if req.titles and req.titles.strip():
         cascade = _titles_to_cascade(req.titles)
         if cascade:
+            # strict_titles=False escape hatch: stamp the marker into the
+            # persisted cascade so resume/restart preserves the opt-out.
+            if req.strict_titles is False:
+                cascade = title_filter.mark_cascade_strict_off(cascade)
             cascade_json = json.dumps(cascade)
 
     rows = df.fillna("").astype(str).to_dict(orient="records")
@@ -5539,6 +5769,7 @@ async def domain_enrich_with_providers(
         dedupe_by_domain=req.dedupe_by_domain,
         deduped_rows=deduped_count,
         dedupe_skipped_domains=json.dumps(skipped_domains),
+        website_only=req.website_only,
     )
 
     _job_signals[job_id] = asyncio.Event()
@@ -5561,6 +5792,7 @@ async def domain_enrich_with_providers(
         selected_providers=req.providers,
         normalize_domains=req.normalize_domains,
         source=req.source,
+        website_only=req.website_only,
     )
 
     return {
@@ -5587,6 +5819,7 @@ async def _run_domain_enrich_job(
     selected_providers: Optional[list[str]] = None,
     normalize_domains: bool = True,
     source: Optional[str] = None,
+    website_only: bool = False,
     prepend_rows: Optional[list[dict]] = None,
 ):
     """Background task to run domain enrichment using list_builder."""
@@ -5667,6 +5900,7 @@ async def _run_domain_enrich_job(
             company_linkedin_col=company_linkedin_col,
             linkedin_url_col=linkedin_url_col,
             source=source,
+            website_only=website_only,
             output_path=output_path,
             write_incremental=True,
             dedupe_on=_job_dedupe_on(job_id),
@@ -5876,11 +6110,15 @@ async def search_employees(
                 offset=req.offset,
             )
             data = result or {}
+            # SEG MX classification per person (flag-gated; verbatim pass-
+            # through when the flag is off — rows are NOT filtered by
+            # _strip_internal_fields_from_response on this endpoint).
+            people = await _hydrate_people_with_seg(data.get("people", []))
             return {
                 "total": data.get("total", 0),
                 "limit": req.limit,
                 "offset": req.offset,
-                "people": data.get("people", []),
+                "people": people,
                 "flow": "people_search",
             }
         except Exception as e:

@@ -186,6 +186,21 @@ Both accept request-time cascade restrictors (mutually exclusive): `force_provid
 ### Job Cancellation
 `POST /api/enrichment/jobs/{job_id}/cancel` sets `_cancelled_jobs[job_id]`, checked by pipelines periodically.
 
+### External Scraper API + MCP Action Tools (2026-08-30)
+`/api/external/scraper/*` — API-key-first surface (`X-API-Key` or JWT) for external clients to drive the
+Google Maps scraper: `POST /estimate` (dry-run, ×3 task basis), `POST /cache` (free instant cache hits with
+inline rows), `POST /jobs` (create; `prefer_cache=true` default short-circuits full cache hits — no job row,
+no cost), `GET /jobs` / `GET /jobs/{id}` (curated projections, queue position), `GET /jobs/{id}/results`
+(paginated JSON rows, 409 not_ready while running), `POST /jobs/{id}/cancel` (shared core with the UI),
+`GET /quota`. Uniform `{success,data,error,meta}` envelope via path-scoped handlers (non-external routes keep
+`{"detail":...}` byte-identical). Implementation: `scraper/external_helpers.py` (impl_*) +
+`scraper/external_routes.py`; kill-switch `ENABLE_EXTERNAL_SCRAPER_API`; non-admin per-job task cap
+`MAX_EXTERNAL_SCRAPER_TASKS` (422). The 5 MCP **action tools** (`mcp_oracle/scraper_actions.py`:
+`scrape_local_businesses` dry_run-default, `get_scrape_job_status/results`, `check_scrape_cache`,
+`cancel_scrape_job`) share the same impl code path — identity via `ctx.request_context.request.scope["user"]`
+set by MCPAuthMiddleware; kill-switch `ENABLE_MCP_SCRAPER_TOOLS`; all tools async (FastMCP runs sync tools on
+the event loop). Docs: API reference §H.
+
 ### Phone Enrichment (`/api/phone-enrichment`)
 
 Enriches LinkedIn profiles with phone numbers using Blitz Direct Phone API:
@@ -217,6 +232,20 @@ ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
 
 # Optional (email notifications)
 SMTP_SERVER, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SENDER_EMAIL, DEFAULT_RECIPIENT
+
+# Website-scrape nightly sync (webscraper.eagleinfoservice.com → Contacts DB, tag 'website_scrape')
+# Standalone systemd service lead-gen-website-scrape-sync.{service,timer} (installed, enable to activate).
+# SSH alias 'webscraper-vps' (key auth) + SELECT-only role 'leadgen_sync' on the remote — no DB secrets here.
+WEBSITE_SCRAPE_SYNC_ENABLED=false
+WEBSITE_SCRAPE_BATCH_SIZE=500
+WEBSITE_SCRAPE_SYNC_RPS=40
+WEBSITE_SCRAPE_SHARED_ND_CAP=20
+WEBSITE_SCRAPE_TIMEOUT_S=300
+
+# External scraper API (/api/external/scraper/*) + MCP action tools — API-key surface
+ENABLE_EXTERNAL_SCRAPER_API=true
+ENABLE_MCP_SCRAPER_TOOLS=true
+MAX_EXTERNAL_SCRAPER_TASKS=15000
 ```
 
 ## PostgreSQL Companion Database

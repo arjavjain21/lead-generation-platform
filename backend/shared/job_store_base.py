@@ -77,7 +77,7 @@ class JobStoreBase:
                            "selected_providers", "used_providers",
                            "linkedin_url_col", "phone_col", "company_name_col", "existing_email_col",
                            "normalize_domains", "dedupe_by_domain", "deduped_rows", "dedupe_skipped_domains",
-                           "source_type"])
+                           "source_type", "website_only"])
             values.extend([
                 kwargs.get("total", 0),
                 0,
@@ -101,6 +101,7 @@ class JobStoreBase:
                 kwargs.get("deduped_rows", 0),
                 kwargs.get("dedupe_skipped_domains", ""),
                 kwargs.get("source_type", ""),
+                1 if kwargs.get("website_only", False) else 0,
             ])
 
         placeholders = ",".join(["?" for _ in columns])
