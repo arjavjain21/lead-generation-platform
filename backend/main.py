@@ -256,15 +256,22 @@ async def _run_parent_startup():
 
         # Scraper dispatcher (2026-08-24): claims queued jobs under a
         # platform-wide concurrency cap and re-launches stale-abandoned ones.
-        # One loop per worker; the atomic claim serializes them.
-        try:
-            from scraper.dispatch import dispatch_loop, runtime_guard_loop
-            from scraper.routes import _launch_claimed_job
-            asyncio.create_task(dispatch_loop(_launch_claimed_job))
-            asyncio.create_task(runtime_guard_loop())
-            logger.info("Started scraper dispatcher + runtime guard")
-        except Exception as e:
-            logger.warning("Failed to start scraper dispatcher: %s", e)
+        # P1 (2026-09-02): the dispatcher now lives in the dedicated runner
+        # process (runner_main.py / lead-gen-scraper-runner.service) so web
+        # worker recycles/murders can never kill an in-flight job. Web
+        # workers set ENABLE_SCRAPER_DISPATCHER=false and skip this block.
+        # Default (unset) is true — preserves single-process local/dev runs.
+        if os.environ.get("ENABLE_SCRAPER_DISPATCHER", "true").lower() not in ("1", "true", "yes"):
+            logger.info("ENABLE_SCRAPER_DISPATCHER=false — web worker skips dispatcher (runner process owns it)")
+        else:
+            try:
+                from scraper.dispatch import dispatch_loop, runtime_guard_loop
+                from scraper.routes import _launch_claimed_job
+                asyncio.create_task(dispatch_loop(_launch_claimed_job))
+                asyncio.create_task(runtime_guard_loop())
+                logger.info("Started scraper dispatcher + runtime guard")
+            except Exception as e:
+                logger.warning("Failed to start scraper dispatcher: %s", e)
 
         try:
             from enrichment.contacts_writer import retry_outbox_loop
