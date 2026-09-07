@@ -202,15 +202,15 @@ The MCP server accepts two authentication methods:
 Header: X-API-Key: lgp_your_key_here
 ```
 - Keys start with `lgp_` and never expire
-- Generate at: **Account → API Keys** in the web UI
-- Works for: single-row enrichment (`/api/enrichment/enrich`), all MCP endpoints, scraper downloads/resume
+- Generate at: **Account → API Keys** in the web UI (JWT required to mint a key)
+- Works for: **every `/api/enrichment/*` endpoint except the SSE stream** (`GET /jobs/{job_id}/stream` — poll `GET /jobs/{job_id}` instead), all MCP endpoints, scraper downloads/resume, `/api/external/scraper/*`
 
 ### JWT Bearer Token (alternative)
 ```
 Header: Authorization: Bearer your_jwt_token
 ```
 - 7-day expiry — refresh via `POST /api/auth/refresh`
-- Required for: CSV upload, bulk job creation, job management endpoints
+- Required for: the enrichment SSE stream, phone enrichment, scraper job creation via the UI route, and API key management
 - Not needed for MCP (API key is sufficient)
 
 ### Where each method works
@@ -218,9 +218,10 @@ Header: Authorization: Bearer your_jwt_token
 | Action | API Key | JWT |
 |---|:---:|:---:|
 | **MCP server access** | Yes | Yes |
-| Single-row enrichment (`/enrich`) | Yes | Yes |
+| All enrichment (`/enrich`, CSV upload, bulk jobs, flows, search) | Yes | Yes |
+| Enrichment SSE stream (`/jobs/{id}/stream`) | No — poll instead | **Yes only** |
 | Scraper downloads + resume | Yes | Yes |
-| CSV upload + bulk jobs | No | **Yes only** |
+| Phone enrichment | No | **Yes only** |
 | API key management | No | **Yes only** |
 
 **For MCP usage, API key is all you need.**

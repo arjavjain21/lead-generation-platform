@@ -72,22 +72,16 @@ JWT expiry: **7 days**.
 
 | Endpoint category | JWT Bearer | API Key |
 | --- | :---: | :---: |
-| `POST /api/enrichment/enrich` (single row) | ✅ | ✅ |
-| `GET /api/enrichment/enrich` (single row) | ✅ | ✅ |
-| `GET /api/enrichment/enrich/{domain}` (legacy single row) | ✅ | ✅ |
-| `GET /api/enrichment/providers` | ✅ | ✅ |
-| `GET /api/enrichment/stats/sources` | ✅ | ✅ |
+| **All `/api/enrichment/*` endpoints — EXCEPT the SSE stream below** (enrich, upload, flows, by-*, jobs, search, downloads, cancel, restart, shards, website-scrape/status) | ✅ | ✅ |
+| `GET /api/enrichment/jobs/{job_id}/stream` (SSE) | ✅ | ❌ JWT only — API-key clients poll `GET /jobs/{job_id}` |
 | `GET /api/auth/me` | ✅ | ✅ |
 | Scraper cache + download + resume endpoints | ✅ | ✅ |
-| **`POST /api/enrichment/upload` (CSV upload)** | ✅ | ❌ JWT only |
-| **All `/api/enrichment/flows/*` endpoints** | ✅ | ❌ JWT only |
-| **All `/api/enrichment/by-*` endpoints** | ✅ | ❌ JWT only |
-| **All `/api/enrichment/jobs/*` endpoints** | ✅ | ❌ JWT only |
+| `/api/external/scraper/*` (external API-key surface) | ✅ | ✅ |
 | **All `/api/phone-enrichment/*` endpoints** | ✅ | ❌ JWT only |
 | **`POST /api/scraper/jobs` (scraper job creation)** | ✅ | ❌ JWT only |
-| **`/api/api-keys/*` (key management)** | ✅ | ❌ JWT only |
+| **`/api/api-keys/*` (key management)** | ✅ | ❌ JWT only — a key must never mint keys |
 
-**Rule of thumb:** API keys work for read-only / single-row lookups (e.g., from Clay HTTP cells). Anything that creates or modifies a job requires JWT.
+**Rule of thumb (since 2026-09-07):** the whole enrichment surface (`/api/enrichment/*`) accepts either credential except the SSE stream — API-key clients poll instead. Phone enrichment, scraper job creation via the UI route, and key management stay JWT-only.
 
 ### Self-registration
 
@@ -372,9 +366,11 @@ Fetch the current default via `GET /api/enrichment/default-cascade` (no auth).
 
 ## Section B: Bulk / CSV Enrichment
 
-All endpoints in this section require **JWT Bearer authentication** (API keys are not accepted).
+All endpoints in this section accept **JWT Bearer OR API key** authentication (`X-API-Key: lgp_...` or the key as a Bearer token) — **except** `GET /jobs/{job_id}/stream` (SSE), which is JWT-only; API-key clients poll `GET /jobs/{job_id}` instead.
 
 > **Crash-safety model (2026-07-22+).** Enrichment jobs now write their output CSV **incrementally** (batch-by-batch as each row group finishes) and push contacts to the Contacts DB incrementally via the outbox. A cancel or worker crash mid-run therefore never loses already-completed rows — the partial CSV on disk and the drained Contacts DB rows both survive. Such jobs end with `status="partial"` (instead of `failed` with total data loss) and are fully resumable: `POST /jobs/{job_id}/restart` reads per-row checkpoints, skips completed rows, and carries the prior partial CSV forward so the resumed job produces one complete file (see B.11, B.13). Controlled by the `ENABLE_INCREMENTAL_PERSISTENCE` flag (on in production via the `enable-incremental-persistence.conf` systemd drop-in).
+
+> **Auth note:** the curl examples below use `Authorization: Bearer YOUR_JWT`; an API key works identically — swap the header for `X-API-Key: lgp_...` (or send the key as the Bearer value).
 
 ### B.1 Upload a CSV: `POST /api/enrichment/upload`
 
@@ -1170,7 +1166,7 @@ Tools share the exact HTTP `impl_*` code path — ownership, quota, and task cap
 
 ### H.11 Notes for integrators
 
-- SSE streams are **JWT-only** — external API-key clients should poll `GET /jobs/{job_id}` (hence `suggested_poll_seconds`). `/api/external/*` adds no SSE.
+- SSE streams are **JWT-only** (both the enrichment `/api/enrichment/jobs/{id}/stream` and scraper UI streams) — external API-key clients should poll `GET /jobs/{job_id}` (hence `suggested_poll_seconds`). `/api/external/*` adds no SSE.
 - The MCP tools never expose SSE; they return complete JSON payloads.
 - Example flow: `POST /cache` (free?) → miss → `POST /estimate` (optional) → `POST /jobs` → poll `GET /jobs/{id}` every `suggested_poll_seconds` → `GET /jobs/{id}/results?fields=compact&limit=1000` pages → CSV link for bulk.
 
@@ -1282,6 +1278,7 @@ Plain-text message about daily quota. No `Retry-After` header.
 
 | Date | Change |
 | --- | --- |
+| 2026-09-07 | **Enrichment API-key surface opened** — every `/api/enrichment/*` endpoint now accepts `X-API-Key` (or key-as-Bearer) in addition to JWT: upload, all job endpoints (create/list/status/download/partial/shards/cancel/restart/resume-info/recover-partial), Flow 1 `/flows/domain-enrich`, Flow 3 `/by-linkedin-v2`, legacy `/by-*` + `/jobs` + `/search/companies/enrich`, `/search/employees`, `/search/companies`, `/search/options`, `/website-scrape/status`, `/stats/sources`. **Exception:** `GET /jobs/{job_id}/stream` (SSE) stays JWT-only — API-key clients poll `GET /jobs/{job_id}`. `/flows/help` auth labels updated; missing `/search/employees` entry added. MCP oracle 401 guidance + quota text corrected (enrichment is not metered by the 50K/day quota). |
 | 2026-08-30 | **Section H added — External Scraper API** (`/api/external/scraper/*`, API-key auth, `{success,data,error,meta}` envelope): estimate, cache (free instant hits), job create/list/status/results (JSON rows)/cancel, quota. 5 MCP **action tools** added to the ListBuilding MCP (Section H.9; `scrape_local_businesses` defaults to dry_run). Scraper shard/partial endpoints added to D.4 table. |
 | 2026-07-24 | Documented crash-safety model + resume/recovery endpoints: `/resume-info` (B.13), `/recover-partial` (B.14), `/shards` (B.15), `/shard/{shard}` (B.16). Updated `/download` (B.9) and `/restart` (B.11) to reflect partial/failed support and true-resume behavior. |
 | 2026-07-16 | Full API reference published. Added: phone enrichment, scraper, helper endpoints, auth matrix, rate limits, UI features, error reference. |
