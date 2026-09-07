@@ -843,7 +843,7 @@ def _website_scrape_status_payload(store: Any) -> dict[str, Any]:
 
 @router.get("/website-scrape/status")
 async def website_scrape_status(
-    current_user: dict = Depends(auth.get_current_user),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """Website-scrape nightly-sync status — powers the Flow 1 'Website data
     only' toggle's 'data as of' display and freshness warning."""
@@ -888,10 +888,10 @@ _LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
                 "header": "X-API-Key: <key>  OR  Authorization: Bearer <key>",
                 "obtained_from": "POST /api/api-keys",
                 "expiry": "does not expire until revoked",
-                "accepted_on": "single /enrich, search, providers, stats, /flows/help (NOT upload/jobs/flows)",
+                "accepted_on": "all /api/enrichment/* endpoints except GET /jobs/{job_id}/stream (SSE — JWT only; poll GET /jobs/{job_id} instead)",
             },
         ],
-        "note": "CSV upload, job create/list/cancel/restart, downloads, Flow 1 and Flow 3 require JWT — API key is not accepted.",
+        "note": "Since 2026-09-07 every /api/enrichment/* endpoint accepts JWT Bearer OR X-API-Key, except the SSE stream (GET /jobs/{job_id}/stream), which stays JWT-only — API-key clients poll GET /jobs/{job_id}. API keys are created/revoked with a JWT at POST /api/api-keys (a key cannot mint keys); phone enrichment is a separate JWT-only surface.",
     },
     "providers": {
         "cascade_order": [
@@ -918,6 +918,13 @@ _LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
             "auth": "none",
             "summary": "This documentation as JSON.",
             "response_shape": "{ generated_at, base_url, auth, providers, endpoints[], examples, errors }",
+        },
+        {
+            "method": "GET",
+            "path": "/api/enrichment/website-scrape/status",
+            "auth": "jwt or api key",
+            "summary": "Website-scrape nightly-sync freshness (watermark, last run, synced_within_hours).",
+            "response_shape": '{"enabled","source_tag","watermark","last_run","fresh_hours","synced_within_hours"}',
         },
         {
             "method": "GET",
@@ -995,7 +1002,7 @@ _LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
         {
             "method": "POST",
             "path": "/api/enrichment/upload",
-            "auth": "jwt only",
+            "auth": "jwt or api key",
             "summary": "Upload CSV, returns upload_id + column preview.",
             "content_type": "multipart/form-data",
             "form_field": "file (must end in .csv)",
@@ -1004,7 +1011,7 @@ _LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
         {
             "method": "POST",
             "path": "/api/enrichment/jobs",
-            "auth": "jwt only",
+            "auth": "jwt or api key",
             "summary": "Start basic enrichment job (legacy — prefer /flows/domain-enrich).",
             "body_fields": [
                 {"name": "upload_id", "type": "string", "required": True},
@@ -1026,14 +1033,14 @@ _LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
         {
             "method": "GET",
             "path": "/api/enrichment/jobs",
-            "auth": "jwt only",
+            "auth": "jwt or api key",
             "summary": "List my jobs (admin sees all).",
             "response_shape": '{"jobs": [{job_id, status, total, processed, emails_found, ...}]}',
         },
         {
             "method": "GET",
             "path": "/api/enrichment/jobs/{job_id}",
-            "auth": "jwt only",
+            "auth": "jwt or api key",
             "summary": "Job status + config.",
             "status_values": ["queued", "running", "completed", "failed", "cancelled", "partial"],
         },
@@ -1041,41 +1048,41 @@ _LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
             "method": "GET",
             "path": "/api/enrichment/jobs/{job_id}/stream",
             "auth": "jwt only",
-            "summary": "SSE progress stream with replay; closes on terminal status.",
+            "summary": "SSE progress stream with replay; closes on terminal status. API-key clients: poll GET /jobs/{job_id} instead.",
             "content_type": "text/event-stream",
         },
         {
             "method": "GET",
             "path": "/api/enrichment/jobs/{job_id}/download",
-            "auth": "jwt only",
+            "auth": "jwt or api key",
             "summary": "Full enriched CSV (works for completed/failed/partial).",
             "content_type": "text/csv",
         },
         {
             "method": "GET",
             "path": "/api/enrichment/jobs/{job_id}/partial-download",
-            "auth": "jwt only",
+            "auth": "jwt or api key",
             "summary": "Whatever has been written so far for running jobs.",
             "content_type": "text/csv",
         },
         {
             "method": "POST",
             "path": "/api/enrichment/jobs/{job_id}/restart",
-            "auth": "jwt only",
+            "auth": "jwt or api key",
             "summary": "Restart failed/abandoned job. Re-reads original CSV, skips processed rows, dedupes.",
             "response_shape": '{"job_id","total","restarted_from","deduped_count"}',
         },
         {
             "method": "POST",
             "path": "/api/enrichment/jobs/{job_id}/cancel",
-            "auth": "jwt only",
+            "auth": "jwt or api key",
             "summary": "Cancel running/queued job. Partial results remain downloadable.",
             "response_shape": '{"job_id","status":"cancelled","message"}',
         },
         {
             "method": "POST",
             "path": "/api/enrichment/flows/domain-enrich",
-            "auth": "jwt only",
+            "auth": "jwt or api key",
             "summary": "FLOW 1 (recommended): domains → generic emails + decision makers, with provider selection, fuzzy titles, dedupe.",
             "body_fields": [
                 {"name": "upload_id", "type": "string", "required": True},
@@ -1132,8 +1139,27 @@ _LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
         },
         {
             "method": "POST",
+            "path": "/api/enrichment/search/employees",
+            "auth": "jwt or api key",
+            "summary": "Find People: search the internal contacts DB by role/function/geo/industry (free, index-backed).",
+            "body_fields": [
+                {"name": "seniority", "type": "array<string>", "examples": ["C-Team", "VP", "Director", "Manager"]},
+                {"name": "function", "type": "array<string>", "examples": ["Sales", "Marketing", "Engineering"]},
+                {"name": "geo_country", "type": "array<string>", "examples": ["United States", "United Kingdom"]},
+                {"name": "industry", "type": "array<string>"},
+                {"name": "title_keywords", "type": "string"},
+                {"name": "name_contains", "type": "string"},
+                {"name": "has_email", "type": "bool"},
+                {"name": "universe", "type": "string", "examples": ["local_business", "b2b_agency", "saas", "ecom"], "note": "one of the 4 lead-universe values; anything else is 422"},
+                {"name": "limit", "type": "int", "default": "50"},
+                {"name": "offset", "type": "int", "default": "0"},
+            ],
+            "response_shape": '{"total","limit","offset","people":[{person_id, full_name, headline, seniority, company_name, email, lead_universe, ...}],"flow":"people_search"}',
+        },
+        {
+            "method": "POST",
             "path": "/api/enrichment/by-linkedin-v2",
-            "auth": "jwt only",
+            "auth": "jwt or api key",
             "summary": "FLOW 3 (recommended): unified LinkedIn enrichment for personal AND/OR company URLs.",
             "body_fields": [
                 {"name": "upload_id", "type": "string", "required": True},
@@ -1148,7 +1174,7 @@ _LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
         {
             "method": "POST",
             "path": "/api/enrichment/by-linkedin",
-            "auth": "jwt only",
+            "auth": "jwt or api key",
             "summary": "FLOW 3 legacy: personal LinkedIn URLs only.",
             "body_fields": [
                 {"name": "upload_id", "type": "string", "required": True},
@@ -1159,7 +1185,7 @@ _LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
         {
             "method": "POST",
             "path": "/api/enrichment/by-domains",
-            "auth": "jwt only",
+            "auth": "jwt or api key",
             "summary": "Legacy alias for /jobs — prefer /flows/domain-enrich.",
         },
     ],
@@ -3678,7 +3704,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
 @router.post("/upload")
 async def upload_csv(
     file: UploadFile,
-    current_user: dict = Depends(auth.get_current_user),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """Accepts a CSV file, saves it persistently, returns upload_id and columns."""
     if not file.filename or not file.filename.lower().endswith(".csv"):
@@ -3729,7 +3755,7 @@ def _job_output_exists(job: dict) -> bool:
 
 @router.get("/jobs")
 async def list_enrichment_jobs(
-    current_user: dict = Depends(auth.get_current_user),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
     limit: int = Query(25, ge=1, le=200),
     offset: int = Query(0, ge=0),
     status: Optional[str] = Query(None),
@@ -3844,7 +3870,7 @@ async def list_enrichment_jobs(
 async def start_enrichment_job(
     req: StartJobRequest,
     background_tasks: BackgroundTasks,
-    current_user: dict = Depends(auth.get_current_user),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """Starts a persistent enrichment job. Returns immediately with job_id."""
     upload_path = UPLOAD_DIR / f"{req.upload_id}.csv"
@@ -3921,7 +3947,7 @@ async def start_enrichment_job(
 @router.get("/jobs/{job_id}")
 async def get_enrichment_job(
     job_id: str,
-    current_user: dict = Depends(auth.get_current_user),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """Get an enrichment job by ID."""
     store = job_store.get_store()
@@ -4019,7 +4045,7 @@ async def stream_enrichment_job_progress(
 @router.get("/jobs/{job_id}/download")
 async def download_enrichment_result(
     job_id: str,
-    current_user: dict = Depends(auth.get_current_user),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """Download the full CSV output of a completed enrichment job."""
     try:
@@ -4090,7 +4116,7 @@ async def download_enrichment_result(
 @router.get("/jobs/{job_id}/partial-download")
 async def partial_download_enrichment(
     job_id: str,
-    current_user: dict = Depends(auth.get_current_user),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """
     Download partial CSV results from a running enrichment job.
@@ -4161,7 +4187,7 @@ def _count_csv_data_rows(path: Path) -> int:
 @router.get("/jobs/{job_id}/resume-info")
 async def enrichment_resume_info(
     job_id: str,
-    current_user: dict = Depends(auth.get_current_user),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """Resume eligibility + partial-CSV status. The frontend's 'Resume' button
     calls this before POSTing /restart. Returns exactly the shape the UI reads."""
@@ -4223,7 +4249,7 @@ async def enrichment_resume_info(
 @router.get("/jobs/{job_id}/recover-partial")
 async def enrichment_recover_partial(
     job_id: str,
-    current_user: dict = Depends(auth.get_current_user),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """Serve whatever partial CSV exists for a job — works for running/partial/
     failed/cancelled/abandoned (no status guard). The frontend's 'Download Partial'
@@ -4263,7 +4289,7 @@ async def enrichment_recover_partial(
 @router.get("/jobs/{job_id}/shards")
 async def enrichment_shards(
     job_id: str,
-    current_user: dict = Depends(auth.get_current_user),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """List virtual 10K-row download shards for a job's live CSV. Works while the
     job is running — each shard becomes downloadable as its rows land on disk."""
@@ -4306,7 +4332,7 @@ async def enrichment_shards(
 async def enrichment_shard_download(
     job_id: str,
     shard: int,
-    current_user: dict = Depends(auth.get_current_user),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """Stream one 10K-row shard of the live CSV (no status guard — works while
     the job is still running). Reads the file sequentially so a 100K-row job is
@@ -4717,7 +4743,7 @@ async def _wait_event(event: asyncio.Event):
 async def restart_enrichment_job(
     job_id: str,
     background_tasks: BackgroundTasks,
-    current_user: dict = Depends(auth.get_current_user),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """
     Restart a failed enrichment job with the same configuration.
@@ -5327,7 +5353,7 @@ async def _restart_job_core(
 @router.post("/jobs/{job_id}/cancel")
 async def cancel_enrichment_job(
     job_id: str,
-    current_user: dict = Depends(auth.get_current_user),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """
     Cancel a running or queued enrichment job.
@@ -5492,7 +5518,7 @@ class LinkedInV2Request(BaseModel):
 async def enrich_by_domains(
     req: StartJobRequest,
     background_tasks: BackgroundTasks,
-    current_user: dict = Depends(auth.get_current_user),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """
     [LEGACY] Flow 1: Domain → Generic Emails + Decision Makers
@@ -5656,7 +5682,7 @@ class ProviderToggleRequest(BaseModel):
 async def domain_enrich_with_providers(
     req: ProviderToggleRequest,
     background_tasks: BackgroundTasks,
-    current_user: dict = Depends(auth.get_current_user),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """
     Flow 1: Domain → Generic Emails + Decision Makers
@@ -6053,7 +6079,7 @@ async def _run_domain_enrich_job(
 @router.post("/search/companies")
 async def search_companies(
     req: CompanySearchRequest,
-    current_user: dict = Depends(auth.get_current_user),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """
     Flow 2a: Search companies by criteria
@@ -6087,7 +6113,7 @@ async def search_companies(
 @router.post("/search/employees")
 async def search_employees(
     req: EmployeeSearchRequest,
-    current_user: dict = Depends(auth.get_current_user),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """
     Find People: direct people search against the internal contacts DB by
@@ -6130,7 +6156,7 @@ async def search_employees(
 async def search_and_enrich(
     req: SearchAndEnrichRequest,
     background_tasks: BackgroundTasks,
-    current_user: dict = Depends(auth.get_current_user),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """
     [LEGACY] Flow 2b: Search companies + Enrich
@@ -6239,7 +6265,7 @@ async def search_and_enrich(
 async def enrich_by_linkedin(
     req: LinkedInEnrichRequest,
     background_tasks: BackgroundTasks,
-    current_user: dict = Depends(auth.get_current_user),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """
     [LEGACY] Flow 3: LinkedIn URLs → Full Enrichment
@@ -6490,7 +6516,7 @@ async def _run_linkedin_job(
 async def enrich_by_linkedin_v2(
     req: LinkedInV2Request,
     background_tasks: BackgroundTasks,
-    current_user: dict = Depends(auth.get_current_user),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """
     Unified enrichment using personal and/or company LinkedIn URLs.
@@ -6784,7 +6810,7 @@ async def _run_linkedin_v2_job(
 # --- Search Filter Options Endpoint ---
 
 @router.get("/search/options")
-async def get_search_options(_current_user: dict = Depends(auth.get_current_user)):
+async def get_search_options(_current_user: dict = Depends(auth.get_current_user_with_api_key)):
     """
     Get available search filter options for Flow 2.
 
@@ -6864,7 +6890,7 @@ async def get_search_options(_current_user: dict = Depends(auth.get_current_user
 async def get_source_stats(
     start_date: Optional[str] = Query(None, description="Start date (ISO format)"),
     end_date: Optional[str] = Query(None, description="End date (ISO format)"),
-    current_user: dict = Depends(auth.get_current_user),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """
     Get aggregated enrichment source statistics.

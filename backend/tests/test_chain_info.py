@@ -236,7 +236,12 @@ def _make_user(user_id=OWNER_UID, is_admin=False):
 
 def _override_auth():
     from shared import auth
-    return {auth.get_current_user: lambda: _make_user()}
+    # Both flavors: the endpoint now uses the dual API-key dependency; keeping
+    # the plain override too preserves intent for any still-JWT-only path.
+    return {
+        auth.get_current_user: lambda: _make_user(),
+        auth.get_current_user_with_api_key: lambda: _make_user(),
+    }
 
 
 @pytest.fixture
