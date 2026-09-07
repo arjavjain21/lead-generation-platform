@@ -1042,7 +1042,7 @@ _LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
             "path": "/api/enrichment/jobs/{job_id}",
             "auth": "jwt or api key",
             "summary": "Job status + config.",
-            "status_values": ["queued", "running", "completed", "failed", "cancelled", "partial"],
+            "status_values": ["queued", "running", "done", "failed", "cancelled", "partial", "abandoned"],
         },
         {
             "method": "GET",
