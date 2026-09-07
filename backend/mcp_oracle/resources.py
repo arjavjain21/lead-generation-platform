@@ -146,7 +146,7 @@ def providers_status() -> str:
 
     cascade = [
         (1, "contacts_db", "75 RPS", "Free — internal database"),
-        (2, "blitz", "25 RPS", "Paid — LinkedIn enrichment"),
+        (2, "blitz", "50 RPS/endpoint*", "Paid — LinkedIn enrichment"),
         (3, "getleads", "100/min*", "Paid — verified DM emails + bonus phones (batch 100)"),
         (4, "smartprospect", "30 RPS", "Paid — SmartLead Find Emails"),
         (5, "wizleads", "10 RPS", "Paid — verified email"),
@@ -172,7 +172,9 @@ def providers_status() -> str:
         "**Note:** `contacts_db` is always allowed even when not explicitly "
         "listed in `selected_providers` (mandatory first step).",
         "",
-        "`*` GetLeads batch of 100 amortizes to ~10k/min on the unlimited plan.",
+        "`*` GetLeads batch of 100 amortizes to ~10k/min on the unlimited plan. "
+        "Blitz: 50 RPS per endpoint (legacy plan, 2026-09) + 15M records/month "
+        "fair use; our client caps below plan via `BLITZ_RPS` (per-process limiter).",
     ])
     return "\n".join(lines)
 

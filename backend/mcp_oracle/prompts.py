@@ -145,7 +145,7 @@ def choose_providers_for_budget(budget: str = "minimize cost") -> str:
         "| Provider | Cost | Rate | Best for |\n"
         "|----------|------|------|----------|\n"
         "| Contacts DB | **Free** | 75 RPS | Internal DB — always check first |\n"
-        "| Blitz | Paid | 25 RPS | LinkedIn-based enrichment |\n"
+        "| Blitz | Paid | 50 RPS/endpoint | LinkedIn-based enrichment (legacy plan; 15M records/mo fair use) |\n"
         "| SmartProspect | Paid | 30 RPS | Self-verifying, batch-capable |\n"
         "| WizLeads | Paid | 10 RPS | Catch-all verified |\n"
         "| BetterEnrich | Paid | 10 RPS | Person + company email |\n\n"

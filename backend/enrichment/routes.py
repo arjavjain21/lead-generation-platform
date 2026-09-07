@@ -896,7 +896,7 @@ _LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
     "providers": {
         "cascade_order": [
             {"name": "contacts_db", "rate": "75 RPS", "role": "Internal PostgreSQL DB, always first, free"},
-            {"name": "blitz", "rate": "25 RPS", "role": "LinkedIn-based enrichment with title cascade"},
+            {"name": "blitz", "rate": "50 RPS per endpoint (legacy plan; client cap BLITZ_RPS, default 40)", "role": "LinkedIn-based enrichment with title cascade. Fair use: 15M records/month."},
             {"name": "smartprospect", "rate": "30 RPS", "role": "SmartLead Find Emails — self-verifying person-email finder, batch up to 10. Gates on firstName+lastName+domain."},
             {"name": "wizleads", "rate": "10 RPS", "role": "Catch-all verified email enrichment"},
             {"name": "better_enrich", "rate": "10 RPS", "role": "Person + company email (final fallback)"},

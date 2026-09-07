@@ -28,8 +28,11 @@ _MAX_RETRIES = 3
 _BASE_BACKOFF = 2.0   # seconds before first retry
 _MAX_BACKOFF = 60.0   # cap so we never wait more than a minute per attempt
 
-# Rate limiting: Blitz API allows higher rate limits, using 25 RPS
-_RATE_LIMIT_RPS = 25  # requests per second
+# Rate limiting: Blitz legacy plan (2026-09) = 50 RPS per endpoint + 15M records/month
+# fair-use. Cap is env-driven for safe tuning: BLITZ_RPS (default 40 — a deliberate
+# safety margin under the 50 plan limit, since this limiter is per-process and the
+# account runs multiple gunicorn workers + the scraper runner).
+_RATE_LIMIT_RPS = float(os.getenv("BLITZ_RPS", "40"))
 _MIN_REQUEST_INTERVAL = 1.0 / _RATE_LIMIT_RPS  # seconds between requests
 
 # Rate limiter state (thread-safe for async via asyncio.Lock)

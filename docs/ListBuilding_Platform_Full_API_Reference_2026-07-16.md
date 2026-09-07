@@ -259,7 +259,7 @@ When resolving emails, the system queries providers in this order, stopping at t
 | # | Provider | Rate Limit | Cost | Purpose |
 | --- | --- | --- | --- | --- |
 | 1 | Contacts DB | 75 RPS | Free | Internal database lookup |
-| 2 | Blitz | 25 RPS | Paid | LinkedIn-based enrichment with title cascade |
+| 2 | Blitz | 50 RPS per endpoint (legacy plan 2026-09; fair use 15M records/mo; client caps at 40 via `BLITZ_RPS`) | Paid | LinkedIn-based enrichment with title cascade |
 | 3 | SmartProspect | 30 RPS | Paid | Self-verifying person-email finder |
 | 4 | WizLeads | 10 RPS | Paid | Catch-all verified email |
 | 5 | BetterEnrich | 10 RPS | Paid | Person + company email fallback |

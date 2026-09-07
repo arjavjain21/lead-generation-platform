@@ -491,7 +491,7 @@ def list_current_providers() -> str:
 
     cascade = [
         (1, "contacts_db", "75 RPS", "Free"),
-        (2, "blitz", "25 RPS", "Paid"),
+        (2, "blitz", "50 RPS/endpoint*", "Paid"),
         (3, "getleads", "100/min*", "Paid"),
         (4, "smartprospect", "30 RPS", "Paid"),
         (5, "wizleads", "10 RPS", "Paid"),
@@ -513,6 +513,10 @@ def list_current_providers() -> str:
         "The cascade stops at the first provider that returns a valid email.",
         "Use `selected_providers` to restrict the cascade to a subset.",
         "`contacts_db` is always allowed even if not listed.",
+        "",
+        "*Blitz legacy plan (2026-09): 50 RPS per endpoint (separate buckets per "
+        "endpoint, not shared) + fair use of 15M records/month. Our client caps "
+        "below plan via `BLITZ_RPS` (default 40) because the limiter is per-process.",
     ])
     return "\n".join(lines)
 
