@@ -116,3 +116,4 @@ htmlcov/
 docs/blitz-api-py/
 LOOP-latam.md
 .listbuilding-api-key
+.claude/.listbuilding-enrichment-api-key
