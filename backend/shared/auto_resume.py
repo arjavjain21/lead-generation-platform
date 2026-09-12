@@ -561,6 +561,110 @@ async def maybe_auto_resume_abandoned_jobs() -> None:
         logger.warning("Auto-resume pass failed (non-fatal): %s", exc)
 
 
+# --- Enrichment runtime watchdog (2026-09-11) -------------------------------
+#
+# The boot-time reaper only runs at worker startup. When a worker murder is
+# followed by a replacement boot whose reaper misses the job (the Sep-11
+# shopify case: replacement worker booted 13s after the murder, heartbeat was
+# still "fresh"), the job stays 'running' forever with a dead runner. This
+# loop closes that gap the same way the scraper runtime guard does for
+# scraper jobs: periodically reap heartbeat-stale running enrichment jobs and
+# feed them to the SAME atomic-claim auto-resume machinery.
+#
+# Deliberately LONGER staleness threshold than the boot reaper's 2 minutes:
+# a runner whose loop is briefly starved (but alive) must not be reaped and
+# double-processed. At GUARD_STALE_MINUTES the runner has missed 20 heartbeat
+# cycles; if it recovers afterwards it sees its own 'abandoned' status via
+# the per-batch is_job_cancelled_or_abandoned check and stops itself, so the
+# overlap is bounded to one in-flight batch.
+
+# How often the guard polls for stale running enrichment jobs.
+ENRICHMENT_GUARD_POLL_SECONDS = float(os.getenv("ENRICHMENT_GUARD_POLL_SECONDS", "60"))
+
+# A running enrichment job whose heartbeat is older than this is presumed
+# dead (runner murdered with its worker) and is reaped + auto-resumed.
+ENRICHMENT_GUARD_STALE_MINUTES = float(os.getenv("ENRICHMENT_GUARD_STALE_MINUTES", "10"))
+
+# Kill-switch for the whole guard loop (default on; no .env entry required).
+ENABLE_ENRICHMENT_RUNTIME_GUARD = os.getenv(
+    "ENABLE_ENRICHMENT_RUNTIME_GUARD", "true"
+).lower() in ("1", "true", "yes")
+
+
+def get_heartbeat_stale_running_enrichment_jobs(stale_minutes: float) -> list[dict[str, Any]]:
+    """Enrichment jobs in 'running'/'queued' whose heartbeat is older than
+    ``stale_minutes`` (and which are older than that themselves, so a job
+    still in its pre-heartbeat startup window is never reaped)."""
+    conn = db.get_db()
+    rows = conn.execute(
+        """SELECT job_id, user_id, status, last_heartbeat
+           FROM jobs
+           WHERE job_type='enrichment'
+             AND status IN ('running', 'queued')
+             AND (last_heartbeat IS NULL OR datetime(last_heartbeat) < datetime('now', ?))
+             AND datetime(created_at) < datetime('now', ?)""",
+        (
+            f"-{int(stale_minutes)} minutes",
+            f"-{int(stale_minutes)} minutes",
+        ),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+async def enrichment_runtime_guard_once() -> int:
+    """One guard pass: reap heartbeat-stale running enrichment jobs and
+    auto-resume them. Returns the number of jobs reaped by THIS pass.
+
+    Safe across the N workers (each runs its own loop): the flip is the
+    atomic ``try_claim_abandoned`` compare-and-set (exactly one winner), and
+    the resume goes through ``resume_one``'s BEGIN IMMEDIATE claim with the
+    root-counted attempt cap — a chain at its budget is left abandoned for a
+    human, exactly like the boot path.
+    """
+    if not ENABLE_ENRICHMENT_RUNTIME_GUARD:
+        return 0
+    if not AUTO_RESUME_ENABLED:
+        # Reaping without resume would still fix the "stuck forever" state,
+        # but the user asked for parity with the boot path: reap + resume.
+        return 0
+
+    stale = get_heartbeat_stale_running_enrichment_jobs(ENRICHMENT_GUARD_STALE_MINUTES)
+    reaped = 0
+    for row in stale:
+        job_id = row["job_id"]
+        if not try_claim_abandoned(job_id):
+            # Another worker flipped it first, or it completed/cancelled in
+            # the gap between the SELECT and the UPDATE — either way, done.
+            continue
+        reaped += 1
+        logger.warning(
+            "Enrichment runtime guard: job %s had no heartbeat for >%s min "
+            "(runner presumed dead) — marked abandoned, auto-resuming",
+            job_id, int(ENRICHMENT_GUARD_STALE_MINUTES),
+        )
+        await resume_one(job_id, row.get("user_id") or "")
+    return reaped
+
+
+async def enrichment_runtime_guard_loop() -> None:
+    """Periodic watchdog for enrichment jobs (mirror of the scraper's
+    ``runtime_guard_loop``). Runs forever; a pass failure is logged and never
+    propagates."""
+    if not ENABLE_ENRICHMENT_RUNTIME_GUARD:
+        logger.info("Enrichment runtime guard disabled via ENABLE_ENRICHMENT_RUNTIME_GUARD")
+        return
+    logger.info(
+        "Enrichment runtime guard active (poll=%ss, stale=%smin)",
+        int(ENRICHMENT_GUARD_POLL_SECONDS), int(ENRICHMENT_GUARD_STALE_MINUTES),
+    )
+    while True:
+        await asyncio.sleep(ENRICHMENT_GUARD_POLL_SECONDS)
+        try:
+            await enrichment_runtime_guard_once()
+        except Exception as exc:
+            logger.warning("Enrichment runtime guard pass failed (non-fatal): %s", exc)
+
+
 async def maybe_auto_resume_scraper_jobs() -> None:
     """Scraper counterpart of maybe_auto_resume_abandoned_jobs.
 

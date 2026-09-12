@@ -254,6 +254,19 @@ async def _run_parent_startup():
         except Exception as e:
             logger.warning("Failed to start auto-resume watcher: %s", e)
 
+        # Enrichment runtime watchdog (2026-09-11): the boot reaper only runs
+        # at startup — a murdered runner whose job missed the reaper window
+        # (Sep-11 shopify case: replacement boot 13s after the murder) stayed
+        # 'running' for 16h. This loop reaps heartbeat-stale running jobs
+        # every minute and feeds them to the same atomic-claim auto-resume.
+        # Mirror of the scraper dispatcher's runtime_guard_loop.
+        try:
+            from shared.auto_resume import enrichment_runtime_guard_loop
+            asyncio.create_task(enrichment_runtime_guard_loop())
+            logger.info("Started enrichment runtime guard (heartbeat watchdog)")
+        except Exception as e:
+            logger.warning("Failed to start enrichment runtime guard: %s", e)
+
         # Scraper dispatcher (2026-08-24): claims queued jobs under a
         # platform-wide concurrency cap and re-launches stale-abandoned ones.
         # P1 (2026-09-02): the dispatcher now lives in the dedicated runner
