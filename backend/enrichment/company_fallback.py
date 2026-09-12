@@ -61,6 +61,31 @@ def _is_paid_company() -> bool:
     return fb_cfg.ENABLE_COMPANY_EMAIL_FALLBACK
 
 
+def better_enrich_allowed(selected_providers: Optional[list[str]]) -> bool:
+    """Whether the BetterEnrich-backed fallbacks may run for this request.
+
+    Mirrors the person-waterfall allowlist semantics (list_builder
+    ``_should_skip_provider``): when the request carries a provider
+    selection, only the selected providers may be called — the
+    company/page-email fallbacks are BetterEnrich products, so a selection
+    that omits ``better_enrich`` disables them. Without a selection the
+    global ``ENABLED_PROVIDERS`` switch decides (the fallback flags in
+    ``fallback_config`` still apply independently, as before).
+
+    2026-09-11 RCA: this tier previously ignored the selection entirely, so
+    a job uploaded as "Blitz + GetLeads + SmartProspect" still burned
+    BetterEnrich calls on every no-hit domain.
+    """
+    if selected_providers is not None:
+        return "better_enrich" in selected_providers
+    try:
+        from . import providers as _providers
+
+        return bool(_providers.ENABLED_PROVIDERS.get("better_enrich", False))
+    except Exception:  # pragma: no cover - defensive: never block on import
+        return True
+
+
 async def _verify_with_mailtester(
     client: httpx.AsyncClient,
     email: str,
@@ -204,6 +229,7 @@ async def run_company_fallbacks(
     record_provider_use: Optional[Callable[[str], None]] = None,
     collector: Optional[Any] = None,
     company_linkedin_url: str = "",
+    selected_providers: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     """Run the company / page-level email fallbacks for a single row.
 
@@ -229,6 +255,11 @@ async def run_company_fallbacks(
             person email).
         company_linkedin_url: Optional company LinkedIn URL for the
             collector payload. Empty for domain-only flows.
+        selected_providers: Optional request-time provider allowlist (same
+            semantics as the person waterfall). When set and it does not
+            include "better_enrich", BOTH BetterEnrich fallbacks are skipped
+            (no paid calls, no_email_reason=company_email_fallback_disabled).
+            None = no selection: global enablement decides, as before.
 
     Returns a dict with the new company/final columns:
         {
@@ -262,9 +293,13 @@ async def run_company_fallbacks(
     company_email_provider_status = ""  # what BetterEnrich told us about the email
     no_email_reason = ""
 
+    # Request-time allowlist gate: both fallback tiers below are BetterEnrich
+    # products; a selection that omits better_enrich must not leak paid calls.
+    be_allowed = better_enrich_allowed(selected_providers)
+
     # ---- Facebook page email fallback ----
     normalized_fb = identifier_utils.normalize_facebook_url(facebook_url)
-    if not _is_paid_facebook():
+    if not be_allowed or not _is_paid_facebook():
         if facebook_url and not normalized_fb:
             # facebook URL was given but not parseable.
             no_email_reason = pipeline_mod.NO_EMAIL_REASON_FACEBOOK_PAGE_MISSING
@@ -320,7 +355,7 @@ async def run_company_fallbacks(
     # ---- Company email fallback (only if facebook didn't yield) ----
     if not company_email:
         domain_key = normalize_domain_key(domain)
-        if not _is_paid_company():
+        if not be_allowed or not _is_paid_company():
             if domain and not no_email_reason:
                 no_email_reason = pipeline_mod.NO_EMAIL_REASON_COMPANY_EMAIL_FALLBACK_DISABLED
         elif not domain_key:

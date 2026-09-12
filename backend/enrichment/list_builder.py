@@ -1201,6 +1201,7 @@ async def _apply_company_fallback_to_output_rows(
     record_provider_use: Optional[Callable[[str], None]] = None,
     source_path_prefix: str = "",
     collector: Optional[Any] = None,
+    selected_providers: Optional[list[str]] = None,
 ) -> None:
     """Run the company/page-level fallback once per domain and apply
     to all output rows that lack a person-level email.
@@ -1208,6 +1209,10 @@ async def _apply_company_fallback_to_output_rows(
     Mirrors `_maybe_apply_company_fallbacks` in pipeline.py for the
     list_builder flows (Flows 1, 3). No-op when both fallback flags
     are off or every row already has dm_email.
+
+    ``selected_providers`` is the request-time allowlist: when it omits
+    ``better_enrich`` the BetterEnrich fallbacks are skipped entirely
+    (no paid calls) — same semantics as the person waterfall.
     """
     if not fb_cfg.ENABLE_COMPANY_EMAIL_FALLBACK and not fb_cfg.ENABLE_FACEBOOK_EMAIL_FALLBACK:
         return
@@ -1233,6 +1238,7 @@ async def _apply_company_fallback_to_output_rows(
         record_provider_use=record_provider_use,
         collector=collector,
         company_linkedin_url=(output_rows[0].get("company_linkedin_url", "") if output_rows else ""),
+        selected_providers=selected_providers,
     )
 
     for row in output_rows:
@@ -1478,7 +1484,8 @@ async def run_domain_enrichment(
         # Company/page-level fallback (BetterEnrich Facebook + company
         # email). Runs once per domain; applied to all output rows
         # that lack a person-level email. Mirrors run_pipeline wiring.
-        # Skipped entirely in website_only mode (paid provider).
+        # Skipped entirely in website_only mode (paid provider), and when
+        # the request's provider selection omits better_enrich.
         if domain and not website_only:
             row_facebook_url = str(row.get("facebook_url", "") or row.get("facebook", "") or "").strip()
             domain_dedupe = company_fallback.CompanyFallbackDedupe()
@@ -1490,6 +1497,7 @@ async def run_domain_enrichment(
                 dedupe=domain_dedupe,
                 record_provider_use=record_provider_use,
                 collector=collector,
+                selected_providers=selected_providers,
             )
 
         return result
