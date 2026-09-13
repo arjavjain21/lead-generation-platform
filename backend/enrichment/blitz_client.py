@@ -390,7 +390,7 @@ async def employee_finder(
     limit: int = 100,
 ) -> dict[str, Any]:
     """
-    POST /v2/search/employees
+    POST /v2/search/employee-finder
     Find employees/people by company and/or criteria.
 
     Args:
@@ -457,7 +457,10 @@ async def employee_finder(
 
     return await _post_with_retry(
         client,
-        f"{BLITZ_BASE_URL}/v2/search/employees",
+        # SDK (blitz-api-py v2.0.0) defines /v2/search/employee-finder; the
+        # legacy /v2/search/employees spelling was never verified against the
+        # live API (function is dormant — 0 calls in telemetry).
+        f"{BLITZ_BASE_URL}/v2/search/employee-finder",
         payload,
         timeout=60.0,
     )

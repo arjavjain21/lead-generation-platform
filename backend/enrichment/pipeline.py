@@ -1247,8 +1247,10 @@ async def _run_route_step(
             # Phase 3 (batch coverage): reuse a pre-resolved batch result
             # instead of re-calling the single endpoint. Mirrors the
             # _resolve_email_for_person Step 6 pre-resolved pattern
-            # (~pipeline.py:2435). An empty pre-resolved email falls through
-            # to the normal single-call path below.
+            # (~pipeline.py:2435). A HIT short-circuits; a stored MISS (empty
+            # email) means the batch already asked SmartProspect for this
+            # person — return not-found WITHOUT re-calling the single
+            # endpoint (strictly 1 SmartProspect call per person).
             if pre_resolved_smartprospect is not None:
                 pre_email = pre_resolved_smartprospect.get("email", "")
                 if pre_email:
@@ -1257,6 +1259,8 @@ async def _run_route_step(
                     verification["dm_email_verified"] = "yes" if vs == "Valid" else "unknown"
                     logger.info("SmartProspect (route batch pre-pass) found email: %s", pre_email)
                     return {"email": pre_email, "source": SOURCE_SMARTPROSPECT, "verification": verification}
+                _record("smartprospect")
+                return {"email": "", "source": SOURCE_NOT_FOUND}
             _record("smartprospect")
             try:
                 result = await _sp.find_email(
@@ -3014,6 +3018,57 @@ async def _enrich_domain(
                 _stamp_company_errors(err_out, company_provider_errors)
                 return [err_out]
 
+    # Step 2.4 (2026-09-13): GetLeads decision-makers fallback (coverage
+    # layer). When contacts_db AND the Blitz waterfall both found no decision
+    # makers, ask GetLeads' ~402M-row contact DB by domain (C-Team / VP /
+    # Director / "Head" titles, verified emails) before settling for a
+    # generic BetterEnrich company email. Persons whose DM row already has an
+    # email seed the GetLeads pre-resolved map — the per-row cascade's free
+    # steps (contacts_db, blitz) still run first, but the from-person call
+    # will NOT re-ask for an email already in hand. 1 credit per returned
+    # record on the unlimited plan = fair-use budget (4M+ records/mo spare).
+    dm_gl_pre_resolved: dict[int, dict[str, Any]] = {}
+    if not persons and not _should_skip_provider("getleads", force_provider):
+        dm_limit = max(1, min(max_results if isinstance(max_results, int) and max_results > 0 else 25, 50))
+        if record_provider_use is not None:
+            try:
+                record_provider_use("getleads")
+            except Exception:
+                pass
+        try:
+            dm_contacts = await getleads_client.lookup_decision_makers(
+                blitz_http, domain, limit=dm_limit
+            )
+        except Exception as dm_exc:
+            _record_company_error("getleads", "lookup_decision_makers", dm_exc)
+            dm_contacts = []
+        if _is_provider_error(dm_contacts):
+            _record_company_error("getleads", "lookup_decision_makers", "insufficient credits (402)")
+            dm_contacts = []
+        if dm_contacts:
+            persons = [
+                {
+                    "person": {
+                        "full_name": c.get("person_full_name") or "",
+                        "first_name": c.get("first_name", ""),
+                        "last_name": c.get("last_name", ""),
+                        "linkedin_url": c.get("linkedin_url", ""),
+                        "title": c.get("job_title", ""),
+                        "headline": "",
+                    },
+                    "icp": 0,
+                }
+                for c in dm_contacts
+                if isinstance(c, dict)
+            ]
+            for idx, c in enumerate(dm_contacts):
+                if isinstance(c, dict) and c.get("email"):
+                    dm_gl_pre_resolved[idx] = c
+            logger.info(
+                "GetLeads decision-makers fallback for %s: %d persons (%d with email)",
+                domain, len(persons), len(dm_gl_pre_resolved),
+            )
+
     if not persons:
         # No decision makers found — try BetterEnrich for generic company email
         if not _should_skip_provider("better_enrich", force_provider):
@@ -3154,6 +3209,12 @@ async def _enrich_domain(
                                 "collector.capture_company_contact(smartprospect batch) failed for %s: %s",
                                 domain, cap_err,
                             )
+                else:
+                    # Known miss — store the empty-email marker so per-row
+                    # Step 6 / the routed smartprospect step do NOT re-fire a
+                    # single find_email for this person (strictly 1
+                    # SmartProspect call per person per domain).
+                    pre_resolved_by_index[idx] = {"email": ""}
 
             logger.info(
                 "SmartProspect batch pre-pass for %s: %d/%d resolved (attempted=%s)",
@@ -3174,7 +3235,7 @@ async def _enrich_domain(
     #
     # Safety: every guard here is additive. If anything looks off, the batch
     # is skipped and the per-row cascade runs normally for everyone.
-    pre_resolved_getleads_by_index: dict[int, dict[str, Any]] = {}
+    pre_resolved_getleads_by_index: dict[int, dict[str, Any]] = dict(dm_gl_pre_resolved)
     getleads_batch_attempted = False
     getleads_batch_found = 0
     # Phase 3 (batch coverage): the pre-pass no longer requires a collector —
@@ -3189,6 +3250,10 @@ async def _enrich_domain(
         # Build the batch input list — only persons with first+last+domain.
         getleads_batch_inputs: list[tuple[int, str, str]] = []  # (person_idx, first, last)
         for idx, item in enumerate(persons):
+            # Skip decision-makers-layer persons whose email is already in
+            # hand — the from-person batch must not re-ask (re-pay) for them.
+            if idx in pre_resolved_getleads_by_index:
+                continue
             p = item.get("person", {}) if isinstance(item, dict) else {}
             if not isinstance(p, dict):
                 continue

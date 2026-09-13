@@ -932,6 +932,177 @@ async def get_credits_balance(
 
 
 # ---------------------------------------------------------------------------
+# Decision-makers domain lookup (2026-09-13) — coverage layer
+# ---------------------------------------------------------------------------
+
+_DM_LOOKUP_PATH = "/api/v1/contacts/lookup/decision-makers"
+
+
+def _normalize_dm_contact(contact: dict[str, Any]) -> dict[str, Any]:
+    """
+    Map one decision-makers ``contacts[]`` row to the canonical shape.
+
+    The endpoint returns human-readable CSV-style keys (live-verified
+    2026-09-13): First Name / Last Name / Email / Email Verification Status /
+    Current Job Title / Department / Function / Seniority Level / Company
+    Name / Company Domain / Contact City / Contact State / Contact Country /
+    Company Industry (LinkedIn) / Employee Count Range / Revenue Range /
+    Contact LinkedIn URL / Cellphone / Persona / About Me. Keys the canonical
+    shape has no analogue for stay "" (mirroring _not_found_contact) and the
+    raw row rides along as ``_raw_getleads``.
+    """
+    first = _clean_str(contact.get("First Name"))
+    last = _clean_str(contact.get("Last Name"))
+    email_status = _clean_str(contact.get("Email Verification Status"))
+    return {
+        "email": _clean_str(contact.get("Email")),
+        "first_name": first,
+        "last_name": last,
+        "domain": _clean_str(contact.get("Company Domain")),
+        "verification_status": "Valid" if email_status == "VALID" else "unknown",
+        "linkedin_url": _clean_str(contact.get("Contact LinkedIn URL")),
+        "phone": _clean_str(contact.get("Cellphone")),
+        "job_title": _clean_str(contact.get("Current Job Title")),
+        "linkedin_headline": "",
+        "person_full_name": " ".join(part for part in (first, last) if part),
+        "company_name": _clean_str(contact.get("Company Name")),
+        "company_industry": _clean_str(contact.get("Company Industry (LinkedIn)")),
+        "employee_count": _clean_str(contact.get("Employee Count Range")),
+        "revenue": _clean_str(contact.get("Revenue Range")),
+        "city": _clean_str(contact.get("Contact City")),
+        "country": _clean_str(contact.get("Contact Country")),
+        "linkedin_connections": "",
+        "email_last_verified_at": "",
+        "job_level": _clean_str(contact.get("Seniority Level")),
+        "job_function": _clean_str(contact.get("Department / Function")),
+        "_raw_getleads": contact,
+    }
+
+
+async def lookup_decision_makers(
+    client: httpx.AsyncClient,
+    domain: str,
+    limit: int = 25,
+) -> Any:
+    """
+    Find decision makers at a company via the GetLeads contact database
+    (C-Team / VP / Director seniority, or any title containing "Head").
+
+    Domain-level DISCOVERY fallback: the cascade calls this only when
+    contacts_db AND the Blitz waterfall both found no decision makers for a
+    domain. Costs 1 credit per returned record (0 if none) — on the unlimited
+    plan this is fair-use budget, not credits.
+
+    Args:
+        client: httpx.AsyncClient used for the HTTP call.
+        domain: Company website domain (bare, e.g. "linear.app").
+        limit: Max records (1..5000; we default low — this is a residual
+            fallback, not a bulk pull).
+
+    Returns:
+        List of normalized contacts (canonical shape; ``email`` may be ""
+        per-row — the endpoint defaults to verified-emails-only but a row
+        without an email is still useful as a person for downstream steps).
+        ``[]`` when disabled / misconfigured / no contacts / unrecoverable
+        failure. A falsy ``pipeline._ProviderError`` on 402.
+    """
+    if not _is_enabled():
+        logger.debug("GetLeads kill switch (ENABLE_GETLEADS=false) active")
+        return []
+    if not API_KEY:
+        logger.warning("GetLeads API key not configured, skipping")
+        return []
+    if not domain or not str(domain).strip():
+        logger.debug("GetLeads decision-makers requires a domain")
+        return []
+
+    domain_clean = str(domain).strip().lower()
+    limit_clean = max(1, min(int(limit or 25), 5000))
+
+    if not await _getleads_circuit.can_proceed():
+        logger.warning("GetLeads API circuit breaker OPEN, failing fast")
+        return []
+
+    url = f"{BASE_URL}{_DM_LOOKUP_PATH}"
+    payload = {"domain": domain_clean, "limit": limit_clean, "require_email": True}
+
+    for attempt in range(_MAX_RETRIES + 1):
+        await _acquire_rate_limit()
+        try:
+            resp = await client.post(
+                url,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {API_KEY}",
+                },
+                json=payload,
+                timeout=_REQUEST_TIMEOUT,
+            )
+
+            if resp.status_code == 402:
+                await _getleads_circuit.record_failure()
+                logger.warning("GetLeads: Insufficient credits (402)")
+                return _insufficient_credits_error("lookup_decision_makers")
+
+            if resp.status_code == 400:
+                await _getleads_circuit.record_failure()
+                logger.debug("GetLeads decision-makers 400: %s", resp.text[:200])
+                return []
+
+            if _should_retry(resp.status_code):
+                if resp.status_code != 429:
+                    await _getleads_circuit.record_failure()
+                retry_after_raw = resp.headers.get("Retry-After")
+                retry_after = float(retry_after_raw) if retry_after_raw else None
+                delay = _backoff_delay(attempt, retry_after)
+                if attempt < _MAX_RETRIES:
+                    logger.warning(
+                        "GetLeads decision-makers %s (attempt %d/%d), retrying in %.1fs",
+                        resp.status_code, attempt + 1, _MAX_RETRIES + 1, delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                return []
+
+            if resp.status_code != 200:
+                await _getleads_circuit.record_failure()
+                logger.warning(
+                    "GetLeads decision-makers unexpected status %d", resp.status_code
+                )
+                return []
+
+            await _getleads_circuit.record_success()
+            body = resp.json()
+            contacts = body.get("contacts") if isinstance(body, dict) else None
+            if not isinstance(contacts, list):
+                return []
+            normalized = [
+                _normalize_dm_contact(c) for c in contacts if isinstance(c, dict)
+            ]
+            logger.info(
+                "GetLeads decision-makers for %s: %d contact(s) (total_available=%s)",
+                domain_clean,
+                len(normalized),
+                body.get("total_available"),
+            )
+            return normalized
+
+        except Exception as exc:
+            await _getleads_circuit.record_failure()
+            if attempt < _MAX_RETRIES:
+                delay = _backoff_delay(attempt, None)
+                logger.warning(
+                    "GetLeads decision-makers request failed (%s), retrying in %.1fs",
+                    exc, delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+            logger.warning("GetLeads decision-makers failed after retries: %s", exc)
+            return []
+    return []
+
+
+# ---------------------------------------------------------------------------
 # Demo entry point (reads GETLEADS_API_KEY from env; never hardcodes the key)
 # ---------------------------------------------------------------------------
 

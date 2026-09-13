@@ -145,7 +145,7 @@ Each enrichment source has different cost/quality tradeoffs:
 |-----|------------|----------|---------|
 | **Contacts DB** | 75 RPS | 1st (free) | Domain → company → contacts with emails |
 | **Blitz** | 50 RPS per endpoint (legacy plan 2026-09; per-lane caps `BLITZ_RPS` default + `BLITZ_RPS_EMAIL/_DISCOVERY/_SEARCH`; FUP 15M records/mo, metered live in `blitz_fair_use`) | 2nd | LinkedIn-based enrichment with title cascade |
-| **GetLeads** | batch 100 (~10k/min) | 3rd | Verified DM emails + bonus phones (batch of 100, unlimited plan); also the from-linkedin fallback in the LinkedIn-only arm (after Blitz) |
+| **GetLeads** | batch 100 (~10k/min) | 3rd | Verified DM emails + bonus phones (batch of 100, unlimited plan); from-linkedin fallback in the LinkedIn-only arm (after Blitz); decision-makers domain fallback when contacts_db + Blitz waterfall both find nobody (`lookup_decision_makers`, C-Team/VP/Director, 1 credit/record vs fair use) |
 | **smartprospect** | shared cross-process 1900 RPM (`SMARTPROSPECT_RATE_LIMIT_RPM`, acct 2000/min) | 4th | Person-email finder, batch up to 10, self-verifying |
 | **WizLeads** | 10 RPS | 5th | Catch-all verified email enrichment |
 | **BetterEnrich** | 10 RPS | 6th | Person email, company email |

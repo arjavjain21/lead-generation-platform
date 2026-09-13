@@ -881,6 +881,52 @@ async def _enrich_single_domain(
                 row["row_status"] = STATUS_ERROR
                 return [row]
 
+    # Step 2.4 (2026-09-13): GetLeads decision-makers fallback (coverage
+    # layer) — mirror of pipeline._enrich_domain. When contacts_db AND the
+    # Blitz waterfall found no decision makers, ask GetLeads' contact DB by
+    # domain before returning no-contacts. Persons with emails seed the
+    # pre-resolved map so the from-person batch/single does not re-ask.
+    dm_gl_pre_resolved: dict[tuple[str, str], dict[str, Any]] = {}
+    if not persons and not _should_skip_provider("getleads", force_provider, selected_providers):
+        dm_limit = max(1, min(max_decision_makers if isinstance(max_decision_makers, int) and max_decision_makers > 0 else 25, 50))
+        if record_provider_use:
+            try:
+                record_provider_use("getleads")
+            except Exception:
+                pass
+        try:
+            dm_contacts = await getleads_client.lookup_decision_makers(
+                blitz_http, domain, limit=dm_limit
+            )
+        except Exception as dm_exc:
+            logger.debug("GetLeads decision-makers fallback failed for %s: %s", domain, dm_exc)
+            dm_contacts = []
+        if dm_contacts:
+            persons = [
+                {
+                    "person": {
+                        "full_name": c.get("person_full_name") or "",
+                        "first_name": c.get("first_name", ""),
+                        "last_name": c.get("last_name", ""),
+                        "linkedin_url": c.get("linkedin_url", ""),
+                        "title": c.get("job_title", ""),
+                        "headline": "",
+                    },
+                    "icp": 0,
+                }
+                for c in dm_contacts
+                if isinstance(c, dict)
+            ]
+            for c in dm_contacts:
+                if isinstance(c, dict) and c.get("email"):
+                    key = (str(c.get("first_name", "")).strip().lower(), str(c.get("last_name", "")).strip().lower())
+                    if key[0] and key[1]:
+                        dm_gl_pre_resolved[key] = c
+            logger.info(
+                "GetLeads decision-makers fallback for %s: %d persons (%d with email)",
+                domain, len(persons), len(dm_gl_pre_resolved),
+            )
+
     if not persons:
         row = {**base_row, **_empty_enriched()}
         row["company_linkedin_url"] = company_linkedin_url
@@ -896,7 +942,7 @@ async def _enrich_single_domain(
     # cascade below. Free tiers (Contacts DB, Blitz) still run first per
     # person — the batch only replaces the getleads single call. On failure
     # the map stays empty and everyone falls back to singles.
-    pre_resolved_gl_by_person: dict[tuple[str, str], dict[str, Any]] = {}
+    pre_resolved_gl_by_person: dict[tuple[str, str], dict[str, Any]] = dict(dm_gl_pre_resolved)
     gl_batch_candidates: list[tuple[str, str]] = []
     if not force_provider and not _should_skip_provider("getleads", force_provider, selected_providers):
         for item in persons:
@@ -909,6 +955,10 @@ async def _enrich_single_domain(
                 " ".join(_gl_full.split(" ")[1:]) if " " in _gl_full else ""
             )
             if _gl_first.strip() and _gl_last.strip() and domain:
+                # Skip decision-makers-layer persons whose email is already
+                # in hand — the batch must not re-ask (re-pay) for them.
+                if (_gl_first.strip().lower(), _gl_last.strip().lower()) in pre_resolved_gl_by_person:
+                    continue
                 gl_batch_candidates.append((_gl_first.strip(), _gl_last.strip()))
         if len(gl_batch_candidates) >= 2:
             if record_provider_use:
