@@ -121,6 +121,9 @@ def test_fair_use_endpoint_returns_snapshot(tmp_path, monkeypatch) -> None:
         conn.commit()
     finally:
         conn.close()
+        # Reset the thread-local cached connection — leaving it cached-closed
+        # poisons later tests that reuse shared_db.get_db() on this thread.
+        shared_db._local.conn = None
 
     from fastapi.testclient import TestClient
     from main import app

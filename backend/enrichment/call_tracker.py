@@ -143,6 +143,22 @@ CREATE TABLE IF NOT EXISTS blitz_fair_use_daily (
     next_reset_at     TEXT,
     updated_at        TEXT NOT NULL
 );
+
+-- Email-quality scoreboard (2026-09-13): per-(day, provider, endpoint,
+-- email_status) counters. VALID/CATCH_ALL/INVALID come from providers that
+-- report per-email status (GetLeads email_status, SmartProspect
+-- verification_status); everything else is UNKNOWN pending external
+-- validation. Populated from the same response hook as the ledger.
+CREATE TABLE IF NOT EXISTS provider_email_quality_daily (
+    day          TEXT    NOT NULL,
+    provider     TEXT    NOT NULL,
+    endpoint     TEXT    NOT NULL,
+    email_status TEXT    NOT NULL,
+    responses    INTEGER NOT NULL DEFAULT 0,
+    emails       INTEGER NOT NULL DEFAULT 0,
+    updated_at   TEXT    NOT NULL,
+    PRIMARY KEY (day, provider, endpoint, email_status)
+);
 """
 
 # ---------------------------------------------------------------------------
@@ -293,9 +309,150 @@ def _insert_emails_batch(
         )
 
 
+# Cap on ledger rows recorded per response — huge payloads (batch endpoints)
+# must not flood the ledger; the daily counters stay exact regardless.
+_MAX_LEDGER_EMAILS_PER_RESPONSE: int = 25
+
+# Recognized quality buckets. Providers that report per-email status map into
+# these; everything else lands in UNKNOWN.
+_EMAIL_STATUSES = ("VALID", "CATCH_ALL", "INVALID", "UNKNOWN")
+
+
+def _norm_email_status(raw: Any) -> str:
+    s = str(raw or "").strip().upper()
+    return s if s in _EMAIL_STATUSES[:3] else "UNKNOWN"
+
+
+def _structured_email_status(provider: str, body: Any) -> dict[str, str]:
+    """Extract {email: STATUS} from provider-native response shapes.
+
+    GetLeads: enrich endpoints report ``results[].data.email_status``
+    (VALID/CATCH_ALL/INVALID); decision-makers reports
+    ``contacts[].Email Verification Status``.
+    SmartProspect: ``data[].email_id`` + ``verification_status`` ("Valid"
+    is the only trusted value — everything else is UNKNOWN).
+    """
+    out: dict[str, str] = {}
+    if not isinstance(body, dict):
+        return out
+
+    if provider == "getleads":
+        results = body.get("results")
+        if isinstance(results, list):
+            for item in results:
+                if not isinstance(item, dict):
+                    continue
+                data = item.get("data")
+                if isinstance(data, dict) and data.get("email_address"):
+                    out[str(data["email_address"]).strip().lower()] = _norm_email_status(
+                        data.get("email_status")
+                    )
+        contacts = body.get("contacts")
+        if isinstance(contacts, list):
+            for contact in contacts:
+                if isinstance(contact, dict) and contact.get("Email"):
+                    out[str(contact["Email"]).strip().lower()] = _norm_email_status(
+                        contact.get("Email Verification Status")
+                    )
+    elif provider == "smartprospect":
+        data = body.get("data")
+        if isinstance(data, list):
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                email = item.get("email_id") or item.get("email")
+                if not email:
+                    continue
+                verified = str(item.get("verification_status", "")).strip().lower() == "valid"
+                out[str(email).strip().lower()] = "VALID" if verified else "UNKNOWN"
+    return out
+
+
+def _extract_email_records(provider: str, body: Any) -> dict[str, str]:
+    """Return {email: STATUS} for one response: structured first, regex
+    fallback for the rest, own-domain noise filtered for both."""
+    records = {
+        email: st
+        for email, st in _structured_email_status(provider, body).items()
+        if not _is_own_domain(provider, email)
+    }
+    for email in _extract_emails(provider, body):
+        records.setdefault(email, "UNKNOWN")
+    return records
+
+
+def _insert_email_records(
+    provider: str,
+    endpoint: str,
+    status_code: int,
+    records: dict[str, str],
+) -> None:
+    """Ledger insert carrying the per-email quality status in metadata."""
+    if not records:
+        return
+    ts = _now_iso()
+    items = list(records.items())[:_MAX_LEDGER_EMAILS_PER_RESPONSE]
+    rows = [
+        (ts, provider, endpoint, email, status_code, json.dumps({"email_status": st}))
+        for email, st in items
+    ]
+    try:
+        with _connect() as conn:
+            conn.executemany(
+                "INSERT INTO provider_email_ledger "
+                "(ts, provider, endpoint, email, status_code, metadata) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+    except Exception:
+        logger.warning(
+            "call_tracker email ledger insert failed (%d rows)", len(rows),
+            exc_info=True,
+        )
+
+
+def _bump_quality_counters(provider: str, endpoint: str, records: dict[str, str]) -> None:
+    """Upsert the per-(day, provider, endpoint, status) scoreboard counters.
+
+    One row per distinct status per response — far lighter than the raw
+    ledger and exact (no sampling).
+    """
+    if not records:
+        return
+    day = _now_iso()[:10]
+    status_counts: dict[str, int] = {}
+    for st in records.values():
+        status_counts[st] = status_counts.get(st, 0) + 1
+    try:
+        with _connect() as conn:
+            for st, n in status_counts.items():
+                conn.execute(
+                    """
+                    INSERT INTO provider_email_quality_daily
+                        (day, provider, endpoint, email_status, responses, emails, updated_at)
+                    VALUES (?, ?, ?, ?, 1, ?, ?)
+                    ON CONFLICT(day, provider, endpoint, email_status) DO UPDATE SET
+                        responses = responses + 1,
+                        emails = emails + excluded.emails,
+                        updated_at = excluded.updated_at
+                    """,
+                    (day, provider, endpoint, st, n, _now_iso()),
+                )
+    except Exception:
+        logger.debug("quality counter upsert failed", exc_info=True)
+
+
 # ---------------------------------------------------------------------------
 # Email extraction from provider response bodies
 # ---------------------------------------------------------------------------
+
+def _is_own_domain(provider: str, email_lower: str) -> bool:
+    """True when the email sits on the provider's own domain (or a subdomain
+    of it) — metadata noise, never a real lead."""
+    blocked = _PROVIDER_OWN_DOMAINS.get(provider, set())
+    domain = email_lower.rsplit("@", 1)[-1] if "@" in email_lower else ""
+    return any(domain == bd or domain.endswith("." + bd) for bd in blocked)
+
 
 def _extract_emails(provider: str, body: Any) -> list[str]:
     """Extract unique, lowercased emails from a provider response body.
@@ -320,16 +477,13 @@ def _extract_emails(provider: str, body: Any) -> list[str]:
         return []
 
     raw_emails = _EMAIL_RE.findall(body_str)
-    blocked = _PROVIDER_OWN_DOMAINS.get(provider, set())
 
     unique: set[str] = set()
     for email in raw_emails:
         email_lower = email.lower().strip()
         if not email_lower or "@" not in email_lower:
             continue
-        domain = email_lower.rsplit("@", 1)[-1] if "@" in email_lower else ""
-        # Filter provider's own domain (and any subdomain of it)
-        if any(domain == bd or domain.endswith("." + bd) for bd in blocked):
+        if _is_own_domain(provider, email_lower):
             continue
         unique.add(email_lower)
     return list(unique)
@@ -380,6 +534,16 @@ async def _on_response(response: httpx.Response) -> None:
         if content_length and content_length > _MAX_BODY_BYTES_FOR_EXTRACTION:
             return
 
+        # ROOT-CAUSE FIX (2026-09-13): on live network responses httpx fires
+        # async response hooks BEFORE the body stream is read, so
+        # response.json() raised httpx.ResponseNotRead and the swallowing
+        # except below silently dropped EVERY real response — the email
+        # ledger (and the fair_usage meter) recorded nothing but MockTransport
+        # test artifacts since 2026-07-11. Reading the stream here is
+        # idempotent (no-op when the caller already read it).
+        if not response.is_stream_consumed:
+            await response.aread()
+
         try:
             body = response.json()
         except Exception:
@@ -393,18 +557,10 @@ async def _on_response(response: httpx.Response) -> None:
             if isinstance(fair_usage, dict):
                 _upsert_blitz_fair_usage(endpoint, fair_usage)
 
-        emails = _extract_emails(provider, body)
-        if emails:
-            # Compact metadata: top-level keys only, capped length
-            try:
-                meta_str = json.dumps({
-                    k: (str(v)[:80] if not isinstance(v, (dict, list)) else f"<{type(v).__name__}>")
-                    for k, v in (body.items() if isinstance(body, dict) else {"_": body}).items()
-                    if k.lower() not in ("email", "emails")  # already captured
-                })[:500]
-            except Exception:
-                meta_str = "{}"
-            _insert_emails_batch(provider, endpoint, status, emails, meta_str)
+        records = _extract_email_records(provider, body)
+        if records:
+            _bump_quality_counters(provider, endpoint, records)
+            _insert_email_records(provider, endpoint, status, records)
     except Exception:
         # Tracker must never break the underlying HTTP call.
         logger.debug("call_tracker hook swallowed error", exc_info=True)
@@ -461,8 +617,8 @@ def init_schema() -> None:
 
 
 def purge_old(days: int = RETENTION_DAYS) -> dict[str, int]:
-    """Delete rows older than `days` from BOTH tables. Returns counts. Best-effort."""
-    out: dict[str, int] = {"call_log": 0, "email_ledger": 0}
+    """Delete rows older than `days` from ALL tracker tables. Returns counts. Best-effort."""
+    out: dict[str, int] = {"call_log": 0, "email_ledger": 0, "quality_daily": 0}
     try:
         with _connect() as conn:
             cur = conn.execute(
@@ -475,6 +631,11 @@ def purge_old(days: int = RETENTION_DAYS) -> dict[str, int]:
                 (f"-{days} days",),
             )
             out["email_ledger"] = cur.rowcount or 0
+            cur = conn.execute(
+                "DELETE FROM provider_email_quality_daily WHERE day < date('now', ?)",
+                (f"-{days} days",),
+            )
+            out["quality_daily"] = cur.rowcount or 0
         if any(out.values()):
             logger.info(
                 "call_tracker purged %d call_log + %d email_ledger rows older than %d days",

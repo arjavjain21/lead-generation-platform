@@ -263,6 +263,22 @@ def init_db() -> None:
             updated_at        TEXT NOT NULL
         );
 
+        -- Email-quality scoreboard (2026-09-13): per-(day, provider,
+        -- endpoint, email_status) counters from the call_tracker response
+        -- hook. VALID/CATCH_ALL/INVALID from providers reporting per-email
+        -- status; UNKNOWN otherwise. Idempotent — call_tracker also creates
+        -- it lazily as defense in depth.
+        CREATE TABLE IF NOT EXISTS provider_email_quality_daily (
+            day          TEXT    NOT NULL,
+            provider     TEXT    NOT NULL,
+            endpoint     TEXT    NOT NULL,
+            email_status TEXT    NOT NULL,
+            responses    INTEGER NOT NULL DEFAULT 0,
+            emails       INTEGER NOT NULL DEFAULT 0,
+            updated_at   TEXT    NOT NULL,
+            PRIMARY KEY (day, provider, endpoint, email_status)
+        );
+
         -- SEG (Secure Email Gateway) MX classification cache (2026-08-25).
         -- Written by enrichment/seg.py: one row per normalized domain, both
         -- contacts-DB hits (source='contacts_db') and DoH scan results

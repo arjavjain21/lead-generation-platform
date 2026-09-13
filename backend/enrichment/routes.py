@@ -6943,6 +6943,65 @@ async def get_blitz_fair_use(
     }
 
 
+@router.get("/stats/email-quality")
+async def get_email_quality_stats(
+    days: int = Query(30, ge=1, le=90, description="Lookback window in days"),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """
+    Email-quality scoreboard: per-provider distribution of email statuses.
+
+    Providers that report per-email verification (GetLeads VALID /
+    CATCH_ALL / INVALID; SmartProspect verification_status) break out real
+    buckets; everything else lands in UNKNOWN — which for providers without
+    a native status (Blitz, WizLeads, BetterEnrich) is itself the finding:
+    their quality needs an external sample test, not response parsing.
+    """
+    try:
+        conn = db.get_db()
+        rows = conn.execute(
+            """
+            SELECT provider, email_status, SUM(emails) AS emails, SUM(responses) AS responses
+            FROM provider_email_quality_daily
+            WHERE day >= date('now', ?)
+            GROUP BY provider, email_status
+            """,
+            (f"-{days} days",),
+        ).fetchall()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to read email-quality stats: {exc}")
+
+    providers: dict[str, dict] = {}
+    for row in rows:
+        entry = providers.setdefault(
+            row["provider"],
+            {"emails": 0, "responses": 0, "status_breakdown": {}},
+        )
+        entry["emails"] += row["emails"] or 0
+        entry["responses"] += row["responses"] or 0
+        entry["status_breakdown"][row["email_status"]] = {
+            "emails": row["emails"] or 0,
+            "responses": row["responses"] or 0,
+        }
+
+    for entry in providers.values():
+        total = entry["emails"] or 0
+        for bucket in entry["status_breakdown"].values():
+            bucket["pct"] = round(100.0 * bucket["emails"] / total, 1) if total else 0.0
+
+    return {
+        "days": days,
+        "providers": providers,
+        "notes": {
+            "VALID": "verified safe-to-send by the provider",
+            "CATCH_ALL": "domain accepts all mail — deliverability risk",
+            "INVALID": "provider reports the address as dead",
+            "UNKNOWN": "provider does not report per-email status (or status "
+                       "absent) — needs an external sample test to grade",
+        },
+    }
+
+
 @router.get("/stats/sources")
 async def get_source_stats(
     start_date: Optional[str] = Query(None, description="Start date (ISO format)"),

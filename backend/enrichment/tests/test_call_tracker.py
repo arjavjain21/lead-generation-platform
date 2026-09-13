@@ -241,14 +241,14 @@ def test_purge_old_deletes_only_old_rows(installed: None) -> None:
             "VALUES (?, 'blitz', '/fresh', 'POST', 200)", (fresh_ts,)
         )
     deleted = call_tracker.purge_old(days=30)
-    assert deleted == {"call_log": 1, "email_ledger": 0}
+    assert deleted == {"call_log": 1, "email_ledger": 0, "quality_daily": 0}
     with sqlite3.connect(call_tracker.DB_PATH) as conn:
         remaining = conn.execute("SELECT endpoint FROM provider_call_log").fetchall()
     assert remaining == [("/fresh",)]
 
 
 def test_purge_old_returns_zero_when_nothing_to_delete(installed: None) -> None:
-    assert call_tracker.purge_old(days=30) == {"call_log": 0, "email_ledger": 0}
+    assert call_tracker.purge_old(days=30) == {"call_log": 0, "email_ledger": 0, "quality_daily": 0}
 
 
 # ---------------------------------------------------------------------------

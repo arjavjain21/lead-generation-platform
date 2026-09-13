@@ -55,7 +55,7 @@ DB changes (`everything-claude-code:database-reviewer`), security (`everything-c
 │   │   ├── providers.py         # ENABLED_PROVIDERS — single source of truth for provider on/off
 │   │   ├── contacts_writer.py   # Contacts DB write-back (single entry point; USE_CONTACTS_WRITER_V2)
 │   │   ├── response_normalizer.py / raw_contact_collector.py  # provider→canonical contact + collector
-│   │   ├── call_tracker.py      # provider_call_log + provider_email_ledger observability
+│   │   ├── call_tracker.py      # provider_call_log + email ledger + email-quality counters + blitz FUP meter observability
 │   │   ├── blitz_client.py      # Blitz API wrapper (50 RPS/endpoint legacy plan; per-lane caps BLITZ_RPS[,_EMAIL,_DISCOVERY,_SEARCH])
 │   │   ├── smartprospect_client.py  # SmartLead Find Emails (shared 1900 RPM limiter, batch ≤10)
 │   │   ├── contacts_client.py   # Contacts DB wrapper (75 RPS) + business upsert
