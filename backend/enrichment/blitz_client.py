@@ -6,6 +6,7 @@ import os
 import random
 import time
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import httpx
 
@@ -28,35 +29,72 @@ _MAX_RETRIES = 3
 _BASE_BACKOFF = 2.0   # seconds before first retry
 _MAX_BACKOFF = 60.0   # cap so we never wait more than a minute per attempt
 
-# Rate limiting: Blitz legacy plan (2026-09) = 50 RPS per endpoint + 15M records/month
-# fair-use. Cap is env-driven for safe tuning: BLITZ_RPS (default 40 — a deliberate
-# safety margin under the 50 plan limit, since this limiter is per-process and the
-# account runs multiple gunicorn workers + the scraper runner).
-_RATE_LIMIT_RPS = float(os.getenv("BLITZ_RPS", "40"))
-_MIN_REQUEST_INTERVAL = 1.0 / _RATE_LIMIT_RPS  # seconds between requests
+# Rate limiting: Blitz legacy plan (2026-09) = 50 RPS PER ENDPOINT (separate
+# buckets) + 15M records/month fair-use. The client therefore paces each
+# endpoint LANE independently — /email, discovery (/domain-to-linkedin,
+# /linkedin-to-domain, /company) and /v2/search/* no longer serialize behind
+# one another. Caps are env-driven for safe tuning: BLITZ_RPS is the default
+# for every lane (deliberate safety margin under the 50 plan limit, since
+# these limiters are per-process and the account runs multiple gunicorn
+# workers + the scraper runner); per-lane overrides BLITZ_RPS_EMAIL /
+# BLITZ_RPS_DISCOVERY / BLITZ_RPS_SEARCH win when set.
+_RATE_LIMIT_RPS = 40.0  # default cap when BLITZ_RPS is unset
 
-# Rate limiter state (thread-safe for async via asyncio.Lock)
-_rate_limiter_lock = asyncio.Lock()
-_last_request_time: float = 0.0
+_LANE_NAMES = ("email", "discovery", "search", "default")
+
+
+def _lane_rps(lane: str) -> float:
+    """Lane RPS: per-lane env override > global BLITZ_RPS > 40 default."""
+    override = os.getenv(f"BLITZ_RPS_{lane.upper()}", "")
+    if not override:
+        override = os.getenv("BLITZ_RPS", "")
+    if override:
+        try:
+            return float(override)
+        except ValueError:
+            pass
+    return _RATE_LIMIT_RPS
+
+
+def _lane_for_url(url: str) -> str:
+    """Map a Blitz URL to its rate-limit lane (plan buckets are per-endpoint)."""
+    path = urlparse(url).path
+    if path.startswith("/v2/enrichment/email"):
+        return "email"
+    if path.startswith(
+        ("/v2/enrichment/domain-to-linkedin", "/v2/enrichment/linkedin-to-domain", "/v2/enrichment/company")
+    ):
+        return "discovery"
+    if path.startswith("/v2/search/"):
+        return "search"
+    return "default"
+
+
+# Rate limiter state per lane (thread-safe for async via per-lane asyncio.Lock)
+_lane_locks: dict[str, asyncio.Lock] = {name: asyncio.Lock() for name in _LANE_NAMES}
+_lane_last_request: dict[str, float] = {name: 0.0 for name in _LANE_NAMES}
 
 # Cache for domain→LinkedIn lookups (1 hour TTL)
 _domain_linkedin_cache: dict[str, tuple[str, float]] = {}  # domain -> (result_json, timestamp)
 _DOMAIN_CACHE_TTL = 3600  # 1 hour in seconds
 
 
-async def _acquire_rate_limit() -> None:
-    """Ensure we don't exceed the rate limit by sleeping if needed."""
-    global _last_request_time
+async def _acquire_rate_limit(lane: str = "default") -> None:
+    """Ensure we don't exceed the lane's rate limit by sleeping if needed.
 
-    async with _rate_limiter_lock:
+    Lanes pace independently (plan buckets are per-endpoint), so traffic on
+    /domain-to-linkedin never waits behind /email's interval.
+    """
+    interval = 1.0 / _lane_rps(lane)
+    async with _lane_locks[lane]:
         now = time.monotonic()
-        time_since_last = now - _last_request_time
+        time_since_last = now - _lane_last_request[lane]
 
-        if time_since_last < _MIN_REQUEST_INTERVAL:
-            wait_time = _MIN_REQUEST_INTERVAL - time_since_last
+        if time_since_last < interval:
+            wait_time = interval - time_since_last
             await asyncio.sleep(wait_time)
 
-        _last_request_time = time.monotonic()
+        _lane_last_request[lane] = time.monotonic()
 
 
 def _get_api_key() -> str:
@@ -99,8 +137,8 @@ async def _post_with_retry(
 
     last_exc: Optional[Exception] = None
     for attempt in range(_MAX_RETRIES + 1):
-        # Acquire rate limit before each attempt (including retries)
-        await _acquire_rate_limit()
+        # Acquire the endpoint's rate lane before each attempt (incl. retries)
+        await _acquire_rate_limit(_lane_for_url(url))
 
         try:
             resp = await client.post(url, headers=_headers(), json=payload, timeout=timeout)

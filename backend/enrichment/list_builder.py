@@ -549,24 +549,28 @@ async def _resolve_person_email(
                     verified = "yes" if vs == "Valid" else "unknown"
                     logger.debug("GetLeads (batch pre-pass) found email for %s: %s", search_name, pre_email)
                     return pre_email, "", SOURCE_GETLEADS, verified, "", "", _getleads_dm_snapshot(pre_resolved_getleads)
-                # Batch tried but no email — fall through to the single call.
-            if record_provider_use:
-                record_provider_use("getleads")
-            try:
-                result = await getleads_client.find_email(
-                    blitz_http,
-                    first_name=first_name,
-                    last_name=last_name,
-                    company_domain=domain,
-                )
-                if result and result.get("email"):
-                    email = result["email"]
-                    vs = result.get("verification_status")
-                    verified = "yes" if vs == "Valid" else "unknown"
-                    logger.debug("GetLeads found email for %s: %s (verification_status: %s)", search_name, email, vs)
-                    return email, "", SOURCE_GETLEADS, verified, "", "", _getleads_dm_snapshot(result)
-            except Exception as e:
-                logger.debug("GetLeads lookup failed: %s", e)
+                # Batch already asked GetLeads for this person and missed —
+                # skip the single call (strictly 1 GetLeads call per person).
+                if record_provider_use:
+                    record_provider_use("getleads")
+            else:
+                if record_provider_use:
+                    record_provider_use("getleads")
+                try:
+                    result = await getleads_client.find_email(
+                        blitz_http,
+                        first_name=first_name,
+                        last_name=last_name,
+                        company_domain=domain,
+                    )
+                    if result and result.get("email"):
+                        email = result["email"]
+                        vs = result.get("verification_status")
+                        verified = "yes" if vs == "Valid" else "unknown"
+                        logger.debug("GetLeads found email for %s: %s (verification_status: %s)", search_name, email, vs)
+                        return email, "", SOURCE_GETLEADS, verified, "", "", _getleads_dm_snapshot(result)
+                except Exception as e:
+                    logger.debug("GetLeads lookup failed: %s", e)
 
     # Strategy 6: SmartProspect by first + last + domain (self-verifying, 30 RPS, batch-capable)
     # Inserted between GetLeads and WizLeads. Gates on first_name + last_name +
@@ -924,6 +928,11 @@ async def _enrich_single_domain(
                     if isinstance(result, dict) and result.get("email"):
                         # Duplicate names: last-wins (same person → same email).
                         pre_resolved_gl_by_person[(first.lower(), last.lower())] = result
+                    elif isinstance(result, dict):
+                        # Known miss — store the empty-email marker so
+                        # _resolve_person_email Strategy 5 skips the single
+                        # call (strictly 1 GetLeads call per person).
+                        pre_resolved_gl_by_person[(first.lower(), last.lower())] = {"email": ""}
                 logger.info(
                     "GetLeads batch pre-pass for %s: %d/%d pre-resolved",
                     domain, len(pre_resolved_gl_by_person), len(gl_batch_candidates),

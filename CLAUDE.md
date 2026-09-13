@@ -56,8 +56,8 @@ DB changes (`everything-claude-code:database-reviewer`), security (`everything-c
 │   │   ├── contacts_writer.py   # Contacts DB write-back (single entry point; USE_CONTACTS_WRITER_V2)
 │   │   ├── response_normalizer.py / raw_contact_collector.py  # provider→canonical contact + collector
 │   │   ├── call_tracker.py      # provider_call_log + provider_email_ledger observability
-│   │   ├── blitz_client.py      # Blitz API wrapper (50 RPS/endpoint legacy plan; client cap BLITZ_RPS=40)
-│   │   ├── smartprospect_client.py  # SmartLead Find Emails (30 RPS, batch ≤10)
+│   │   ├── blitz_client.py      # Blitz API wrapper (50 RPS/endpoint legacy plan; per-lane caps BLITZ_RPS[,_EMAIL,_DISCOVERY,_SEARCH])
+│   │   ├── smartprospect_client.py  # SmartLead Find Emails (shared 1900 RPM limiter, batch ≤10)
 │   │   ├── contacts_client.py   # Contacts DB wrapper (75 RPS) + business upsert
 │   │   ├── wizleads_client.py   # WizLeads (10 RPS)
 │   │   ├── better_enrich_client.py  # BetterEnrich (10/5 RPS)
@@ -144,9 +144,9 @@ Each enrichment source has different cost/quality tradeoffs:
 | API | Rate Limit | Priority | Purpose |
 |-----|------------|----------|---------|
 | **Contacts DB** | 75 RPS | 1st (free) | Domain → company → contacts with emails |
-| **Blitz** | 50 RPS per endpoint (legacy plan 2026-09; client cap 40 via `BLITZ_RPS`; FUP 15M records/mo) | 2nd | LinkedIn-based enrichment with title cascade |
+| **Blitz** | 50 RPS per endpoint (legacy plan 2026-09; per-lane caps `BLITZ_RPS` default + `BLITZ_RPS_EMAIL/_DISCOVERY/_SEARCH`; FUP 15M records/mo, metered live in `blitz_fair_use`) | 2nd | LinkedIn-based enrichment with title cascade |
 | **GetLeads** | batch 100 (~10k/min) | 3rd | Verified DM emails + bonus phones (batch of 100, unlimited plan); also the from-linkedin fallback in the LinkedIn-only arm (after Blitz) |
-| **smartprospect** | 30 RPS | 4th | Person-email finder, batch up to 10, self-verifying |
+| **smartprospect** | shared cross-process 1900 RPM (`SMARTPROSPECT_RATE_LIMIT_RPM`, acct 2000/min) | 4th | Person-email finder, batch up to 10, self-verifying |
 | **WizLeads** | 10 RPS | 5th | Catch-all verified email enrichment |
 | **BetterEnrich** | 10 RPS | 6th | Person email, company email |
 

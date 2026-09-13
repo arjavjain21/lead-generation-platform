@@ -1158,8 +1158,10 @@ async def _run_route_step(
             # Phase 3 (batch coverage): reuse a pre-resolved batch result
             # instead of re-calling the single endpoint. Mirrors the
             # _resolve_email_for_person Step 5 pre-resolved pattern
-            # (~pipeline.py:2363). An empty pre-resolved email falls through
-            # to the normal single-call path below.
+            # (~pipeline.py:2363). A HIT short-circuits; a stored MISS (empty
+            # email) means the batch already asked GetLeads for this person —
+            # return not-found WITHOUT re-calling the single endpoint
+            # (strictly 1 GetLeads call per person).
             if pre_resolved_getleads is not None:
                 pre_email = pre_resolved_getleads.get("email", "")
                 if pre_email:
@@ -1172,6 +1174,8 @@ async def _run_route_step(
                     verification["getleads_dm"] = _getleads_dm_snapshot(pre_resolved_getleads)
                     logger.info("GetLeads (route batch pre-pass) found email: %s", pre_email)
                     return {"email": pre_email, "source": SOURCE_GETLEADS, "verification": verification}
+                _record("getleads")
+                return {"email": "", "source": SOURCE_NOT_FOUND}
             _record("getleads")
             try:
                 result = await getleads_client.find_email(
@@ -3232,6 +3236,12 @@ async def _enrich_domain(
                 if email:
                     pre_resolved_getleads_by_index[idx] = result
                     getleads_batch_found += 1
+                else:
+                    # Known miss — store it so per-row Step 5 does NOT re-fire
+                    # a single find_email for this person (strictly 1 GetLeads
+                    # call per person per domain). An empty-email dict is the
+                    # miss marker the Step 5 pre-resolved check understands.
+                    pre_resolved_getleads_by_index[idx] = {"email": ""}
                     # Phase 5 capture: write the batch-resolved email to the
                     # collector so it drains to Contacts DB at job end. Same
                     # shape as the per-row getleads capture. No-ops when

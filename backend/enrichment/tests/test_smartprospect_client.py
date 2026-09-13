@@ -115,8 +115,12 @@ def _reset_module_state(monkeypatch: pytest.MonkeyPatch) -> None:
     cb._last_failure_time = 0.0
     cb._half_open_calls = 0
 
-    # Reset rate limiter.
-    monkeypatch.setattr(sp, "_last_request_time", 0.0, raising=True)
+    # Rate limiter: the shared cross-process token bucket is stubbed to grant
+    # instantly (dedicated limiter tests live in
+    # test_smartprospect_rate_limit_loop.py).
+    monkeypatch.setattr(
+        sp.rate_limiter, "acquire_token", lambda *args, **kwargs: 0.0, raising=True
+    )
 
     # Make asyncio.sleep instant across the board (retries, rate limiter).
     async def _no_sleep(_delay: float) -> None:
@@ -804,23 +808,32 @@ class TestRateLimiting:
 
         monkeypatch.setattr(sp.asyncio, "sleep", _counting_sleep, raising=True)
 
+        # Shared-bucket denial: deny exactly the 6th acquire with a wait, then
+        # grant again. The client must sleep the wait and re-acquire.
+        grants = {"n": 0}
+
+        def fake_acquire(provider, refill_per_sec, capacity=None):
+            grants["n"] += 1
+            return 0.123 if grants["n"] == 6 else 0.0
+
+        monkeypatch.setattr(sp.rate_limiter, "acquire_token", fake_acquire, raising=True)
+
         def handler(req: httpx.Request) -> httpx.Response:
             return httpx.Response(200, content=_found_response([_contact()]))
 
         async def go() -> Any:
             client = _make_client(handler)
             try:
-                for _ in range(5):
+                for _ in range(6):
                     await sp.find_email(client, "John", "Doe", "example.com")
             finally:
                 await client.aclose()
 
         asyncio.run(go())
-        # At 30 RPS the limiter sleeps when elapsed < ~33ms. Over 5 sequential
-        # calls at least one sleep should fire (the first call sees
-        # _last_request_time == 0.0 so it won't sleep, subsequent ones likely
-        # will). Assert at least one positive sleep was requested.
+        # The 6th (denied) acquire must produce a positive sleep — the loop
+        # re-acquires after sleeping, so the call still completes.
         assert any(d > 0 for d in sleep_calls), f"expected at least one rate-limit sleep, got {sleep_calls}"
+        assert 0.123 in sleep_calls
 
 
 # ---------------------------------------------------------------------------

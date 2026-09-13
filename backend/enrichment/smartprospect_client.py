@@ -59,8 +59,11 @@ BASE_URL = os.getenv(
 )
 API_KEY = os.getenv("SMARTPROSPECT_API_KEY", "")
 
-# Account limit is 2000 req/min (~33 RPS). Use 30 RPS for headroom.
-RATE_LIMIT_RPS = 30
+# Account limit is 2000 req/min. The shared cross-process limiter enforces
+# one GLOBAL bucket across all gunicorn workers (env-tunable; 5% margin).
+_RATE_LIMIT_RPM = float(os.getenv("SMARTPROSPECT_RATE_LIMIT_RPM", "1900"))
+_REFILL_PER_SEC = _RATE_LIMIT_RPM / 60.0
+_CAPACITY = float(os.getenv("SMARTPROSPECT_RATE_LIMIT_BURST", str(_REFILL_PER_SEC)))
 
 # Endpoint path for the Find Emails API (key passed as query param, not here).
 _FIND_EMAILS_PATH = "/api/v1/search-email-leads/search-contacts/find-emails"
@@ -86,23 +89,30 @@ _smartprospect_circuit = get_circuit_breaker(
 )
 
 # ---------------------------------------------------------------------------
-# Rate limiter (token-interval style — mirrors wizleads_client / blitz_client).
+# Rate limiter (shared cross-process token bucket — see shared/rate_limiter.py).
 # ---------------------------------------------------------------------------
 
-_rate_limiter_lock = asyncio.Lock()
-_last_request_time: float = 0.0
-_MIN_REQUEST_INTERVAL = 1.0 / RATE_LIMIT_RPS
+from shared import rate_limiter  # noqa: E402  (import kept local to the section)
 
 
 async def _acquire_rate_limit() -> None:
-    """Ensure we don't exceed the 30 RPS rate limit."""
-    global _last_request_time
-    async with _rate_limiter_lock:
-        now = time.monotonic()
-        elapsed = now - _last_request_time
-        if elapsed < _MIN_REQUEST_INTERVAL:
-            await asyncio.sleep(_MIN_REQUEST_INTERVAL - elapsed)
-        _last_request_time = time.monotonic()
+    """Ensure we don't exceed the shared cross-process RPM rate limit.
+
+    Loops until a token is actually GRANTED. A single sleep-and-proceed is not
+    sufficient: concurrent denials compute similar waits and would all proceed
+    together after sleeping, admitting N calls per ~1 refilled token and
+    bursting past the account limit (the same over-admission bug observed on
+    GetLeads 2026-08-14; on SmartProspect it manifested as a 22% 429 rate
+    under multi-worker load). Only a grant consumes a token, so re-acquiring
+    after each sleep bounds the true global HTTP rate to refill_per_sec.
+    """
+    while True:
+        wait = await asyncio.to_thread(
+            rate_limiter.acquire_token, "smartprospect", _REFILL_PER_SEC, _CAPACITY
+        )
+        if wait <= 0:
+            return
+        await asyncio.sleep(wait)
 
 
 # ---------------------------------------------------------------------------

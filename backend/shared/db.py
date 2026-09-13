@@ -239,6 +239,30 @@ def init_db() -> None:
             refill_per_sec REAL NOT NULL
         );
 
+        -- Blitz fair-usage meter (2026-09-13). Every 2xx Blitz response
+        -- carries a top-level fair_usage object (records_used per response,
+        -- records_remaining against the 15M records/month plan cap,
+        -- next_reset_at). call_tracker captures it: single-row snapshot of
+        -- the latest gauge + one rollup row per UTC day for burn-rate trend.
+        -- Idempotent — call_tracker also creates these lazily as defense in
+        -- depth.
+        CREATE TABLE IF NOT EXISTS blitz_fair_use (
+            id                INTEGER PRIMARY KEY CHECK (id = 1),
+            endpoint          TEXT    NOT NULL,
+            records_used      REAL,
+            records_remaining REAL,
+            next_reset_at     TEXT,
+            rate_limit        TEXT,
+            request_id        TEXT,
+            updated_at        TEXT    NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS blitz_fair_use_daily (
+            day               TEXT PRIMARY KEY,
+            records_remaining REAL,
+            next_reset_at     TEXT,
+            updated_at        TEXT NOT NULL
+        );
+
         -- SEG (Secure Email Gateway) MX classification cache (2026-08-25).
         -- Written by enrichment/seg.py: one row per normalized domain, both
         -- contacts-DB hits (source='contacts_db') and DoH scan results

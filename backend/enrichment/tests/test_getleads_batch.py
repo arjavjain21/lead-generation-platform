@@ -321,16 +321,20 @@ class TestRunEnrichmentRoutePreResolved:
         assert gl_dm.get("title") == "CEO", "Phase-2 DM snapshot must ride the verification dict"
         assert gl_dm.get("city") == "Austin"
 
-    def test_pre_resolved_getleads_empty_falls_through_to_single(self):
-        """An empty pre-resolved email must fall through to the normal
-        single-call path (the step is NOT skipped)."""
+    def test_pre_resolved_getleads_miss_skips_single(self):
+        """A stored batch miss (empty-email pre-resolved result) must NOT
+        re-fire the single endpoint — the batch already asked GetLeads for
+        this person (strictly 1 GetLeads call per person). The getleads step
+        returns not-found and the route continues to SmartProspect."""
         single_calls = {"n": 0}
 
         async def fake_single(*a, **kw):
             single_calls["n"] += 1
             return _gl_result(email="single.jane@acme.com")
 
-        with self._patch_upstream(), patch.object(gl, "find_email", fake_single):
+        with self._patch_upstream(), \
+                patch.object(gl, "find_email", fake_single), \
+                patch.object(sp, "find_email", AsyncMock(return_value={})):
             result = _run(pipeline_mod.run_enrichment_route(
                 self._route(),
                 AsyncMock(), AsyncMock(),
@@ -342,9 +346,9 @@ class TestRunEnrichmentRoutePreResolved:
                 pre_resolved_getleads=_gl_result(email=""),
             ))
 
-        assert single_calls["n"] == 1, "empty pre-resolved must fall through to one single call"
-        assert result["email"] == "single.jane@acme.com"
-        assert result["source"] == pipeline_mod.SOURCE_GETLEADS
+        assert single_calls["n"] == 0, "stored miss must NOT re-call find_email"
+        assert result["email"] == "", "getleads miss + smartprospect miss -> no email"
+
 
     def test_pre_resolved_smartprospect_hit_no_single_call(self):
         """Mirror of the getleads test for the smartprospect kwarg."""
@@ -497,6 +501,37 @@ class TestDomainOnlyLoopBatch:
         emails = [c["email"] for c in response["contacts"]]
         assert emails == [f"first{i}.last{i}@acme.com" for i in range(5)], emails
         assert all(c["email_source"] == "getleads_email" for c in response["contacts"])
+
+    def test_batch_misses_still_zero_singles(self):
+        """All-miss batch: the pre-pass stores the misses, so NO single calls
+        refire (strictly 1 GetLeads call per person) and the contacts end
+        without getleads emails."""
+        counters, patches = self._patch_routes_stack(_dm_contacts(3))
+
+        async def fake_batch_miss(http, payload):
+            counters["batch"] += 1
+            return [_gl_result(email="", first=c["firstName"], last=c["lastName"])
+                    for c in payload]
+
+        patches.append(patch.object(gl, "find_emails_batch", fake_batch_miss))
+        patches.append(patch.object(sp, "find_email", AsyncMock(return_value={})))
+        for p in patches:
+            p.start()
+        try:
+            req = routes_mod.UnifiedEnrichRequest(domain="acme.com", max_results=3)
+            response = _run(routes_mod._unified_enrich_logic(
+                req, {"email": "t@e.com", "user_id": 1, "id": 1}, debug=False
+            ))
+        finally:
+            # Reverse order — two patches stack on gl.find_emails_batch, and
+            # patch.stop() must unwind in the opposite order of start() or the
+            # second stop re-installs the first patch's fake.
+            for p in reversed(patches):
+                p.stop()
+
+        assert counters["batch"] == 1
+        assert counters["single"] == 0, "stored misses must NOT re-fire singles"
+        assert all(not c["email"] for c in response["contacts"])
 
     def test_batch_failure_falls_back_to_singles(self):
         counters, patches = self._patch_routes_stack(_dm_contacts(2))
@@ -676,7 +711,10 @@ class TestListBuilderBatch:
         assert verified == "yes"
         assert gl_dm.get("title") == "CEO"
 
-    def test_resolve_person_email_empty_pre_resolved_falls_through(self, monkeypatch):
+    def test_resolve_person_email_miss_pre_resolved_skips_single(self, monkeypatch):
+        """A stored batch miss must skip the single call entirely — the batch
+        already asked GetLeads (strictly 1 call/person). Cascade continues to
+        SmartProspect (mocked miss) and ends not-found."""
         monkeypatch.setattr(cc, "person_by_name_and_domain", AsyncMock(return_value=None))
         monkeypatch.setattr(cc, "extract_email_from_contacts_response", MagicMock(return_value=""))
         monkeypatch.setattr(bc, "person_enrich",
@@ -689,6 +727,7 @@ class TestListBuilderBatch:
             return _gl_result(email="single.jane@acme.com", job_title="CTO")
 
         monkeypatch.setattr(gl, "find_email", fake_single)
+        monkeypatch.setattr(sp, "find_email", AsyncMock(return_value={}))
 
         result = _run(lb._resolve_person_email(
             MagicMock(),
@@ -701,10 +740,9 @@ class TestListBuilderBatch:
         ))
 
         email, _, source, _, _, _, gl_dm = result
-        assert single_calls["n"] == 1, "empty pre-resolved must fall through to the single call"
-        assert email == "single.jane@acme.com"
-        assert source == lb.SOURCE_GETLEADS
-        assert gl_dm.get("title") == "CTO", "single-call path must also carry the DM snapshot"
+        assert single_calls["n"] == 0, "stored miss must NOT re-call find_email"
+        assert email == ""
+        assert gl_dm in ({}, None)
 
     def test_batch_failure_falls_back_to_singles(self, monkeypatch):
         monkeypatch.setattr(cc, "company_by_domain",

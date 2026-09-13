@@ -3448,6 +3448,11 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                 for (first, last), result in zip(dm_batch_candidates, dm_batch_results):
                     if isinstance(result, dict) and result.get("email"):
                         pre_resolved_by_contact[(first.lower(), last.lower())] = result
+                    elif isinstance(result, dict):
+                        # Known miss — store the empty-email marker so the
+                        # per-DM loop skips the single call (strictly 1
+                        # GetLeads call per person per request).
+                        pre_resolved_by_contact[(first.lower(), last.lower())] = {"email": ""}
                 if dm_batch_results:
                     logger.info(
                         "GetLeads domain_only pre-pass for %s: %d/%d pre-resolved",
@@ -3468,14 +3473,15 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
             person_first_name = contact.get("first_name", "")
             person_last_name = contact.get("last_name", "")
 
-            # Per-DM GetLeads batch result (None → normal single-call cascade).
+            # Per-DM GetLeads batch result (None → normal single-call cascade;
+            # an empty-email dict → stored batch miss, single call skipped).
             _dm_pre_gl = None
             if pre_resolved_by_contact:
                 _dm_key_first = (person_first_name or "").strip() or (
-                    person_name.split(" ")[0] if person_name else ""
+                    person_name.split(" ")[0].strip() if person_name else ""
                 )
                 _dm_key_last = (person_last_name or "").strip() or (
-                    " ".join(person_name.split(" ")[1:]) if " " in person_name else ""
+                    " ".join(person_name.split(" ")[1:]).strip() if " " in person_name else ""
                 )
                 _dm_pre_gl = pre_resolved_by_contact.get(
                     (_dm_key_first.lower(), _dm_key_last.lower())
@@ -6885,6 +6891,57 @@ async def get_search_options(_current_user: dict = Depends(auth.get_current_user
 
 
 # --- Source Statistics Endpoint ---
+
+@router.get("/blitz/fair-use")
+async def get_blitz_fair_use(
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """
+    Latest Blitz fair-usage snapshot — the 15M records/month FUP gauge.
+
+    Captured passively by the call tracker from every 2xx Blitz response
+    (top-level ``fair_usage`` object). Returns the current snapshot plus the
+    per-UTC-day history so burn rate is visible before the cap bites.
+    """
+    try:
+        conn = db.get_db()
+        snapshot = conn.execute(
+            """
+            SELECT endpoint, records_used, records_remaining, next_reset_at,
+                   rate_limit, request_id, updated_at
+            FROM blitz_fair_use WHERE id = 1
+            """
+        ).fetchone()
+        history = conn.execute(
+            """
+            SELECT day, records_remaining, next_reset_at, updated_at
+            FROM blitz_fair_use_daily ORDER BY day DESC LIMIT 31
+            """
+        ).fetchall()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to read Blitz fair-use meter: {exc}")
+
+    if snapshot is None:
+        return {"enabled": False, "snapshot": None, "history": []}
+
+    return {
+        "enabled": True,
+        "snapshot": {
+            "endpoint": snapshot["endpoint"],
+            "records_used": snapshot["records_used"],
+            "records_remaining": snapshot["records_remaining"],
+            "next_reset_at": snapshot["next_reset_at"],
+            "updated_at": snapshot["updated_at"],
+        },
+        "history": [
+            {
+                "day": row["day"],
+                "records_remaining": row["records_remaining"],
+            }
+            for row in history
+        ],
+    }
+
 
 @router.get("/stats/sources")
 async def get_source_stats(

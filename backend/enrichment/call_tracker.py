@@ -122,6 +122,27 @@ CREATE INDEX IF NOT EXISTS idx_pel_provider_email
     ON provider_email_ledger(provider, email);
 CREATE INDEX IF NOT EXISTS idx_pel_provider_endpoint_ts
     ON provider_email_ledger(provider, endpoint, ts);
+
+-- Blitz fair-usage meter: every 2xx Blitz response carries a top-level
+-- `fair_usage` object (records_used per response, records_remaining against
+-- the 15M records/month plan cap, next_reset_at). Single-row snapshot of the
+-- latest gauge + one rollup row per UTC day for burn-rate trending.
+CREATE TABLE IF NOT EXISTS blitz_fair_use (
+    id                INTEGER PRIMARY KEY CHECK (id = 1),
+    endpoint          TEXT    NOT NULL,
+    records_used      REAL,
+    records_remaining REAL,
+    next_reset_at     TEXT,
+    rate_limit        TEXT,
+    request_id        TEXT,
+    updated_at        TEXT    NOT NULL
+);
+CREATE TABLE IF NOT EXISTS blitz_fair_use_daily (
+    day               TEXT PRIMARY KEY,
+    records_remaining REAL,
+    next_reset_at     TEXT,
+    updated_at        TEXT NOT NULL
+);
 """
 
 # ---------------------------------------------------------------------------
@@ -134,6 +155,10 @@ CREATE INDEX IF NOT EXISTS idx_pel_provider_endpoint_ts
 _ORIGINAL_ASYNC_INIT: Any = httpx.AsyncClient.__init__
 
 _installed: bool = False
+
+# UTC day (YYYY-MM-DD) of the last blitz_fair_use_daily rollup write — gates
+# the daily row to one write per day instead of one per response.
+_last_fair_use_daily_day: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +176,56 @@ def _connect() -> sqlite3.Connection:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+
+
+def _upsert_blitz_fair_usage(endpoint: str, fair_usage: dict) -> None:
+    """Best-effort snapshot of Blitz's fair_usage FUP gauge. Never raises."""
+    global _last_fair_use_daily_day
+    try:
+        now = _now_iso()
+        rate_limit = fair_usage.get("rate_limit")
+        with _connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO blitz_fair_use
+                    (id, endpoint, records_used, records_remaining, next_reset_at,
+                     rate_limit, request_id, updated_at)
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    endpoint = excluded.endpoint,
+                    records_used = excluded.records_used,
+                    records_remaining = excluded.records_remaining,
+                    next_reset_at = excluded.next_reset_at,
+                    rate_limit = excluded.rate_limit,
+                    request_id = excluded.request_id,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    endpoint,
+                    fair_usage.get("records_used"),
+                    fair_usage.get("records_remaining"),
+                    fair_usage.get("next_reset_at"),
+                    json.dumps(rate_limit) if rate_limit is not None else None,
+                    fair_usage.get("request_id"),
+                    now,
+                ),
+            )
+            today = now[:10]
+            if _last_fair_use_daily_day != today:
+                conn.execute(
+                    """
+                    INSERT INTO blitz_fair_use_daily (day, records_remaining, next_reset_at, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(day) DO UPDATE SET
+                        records_remaining = excluded.records_remaining,
+                        next_reset_at = excluded.next_reset_at,
+                        updated_at = excluded.updated_at
+                    """,
+                    (today, fair_usage.get("records_remaining"), fair_usage.get("next_reset_at"), now),
+                )
+                _last_fair_use_daily_day = today
+    except sqlite3.Error:
+        logger.debug("blitz fair_usage upsert failed", exc_info=True)
 
 
 def _insert_call_log(
@@ -310,6 +385,13 @@ async def _on_response(response: httpx.Response) -> None:
         except Exception:
             # Body isn't JSON — nothing to extract
             return
+
+        # Blitz FUP meter: capture the plan's fair_usage gauge (single-row
+        # snapshot + daily rollup). Best-effort, never breaks the call.
+        if provider == "blitz" and isinstance(body, dict):
+            fair_usage = body.get("fair_usage")
+            if isinstance(fair_usage, dict):
+                _upsert_blitz_fair_usage(endpoint, fair_usage)
 
         emails = _extract_emails(provider, body)
         if emails:
