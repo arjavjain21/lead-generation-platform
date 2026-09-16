@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import inspect
 import io
 import json
 import logging
@@ -426,6 +427,26 @@ _job_signals: dict[str, asyncio.Event] = {}
 _cancelled_jobs: set[str] = set()
 # Per-job dedupe_by_domain flag (memoized) — gates domain-checkpoint WRITES
 _JOB_DEDUPE_CACHE: dict[str, bool] = {}
+
+
+def _forward_compat_kwargs(fn, **wanted) -> dict[str, Any]:
+    """Return only the kwargs the installed ``fn`` signature accepts.
+
+    Bridges the staged rollout of ``exact_titles`` / ``include_phone`` /
+    ``phone_for_all``: routes.py threads these request fields into the
+    pipeline / list_builder entry points, whose signatures gain the
+    same-named keyword params in a parallel change. Filtering here keeps
+    both trees working — pre-merge the extras are dropped (callee defaults
+    preserve behavior), post-merge they pass straight through. Remove this
+    helper once the callee params are on master.
+    """
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return {}
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return dict(wanted)
+    return {key: value for key, value in wanted.items() if key in params}
 
 
 # ---------------------------------------------------------------------------
@@ -1987,6 +2008,16 @@ class UnifiedEnrichRequest(BaseModel):
             allowed provider. contacts_db is always allowed (mandatory first
             step) even if not explicitly listed. Mutually exclusive with
             force_provider. If None, all enabled providers are used.
+        exact_titles: When True, title tokens are sent to providers as
+            bracket-wrapped exact matches ([CEO]) instead of fuzzy
+            substrings. Default False keeps the historical fuzzy behavior.
+        include_phone: Attach phone numbers to the returned contacts when
+            the winning provider already returns them (no extra paid
+            phone lookups). Default False omits phones.
+        phone_for_all: Attach phones to ALL returned contacts, not just the
+            winning one — may trigger extra phone lookups. Default False.
+            Requires include_phone semantics (ignored when include_phone
+            is False).
     """
     domain: Optional[str] = None
     full_name: Optional[str] = None
@@ -2018,6 +2049,15 @@ class UnifiedEnrichRequest(BaseModel):
     # contacts tagged with that source only. ``None`` → all sources (today's
     # behavior — no regression). NOT a cascade provider.
     source: Optional[str] = None
+    # Exact-title mode (2026-09): bracket-wrapped ([CEO]) provider title
+    # matching instead of fuzzy substrings. Default False = fuzzy (unchanged).
+    exact_titles: bool = False
+    # Phone bundle (2026-09): attach provider-returned phones to contacts.
+    # Default False keeps responses phone-free (unchanged).
+    include_phone: bool = False
+    # Phone for ALL contacts (not just the winning one); may trigger extra
+    # paid phone lookups. Default False. No effect when include_phone is off.
+    phone_for_all: bool = False
 
     class Config:
         schema_extra = {
@@ -3134,6 +3174,12 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                 job_id=f"api_{current_user.get('id', 'anon')}_{uuid.uuid4().hex[:8]}",
                 row_index=0,
                 emit_logs=True,
+                **_forward_compat_kwargs(
+                    pipeline.run_enrichment_route,
+                    exact_titles=req.exact_titles,
+                    include_phone=req.include_phone,
+                    phone_for_all=req.phone_for_all,
+                ),
             )
 
             # Update the (possibly empty) contact dict with the routing result.
@@ -3391,6 +3437,12 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                 row_index=0,
                 emit_logs=True,
                 pre_resolved_getleads=pre_resolved_getleads,
+                **_forward_compat_kwargs(
+                    pipeline.run_enrichment_route,
+                    exact_titles=req.exact_titles,
+                    include_phone=req.include_phone,
+                    phone_for_all=req.phone_for_all,
+                ),
             )
             email = route_result.get("email", "") or ""
             source = route_result.get("source", "not_found") or "not_found"
@@ -4466,6 +4518,9 @@ async def _run_job(
     phone_col: Optional[str] = None,
     company_name_col: Optional[str] = None,
     existing_email_col: Optional[str] = None,
+    exact_titles: bool = False,  # 2026-09: bracket-exact provider title matching
+    include_phone: bool = False,  # 2026-09: attach provider-returned phones
+    phone_for_all: bool = False,  # 2026-09: phones for every contact (extra cost)
 ):
     store = job_store.get_store()
     store.set_running(job_id)
@@ -4570,6 +4625,12 @@ async def _run_job(
             existing_email_col=existing_email_col,
             record_provider_use=record_provider_use,
             collector=collector,
+            **_forward_compat_kwargs(
+                pipeline.run_pipeline,
+                exact_titles=exact_titles,
+                include_phone=include_phone,
+                phone_for_all=phone_for_all,
+            ),
         )
 
         # If not writing incrementally, write final output
@@ -5499,12 +5560,18 @@ class LinkedInEnrichRequest(BaseModel):
 
 
 class LinkedInV2Request(BaseModel):
-    """Request model for unified LinkedIn enrichment (personal + company)."""
+    """Request model for unified LinkedIn enrichment (personal + company).
+
+    include_phone (2026-09): attach provider-returned phone numbers to the
+    job's output rows (no extra paid phone lookups). Default False omits
+    phones (unchanged behavior).
+    """
     upload_id: str
     personal_linkedin_col: Optional[str] = None
     company_linkedin_col: Optional[str] = None
     max_dms: int = 5
     include_company: bool = True
+    include_phone: bool = False
 
 
 # =============================================================================
@@ -5637,6 +5704,15 @@ class ProviderToggleRequest(BaseModel):
             Max 50 titles.
         normalize_domains: Whether to normalize domain formats (default: True).
         dedupe_by_domain: Whether to deduplicate results by domain (default: True).
+        exact_titles: When True, title tokens are sent to providers as
+            bracket-wrapped exact matches ([CEO]) instead of fuzzy
+            substrings. Default False keeps the historical fuzzy behavior.
+        include_phone: Attach provider-returned phone numbers to the job's
+            output rows (no extra paid phone lookups). Default False omits
+            phones.
+        phone_for_all: Attach phones to ALL contacts per domain, not just
+            the winning one — may trigger extra phone lookups. Default
+            False. No effect when include_phone is False.
     """
     upload_id: str
     domain_col: str
@@ -5682,6 +5758,15 @@ class ProviderToggleRequest(BaseModel):
     # Scraper.tech provenance fix: tag all enriched leads with this universe
     # (e.g., 'local_business') so write-back carries the origin forward.
     lead_universe: Optional[str] = None
+    # Exact-title mode (2026-09): bracket-wrapped ([CEO]) provider title
+    # matching instead of fuzzy substrings. Default False = fuzzy (unchanged).
+    exact_titles: bool = False
+    # Phone bundle (2026-09): attach provider-returned phones to output rows.
+    # Default False keeps output phone-free (unchanged).
+    include_phone: bool = False
+    # Phone for ALL contacts per domain; may trigger extra paid phone
+    # lookups. Default False. No effect when include_phone is off.
+    phone_for_all: bool = False
 
 
 @router.post("/flows/domain-enrich")
@@ -5825,6 +5910,9 @@ async def domain_enrich_with_providers(
         normalize_domains=req.normalize_domains,
         source=req.source,
         website_only=req.website_only,
+        exact_titles=req.exact_titles,
+        include_phone=req.include_phone,
+        phone_for_all=req.phone_for_all,
     )
 
     return {
@@ -5853,6 +5941,9 @@ async def _run_domain_enrich_job(
     source: Optional[str] = None,
     website_only: bool = False,
     prepend_rows: Optional[list[dict]] = None,
+    exact_titles: bool = False,  # 2026-09: bracket-exact provider title matching
+    include_phone: bool = False,  # 2026-09: attach provider-returned phones
+    phone_for_all: bool = False,  # 2026-09: phones for every contact (extra cost)
 ):
     """Background task to run domain enrichment using list_builder."""
     store = job_store.get_store()
@@ -5941,6 +6032,12 @@ async def _run_domain_enrich_job(
             existing_email_col=existing_email_col,
             return_partial_on_cancel=True,
             prepend_rows=prepend_rows,
+            **_forward_compat_kwargs(
+                list_builder.run_domain_enrichment,
+                exact_titles=exact_titles,
+                include_phone=include_phone,
+                phone_for_all=phone_for_all,
+            ),
         )
 
         # The incremental writer (write_incremental=True above) already flushed
@@ -6611,6 +6708,7 @@ async def enrich_by_linkedin_v2(
         company_linkedin_col=req.company_linkedin_col,
         max_dms=req.max_dms,
         include_company=req.include_company,
+        include_phone=req.include_phone,
     )
 
     return {"job_id": job_id, "total": valid_count, "flow": "linkedin_v2_enrichment"}
@@ -6623,6 +6721,7 @@ async def _run_linkedin_v2_job(
     company_linkedin_col: Optional[str],
     max_dms: int,
     include_company: bool,
+    include_phone: bool = False,  # 2026-09: attach provider-returned phones
 ):
     """Background task to run unified LinkedIn (personal + company) enrichment job."""
     store = job_store.get_store()
@@ -6702,6 +6801,10 @@ async def _run_linkedin_v2_job(
             output_path=output_path,
             write_incremental=True,
             return_partial_on_cancel=True,
+            **_forward_compat_kwargs(
+                list_builder.run_unified_linkedin_enrichment,
+                include_phone=include_phone,
+            ),
         )
 
         # The incremental writer (write_incremental=True above) already flushed

@@ -42,6 +42,7 @@ from enrichment import blitz_client
 from enrichment import call_tracker
 from enrichment import identifier_utils
 from enrichment import job_store
+from enrichment import tam_routes
 from phone_enrichment import routes as phone_enrichment_routes
 
 load_dotenv()
@@ -367,6 +368,10 @@ if _MCP_ENABLED:
 # Include module routers
 app.include_router(scraper_routes.router, tags=["scraper"])
 app.include_router(enrichment_routes.router, tags=["enrichment"])
+# TAM-by-People flow (new Flow 2): POST /api/enrichment/flows/tam. Mounted
+# after enrichment_routes because tam_routes imports its shared job plumbing
+# (_job_signals / _active_jobs / _cancelled_jobs) at module load.
+app.include_router(tam_routes.router, tags=["enrichment"])
 app.include_router(phone_enrichment_routes.router, tags=["phone_enrichment"])
 
 # External scraper API (/api/external/scraper/*) — additive surface for
