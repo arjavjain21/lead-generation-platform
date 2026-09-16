@@ -25,9 +25,15 @@ import json
 import os
 from typing import Any, Optional
 
-# Pool size: how many Contacts-DB people to fetch per domain when a title
-# filter is active, so the title matches are present before filtering.
-TITLE_SEARCH_POOL = int(os.getenv("TITLE_SEARCH_POOL", "50"))
+# Candidate-pool size: how many Contacts-DB people to fetch per domain when a
+# title filter is active, so matches survive the local gate (consumers widen
+# the fetch via max(max_results, TITLE_SEARCH_POOL) in pipeline.py and
+# list_builder.py). This is a FREE contacts_db knob — NOT a Blitz billing
+# knob: the waterfall bills 1 record per result RETURNED and always receives
+# the raw max_results, so this value never changes Blitz spend. 12 keeps gate
+# precision with far less load on a free-but-slow 75 RPS API (50 over-fetched
+# candidates with no quality gain). Env override still wins.
+TITLE_SEARCH_POOL = int(os.getenv("TITLE_SEARCH_POOL", "12"))
 
 _TITLE_SYNONYMS = {
     "ceo": ("chief executive officer", "chief exec"),
