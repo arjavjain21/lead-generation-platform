@@ -128,15 +128,29 @@ def _waterfall_person(name: str = "Blitz Person") -> dict[str, Any]:
     }
 
 
-def _miss_store_stubs(recorded: list[tuple[str, str]], miss_kind: Any = None):
-    """Patch pair for blitz_miss_store: is_recent_miss -> miss_kind (constant),
-    record_miss -> append (domain, kind). Returns the two patch objects."""
+def _miss_dict(miss_kind: Any) -> Any:
+    """Normalize a stubbed marker into the dict shape is_recent_miss
+    returns: "company"/"contacts" shorthand -> {"kind": ..., "company_url": ""};
+    dicts pass through; None stays None."""
+    if isinstance(miss_kind, str):
+        return {"kind": miss_kind, "company_url": ""}
+    return miss_kind
+
+
+def _miss_store_stubs(recorded: list[tuple], miss_kind: Any = None):
+    """Patch pair for blitz_miss_store: is_recent_miss -> _miss_dict(miss_kind)
+    (constant), record_miss -> append (domain, kind, company_url). Returns
+    the two patch objects."""
     return (
-        patch.object(blitz_miss_store, "is_recent_miss", lambda domain: miss_kind),
+        patch.object(
+            blitz_miss_store, "is_recent_miss", lambda domain: _miss_dict(miss_kind),
+        ),
         patch.object(
             blitz_miss_store,
             "record_miss",
-            lambda domain, kind: recorded.append((domain, kind)),
+            lambda domain, kind, company_url=None: recorded.append(
+                (domain, kind, company_url)
+            ),
         ),
     )
 
@@ -443,7 +457,7 @@ class TestMissStoreWiring(unittest.TestCase):
         finally:
             for p in patches + list(miss_patches):
                 p.stop()
-        self.assertIn(("acme.com", "company"), recorded)
+        self.assertIn(("acme.com", "company", None), recorded)
 
     def test_d2l_exception_never_records(self):
         recorded: list[tuple[str, str]] = []
@@ -464,8 +478,8 @@ class TestMissStoreWiring(unittest.TestCase):
                 p.stop()
         self.assertEqual(recorded, [])
 
-    def test_clean_waterfall_empty_records_contacts(self):
-        recorded: list[tuple[str, str]] = []
+    def test_clean_waterfall_empty_records_contacts_with_url(self):
+        recorded: list[tuple] = []
         company = {"linkedin_url": "https://www.linkedin.com/company/acme"}
         patches = _domain_stubs(company=company, waterfall=AsyncMock(return_value={"results": []}))
         miss_patches = _miss_store_stubs(recorded, miss_kind=None)
@@ -482,8 +496,96 @@ class TestMissStoreWiring(unittest.TestCase):
         finally:
             for p in patches + list(miss_patches):
                 p.stop()
-        self.assertIn(("acme.com", "contacts"), recorded)
+        self.assertIn(
+            ("acme.com", "contacts", "https://www.linkedin.com/company/acme"),
+            recorded,
+            "a clean empty waterfall must cache the resolved company URL so "
+            "later jobs re-enter the waterfall-empty flow",
+        )
         self.assertEqual(rows[0]["row_status"], lb.STATUS_NO_CONTACTS)
+
+    def test_contacts_miss_with_url_still_reaches_getleads(self):
+        """FIX 1 regression (CRITICAL): job 2 hitting a stored 'contacts'
+        miss (company resolved, zero Blitz DMs) must skip d2l AND the
+        waterfall but INJECT the cached company URL, so the flow continues
+        to the GetLeads decision-makers fallback (domain-keyed, needs no
+        company URL) — no early no-LinkedIn return."""
+        dm = AsyncMock(return_value=[{
+            "person_full_name": "Grace Getleads",
+            "first_name": "Grace",
+            "last_name": "Getleads",
+            "linkedin_url": "https://www.linkedin.com/in/grace",
+            "job_title": "CEO",
+            "email": "grace@gl.test",
+        }])
+        d2l = AsyncMock(return_value={"found": True, "company_linkedin_url": "https://decoy"})
+        waterfall = AsyncMock(return_value={"results": [_waterfall_person("Decoy")]})
+        recorded: list[tuple] = []
+        patches = _domain_stubs(d2l=d2l, waterfall=waterfall, getleads_dm=dm) + list(
+            _miss_store_stubs(
+                recorded,
+                miss_kind={
+                    "kind": "contacts",
+                    "company_url": "https://www.linkedin.com/company/acme",
+                },
+            )
+        )
+        for p in patches:
+            p.start()
+        try:
+            rows = asyncio.run(lb._enrich_single_domain(
+                blitz_http=MagicMock(), contacts_http=MagicMock(),
+                base_row={"domain": "acme.com"}, domain="acme.com",
+                max_decision_makers=2, domain_semaphore=asyncio.Semaphore(1),
+                email_semaphore=asyncio.Semaphore(1), validate_email=False,
+                blitz_miss_skip=True,
+            ))
+        finally:
+            for p in patches:
+                p.stop()
+        d2l.assert_not_awaited()
+        waterfall.assert_not_awaited()
+        dm.assert_awaited_once()
+        self.assertEqual(rows[0]["row_status"], lb.STATUS_ENRICHED)
+        self.assertEqual(rows[0]["dm_full_name"], "Grace Getleads")
+        self.assertEqual(
+            rows[0]["company_linkedin_url"],
+            "https://www.linkedin.com/company/acme",
+        )
+        # nothing re-recorded on a skip — the marker already exists
+        self.assertEqual(recorded, [])
+
+    def test_contacts_miss_without_url_keeps_no_linkedin_path(self):
+        """Degradation path (URL-less marker, e.g. recorded through the
+        2-arg callback seam before a backfill): no URL to inject -> the
+        no-LinkedIn path proceeds — GetLeads DM fallback does NOT run."""
+        dm = AsyncMock(return_value=[])
+        d2l = AsyncMock(return_value={"found": True, "company_linkedin_url": "https://x"})
+        waterfall = AsyncMock(return_value={"results": [_waterfall_person()]})
+        recorded: list[tuple] = []
+        patches = _domain_stubs(d2l=d2l, waterfall=waterfall, getleads_dm=dm) + list(
+            _miss_store_stubs(
+                recorded, miss_kind={"kind": "contacts", "company_url": ""},
+            )
+        )
+        for p in patches:
+            p.start()
+        try:
+            rows = asyncio.run(lb._enrich_single_domain(
+                blitz_http=MagicMock(), contacts_http=MagicMock(),
+                base_row={"domain": "acme.com"}, domain="acme.com",
+                max_decision_makers=2, domain_semaphore=asyncio.Semaphore(1),
+                email_semaphore=asyncio.Semaphore(1), validate_email=False,
+                blitz_miss_skip=True,
+            ))
+        finally:
+            for p in patches:
+                p.stop()
+        d2l.assert_not_awaited()
+        waterfall.assert_not_awaited()
+        dm.assert_not_awaited()
+        self.assertEqual(rows[0]["row_status"], lb.STATUS_NO_LINKEDIN)
+        self.assertEqual(recorded, [])
 
     def test_waterfall_exception_never_records(self):
         recorded: list[tuple[str, str]] = []
@@ -657,6 +759,68 @@ class TestPrepassConsumption(unittest.TestCase):
         waterfall.assert_not_awaited()
         # GetLeads DM fallback stubbed [] -> single no_contacts row
         self.assertEqual(rows[0]["row_status"], lb.STATUS_NO_CONTACTS)
+
+    def test_covered_empty_backfills_urlless_marker(self):
+        """A confirmed-zero prepass answer whose marker was recorded through
+        blitz_batch's 2-arg callback seam (no URL) is re-recorded WITH the
+        company URL — one-time backfill so later jobs re-enter the
+        waterfall-empty flow."""
+        waterfall = AsyncMock(return_value={"results": [_waterfall_person()]})
+        recorded: list[tuple] = []
+        patches = _domain_stubs(waterfall=waterfall) + list(
+            _miss_store_stubs(
+                recorded, miss_kind={"kind": "contacts", "company_url": ""},
+            )
+        )
+        for p in patches:
+            p.start()
+        try:
+            asyncio.run(lb._enrich_single_domain(
+                blitz_http=MagicMock(), contacts_http=MagicMock(),
+                base_row={"domain": "acme.com"}, domain="acme.com",
+                max_decision_makers=2, domain_semaphore=asyncio.Semaphore(1),
+                email_semaphore=asyncio.Semaphore(1), validate_email=False,
+                blitz_prepass=self._prepass("acme.com", []),
+                blitz_miss_skip=True,
+            ))
+        finally:
+            for p in patches:
+                p.stop()
+        waterfall.assert_not_awaited()
+        self.assertIn(
+            ("acme.com", "contacts", "https://www.linkedin.com/company/acme"),
+            recorded,
+        )
+
+    def test_covered_empty_keeps_url_carrying_marker(self):
+        """A marker that already carries the company URL is not re-recorded
+        (strictly no duplicate writes)."""
+        waterfall = AsyncMock(return_value={"results": [_waterfall_person()]})
+        recorded: list[tuple] = []
+        patches = _domain_stubs(waterfall=waterfall) + list(
+            _miss_store_stubs(
+                recorded,
+                miss_kind={
+                    "kind": "contacts",
+                    "company_url": "https://www.linkedin.com/company/acme",
+                },
+            )
+        )
+        for p in patches:
+            p.start()
+        try:
+            asyncio.run(lb._enrich_single_domain(
+                blitz_http=MagicMock(), contacts_http=MagicMock(),
+                base_row={"domain": "acme.com"}, domain="acme.com",
+                max_decision_makers=2, domain_semaphore=asyncio.Semaphore(1),
+                email_semaphore=asyncio.Semaphore(1), validate_email=False,
+                blitz_prepass=self._prepass("acme.com", []),
+                blitz_miss_skip=True,
+            ))
+        finally:
+            for p in patches:
+                p.stop()
+        self.assertEqual(recorded, [])
 
     def test_prepass_persons_pass_the_title_gate(self):
         off_icp = _flat_person("Marketeer May", title="Marketing Manager")

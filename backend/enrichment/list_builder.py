@@ -39,6 +39,7 @@ from . import company_fallback
 from . import fallback_config as fb_cfg
 from . import seg
 from . import title_filter
+from .env_flags import env_flag
 from .pipeline import _getleads_dm_snapshot
 from .response_normalizer import previous_companies_titles as _previous_companies_titles
 
@@ -342,18 +343,6 @@ def _normalize_source(source: str) -> str:
     return source
 
 
-def _env_flag(name: str, default: str = "true") -> bool:
-    """Truthiness of an env flag with an on-by-default policy.
-
-    Unset/blank -> the default; explicit off values (0/false/no/off,
-    case-insensitive) -> False; anything else -> True.
-    """
-    raw = os.getenv(name, default).strip().lower()
-    if not raw:
-        raw = default.strip().lower()
-    return raw not in ("0", "false", "no", "off")
-
-
 def _blitz_find_people_prepass_enabled() -> bool:
     """ENABLE_BLITZ_FIND_PEOPLE_BATCH (default true) gates the Flow-1
     find-people batch prepass.
@@ -361,7 +350,7 @@ def _blitz_find_people_prepass_enabled() -> bool:
     Kill-switch only — the prepass is a pure cost optimization (1
     domain-to-linkedin + ceil(N/50) /v2/search/people calls replacing N
     per-domain waterfalls), so it ships on by default."""
-    return _env_flag("ENABLE_BLITZ_FIND_PEOPLE_BATCH")
+    return env_flag("ENABLE_BLITZ_FIND_PEOPLE_BATCH")
 
 
 def _blitz_miss_wiring_armed() -> bool:
@@ -375,10 +364,11 @@ def _blitz_miss_wiring_armed() -> bool:
     parameter defaulting to False so direct-call tests never touch the
     store, while ``run_domain_enrichment`` (the only production caller)
     arms it from this flag.
+
+    Vocabulary: env_flags.env_flag (true/false/1/0/yes/no/on/off,
+    case-insensitive) — one parser for every enrichment gate.
     """
-    return os.getenv("ENABLE_BLITZ_MISS_SKIP", "true").strip().lower() not in (
-        "false", "0", "no",
-    )
+    return env_flag("ENABLE_BLITZ_MISS_SKIP")
 
 
 def _noop_recent_miss(domain: str) -> None:
@@ -391,13 +381,38 @@ def _noop_record_miss(domain: str, kind: str) -> None:
     return None
 
 
+def _stored_miss_info(domain: str) -> Optional[dict[str, str]]:
+    """Normalized miss-marker read for ``_enrich_single_domain``.
+
+    Returns the store's ``{"kind", "company_url"}`` dict when `domain` has
+    an unexpired marker, else None. Normalizes any legacy/str return into
+    the dict shape so call sites can rely on ``.get()``. Best-effort
+    fail-open: a store error reads as "no marker" (Blitz is simply asked
+    again — the safe direction).
+    """
+    try:
+        info = blitz_miss_store.is_recent_miss(domain)
+    except Exception:
+        logger.debug("blitz miss-marker read failed for %s", domain, exc_info=True)
+        return None
+    if info is None:
+        return None
+    if isinstance(info, dict):
+        return {
+            "kind": str(info.get("kind") or ""),
+            "company_url": str(info.get("company_url") or ""),
+        }
+    # Legacy string shape ("company"/"contacts") — no URL known.
+    return {"kind": str(info), "company_url": ""}
+
+
 def _phone_bundle_enabled() -> bool:
     """ENABLE_PHONE_BUNDLE (default true) gates the Flow-1 phone bundle.
 
     Kill-switch only — the bundle is opt-in per request via include_phone;
     this flag exists to disable the paid /v2/enrichment/phone lane globally
     (e.g. a plan change) without a deploy."""
-    return _env_flag("ENABLE_PHONE_BUNDLE")
+    return env_flag("ENABLE_PHONE_BUNDLE")
 
 
 def _is_us_or_unknown_country(country: Any) -> bool:
@@ -844,14 +859,20 @@ async def _enrich_single_domain(
             per-domain Blitz waterfall; uncovered domains keep the legacy
             path.
         blitz_miss_skip: Arm the miss-marker store wiring (blitz_miss_store):
-            with a stored recent definitive miss (either kind) the paid
-            domain_to_linkedin replay is skipped (no-LinkedIn path, where
-            the free Contacts DB domain lookup still surfaces any emails
-            it has), and clean not-found answers are recorded for future
-            runs. DEFAULTS TO FALSE so direct-call tests never touch the
-            shared jobs.db — ``run_domain_enrichment`` (the only production
-            caller) arms it from ENABLE_BLITZ_MISS_SKIP (mirrors the
-            pipeline wave's parameter of the same name).
+            with a stored recent definitive miss the paid domain_to_linkedin
+            replay is skipped. A stored 'contacts' miss that cached the
+            company LinkedIn URL re-INJECTS it, so the domain re-enters the
+            waterfall-empty path (Contacts DB DMs -> GetLeads
+            decision-makers fallback -> no_contacts) instead of dying on the
+            early no-LinkedIn return that fires BEFORE the GetLeads
+            fallback; a 'company' miss (or a URL-less 'contacts' miss) keeps
+            the no-LinkedIn path, where the free Contacts DB domain lookup
+            still surfaces any emails it has. Clean not-found answers are
+            recorded (with the company URL for 'contacts' misses) for
+            future runs. DEFAULTS TO FALSE so direct-call tests never touch
+            the shared jobs.db — ``run_domain_enrichment`` (the only
+            production caller) arms it from ENABLE_BLITZ_MISS_SKIP (mirrors
+            the pipeline wave's parameter of the same name).
     """
     if not domain_semaphore:
         domain_semaphore = asyncio.Semaphore(DOMAIN_CONCURRENCY)
@@ -876,6 +897,12 @@ async def _enrich_single_domain(
     company_industry = ""
     company_employee_count = ""
 
+    # Stored-'contacts'-miss waterfall skip (set in Step 1 when a cached
+    # marker's company URL is injected): the miss already answered the
+    # waterfall with a definitive zero, so Step 2 must not re-bill it —
+    # execution continues to the Step-2.4 GetLeads fallback instead.
+    _blitz_waterfall_skip = False
+
     async with domain_semaphore:
         # Step 1: Get company info from Contacts DB (PRIMARY - FREE)
         try:
@@ -896,7 +923,11 @@ async def _enrich_single_domain(
         #   1. find-people prepass company URL — already paid for by the
         #      job-level batch, no domain_to_linkedin call at all;
         #   2. miss-marker store — a stored recent definitive Blitz miss
-        #      (either kind) skips the paid replay entirely (no-LI path);
+        #      skips the paid replay entirely. A 'contacts' miss that cached
+        #      the company URL re-injects it (waterfall skipped in Step 2,
+        #      flow continues to the GetLeads DM fallback); otherwise the
+        #      no-LI path proceeds (free Contacts DB domain lookup still
+        #      surfaces any emails it has);
         #   3. live domain_to_linkedin — a CLEAN found=false records a
         #      'company' miss for future runs; exceptions NEVER record
         #      (a transient failure is not an answer).
@@ -909,11 +940,25 @@ async def _enrich_single_domain(
             _prepass_url = ""
             if isinstance(_prepass_urls, dict):
                 _prepass_url = str(_prepass_urls.get(domain) or "").strip()
+            _miss_info = _stored_miss_info(domain) if blitz_miss_skip else None
             if _prepass_url:
                 company_linkedin_url = _prepass_url
                 logger.debug("Found company via blitz find-people prepass: %s", company_linkedin_url)
-            elif blitz_miss_skip and blitz_miss_store.is_recent_miss(domain):
-                logger.debug("Blitz miss-marker hit for %s - skipping domain_to_linkedin replay", domain)
+            elif _miss_info is not None:
+                if (
+                    _miss_info.get("kind") == "contacts"
+                    and _miss_info.get("company_url", "").strip()
+                ):
+                    company_linkedin_url = _miss_info["company_url"].strip()
+                    _blitz_waterfall_skip = True
+                    logger.debug(
+                        "Blitz 'contacts' miss-marker hit for %s - company URL "
+                        "re-injected, d2l and waterfall skipped (GetLeads DM "
+                        "fallback proceeds)",
+                        domain,
+                    )
+                else:
+                    logger.debug("Blitz miss-marker hit for %s - skipping domain_to_linkedin replay", domain)
             else:
                 try:
                     d2l = await blitz_client.domain_to_linkedin(blitz_http, domain)
@@ -1063,6 +1108,21 @@ async def _enrich_single_domain(
                     or []
                 )
                 persons = _prepass_persons_to_waterfall_shape(_flat_persons)
+                if not _flat_persons and blitz_miss_skip:
+                    # Confirmed-zero prepass answer. blitz_batch recorded the
+                    # 'contacts' marker through a callback seam that cannot
+                    # carry the company URL — backfill it (with the URL this
+                    # flow has in hand) when no marker exists yet OR the
+                    # stored one has no URL, so later jobs re-enter this
+                    # exact waterfall-empty flow.
+                    _existing_miss = _stored_miss_info(domain)
+                    if _existing_miss is None or not _existing_miss.get(
+                        "company_url", ""
+                    ).strip():
+                        blitz_miss_store.record_miss(
+                            domain, "contacts",
+                            company_url=company_linkedin_url or None,
+                        )
                 # Phase 1: capture every prepass person (flat shape carries
                 # experiences[] — the collector derives dm_previous_*).
                 if collector is not None and _flat_persons:
@@ -1089,6 +1149,16 @@ async def _enrich_single_domain(
                             domain, _dropped, _persons_before,
                         )
                 logger.debug("Using blitz prepass for %d decision makers", len(persons))
+            elif _blitz_waterfall_skip:
+                # Stored 'contacts' miss whose company URL Step 1 injected:
+                # the marker already answered the waterfall with a
+                # definitive zero — do not re-bill it. Persons stays [] and
+                # the flow continues to the Step-2.4 GetLeads DM fallback
+                # exactly like the waterfall-empty path.
+                logger.debug(
+                    "Blitz waterfall skipped for %s (stored 'contacts' miss within TTL)",
+                    domain,
+                )
             else:
                 try:
                     # Use cascade_config from job if available, otherwise use default
@@ -1103,11 +1173,17 @@ async def _enrich_single_domain(
                     persons = icp_result.get("results", [])
                     # Miss store: a CLEAN waterfall with zero results is a
                     # definitive 'contacts' miss (the prepass records its
-                    # own; this covers the non-prepass path). Title-gate
-                    # drops are NOT misses — Blitz answered, the ICP said
-                    # no. Exceptions never record.
+                    # own; this covers the non-prepass path) — recorded
+                    # WITH the company URL so later jobs re-enter this
+                    # exact waterfall-empty flow (GetLeads DM fallback)
+                    # without re-billing d2l. Title-gate drops are NOT
+                    # misses — Blitz answered, the ICP said no. Exceptions
+                    # never record.
                     if not persons and blitz_miss_skip:
-                        blitz_miss_store.record_miss(domain, "contacts")
+                        blitz_miss_store.record_miss(
+                            domain, "contacts",
+                            company_url=company_linkedin_url or None,
+                        )
                     # Phase 1: capture every Blitz contact.
                     if collector is not None and persons:
                         for _bp in persons:

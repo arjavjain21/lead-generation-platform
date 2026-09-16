@@ -33,7 +33,15 @@ call_tracker / stats_store pattern; thread-local connections via
 shared.db.get_db):
 
     blitz_domain_miss(domain TEXT PRIMARY KEY, kind TEXT NOT NULL,
-                      miss_at TEXT NOT NULL)
+                      miss_at TEXT NOT NULL, company_url TEXT)
+
+``company_url`` (2026-09-16) caches the resolved company LinkedIn URL
+alongside a 'contacts' miss. A later job that hits that marker re-injects
+the URL into the flow (skipping BOTH the blitz d2l call AND the waterfall)
+so execution continues down the waterfall-empty path — Contacts DB DMs, the
+GetLeads decision-makers fallback, the BetterEnrich generic path — instead
+of dying on an early no-LinkedIn return that fires BEFORE the GetLeads
+fallback. NULL/empty for 'company' misses (no page exists to store).
 
 Every entry point is best-effort: any sqlite failure is swallowed with a
 debug log — a marker-store outage must never break enrichment itself.
@@ -70,9 +78,11 @@ _schema_initialized: bool = False
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS blitz_domain_miss (
-    domain  TEXT PRIMARY KEY,
-    kind    TEXT NOT NULL,             -- 'company' | 'contacts'
-    miss_at TEXT NOT NULL              -- ISO-8601 UTC, ms precision
+    domain       TEXT PRIMARY KEY,
+    kind         TEXT NOT NULL,        -- 'company' | 'contacts'
+    miss_at      TEXT NOT NULL,        -- ISO-8601 UTC, ms precision
+    company_url  TEXT                  -- resolved company LinkedIn URL
+                                       -- ('contacts' misses; NULL for 'company')
 );
 CREATE INDEX IF NOT EXISTS idx_blitz_domain_miss_miss_at
     ON blitz_domain_miss(miss_at);
@@ -127,11 +137,23 @@ def _ttl_days() -> int:
 
 
 def _ensure_table(conn: sqlite3.Connection) -> None:
-    """Create blitz_domain_miss (+ index) if missing. Idempotent, in-DB safe."""
+    """Create blitz_domain_miss (+ index) if missing. Idempotent, in-DB safe.
+
+    Also upgrades a pre-company_url table (created by an earlier build of
+    this undeployed module) with an ALTER TABLE ADD COLUMN so INSERTs that
+    carry a company_url never fail. The duplicate-column error on fresh
+    schemas is expected and swallowed; any other failure propagates to the
+    caller's best-effort try/except (fail-open reads, skipped writes).
+    """
     global _schema_initialized
     if _schema_initialized:
         return
     conn.executescript(_SCHEMA)
+    try:
+        conn.execute("ALTER TABLE blitz_domain_miss ADD COLUMN company_url TEXT")
+    except sqlite3.OperationalError as exc:
+        if "duplicate column" not in str(exc).lower():
+            raise
     conn.commit()
     _schema_initialized = True
 
@@ -153,11 +175,13 @@ def init_table() -> None:
 # Public API
 # ---------------------------------------------------------------------------
 
-def record_miss(domain: str, kind: str) -> None:
+def record_miss(domain: str, kind: str, company_url: Optional[str] = None) -> None:
     """Persist a definitive Blitz miss for a domain (upsert; best-effort).
 
-    Re-recording an existing domain refreshes both miss_at and kind — the
-    latest definitive answer wins and the TTL clock restarts.
+    Re-recording an existing domain refreshes miss_at, kind AND company_url —
+    the latest definitive answer wins and the TTL clock restarts (a
+    re-record without ``company_url`` therefore CLEARS a previously stored
+    URL; callers that have one must always pass it).
 
     Args:
         domain: domain string; normalized (lowercase/strip via the shared
@@ -167,6 +191,13 @@ def record_miss(domain: str, kind: str) -> None:
             'contacts' (company resolved, zero decision-makers). Any other
             value is refused with a warning — the kind vocabulary is part
             of the store's contract with the observability endpoint.
+        company_url: the resolved company LinkedIn URL to cache alongside a
+            'contacts' miss, so later jobs can re-enter the waterfall-empty
+            flow (GetLeads decision-makers fallback) without re-billing the
+            blitz domain-to-linkedin call. Optional/None for 'company'
+            misses (no page exists) and for 'contacts' misses recorded
+            through a callback seam that has no URL in hand (the wiring
+            layer backfills it when the flow re-confirms the miss).
 
     Never raises. THE CALLER must only invoke this on definitive not-found
     responses — see the module docstring's CRITICAL SEMANTICS.
@@ -184,18 +215,20 @@ def record_miss(domain: str, kind: str) -> None:
             domain, kind,
         )
         return
+    normalized_url = str(company_url).strip() if company_url else ""
     try:
         conn = db.get_db()
         _ensure_table(conn)
         conn.execute(
             """
-            INSERT INTO blitz_domain_miss (domain, kind, miss_at)
-            VALUES (?, ?, ?)
+            INSERT INTO blitz_domain_miss (domain, kind, miss_at, company_url)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(domain) DO UPDATE SET
                 kind = excluded.kind,
-                miss_at = excluded.miss_at
+                miss_at = excluded.miss_at,
+                company_url = excluded.company_url
             """,
-            (normalized, kind, _now_iso()),
+            (normalized, kind, _now_iso(), normalized_url or None),
         )
         conn.commit()
     except Exception:
@@ -205,13 +238,24 @@ def record_miss(domain: str, kind: str) -> None:
         )
 
 
-def is_recent_miss(domain: str) -> Optional[str]:
-    """Return the miss kind if `domain` has an unexpired marker, else None.
+def is_recent_miss(domain: str) -> Optional[dict[str, str]]:
+    """Return miss info if `domain` has an unexpired marker, else None.
+
+    Shape (stable keys):
+        {"kind": "company" | "contacts", "company_url": "<url or empty>"}
 
     A None return means "safe to ask Blitz" — either the domain was never
     marked, or its marker aged past BLITZ_MISS_TTL_DAYS (default 30) and the
-    domain must be retried. Best-effort: on any sqlite failure the answer is
-    None (fail-open — enrichment proceeds, we merely lose the skip).
+    domain must be retried. ``company_url`` is "" for 'company' misses and
+    for markers recorded before the column existed / without a URL.
+
+    Truthiness-compatible with the earlier ``Optional[str]`` return: hit ->
+    non-empty dict (truthy), no hit -> None, so ``if is_recent_miss(d):``
+    call sites (e.g. the blitz_batch prepass callback contract) are
+    unaffected.
+
+    Best-effort: on any sqlite failure the answer is None (fail-open —
+    enrichment proceeds, we merely lose the skip).
 
     Args:
         domain: normalized exactly like record_miss (lowercase/strip), so
@@ -224,11 +268,16 @@ def is_recent_miss(domain: str) -> Optional[str]:
         conn = db.get_db()
         _ensure_table(conn)
         row = conn.execute(
-            "SELECT kind FROM blitz_domain_miss "
+            "SELECT kind, company_url FROM blitz_domain_miss "
             "WHERE domain = ? AND miss_at > ?",
             (normalized, _iso_cutoff(days=_ttl_days())),
         ).fetchone()
-        return row["kind"] if row is not None else None
+        if row is None:
+            return None
+        return {
+            "kind": row["kind"],
+            "company_url": str(row["company_url"] or ""),
+        }
     except Exception:
         logger.debug(
             "blitz_miss_store: is_recent_miss failed for %s", normalized,

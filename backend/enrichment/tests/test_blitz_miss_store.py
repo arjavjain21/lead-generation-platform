@@ -4,13 +4,19 @@ Tests for enrichment.blitz_miss_store — persistent Blitz miss markers.
 Covers the store contract in isolation (the cascade wiring lands in a later
 wave and has its own tests):
 - Table creation is idempotent (explicit init + lazy first-use)
-- Upsert refreshes both miss_at and kind — never duplicates a domain
-- TTL semantics: unexpired marker returns its kind, expired returns None,
-  env override BLITZ_MISS_TTL_DAYS honours, invalid env falls back to 30
+- Upsert refreshes miss_at, kind AND company_url — never duplicates a domain
+- TTL semantics: unexpired marker returns its info dict, expired returns
+  None, env override BLITZ_MISS_TTL_DAYS honours, invalid env falls back
+  to 30
+- company_url caching: recorded alongside 'contacts' misses, returned by
+  is_recent_miss, cleared by a URL-less re-record; truthiness of the dict
+  return stays hit/miss-compatible with the legacy Optional[str] shape
+  (the blitz_batch prepass callback contract)
 - Domain normalization (lowercase/strip variants collapse to one row)
 - Guards: empty/junk domains and unknown kinds are refused
 - Best-effort: every entry point swallows sqlite errors (reads fail open)
 - miss_stats shape (stable keys, by_kind pre-seeded, recent_24h window)
+- Schema backfill: a pre-company_url table is upgraded via ALTER TABLE
 """
 
 from __future__ import annotations
@@ -56,14 +62,14 @@ def _iso_days_ago(days: float) -> str:
     )[:-3]
 
 
-def _seed_row(domain: str, kind: str, miss_at: str) -> None:
+def _seed_row(domain: str, kind: str, miss_at: str, company_url: str = "") -> None:
     """Insert a marker row directly, bypassing the public API (TTL tests)."""
     blitz_miss_store.init_table()
     conn = shared_db.get_db()
     conn.execute(
-        "INSERT OR REPLACE INTO blitz_domain_miss (domain, kind, miss_at) "
-        "VALUES (?, ?, ?)",
-        (domain, kind, miss_at),
+        "INSERT OR REPLACE INTO blitz_domain_miss (domain, kind, miss_at, company_url) "
+        "VALUES (?, ?, ?, ?)",
+        (domain, kind, miss_at, company_url or None),
     )
     conn.commit()
 
@@ -72,7 +78,7 @@ def _fetch_all_rows(db_path: Path) -> list[tuple]:
     """Read rows via an independent connection (not the thread-local one)."""
     with sqlite3.connect(str(db_path)) as conn:
         return conn.execute(
-            "SELECT domain, kind, miss_at FROM blitz_domain_miss "
+            "SELECT domain, kind, miss_at, company_url FROM blitz_domain_miss "
             "ORDER BY domain"
         ).fetchall()
 
@@ -107,10 +113,11 @@ class TestSchema:
         assert _table_exists(fresh_db, "blitz_domain_miss") == 1
         rows = _fetch_all_rows(fresh_db)
         assert len(rows) == 1
-        domain, kind, miss_at = rows[0]
+        domain, kind, miss_at, company_url = rows[0]
         assert domain == "acme.com"
         assert kind == "company"
         assert miss_at > _iso_days_ago(days=1 / 24)
+        assert company_url is None  # no URL passed -> NULL, not ""
 
     def test_read_lazy_first_use_creates_table(self, fresh_db: Path) -> None:
         # Reads must also self-create (fail-open must not crash on a fresh DB).
@@ -127,7 +134,7 @@ class TestRecordMiss:
         blitz_miss_store.record_miss("acme.com", "company")
         rows = _fetch_all_rows(fresh_db)
         assert len(rows) == 1
-        domain, kind, miss_at = rows[0]
+        domain, kind, miss_at, _url = rows[0]
         assert domain == "acme.com"
         assert kind == "company"
         # Timestamp is fresh (within the last minute) and ISO-formatted.
@@ -138,7 +145,7 @@ class TestRecordMiss:
         blitz_miss_store.record_miss("acme.com", "contacts")
         rows = _fetch_all_rows(fresh_db)
         assert len(rows) == 1  # upsert, never a duplicate
-        _, kind, miss_at = rows[0]
+        _, kind, miss_at, _url = rows[0]
         assert kind == "contacts"
         assert miss_at > _iso_days_ago(days=1)  # clock restarted
 
@@ -146,7 +153,9 @@ class TestRecordMiss:
         _seed_row("acme.com", "company", _iso_days_ago(days=40))
         blitz_miss_store.record_miss("acme.com", "company")
         # Was expired before the re-record; fresh miss_at makes it live again.
-        assert blitz_miss_store.is_recent_miss("acme.com") == "company"
+        assert blitz_miss_store.is_recent_miss("acme.com") == {
+            "kind": "company", "company_url": ""
+        }
 
     def test_invalid_kind_refused(self, fresh_db: Path) -> None:
         blitz_miss_store.init_table()  # guards return before lazy table creation
@@ -167,7 +176,9 @@ class TestRecordMiss:
 class TestIsRecentMiss:
     def test_returns_kind_within_ttl(self, fresh_db: Path) -> None:
         blitz_miss_store.record_miss("acme.com", "contacts")
-        assert blitz_miss_store.is_recent_miss("acme.com") == "contacts"
+        assert blitz_miss_store.is_recent_miss("acme.com") == {
+            "kind": "contacts", "company_url": ""
+        }
 
     def test_unknown_domain_returns_none(self, fresh_db: Path) -> None:
         blitz_miss_store.record_miss("acme.com", "company")
@@ -185,14 +196,14 @@ class TestIsRecentMiss:
     def test_just_inside_ttl_returns_kind(self, fresh_db: Path) -> None:
         # 29 days old vs the 30-day default — still a recent miss.
         _seed_row("acme.com", "company", _iso_days_ago(days=29))
-        assert blitz_miss_store.is_recent_miss("acme.com") == "company"
+        assert blitz_miss_store.is_recent_miss("acme.com")["kind"] == "company"
 
     def test_ttl_env_override(self, fresh_db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("BLITZ_MISS_TTL_DAYS", "1")
         _seed_row("old.com", "company", _iso_days_ago(days=2))
         _seed_row("new.com", "company", _iso_days_ago(days=0.5))
         assert blitz_miss_store.is_recent_miss("old.com") is None
-        assert blitz_miss_store.is_recent_miss("new.com") == "company"
+        assert blitz_miss_store.is_recent_miss("new.com")["kind"] == "company"
 
     def test_ttl_env_invalid_falls_back_to_default(
         self, fresh_db: Path, monkeypatch: pytest.MonkeyPatch
@@ -201,7 +212,7 @@ class TestIsRecentMiss:
         _seed_row("old.com", "company", _iso_days_ago(days=31))
         _seed_row("new.com", "company", _iso_days_ago(days=29))
         assert blitz_miss_store.is_recent_miss("old.com") is None
-        assert blitz_miss_store.is_recent_miss("new.com") == "company"
+        assert blitz_miss_store.is_recent_miss("new.com")["kind"] == "company"
 
     def test_ttl_env_below_one_falls_back_to_default(
         self, fresh_db: Path, monkeypatch: pytest.MonkeyPatch
@@ -209,7 +220,113 @@ class TestIsRecentMiss:
         monkeypatch.setenv("BLITZ_MISS_TTL_DAYS", "0")
         _seed_row("new.com", "company", _iso_days_ago(days=29))
         # TTL 0 is invalid -> default 30 applies instead of expiring instantly.
-        assert blitz_miss_store.is_recent_miss("new.com") == "company"
+        assert blitz_miss_store.is_recent_miss("new.com")["kind"] == "company"
+
+
+# ---------------------------------------------------------------------------
+# company_url caching (2026-09-16)
+# ---------------------------------------------------------------------------
+
+
+class TestCompanyUrl:
+    def test_recorded_alongside_contacts_miss(self, fresh_db: Path) -> None:
+        blitz_miss_store.record_miss(
+            "acme.com", "contacts",
+            company_url="https://www.linkedin.com/company/acme",
+        )
+        assert blitz_miss_store.is_recent_miss("acme.com") == {
+            "kind": "contacts",
+            "company_url": "https://www.linkedin.com/company/acme",
+        }
+
+    def test_stripped_before_store(self, fresh_db: Path) -> None:
+        blitz_miss_store.record_miss(
+            "acme.com", "contacts", company_url="  https://x.co/acme  \t",
+        )
+        rows = _fetch_all_rows(fresh_db)
+        assert rows[0][3] == "https://x.co/acme"
+
+    def test_rerecord_without_url_clears_it(self, fresh_db: Path) -> None:
+        """The latest definitive answer wins — a URL-less re-record must not
+        leave a stale URL behind (it would misattribute a company page to a
+        later 'company' miss)."""
+        blitz_miss_store.record_miss(
+            "acme.com", "contacts", company_url="https://x.co/acme",
+        )
+        blitz_miss_store.record_miss("acme.com", "company")
+        rows = _fetch_all_rows(fresh_db)
+        assert len(rows) == 1
+        assert rows[0][1] == "company"
+        assert rows[0][3] is None
+        assert blitz_miss_store.is_recent_miss("acme.com") == {
+            "kind": "company", "company_url": "",
+        }
+
+    def test_rerecord_with_url_refreshes_it(self, fresh_db: Path) -> None:
+        blitz_miss_store.record_miss("acme.com", "contacts")
+        blitz_miss_store.record_miss(
+            "acme.com", "contacts", company_url="https://x.co/acme",
+        )
+        assert blitz_miss_store.is_recent_miss("acme.com") == {
+            "kind": "contacts", "company_url": "https://x.co/acme",
+        }
+
+    def test_dict_return_truthiness_compatible(self, fresh_db: Path) -> None:
+        """The blitz_batch prepass callback contract is ``if is_recent_miss(d):``
+        — a hit must stay truthy (non-empty dict) and a miss falsy (None),
+        exactly like the legacy Optional[str] shape."""
+        blitz_miss_store.record_miss("acme.com", "contacts")
+        assert blitz_miss_store.is_recent_miss("acme.com")
+        assert not blitz_miss_store.is_recent_miss("nope.com")
+
+    def test_seed_marker_without_url_reads_empty_string(
+        self, fresh_db: Path
+    ) -> None:
+        """Markers written before the column existed (or through the 2-arg
+        callback seam) read company_url='' — never crash, never a URL."""
+        _seed_row("legacy.com", "contacts", _iso_days_ago(days=1))
+        info = blitz_miss_store.is_recent_miss("legacy.com")
+        assert info == {"kind": "contacts", "company_url": ""}
+
+
+# ---------------------------------------------------------------------------
+# Schema backfill for pre-company_url tables
+# ---------------------------------------------------------------------------
+
+
+class TestSchemaBackfill:
+    def test_legacy_three_column_table_upgraded(self, fresh_db: Path) -> None:
+        """A table created by the previous (3-column) build is upgraded via
+        ALTER TABLE on first use — record_miss with a URL must not fail."""
+        with sqlite3.connect(str(fresh_db)) as conn:
+            conn.execute(
+                "CREATE TABLE blitz_domain_miss ("
+                "domain TEXT PRIMARY KEY, kind TEXT NOT NULL, miss_at TEXT NOT NULL)"
+            )
+        blitz_miss_store.record_miss(
+            "acme.com", "contacts", company_url="https://x.co/acme",
+        )
+        rows = _fetch_all_rows(fresh_db)
+        assert len(rows) == 1
+        assert rows[0][3] == "https://x.co/acme"
+        assert blitz_miss_store.is_recent_miss("acme.com") == {
+            "kind": "contacts", "company_url": "https://x.co/acme",
+        }
+
+    def test_legacy_table_read_also_upgrades(self, fresh_db: Path) -> None:
+        """A read on a legacy table must self-heal too (fail-open contract
+        must not crash on the missing column)."""
+        with sqlite3.connect(str(fresh_db)) as conn:
+            conn.execute(
+                "CREATE TABLE blitz_domain_miss ("
+                "domain TEXT PRIMARY KEY, kind TEXT NOT NULL, miss_at TEXT NOT NULL)"
+            )
+        # Fresh marker via the (upgraded) public API, then a read that must
+        # SELECT the backfilled company_url column without crashing.
+        blitz_miss_store.record_miss("legacy.com", "company")
+        assert blitz_miss_store.is_recent_miss("legacy.com") == {
+            "kind": "company", "company_url": "",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +342,7 @@ class TestNormalization:
     def test_lookup_variants_hit_same_row(self, fresh_db: Path) -> None:
         blitz_miss_store.record_miss("Example.COM", "company")
         for variant in ("example.com", "  example.com  ", "EXAMPLE.com"):
-            assert blitz_miss_store.is_recent_miss(variant) == "company"
+            assert blitz_miss_store.is_recent_miss(variant)["kind"] == "company"
 
     def test_record_variants_collapse_to_one_row(self, fresh_db: Path) -> None:
         blitz_miss_store.record_miss("Example.COM", "company")

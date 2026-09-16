@@ -14,8 +14,12 @@ Scope:
     exceptions, NEVER when the title gate (not the provider) dropped the
     persons, and nothing at all when the wiring is not armed.
   * Miss skipping (legacy path): an unexpired marker short-circuits d2l AND
-    the waterfall; the row takes the no-LI path (Contacts DB name+domain
-    fallback when full_name is present, else a no_linkedin row).
+    the waterfall. A 'contacts' miss that cached the company URL re-injects
+    it, so the flow continues to the Step-2.4 GetLeads decision-makers
+    fallback (regression: the early no_linkedin return used to fire BEFORE
+    GetLeads, zeroing domains for 30 days). A 'company' miss (or a URL-less
+    'contacts' miss) takes the no-LI path (Contacts DB name+domain fallback
+    when full_name is present, else a no_linkedin row) — unchanged.
   * Phone bundle: first eligible row only (US/unknown country + final email
     + dm LinkedIn URL), ``phone_for_all`` lifts the cap, exceptions are
     swallowed, include_phone=False and ENABLE_PHONE_BUNDLE=false never call.
@@ -177,23 +181,31 @@ def _wire_no_company(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(glc, "lookup_decision_makers", fake_lookup_decision_makers)
 
 
+def _miss_dict(recent: Any) -> Any:
+    """Normalize a stubbed marker into the dict shape _recent_blitz_miss
+    returns: "contacts"/"company" strings or {"kind","company_url"} dicts
+    pass through as dicts; anything else (None) stays as-is."""
+    if isinstance(recent, str):
+        return {"kind": recent, "company_url": ""}
+    return recent
+
+
 def _patch_miss_seams(
     monkeypatch: pytest.MonkeyPatch,
     recent: Any = None,
-) -> list[tuple[str, str]]:
-    """Patch the pipeline miss seams; returns the recorded (domain, kind)
-    pairs. ``recent`` is what _recent_blitz_miss returns (None = no marker)."""
-    recorded: list[tuple[str, str]] = []
+) -> list[tuple[str, str, Any]]:
+    """Patch the pipeline miss seams; returns the recorded
+    (domain, kind, company_url) tuples. ``recent`` is what _recent_blitz_miss
+    returns (None = no marker; "company"/"contacts" shorthand or a full
+    {"kind", "company_url"} dict for URL-carrying markers)."""
+    recorded: list[tuple[str, str, Any]] = []
 
-    def fake_record(domain: str, kind: str) -> None:
-        recorded.append((domain, kind))
-
-    async def _nothing_recent(domain: str):  # never used; clarity only
-        return recent
+    def fake_record(domain: str, kind: str, company_url: Any = None) -> None:
+        recorded.append((domain, kind, company_url))
 
     monkeypatch.setattr(pipeline_mod, "_record_blitz_miss", fake_record)
     monkeypatch.setattr(
-        pipeline_mod, "_recent_blitz_miss", lambda domain: recent,
+        pipeline_mod, "_recent_blitz_miss", lambda domain: _miss_dict(recent),
     )
     return recorded
 
@@ -377,17 +389,21 @@ class TestPrepassConsumption:
 
         rows = _run(go())
         assert waterfall_mock.await_count == 0
-        assert (_DOMAIN, "contacts") in recorded, (
-            "confirmed-zero prepass domain must record a contacts miss when unmarked"
+        assert (_DOMAIN, "contacts", _COMPANY_URL) in recorded, (
+            "confirmed-zero prepass domain must record a contacts miss WITH "
+            "the company URL when unmarked"
         )
         assert len(rows) == 1
         assert rows[0]["dm_full_name"] == "Grace Getleads"
 
-    def test_prepass_zero_persons_keeps_existing_marker(self, monkeypatch):
-        """When a 'contacts' marker already exists the belt-and-suspenders
-        re-record is skipped (strictly no duplicate writes)."""
+    def test_prepass_zero_persons_marker_with_url_not_rerecorded(self, monkeypatch):
+        """When a 'contacts' marker already carries the company URL the
+        belt-and-suspenders re-record is skipped (strictly no duplicate
+        writes)."""
         _wire_no_company(monkeypatch)
-        recorded = _patch_miss_seams(monkeypatch, recent="contacts")
+        recorded = _patch_miss_seams(
+            monkeypatch, recent={"kind": "contacts", "company_url": _COMPANY_URL},
+        )
 
         async def go():
             return await _enrich(
@@ -396,7 +412,27 @@ class TestPrepassConsumption:
             )
 
         _run(go())
-        assert recorded == [], "existing marker must not be re-recorded"
+        assert recorded == [], "URL-carrying marker must not be re-recorded"
+
+    def test_prepass_zero_persons_urlless_marker_backfilled(self, monkeypatch):
+        """A 'contacts' marker recorded through the prepass's 2-arg callback
+        seam has no URL — this flow re-records it WITH the URL (one-time
+        backfill) so later jobs can re-enter the waterfall-empty path."""
+        _wire_no_company(monkeypatch)
+        recorded = _patch_miss_seams(
+            monkeypatch, recent={"kind": "contacts", "company_url": ""},
+        )
+
+        async def go():
+            return await _enrich(
+                blitz_prepass=_prepass_map([]),
+                blitz_miss_skip=True,
+            )
+
+        _run(go())
+        assert (_DOMAIN, "contacts", _COMPANY_URL) in recorded, (
+            "URL-less marker must be backfilled with the resolved company URL"
+        )
 
     def test_prepass_uncovered_domain_uses_legacy_waterfall(self, monkeypatch):
         """A domain NOT in prepass_domains keeps the legacy behavior: its own
@@ -424,6 +460,46 @@ class TestPrepassConsumption:
         assert d2l_mock.await_count == 1, "uncovered domain must run its own d2l"
         assert waterfall_mock.await_count == 1, "uncovered domain must run its own waterfall"
         assert len(rows) == 1
+        assert rows[0]["dm_full_name"] == "Alice Alpha"
+        assert recorded == [], "non-empty waterfall must not record a miss"
+
+    def test_prepass_url_reused_for_uncovered_domain(self, monkeypatch):
+        """FIX 4: a domain whose company URL the prepass resolved but whose
+        person-search chunk failed or was cancelled (NOT in prepass_domains)
+        still reuses the already-paid URL — d2l is NOT re-called — while the
+        waterfall runs normally for persons (mirrors list_builder)."""
+        _wire_no_company(monkeypatch)
+        recorded = _patch_miss_seams(monkeypatch, recent=None)
+        d2l_mock = AsyncMock(return_value={
+            "found": True, "company_linkedin_url": "https://decoy.example",
+        })
+        waterfall_mock = AsyncMock(return_value={"results": [_waterfall_person()]})
+        monkeypatch.setattr(bc, "domain_to_linkedin", d2l_mock)
+        monkeypatch.setattr(bc, "waterfall_icp_search", waterfall_mock)
+        per_row = AsyncMock(return_value=("alice@x.com", "contacts_db_email", {}))
+        prepass_map = {
+            # d2l answer exists (paid for) but the chunk never completed:
+            "company_url_by_domain": {_DOMAIN: _COMPANY_URL},
+            "persons_by_domain": {},
+            "prepass_domains": set(),
+            "skipped_miss": set(),
+        }
+
+        async def go():
+            with patch.object(pipeline_mod, "_resolve_email_for_person", per_row):
+                return await _enrich(
+                    blitz_prepass=prepass_map, blitz_miss_skip=True,
+                )
+
+        rows = _run(go())
+        assert d2l_mock.await_count == 0, (
+            "the prepass-resolved URL must be reused, not re-billed via d2l"
+        )
+        assert waterfall_mock.await_count == 1, (
+            "an uncovered domain still needs the waterfall for persons"
+        )
+        assert len(rows) == 1
+        assert rows[0]["company_linkedin_url"] == _COMPANY_URL
         assert rows[0]["dm_full_name"] == "Alice Alpha"
         assert recorded == [], "non-empty waterfall must not record a miss"
 
@@ -463,8 +539,8 @@ class TestMissRecording:
                 return await _enrich(blitz_miss_skip=True)
 
         rows = _run(go())
-        assert (_DOMAIN, "company") in recorded
-        assert all(kind != "contacts" for _d, kind in recorded)
+        assert (_DOMAIN, "company", None) in recorded
+        assert all(kind != "contacts" for _d, kind, _u in recorded)
         assert rows[0]["row_status"] == pipeline_mod.STATUS_NO_LINKEDIN
 
     def test_d2l_found_true_records_nothing(self, monkeypatch):
@@ -482,7 +558,7 @@ class TestMissRecording:
         _run(go())
         assert recorded == [], "successful lookups must never be marked as misses"
 
-    def test_clean_empty_waterfall_records_contacts_miss(self, monkeypatch):
+    def test_clean_empty_waterfall_records_contacts_miss_with_url(self, monkeypatch):
         recorded = _patch_miss_seams(monkeypatch, recent=None)
         _d2l, per_row = self._wire_legacy(
             monkeypatch,
@@ -495,7 +571,10 @@ class TestMissRecording:
                 await _enrich(blitz_miss_skip=True)
 
         _run(go())
-        assert (_DOMAIN, "contacts") in recorded
+        assert (_DOMAIN, "contacts", _COMPANY_URL) in recorded, (
+            "a clean empty waterfall must cache the resolved company URL so "
+            "later jobs re-enter the waterfall-empty flow"
+        )
 
     def test_waterfall_exception_records_nothing(self, monkeypatch):
         recorded = _patch_miss_seams(monkeypatch, recent=None)
@@ -573,6 +652,82 @@ class TestMissSkipping:
         assert d2l_mock.await_count == 0, "stored miss must skip d2l"
         assert waterfall_mock.await_count == 0, "stored miss must skip the waterfall"
         assert "blitz" not in used, "miss-skip must not record blitz as attempted"
+        assert rows[0]["row_status"] == pipeline_mod.STATUS_NO_LINKEDIN
+
+    def test_contacts_miss_with_url_preserves_getleads_dm_fallback(self, monkeypatch):
+        """FIX 1 regression (CRITICAL): job 2 hitting a stored 'contacts'
+        miss (company resolved, zero Blitz DMs) must skip d2l AND the
+        waterfall but INJECT the cached company URL, so execution continues
+        down the waterfall-empty path — Contacts DB DMs, then the Step-2.4
+        GetLeads decision-makers fallback (domain-keyed, needs no company
+        URL). The early no_linkedin return must NOT fire: domains that
+        yielded GetLeads DMs in job 1 must keep yielding them."""
+        _wire_no_company(monkeypatch)
+        _patch_miss_seams(
+            monkeypatch,
+            recent={"kind": "contacts", "company_url": _COMPANY_URL},
+        )
+        d2l_mock = AsyncMock(return_value={"found": True, "company_linkedin_url": "https://decoy"})
+        waterfall_mock = AsyncMock(return_value={"results": [_waterfall_person()]})
+        monkeypatch.setattr(bc, "domain_to_linkedin", d2l_mock)
+        monkeypatch.setattr(bc, "waterfall_icp_search", waterfall_mock)
+
+        async def fake_dm(http, domain, limit=25):
+            return [{
+                "person_full_name": "Grace Getleads",
+                "first_name": "Grace",
+                "last_name": "Getleads",
+                "linkedin_url": "https://linkedin.com/in/grace",
+                "job_title": "CEO",
+                "email": "grace@gl.com",
+            }]
+
+        dm_mock = AsyncMock(side_effect=fake_dm)
+        monkeypatch.setattr(glc, "lookup_decision_makers", dm_mock)
+        per_row = AsyncMock(return_value=("grace@gl.com", "getleads", {}))
+        used: list[str] = []
+
+        async def go():
+            with patch.object(pipeline_mod, "_resolve_email_for_person", per_row):
+                return await _enrich(
+                    blitz_miss_skip=True, record_provider_use=used.append,
+                )
+
+        rows = _run(go())
+        assert d2l_mock.await_count == 0, "stored miss must skip d2l"
+        assert waterfall_mock.await_count == 0, "stored miss must skip the waterfall"
+        assert dm_mock.await_count == 1, (
+            "GetLeads decision-makers fallback MUST still run on a "
+            "'contacts' miss with a cached URL"
+        )
+        assert "getleads" in used
+        assert len(rows) == 1
+        assert rows[0]["dm_full_name"] == "Grace Getleads"
+        assert rows[0]["row_status"] == pipeline_mod.STATUS_ENRICHED
+        assert rows[0]["company_linkedin_url"] == _COMPANY_URL
+
+    def test_contacts_miss_without_url_keeps_no_linkedin_path(self, monkeypatch):
+        """Degradation path (markers recorded through the URL-less callback
+        seam before a backfill): no URL to inject -> no-LI path, GetLeads
+        DM fallback does NOT run — documented, unchanged semantics."""
+        _wire_no_company(monkeypatch)
+        _patch_miss_seams(
+            monkeypatch, recent={"kind": "contacts", "company_url": ""},
+        )
+        d2l_mock = AsyncMock(return_value={"found": True, "company_linkedin_url": _COMPANY_URL})
+        waterfall_mock = AsyncMock(return_value={"results": [_waterfall_person()]})
+        dm_mock = AsyncMock(return_value=[])
+        monkeypatch.setattr(bc, "domain_to_linkedin", d2l_mock)
+        monkeypatch.setattr(bc, "waterfall_icp_search", waterfall_mock)
+        monkeypatch.setattr(glc, "lookup_decision_makers", dm_mock)
+
+        async def go():
+            return await _enrich(blitz_miss_skip=True)
+
+        rows = _run(go())
+        assert d2l_mock.await_count == 0
+        assert waterfall_mock.await_count == 0
+        assert dm_mock.await_count == 0, "no URL -> no_linkedin return fires first"
         assert rows[0]["row_status"] == pipeline_mod.STATUS_NO_LINKEDIN
 
     def test_recent_miss_with_full_name_uses_contacts_db_fallback(self, monkeypatch):
@@ -764,6 +919,62 @@ class TestPhoneBundle:
         assert all(r["dm_phone"] == "" for r in rows)
 
 
+class TestAttachDmPhonesDirect:
+    """Unit tests on _attach_dm_phones itself: fill-only semantics + str
+    coercion (FIX 2), mirroring list_builder._attach_phone_bundle."""
+
+    def _row(self, **overrides: Any) -> dict[str, Any]:
+        row: dict[str, Any] = {
+            "dm_email": "x@example.com",
+            "dm_linkedin_url": "https://linkedin.com/in/a",
+            "dm_location_country": "US",
+            "dm_phone": "",
+        }
+        row.update(overrides)
+        return row
+
+    def _patch_find_phone(self, monkeypatch, payload=None):
+        calls: list[str] = []
+
+        async def fake_find_phone(http, linkedin_url):
+            calls.append(linkedin_url)
+            return payload if payload is not None else {
+                "found": True, "phone": "+15550001000",
+            }
+
+        monkeypatch.setattr(phone_client_mod, "find_phone", fake_find_phone)
+        return calls
+
+    def test_existing_phone_never_overwritten(self, monkeypatch):
+        """Fill-only: a row whose dm_phone is already set (e.g. stamped by
+        the GetLeads DM overlay) is skipped for free and the cap moves on
+        to the next eligible row."""
+        calls = self._patch_find_phone(monkeypatch)
+        rows = [self._row(dm_phone="+1999"), self._row()]
+
+        asyncio.run(pipeline_mod._attach_dm_phones(
+            MagicMock(), rows, domain="acme.com",
+        ))
+
+        assert rows[0]["dm_phone"] == "+1999", "existing phone must survive"
+        assert calls == ["https://linkedin.com/in/a"], (
+            "only the phone-less row may be looked up"
+        )
+        assert rows[1]["dm_phone"] == "+15550001000"
+
+    def test_phone_stringified_and_stripped(self, monkeypatch):
+        """A non-str/whitespace phone from the API is coerced via
+        str().strip() before assignment (mirrors list_builder)."""
+        self._patch_find_phone(monkeypatch, payload={"found": True, "phone": "  +15550001000  "})
+        rows = [self._row()]
+
+        asyncio.run(pipeline_mod._attach_dm_phones(
+            MagicMock(), rows, domain="acme.com",
+        ))
+
+        assert rows[0]["dm_phone"] == "+15550001000"
+
+
 # ---------------------------------------------------------------------------
 # 5. Prepass launch (run_pipeline)
 # ---------------------------------------------------------------------------
@@ -793,7 +1004,7 @@ async def _fake_route(*args, **kwargs):
     }
 
 
-def _drive(monkeypatch, tmp_path, rows, **pipeline_kwargs):
+def _drive(monkeypatch, tmp_path, rows, max_results: int = 5, **pipeline_kwargs):
     """Run run_pipeline with every downstream side effect stubbed."""
     fake_enrich, enrich_calls = _fake_enrich_domain()
     progress: list[dict[str, Any]] = []
@@ -817,7 +1028,7 @@ def _drive(monkeypatch, tmp_path, rows, **pipeline_kwargs):
             name_col=None,
             first_name_col=None,
             last_name_col=None,
-            max_results=5,
+            max_results=max_results,
             on_progress=on_progress,
             use_email_cache=False,
             **full_kwargs,
@@ -862,6 +1073,36 @@ class TestPrepassLaunch:
         monkeypatch.setattr(blitz_batch, "blitz_find_people_prepass", fake_prepass)
         _drive(monkeypatch, tmp_path, _run_pipeline_rows(5))
         assert launched["n"] == 0, "5 domains is not > 5 — no prepass"
+
+    def test_target_per_company_follows_max_results(self, monkeypatch, tmp_path):
+        """FIX 3: run_pipeline must pass the job's max_results as
+        target_per_company (mirrors list_builder) so a job asking >5 DMs is
+        not silently capped at blitz_batch's default of 5 for
+        prepass-covered domains."""
+        launched: dict[str, Any] = {}
+
+        async def fake_prepass(http, domains, **kwargs):
+            launched["kwargs"] = kwargs
+            return {"company_url_by_domain": {}, "persons_by_domain": {},
+                    "prepass_domains": set(), "skipped_miss": set()}
+
+        monkeypatch.setattr(blitz_batch, "blitz_find_people_prepass", fake_prepass)
+        _drive(monkeypatch, tmp_path, _run_pipeline_rows(6), max_results=12)
+        assert launched["kwargs"]["target_per_company"] == 12
+
+    def test_target_per_company_defaults_safely(self, monkeypatch, tmp_path):
+        """A non-positive max_results falls back to the blitz_batch default
+        of 5 rather than passing 0/None through."""
+        launched: dict[str, Any] = {}
+
+        async def fake_prepass(http, domains, **kwargs):
+            launched["kwargs"] = kwargs
+            return {"company_url_by_domain": {}, "persons_by_domain": {},
+                    "prepass_domains": set(), "skipped_miss": set()}
+
+        monkeypatch.setattr(blitz_batch, "blitz_find_people_prepass", fake_prepass)
+        _drive(monkeypatch, tmp_path, _run_pipeline_rows(6), max_results=0)
+        assert launched["kwargs"]["target_per_company"] == 5
 
     def test_not_launched_with_force_provider(self, monkeypatch, tmp_path):
         launched = {"n": 0}
