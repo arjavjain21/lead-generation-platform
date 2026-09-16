@@ -1,6 +1,6 @@
 # ListBuilding Platform — Full API Reference
 
-- **Updated on:** 2026-07-16
+- **Updated on:** 2026-09-16
 - **Updated by:** @Arjav Jain
 - **Scope:** Every user-facing endpoint on https://listbuilding.eagleinfoservice.com/
 - **Base URL:** `https://listbuilding.eagleinfoservice.com`
@@ -971,6 +971,10 @@ curl https://listbuilding.eagleinfoservice.com/api/quota \
 }
 ```
 
+### E.5 Blitz fair-use meter: `GET /api/enrichment/blitz/fair-use`
+
+Latest snapshot of the **Blitz 15M records/month fair-use gauge** plus the last 31 UTC days of history (burn rate). Captured passively by the call tracker from every 2xx Blitz response — no extra Blitz cost. Auth: JWT or API key. `{"enabled": bool, "snapshot": {endpoint, records_used, records_remaining, next_reset_at, updated_at} | null, "history": [{day, records_remaining}]}` — `enabled: false` before the first metered response. Relevant cost context: Section I.4 billing truths.
+
 ---
 
 ## Section F: Rate Limits & Quotas
@@ -1225,6 +1229,170 @@ This UI maps to the `providers` field in `ProviderToggleRequest` (same semantics
 
 ---
 
+## Section I — TAM Flow + Blitz Summer Release Additions (2026-09-16)
+
+Shipped 2026-09-16 (commits `cb7b478`…`083ed88`): a new TAM-by-People discovery endpoint, three optional request fields on the enrichment surface, two new output CSV columns, a job-level Blitz find-people prepass, a persistent Blitz miss-store, and an optional DM phone bundle. **Every cost-bearing behavior is opt-in per request** — with all-new fields left at their defaults, responses and CSVs are byte-identical to the 2026-09-07 behavior.
+
+> Naming note: `tam_routes.py` / `tam_flow.py` label this "new Flow 2" — it is a **new, fourth flow**, distinct from the company-search "Flow 2" in B.4. No existing flow was renumbered.
+
+### I.1 TAM by People: `POST /api/enrichment/flows/tam`
+
+Persona + firmographic company discovery over Blitz `POST /v2/company/tam-by-people`. You describe **who** (persona: titles, seniority, location) and **what** (firmographics: industry, size, revenue, HQ), and the flow pages through Blitz writing an incremental, deduplicated company CSV — one row per company with a `matched_people` count. Optionally chains a Flow-1 domain-enrichment job over the discovered domains.
+
+**Auth:** JWT Bearer or API key — same dependency as the other flow endpoints.
+
+**Cost (important):** Blitz bills **1 fair-use record per company returned** — an empty page costs 0. Page size is fixed at 50 (cursor-paginated). `max_companies` (default 1000, hard cap 10000) is therefore a **budget ceiling enforced mid-page**, not just a page limit: the loop stops the moment the cap is reached and never asks for the next cursor. Worst case = `max_companies` records.
+
+#### Request body (`TamRequest`)
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `company` | object | No | `{}` | Company-side filters (`TamCompanyFilters`, table below). |
+| `people` | object | No | `{}` | People-side filters (`TamPeopleFilters`, table below). |
+| `max_companies` | integer | No | 1000 | Budget ceiling on companies pulled (1–10000). Cost ceiling: each returned company bills 1 Blitz record. |
+| `create_enrichment_job` | boolean | No | false | When true and the run found companies **with domains**, chain a Flow-1 domain-enrichment job over them (see "Chaining" below). |
+| `titles` | array of strings | No | — | Titles for the chained Flow-1 job (max 50). |
+| `max_decision_makers` | integer | No | 5 | Max contacts per domain in the chained Flow-1 job (1–25). |
+| `providers` | array of strings | No | all enabled | Provider allowlist for the chained Flow-1 job (validated against the platform's `VALID_PROVIDERS`; unknown → 400). |
+| `exact_titles` | boolean | No | false | Send the chained job's titles as exact (`[CEO]`) matches instead of fuzzy (see I.2). |
+
+**At least one company or people filter is required** — a zero-filter request is refused with **HTTP 400** ("an unbounded TAM pull would bill up to max_companies Blitz records with no targeting").
+
+#### `TamCompanyFilters` (every field optional; unknown key → 422)
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `linkedin_url` | array of strings | Restrict the TAM to specific company LinkedIn pages (max 50). |
+| `name_include` / `name_exclude` | array of strings | Company-name keyword include/exclude. |
+| `industry_include` / `industry_exclude` | array of strings | Fixed industry taxonomy include/exclude. |
+| `type_include` / `type_exclude` | array of strings | Company type (e.g. `"Privately Held"`, `"Public Company"`). |
+| `employee_range` | array of strings | LinkedIn size-band labels (e.g. `"11-50"`, `"51-200"`). |
+| `employee_count_min` / `employee_count_max` | integer | Exact headcount bounds (≥ 0). Use `employee_range` for bands. |
+| `min_linkedin_followers` | integer | Minimum LinkedIn follower count (≥ 0). |
+| `revenue_min` / `revenue_max` | integer | Estimated revenue bounds, USD (≥ 0). |
+| `keywords_include` / `keywords_exclude` | array of strings | Free-text keyword include/exclude over the company profile. |
+| `founded_year_min` / `founded_year_max` | integer | Founding year bounds (≥ 0). |
+| `hq_country_code` | array of strings | HQ country codes (nested under `hq` in the Blitz payload). |
+| `hq_continent` | array of strings | HQ continent. |
+| `hq_sales_region` | array of strings | HQ sales region. |
+
+#### `TamPeopleFilters` (every field optional; unknown key → 422)
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `job_title_include` / `job_title_exclude` | array of strings | Job-title include/exclude. Bare tokens are fuzzy; the request-level `exact_titles` flag bracket-wraps includes server-side (excludes stay fuzzy). |
+| `job_levels` | array of strings | Seniority — must be from the Blitz taxonomy: `C-Team`, `VP`, `Director`, `Manager`, `Staff`, `Other`. Unknown value → 422 with the valid list. |
+| `min_per_company` | integer | Drop companies with fewer matched people than this (0–25). |
+| `location_country_code` | array of strings | Person-location country codes. |
+
+Both filter models are `extra="forbid"` — an unknown filter key is a **422** with a clear error, never a silently-dropped field. The Blitz payload is built only from these whitelisted fields (never from a raw client dict).
+
+#### Example
+
+```bash
+curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/flows/tam \
+  -H "X-API-Key: lgp_YOUR_KEY" -H "Content-Type: application/json" \
+  -d '{
+    "company": {"industry_include": ["Software"], "employee_range": ["51-200"], "hq_country_code": ["US"]},
+    "people": {"job_title_include": ["VP Engineering", "Head of Engineering"], "job_levels": ["VP"], "min_per_company": 1},
+    "max_companies": 500,
+    "create_enrichment_job": true,
+    "titles": "VP Engineering,Head of Engineering",
+    "max_decision_makers": 3,
+    "exact_titles": true
+  }'
+```
+
+#### Response
+
+```json
+{ "job_id": "<uuid>", "flow": "tam", "total": 500 }
+```
+
+`total` mirrors `max_companies` — it is the budget ceiling, not the result count. The real count is unknown until the cursor runs dry; read it from the job's `result_count` / the CSV.
+
+#### Job lifecycle (reuses the enrichment job endpoints — no new endpoints)
+
+TAM jobs are plain `job_type='enrichment'` rows (`source_type='tam_flow'`), so **every endpoint in Section B.6–B.16 serves them unchanged**: `GET /api/enrichment/jobs/{job_id}` (status), the SSE stream (JWT-only, as always), `POST /jobs/{job_id}/cancel`, `GET /jobs/{job_id}/download`, `/partial-download`, `/shards` — all of it.
+
+- Statuses: the existing literals only — `queued` → `running` → `done` | `partial` | `failed` | `cancelled`.
+- Progress events (SSE / job events): one per page — `{"stage": "tam_page", "page": N, "companies_found": N, "has_next_page": bool, "message": "..."}`. `processed` tracks pages fetched.
+- The CSV is written incrementally (header + per-page flush/fsync), so it is live-downloadable while running, and a cancel between pages keeps completed pages (`status='partial'`). A live cursor + row count is persisted per page for crash diagnostics.
+- **Output CSV columns (19, in order):** `name, domain, website, linkedin_url, industry, type, size, employees_on_linkedin, followers, founded_year, hq_city, hq_state, hq_country_code, hq_region, revenue, slogan, employee_growth_1y, matched_people`. `domain` is nullable in the Blitz API — never assume it.
+
+#### Chaining into Flow-1 enrichment
+
+With `create_enrichment_job: true`, after the TAM pages complete the platform creates a **Flow-1 domain-enrichment job** over the discovered domains, reusing the exact `/flows/domain-enrich` creation + execution code path:
+
+- Only companies **with a non-empty `domain`** are chained; rows are deduped by domain with normalization (mirroring Flow-1 pre-processing). No domains → chain skipped (`chain_skipped: "no_companies_with_domain"`), the TAM export itself still completes.
+- The chained job carries `parent_job_id` = the TAM job and `source_type='tam_chain'` — visible in the jobs list; its own SSE/cancel/download work as usual.
+- `titles` / `max_decision_makers` / `providers` / `exact_titles` configure the chained job. `exact_titles: true` bracket-wraps the titles (`[CEO]`) for server-side exact matching.
+- A chain failure never loses the TAM export — the job still ends `done` with the CSV, and the skip reason is logged.
+
+### I.2 New optional request fields — `exact_titles`, `include_phone`, `phone_for_all`
+
+All three default **false** (byte-identical behavior when omitted). Accepted on:
+
+| Field | `POST /enrich` | `POST /flows/domain-enrich` (Flow 1) | `POST /by-linkedin-v2` (Flow 3) |
+| --- | :---: | :---: | :---: |
+| `exact_titles` | ✅ | ✅ | — |
+| `include_phone` | ✅ | ✅ | ✅ |
+| `phone_for_all` | ✅ | ✅ (effective here) | — |
+
+**`exact_titles` (default false).** When true, title tokens are sent to Blitz bracket-wrapped — `["CEO"]` — which is a server-side **exact** (case- and accent-insensitive) title match instead of the default fuzzy/contains match. This is the cheapest fair-use lever for strict-title jobs: the server returns only people whose title *is* one of the listed titles, instead of a fuzzy superset the local title gate then discards. Exclude filters stay fuzzy (an exclusion should stay broad). On Flow-1 jobs that run the find-people prepass (I.4), the includes are bracket-wrapped there too.
+
+**`include_phone` (default false) — paid per call.** After a domain's output rows are final, the platform calls the **Blitz Direct Phone** endpoint for the first eligible row and stamps `dm_phone` on success (the column already exists in the CSV contract). Eligibility is checked *before* the call: the row must have a final `dm_email`, a DM LinkedIn URL, and a US or empty/unknown location country.
+
+> **Cost warning:** the phone endpoint bills **1 Blitz fair-use record per CALL, regardless of found** — a not-found answer still bills, which is why eligibility is pre-checked. Coverage is **US-only** (the Direct Phone endpoint has no international numbers); non-US rows are skipped for free. A global kill switch exists server-side (`ENABLE_PHONE_BUNDLE`, default true).
+
+**`phone_for_all` (default false).** Lifts the phone cap from 1 call per domain to **one call per eligible row** — same cost per call, more calls. No effect when `include_phone` is false. Behavioral today on the Flow-1 CSV path.
+
+**Rollout note (honest status):** the fields are live in all three request schemas and validated; the *behavioral* wiring is live on **Flow 1** (`/flows/domain-enrich` → `list_builder`) and the legacy CSV-job path (`/by-domains` → `pipeline`). On `/enrich` and `/by-linkedin-v2` the flags are accepted and threaded through a forward-compat shim that currently drops them at the callee — accepted, no error, no cost — until the parallel signature wave lands.
+
+### I.3 New CSV columns — `dm_previous_companies`, `dm_previous_titles`
+
+Every enrichment job CSV (Flow 1, Flow 3, and the legacy job paths) now ends with two additional columns, appended **after** the seg fields (same resume-compat reason: carry-over rows from pre-feature partials get blanks):
+
+| Column | Description |
+| --- | --- |
+| `dm_previous_companies` | `" \| "-joined company names of the contact's NON-current roles, from the Blitz `experiences[]` list, in provider order (most-recent-first). Duplicates kept — two stints at one company is signal. |
+| `dm_previous_titles` | `" \| "-joined job titles of the non-current roles, deduplicated case-insensitively (first occurrence wins, order preserved). |
+
+Derivation rules (shared single implementation in `response_normalizer.previous_companies_titles`): only entries with `job_is_current` falsy count — the current role already lands in `dm_title`. Both fields are capped at 500 characters each. Empty/absent `experiences[]` yields empty strings.
+
+**Example tail of a row:**
+
+```
+...,seg_classification,seg_provider,dm_previous_companies,dm_previous_titles
+...,direct_google,Google,Acme Corp | Globex Inc,VP Sales | Head of Sales
+```
+
+Both fields also ride into the Contacts DB write-back as contact custom fields.
+
+### I.4 Behavior notes — prepass, miss-store, 422 guard, billing truths
+
+**Find-people prepass (Flow-1 jobs with more than 5 domains).** When `ENABLE_BLITZ_FIND_PEOPLE_BATCH` (default true), Blitz is enabled, and no `force_provider` is set, the job first covers its domains in bulk: one domain→LinkedIn lookup per fresh domain, then one `POST /v2/search/people` call per **50 companies** (cursor-paginated until every company has ~5 people or 6 pages). Covered domains skip their per-domain Blitz d2l + waterfall entirely; their people flow through the same title gate and collector capture as waterfall results. Any prepass failure (429/5xx/network, per-chunk) degrades to the legacy per-domain waterfall — strictly additive, never a new failure mode. Title filters come from the same gate source as the waterfall; `exact_titles` applies the bracket-wrap server-side.
+
+**Blitz miss-store (persistent negative cache).** A `blitz_domain_miss` table (in `jobs.db`) records **definitive** Blitz not-found answers per domain: `kind='company'` (the domain→LinkedIn lookup returned `found=false`) or `kind='contacts'` (company resolved but zero decision-makers). Replays of a marked domain **skip Blitz entirely — 0 records** until the TTL expires. Semantics:
+
+- Markers are written ONLY on conclusive answers — never on exceptions, 429/5xx/402, timeouts, breaker trips, or cancels (a transient failure is not a miss; recording one would poison the domain for TTL days).
+- TTL: `BLITZ_MISS_TTL_DAYS` (default **30**; Blitz claims +40% coverage this summer, so older misses must be retried). An expired marker reads as absent — the domain is retried. Wiring gate: `ENABLE_BLITZ_MISS_SKIP` (default true).
+
+**422 URL guard (zero-cost).** Malformed person LinkedIn URLs are rejected *before* the Blitz `/v2/enrichment/email` call and return the not-found shape at zero cost. (30-day telemetry showed 215,898 HTTP 422s on that endpoint from bad URLs — none of them bill, but they burned latency and log noise.)
+
+**Blitz billing truths (verified against Blitz docs — encode these into cost models):**
+
+| Endpoint family | Billing |
+| --- | --- |
+| Search endpoints (`waterfall-icp-keyword`, `/v2/search/people`, `/v2/company/tam-by-people`, company search) | **1 record per result RETURNED** — an empty result set is free |
+| `/v2/enrichment/email` and `/v2/enrichment/phone` | **1 record per CALL** — bills even when the answer is not-found |
+| `/v2/enrichment/person` and `domain-to-linkedin` | **1 record on success only** — a clean not-found is free |
+| Errors | **Never bill** |
+
+**TITLE_SEARCH_POOL default is now 12** (was 50). This is the *free Contacts DB* candidate pool fetched to feed the local title gate — **not a Blitz billing knob**. Lowering it trims free-side fetch width; Blitz spend is governed by the billing table above, `exact_titles`, the prepass, and the miss-store.
+
+---
+
 ## Error Code Reference
 
 ### HTTP 400 — Bad Request
@@ -1278,6 +1446,7 @@ Plain-text message about daily quota. No `Retry-After` header.
 
 | Date | Change |
 | --- | --- |
+| 2026-09-16 | **Section I added — TAM flow + Blitz summer release additions.** New `POST /api/enrichment/flows/tam` (TAM-by-People: persona + firmographic filters → deduplicated company CSV with `matched_people` counts; 1 Blitz record/company, 50/page cursor pagination, optional Flow-1 chaining; reuses the Section B job endpoints). New optional request fields `exact_titles` / `include_phone` / `phone_for_all` on `/enrich` + Flow 1 (`include_phone` also Flow 3; defaults all false; phone bills 1 Blitz record per call, US-only). New trailing CSV columns `dm_previous_companies` / `dm_previous_titles`. Under the hood: job-level Blitz find-people prepass (50 companies/call), persistent miss-store `blitz_domain_miss` (30-day TTL, definitive misses only), 422 URL guard, `TITLE_SEARCH_POOL` 50→12, and the Blitz billing truths documented in I.4. |
 | 2026-09-07 | **Enrichment API-key surface opened** — every `/api/enrichment/*` endpoint now accepts `X-API-Key` (or key-as-Bearer) in addition to JWT: upload, all job endpoints (create/list/status/download/partial/shards/cancel/restart/resume-info/recover-partial), Flow 1 `/flows/domain-enrich`, Flow 3 `/by-linkedin-v2`, legacy `/by-*` + `/jobs` + `/search/companies/enrich`, `/search/employees`, `/search/companies`, `/search/options`, `/website-scrape/status`, `/stats/sources`. **Exception:** `GET /jobs/{job_id}/stream` (SSE) stays JWT-only — API-key clients poll `GET /jobs/{job_id}`. `/flows/help` auth labels updated; missing `/search/employees` entry added. MCP oracle 401 guidance + quota text corrected (enrichment is not metered by the 50K/day quota). |
 | 2026-08-30 | **Section H added — External Scraper API** (`/api/external/scraper/*`, API-key auth, `{success,data,error,meta}` envelope): estimate, cache (free instant hits), job create/list/status/results (JSON rows)/cancel, quota. 5 MCP **action tools** added to the ListBuilding MCP (Section H.9; `scrape_local_businesses` defaults to dry_run). Scraper shard/partial endpoints added to D.4 table. |
 | 2026-07-24 | Documented crash-safety model + resume/recovery endpoints: `/resume-info` (B.13), `/recover-partial` (B.14), `/shards` (B.15), `/shard/{shard}` (B.16). Updated `/download` (B.9) and `/restart` (B.11) to reflect partial/failed support and true-resume behavior. |

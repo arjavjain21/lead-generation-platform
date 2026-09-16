@@ -198,11 +198,15 @@ def get_schema(model_name: str) -> str:
     - ``LinkedInV2Request`` — POST /api/enrichment/by-linkedin-v2
     - ``CompanySearchRequest`` — POST /api/enrichment/search/companies
     - ``EmployeeSearchRequest`` — POST /api/enrichment/search/employees (Find People; `universe` filter: local_business/b2b_agency/saas/ecom)
+    - ``TamRequest`` — POST /api/enrichment/flows/tam (TAM by People, 2026-09-16)
+    - ``TamCompanyFilters`` — company-side filters nested inside TamRequest
+    - ``TamPeopleFilters`` — people-side filters nested inside TamRequest
 
     Args:
         model_name: The Pydantic class name (case-sensitive).
     """
     from enrichment import routes as enr
+    from enrichment import tam_routes
 
     model_map = {
         "UnifiedEnrichRequest": enr.UnifiedEnrichRequest,
@@ -210,6 +214,10 @@ def get_schema(model_name: str) -> str:
         "ProviderToggleRequest": enr.ProviderToggleRequest,
         "LinkedInV2Request": enr.LinkedInV2Request,
         "CompanySearchRequest": enr.CompanySearchRequest,
+        "EmployeeSearchRequest": enr.EmployeeSearchRequest,
+        "TamRequest": tam_routes.TamRequest,
+        "TamCompanyFilters": tam_routes.TamCompanyFilters,
+        "TamPeopleFilters": tam_routes.TamPeopleFilters,
     }
 
     if model_name not in model_map:

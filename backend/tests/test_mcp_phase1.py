@@ -226,5 +226,77 @@ class TestMCPAuthMiddleware(unittest.TestCase):
         self.assertEqual(status, 401)
 
 
+class TestMCPTamOracleWiring(unittest.TestCase):
+    """2026-09-16 additions: TAM flow + past-experiences discovery in the docs oracle.
+
+    The oracle is read-only documentation — these tests pin the intent
+    keywords and schema maps so the new endpoint stays discoverable.
+    """
+
+    def setUp(self) -> None:
+        os.environ.setdefault("JWT_SECRET", "test-secret-for-mcp-phase1")
+
+    def test_tam_intent_keywords_point_at_flow(self) -> None:
+        from mcp_oracle import tools
+
+        for keyword in ("tam", "icp universe", "universe builder",
+                        "companies with persona", "build company list"):
+            self.assertEqual(
+                tools._INTENT_KEYWORDS.get(keyword),
+                ["/api/enrichment/flows/tam"],
+                f"keyword {keyword!r} must route to the TAM flow",
+            )
+
+    def test_past_experiences_keywords_cover_enrich_surface(self) -> None:
+        from mcp_oracle import tools
+
+        expected = [
+            "/api/enrichment/enrich",
+            "/api/enrichment/flows/domain-enrich",
+            "/api/enrichment/by-linkedin-v2",
+        ]
+        for keyword in ("previous companies", "past experiences"):
+            self.assertEqual(
+                sorted(tools._INTENT_KEYWORDS.get(keyword, [])),
+                sorted(expected),
+                f"keyword {keyword!r} must cover /enrich + Flow 1 + Flow 3",
+            )
+
+    def test_validate_request_supports_tam_endpoint(self) -> None:
+        from mcp_oracle import tools
+
+        result = tools.validate_request(
+            "/api/enrichment/flows/tam",
+            '{"people": {"job_levels": ["VP"]}, "max_companies": 10}',
+        )
+        self.assertIn("looks valid", result)
+
+    def test_validate_request_flags_unknown_tam_field(self) -> None:
+        from mcp_oracle import tools
+
+        result = tools.validate_request(
+            "/api/enrichment/flows/tam",
+            '{"max_companies": 10, "not_a_field": true}',
+        )
+        self.assertIn("Unknown field", result)
+        self.assertIn("not_a_field", result)
+
+    def test_schemas_resource_model_map_includes_tam_and_employee_search(self) -> None:
+        # get_schema is the resource function; the model map lives in its
+        # closure. Exercise both lookups directly to pin the mapping.
+        from enrichment import routes as enr
+        from enrichment import tam_routes
+        from mcp_oracle import resources
+
+        for model_name in ("TamRequest", "TamCompanyFilters", "TamPeopleFilters"):
+            schema = resources.get_schema(model_name)
+            self.assertIn('"title"', schema, f"{model_name} schema must be JSON")
+        employee = resources.get_schema("EmployeeSearchRequest")
+        self.assertIn("EmployeeSearchRequest", employee)
+        # Guard against silent drift: the referenced classes really exist.
+        self.assertTrue(hasattr(tam_routes, "TamRequest"))
+        self.assertTrue(hasattr(enr, "EmployeeSearchRequest"))
+
+
 if __name__ == "__main__":
     unittest.main()

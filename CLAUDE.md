@@ -144,7 +144,7 @@ Each enrichment source has different cost/quality tradeoffs:
 | API | Rate Limit | Priority | Purpose |
 |-----|------------|----------|---------|
 | **Contacts DB** | 75 RPS | 1st (free) | Domain → company → contacts with emails |
-| **Blitz** | 50 RPS per endpoint (legacy plan 2026-09; per-lane caps `BLITZ_RPS` default + `BLITZ_RPS_EMAIL/_DISCOVERY/_SEARCH`; FUP 15M records/mo, metered live in `blitz_fair_use`) | 2nd | LinkedIn-based enrichment with title cascade |
+| **Blitz** | 50 RPS per endpoint (legacy plan 2026-09; per-lane caps `BLITZ_RPS` default + `BLITZ_RPS_EMAIL/_DISCOVERY/_SEARCH`; FUP 15M records/mo, metered live in `blitz_fair_use`) | 2nd | LinkedIn-based enrichment with title cascade. Summer release (2026-09-16): find-people batch prepass (`/v2/search/people`, 50 companies/call, jobs with >5 domains), TAM-by-People flow (`/flows/tam`, 1 record/company), 30-day domain-miss negative cache (`blitz_domain_miss`, definitive misses only), optional DM phone bundle (`include_phone`, 1 record/call, US-only). **Billing truths:** search endpoints bill 1 record per returned result (empty = free); `/v2/enrichment/email` + `/v2/enrichment/phone` bill 1 record per CALL (miss still bills); `/v2/enrichment/person` + domain-to-linkedin bill on success only; errors never bill |
 | **GetLeads** | batch 100 (~10k/min) | 3rd | Verified DM emails + bonus phones (batch of 100, unlimited plan); from-linkedin fallback in the LinkedIn-only arm (after Blitz); decision-makers domain fallback when contacts_db + Blitz waterfall both find nobody (`lookup_decision_makers`, C-Team/VP/Director, 1 credit/record vs fair use) |
 | **smartprospect** | shared cross-process 1900 RPM (`SMARTPROSPECT_RATE_LIMIT_RPM`, acct 2000/min) | 4th | Person-email finder, batch up to 10, self-verifying |
 | **WizLeads** | 10 RPS | 5th | Catch-all verified email enrichment |
@@ -180,6 +180,7 @@ Both accept request-time cascade restrictors (mutually exclusive): `force_provid
 **Flow 1:** `POST /api/enrichment/flows/domain-enrich` - Domain CSV → decision makers
 **Flow 2:** `POST /api/enrichment/flows/search` - Company search by criteria
 **Flow 3:** `POST /api/enrichment/flows/linkedin-enrich` - Bulk LinkedIn enrichment (3 steps per URL: Contacts DB → Blitz → GetLeads from-linkedin fallback, with a GetLeads batch pre-pass of 100/chunk)
+**TAM flow:** `POST /api/enrichment/flows/tam` (2026-09-16) - TAM-by-People: persona + firmographic filters → deduplicated company CSV with `matched_people` counts (job-based `job_type='enrichment'`; 1 Blitz record/company, cursor-paginated 50/page; optional chaining into Flow-1 enrichment for rows with domains; `routes: tam_routes.py`, runner: `tam_flow.py`)
 
 **Concurrency:** 25 domains, 15 LinkedIn URLs, 5 searches in parallel
 
@@ -246,6 +247,13 @@ WEBSITE_SCRAPE_TIMEOUT_S=300
 ENABLE_EXTERNAL_SCRAPER_API=true
 ENABLE_MCP_SCRAPER_TOOLS=true
 MAX_EXTERNAL_SCRAPER_TASKS=15000
+
+# Blitz summer release (2026-09-16) — full docs: API reference Section I
+ENABLE_BLITZ_FIND_PEOPLE_BATCH=true   # Flow-1 jobs >5 domains prepass via /v2/search/people (50 companies/call)
+BLITZ_MISS_TTL_DAYS=30                # blitz_domain_miss negative-cache TTL (definitive misses only, replays skip Blitz)
+ENABLE_BLITZ_MISS_SKIP=true           # arm the miss-store wiring in production callers (pipeline + list_builder)
+ENABLE_PHONE_BUNDLE=true              # master switch for include_phone DM phone lookups (per-request opt-in)
+TITLE_SEARCH_POOL=12                  # free contacts_db candidate pool feeding the title gate (NOT a Blitz billing knob)
 ```
 
 ## PostgreSQL Companion Database
@@ -426,3 +434,6 @@ This project changes often; do not rely on a frozen snapshot here. For current s
   `~/.claude/projects/-var-www-lead-generation-platform/memory/`.
 - **Live health:** `curl -s http://localhost:8765/api/health` and `./monitor.sh`.
 - **Canonical API contract:** `docs/ListBuilding_Platform_Full_API_Reference_2026-07-16.md`.
+- **2026-09-16 shipped:** TAM-by-People flow (`/flows/tam`), `exact_titles`/`include_phone`/`phone_for_all`
+  request fields, `dm_previous_companies`/`dm_previous_titles` CSV columns, Blitz find-people prepass +
+  miss-store + phone bundle — full contract in **Section I** of the API reference.

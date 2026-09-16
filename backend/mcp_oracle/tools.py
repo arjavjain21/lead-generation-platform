@@ -97,6 +97,25 @@ _INTENT_KEYWORDS: dict[str, list[str]] = {
     "b2b leads": ["/api/enrichment/search/employees"],
     "local leads": ["/api/enrichment/search/employees"],
     "ecommerce leads": ["/api/enrichment/search/employees"],
+
+    # TAM by People — persona + firmographic company discovery (2026-09-16)
+    "tam": ["/api/enrichment/flows/tam"],
+    "icp universe": ["/api/enrichment/flows/tam"],
+    "universe builder": ["/api/enrichment/flows/tam"],
+    "companies with persona": ["/api/enrichment/flows/tam"],
+    "build company list": ["/api/enrichment/flows/tam"],
+
+    # Past-experiences fields (dm_previous_companies / dm_previous_titles, 2026-09-16)
+    "previous companies": [
+        "/api/enrichment/enrich",
+        "/api/enrichment/flows/domain-enrich",
+        "/api/enrichment/by-linkedin-v2",
+    ],
+    "past experiences": [
+        "/api/enrichment/enrich",
+        "/api/enrichment/flows/domain-enrich",
+        "/api/enrichment/by-linkedin-v2",
+    ],
 }
 
 
@@ -616,11 +635,13 @@ def validate_request(endpoint: str, payload_json: str) -> str:
         return f"❌ Invalid JSON: {e}"
 
     from enrichment import routes as enr
+    from enrichment import tam_routes
 
     schema_map = {
         "/api/enrichment/enrich": enr.UnifiedEnrichRequest,
         "/api/enrichment/jobs": enr.StartJobRequest,
         "/api/enrichment/flows/domain-enrich": enr.ProviderToggleRequest,
+        "/api/enrichment/flows/tam": tam_routes.TamRequest,
     }
 
     model = schema_map.get(endpoint)
