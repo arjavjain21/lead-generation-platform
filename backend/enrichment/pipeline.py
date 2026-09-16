@@ -13,6 +13,15 @@ Per-domain workflow:
   4. If no decision makers found: BetterEnrich company email (final fallback)
   5. If no email from above: return not_found
 
+Job-level accelerators (Wave 2/3):
+  - Blitz find-people prepass: a bulk /v2/search/people sweep before the
+    per-domain gather covers the job's domains so covered domains skip
+    their per-domain d2l + waterfall calls (blitz_batch module).
+  - Persistent Blitz miss markers: definitive not-found answers are stored
+    (blitz_miss_store, 30-day TTL) and re-asked domains skip Blitz entirely.
+  - Optional DM phone bundle: Blitz Direct Phone on the first eligible row
+    per domain (US-only coverage, 1 record per call).
+
 Supports incremental CSV writes for partial downloads.
 """
 
@@ -30,6 +39,8 @@ from typing import Any, Callable, Optional
 import httpx
 
 from . import blitz_client
+from . import blitz_batch
+from . import blitz_miss_store
 from . import contacts_client
 from . import better_enrich_client
 from . import prospeo_client
@@ -351,6 +362,12 @@ def _normalize_source(source: str) -> str:
 # DOMAIN_CONCURRENCY = 25 (standardized with list_builder.py for consistency)
 DOMAIN_CONCURRENCY = 25  # Was 5, increased to match list_builder.py
 EMAIL_CONCURRENCY = 10
+
+# Wave 2: the job-level Blitz find-people prepass only pays off past a handful
+# of domains (below that, the per-domain waterfall's d2l cache reuse makes the
+# extra prepass bookkeeping worthless). Strictly MORE than this many unique
+# domain-only rows arms the prepass.
+_PREPASS_MIN_DOMAINS = 5
 
 
 # ---------------------------------------------------------------------------
@@ -2716,6 +2733,222 @@ async def _resolve_email_for_person(
 # Per-domain enrichment
 # ---------------------------------------------------------------------------
 
+def _blitz_miss_wiring_armed() -> bool:
+    """Resolve the ENABLE_BLITZ_MISS_SKIP gate (default true).
+
+    The miss store writes to jobs.db via shared.db — whose DB_PATH points at
+    the LIVE database even under pytest (see backend/conftest.py). The env
+    kill-switch therefore only disables the wiring wholesale (TTL flip,
+    outage debugging); test isolation comes from ``_enrich_domain``'s
+    ``blitz_miss_skip`` parameter defaulting to False so direct-call tests
+    never touch the store, while ``run_pipeline`` (the only production
+    caller) arms it from this flag.
+    """
+    return os.environ.get("ENABLE_BLITZ_MISS_SKIP", "true").strip().lower() not in (
+        "false", "0", "no",
+    )
+
+
+def _record_blitz_miss(domain: str, kind: str) -> None:
+    """Best-effort miss-marker write (single seam for tests to patch).
+
+    blitz_miss_store.record_miss never raises on its own (best-effort store),
+    but this wrapper keeps that contract explicit at the call site and gives
+    pipeline tests one patch point that never touches the shared database.
+    """
+    try:
+        blitz_miss_store.record_miss(domain, kind)
+    except Exception:
+        logger.debug(
+            "blitz miss-marker write failed for %s (kind=%s)", domain, kind,
+            exc_info=True,
+        )
+
+
+def _recent_blitz_miss(domain: str) -> Optional[str]:
+    """Miss kind if `domain` has an unexpired marker, else None (fail-open)."""
+    try:
+        return blitz_miss_store.is_recent_miss(domain)
+    except Exception:
+        logger.debug("blitz miss-marker read failed for %s", domain, exc_info=True)
+        return None
+
+
+def _prepass_flat_to_waterfall_item(flat: dict[str, Any]) -> dict[str, Any]:
+    """Map one find-people prepass flat row -> a waterfall result item.
+
+    blitz_client.find_people_batch (via blitz_batch) returns waterfall-FLAT
+    rows: top-level first/last/full name, title from the current experience,
+    location_city/location_country. The per-domain cascade consumes the
+    waterfall item shape ``{"icp": N, "person": {...}}`` — this converter is
+    the bridge so prepass persons flow through the SAME title gate +
+    collector capture code path as waterfall results. Pure function.
+    """
+    return {
+        "person": {
+            "first_name": flat.get("first_name", "") or "",
+            "last_name": flat.get("last_name", "") or "",
+            "full_name": flat.get("full_name", "") or "",
+            "title": flat.get("title", "") or "",
+            "headline": flat.get("headline", "") or "",
+            "linkedin_url": flat.get("linkedin_url", "") or "",
+            "location": {
+                "city": flat.get("location_city", "") or "",
+                "country_code": flat.get("location_country", "") or "",
+            },
+            "experiences": flat.get("experiences") or [],
+        },
+        "icp": flat.get("icp_tier") or 1,
+        "ranking": flat.get("ranking") or 0,
+    }
+
+
+def _prepass_title_filters(cascade: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
+    """Resolve (title_include, title_exclude) for the find-people prepass.
+
+    Same source as the waterfall's local title gate (title_filter.
+    gate_title_filter over the job's cascade — user titles, with the
+    strict_titles escape hatch honoured). When the request carried NO user
+    titles the gate is empty, and the prepass falls back to the
+    DEFAULT_CASCADE tier-1+2 includes (what the waterfall would have asked
+    for first). Excludes are ALWAYS the DEFAULT_CASCADE excludes plus the
+    user's — an exclusion should stay broad.
+    """
+    strict = not title_filter.cascade_config_allows_strict_off(cascade)
+    user_include, user_exclude = title_filter.gate_title_filter(
+        strict_titles=strict,
+        cascade_config=cascade,
+        default_cascade=blitz_client.DEFAULT_CASCADE,
+    )
+    default_tiers = blitz_client.DEFAULT_CASCADE
+    include = user_include or [
+        str(title)
+        for tier in default_tiers[:2]
+        for title in (tier.get("include_title") or [])
+    ]
+    exclude = list(dict.fromkeys(
+        [
+            str(title)
+            for tier in default_tiers
+            for title in (tier.get("exclude_title") or [])
+        ]
+        + list(user_exclude or [])
+    ))
+    return include, exclude
+
+
+def _collect_domain_only_domains(
+    rows: list[dict[str, Any]],
+    *,
+    domain_col: str,
+    name_col: Optional[str],
+    first_name_col: Optional[str],
+    last_name_col: Optional[str],
+    linkedin_url_col: Optional[str] = None,
+    phone_col: Optional[str] = None,
+    company_name_col: Optional[str] = None,
+    force_provider: Optional[str] = None,
+) -> list[str]:
+    """Unique normalized domains of rows that will take the domain-only cascade.
+
+    Only domain-only rows ever reach ``_enrich_domain`` (rows with a LinkedIn
+    URL / phone / name+domain route to the single-person path first), so
+    prepassing anything else would burn Blitz records nobody consumes. The
+    routing decision reuses the pure ``route_enrichment`` (no I/O). Order-
+    preserving dedup so chunk boundaries are deterministic.
+    """
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        domain = identifier_utils.normalize_domain(str(row.get(domain_col, "")))
+        if not domain or domain in seen:
+            continue
+        # Mirror process_row's identifier resolution so the routing decision
+        # here cannot diverge from the one made per row below.
+        payload = identifier_utils.build_row_identifier_payload(
+            row,
+            domain_col=domain_col,
+            name_col=name_col,
+            first_name_col=first_name_col,
+            last_name_col=last_name_col,
+            linkedin_url_col=linkedin_url_col,
+            phone_col=phone_col,
+            company_name_col=company_name_col,
+        )
+        if name_col and row.get(name_col):
+            full_name = str(row[name_col]).strip()
+        elif first_name_col or last_name_col:
+            first = str(row.get(first_name_col or "", "")).strip()
+            last = str(row.get(last_name_col or "", "")).strip()
+            full_name = f"{first} {last}".strip()
+        else:
+            full_name = ""
+        route = route_enrichment(
+            linkedin_url=payload.get("normalized_linkedin_url") or "",
+            phone=payload.get("phone") or "",
+            full_name=full_name or (payload.get("full_name") or ""),
+            first_name=payload.get("first_name") or "",
+            last_name=payload.get("last_name") or "",
+            domain=domain,
+            company_name=payload.get("company_name") or "",
+            force_provider=force_provider,
+        )
+        if route.get("mode") == "domain_only":
+            seen.add(domain)
+            ordered.append(domain)
+    return ordered
+
+
+async def _attach_dm_phones(
+    blitz_http: httpx.AsyncClient,
+    output_rows: list[OutputRow],
+    *,
+    domain: str,
+    phone_for_all: bool = False,
+) -> None:
+    """Attach ``dm_phone`` to eligible rows via the Blitz Direct Phone endpoint.
+
+    Cost note: 1 Blitz FUP record per CALL regardless of found — a not-found
+    answer still bills, so eligibility is checked BEFORE the call and the
+    default cap is 1 call per domain (``phone_for_all`` lifts it to one call
+    per eligible row). Coverage is US-only (the Direct Phone endpoint has no
+    international numbers); non-US rows are skipped for free.
+
+    Eligibility: a FINAL email (``dm_email``), a dm LinkedIn URL, and a US or
+    empty/unknown location country. Never fails the row — every error is
+    swallowed with a debug log.
+
+    Lazy import: sibling package (``phone_enrichment.client`` owns its own
+    5 RPS limiter and returns ``{found, phone}``). Importing at the call site
+    keeps the module off every path that never bundles phones.
+    """
+    from phone_enrichment import client as phone_client
+
+    calls_left = len(output_rows) if phone_for_all else 1
+    for row in output_rows:
+        if calls_left <= 0:
+            break
+        if not row.get("dm_email"):
+            continue
+        linkedin_value = row.get("dm_linkedin_url")
+        linkedin_url = linkedin_value.strip() if isinstance(linkedin_value, str) else ""
+        if not linkedin_url:
+            continue
+        country = str(row.get("dm_location_country") or "").strip().upper()
+        if country not in ("", "US"):
+            continue
+        calls_left -= 1
+        try:
+            result = await phone_client.find_phone(blitz_http, linkedin_url)
+        except Exception as exc:
+            logger.debug("phone bundle find_phone failed for %s: %s", domain, exc)
+            continue
+        if isinstance(result, dict) and result.get("found") and result.get("phone"):
+            row["dm_phone"] = result["phone"]
+
+
 async def _enrich_domain(
     blitz_http: httpx.AsyncClient,
     contacts_http: httpx.AsyncClient,
@@ -2731,6 +2964,10 @@ async def _enrich_domain(
     validate_email: bool = True,  # NEW PARAMETER
     record_provider_use: Optional[Callable[[str], None]] = None,
     collector: Optional[Any] = None,  # RawContactCollector; Phase 1 capture
+    blitz_prepass: Optional[dict[str, Any]] = None,  # blitz_batch result (Wave 2)
+    blitz_miss_skip: bool = False,  # arm the blitz_miss_store wiring (Wave 2)
+    include_phone: bool = False,  # DM phone bundle (Wave 3)
+    phone_for_all: bool = False,  # lift the 1-call/domain phone cap
 ) -> list[OutputRow]:
     """
     Enrich a domain with decision-maker contacts.
@@ -2745,8 +2982,48 @@ async def _enrich_domain(
         collector: Optional ``RawContactCollector``. When provided, every
             provider response at the company-level lookup step is captured
             BEFORE truncation to the user-facing cap. Phase 1 only.
+        blitz_prepass: Optional result of ``blitz_batch.blitz_find_people_prepass``
+            (Wave 2). When the domain is in ``prepass_domains``: the Step-1
+            Blitz domain-to-linkedin call is skipped (the prepass already
+            answered it — ``company_url_by_domain``), and the Step-2
+            waterfall is skipped when the domain is in ``persons_by_domain``
+            (its persons feed the SAME title gate + collector capture as
+            waterfall results). Prepass-covered with zero persons = confirmed
+            DM miss: the flow continues to the Step-2.4 GetLeads fallback
+            exactly like the waterfall-empty path.
+        blitz_miss_skip: Arm the persistent Blitz miss-marker wiring — skip
+            Blitz entirely (d2l AND waterfall) when ``blitz_miss_store`` has
+            an unexpired marker, and record definitive misses (clean
+            found=false d2l -> 'company', clean empty waterfall -> 'contacts';
+            NEVER on exceptions). Default False: only ``run_pipeline`` (the
+            sole production caller) arms it from ENABLE_BLITZ_MISS_SKIP, so
+            direct callers/tests never touch the shared database. Ordering
+            note (verified): a stored miss leaves the domain with no company
+            LinkedIn URL, so the row takes the no-LI path — the Contacts DB
+            name+domain fallback (when full_name is present), else a
+            ``no_linkedin`` row. The GetLeads DM fallback (Step 2.4) does
+            NOT run on that path; it requires a company LinkedIn URL.
+        include_phone: When true AND ENABLE_PHONE_BUNDLE (default true),
+            call the Blitz Direct Phone endpoint for the first eligible
+            output row (final email + dm LinkedIn URL + US/unknown country)
+            and stamp ``dm_phone`` on success. 1 Blitz record per call
+            regardless of found; US-only coverage.
+        phone_for_all: Lift the per-domain phone cap from 1 call to one call
+            per eligible row (same cost per call — more calls).
     """
     logger.info("_enrich_domain called with force_provider=%s for domain=%s", force_provider, domain)
+
+    # Wave 2: find-people prepass result for THIS domain (None when the job
+    # ran without a prepass, the prepass was cancelled/error-fell-back before
+    # covering this domain, or the domain routed to a person path).
+    _prepass = blitz_prepass if isinstance(blitz_prepass, dict) else {}
+    _prepass_covered = domain in (_prepass.get("prepass_domains") or set())
+    _prepass_company_url = (_prepass.get("company_url_by_domain") or {}).get(domain, "")
+    _prepass_persons: Optional[list[dict[str, Any]]] = None
+    if _prepass_covered:
+        _raw_prepass_persons = (_prepass.get("persons_by_domain") or {}).get(domain)
+        _prepass_persons = _raw_prepass_persons if isinstance(_raw_prepass_persons, list) else None
+
     # Honor a caller-provided company LinkedIn URL (e.g., from the unified API
     # `company_linkedin_url` field or Flow 1 `company_linkedin_col`). When set,
     # the domain → LinkedIn resolution steps below are skipped naturally
@@ -2812,16 +3089,49 @@ async def _enrich_domain(
 
         # Fallback: Blitz API if Contacts DB didn't find it
         if not company_linkedin_url:
-            _record("blitz")
-            try:
-                d2l = await blitz_client.domain_to_linkedin(blitz_http, domain)
-                if d2l.get("found"):
-                    company_linkedin_url = d2l.get("company_linkedin_url", "")
+            if _prepass_covered:
+                # Wave 2: the find-people prepass already asked Blitz for
+                # this domain at the job level — reuse its company answer
+                # and NEVER re-call domain_to_linkedin. When the prepass
+                # found no company page, its own 'company' miss marker was
+                # recorded by blitz_batch; fall through to the no-LI path.
+                if _prepass_company_url:
+                    company_linkedin_url = _prepass_company_url
                     linkedin_source = SOURCE_BLITZ_LINKEDIN
-                    logger.debug("Found company LinkedIn via Blitz API for %s: %s", domain, company_linkedin_url)
-            except Exception as e:
-                _record_company_error("blitz", "domain_to_linkedin", str(e))
-                logger.warning("Blitz domain_to_linkedin failed for %s: %s", domain, e)
+                    logger.debug(
+                        "Company LinkedIn via find-people prepass for %s: %s",
+                        domain, company_linkedin_url,
+                    )
+            else:
+                _recent_miss_kind: Optional[str] = None
+                if blitz_miss_skip:
+                    _recent_miss_kind = _recent_blitz_miss(domain)
+                if _recent_miss_kind is not None:
+                    # Stored definitive miss within TTL: skip Blitz entirely
+                    # (d2l AND the Step-2 waterfall). The domain continues
+                    # down the no-company-LinkedIn path below — see the
+                    # ordering note in the docstring.
+                    logger.info(
+                        "Blitz skipped for %s (stored %s miss within TTL)",
+                        domain, _recent_miss_kind,
+                    )
+                else:
+                    _record("blitz")
+                    try:
+                        d2l = await blitz_client.domain_to_linkedin(blitz_http, domain)
+                        if d2l.get("found"):
+                            company_linkedin_url = d2l.get("company_linkedin_url", "")
+                            linkedin_source = SOURCE_BLITZ_LINKEDIN
+                            logger.debug("Found company LinkedIn via Blitz API for %s: %s", domain, company_linkedin_url)
+                        else:
+                            # Clean found=false — a definitive company miss.
+                            # Safe to store. NEVER inside the except block:
+                            # a transient failure is not a miss.
+                            if blitz_miss_skip:
+                                _record_blitz_miss(domain, "company")
+                    except Exception as e:
+                        _record_company_error("blitz", "domain_to_linkedin", str(e))
+                        logger.warning("Blitz domain_to_linkedin failed for %s: %s", domain, e)
 
     # Pattern A: stamp the company-level fields onto base_row so every row
     # built from this domain inherits them. Mutate a copy (immutability
@@ -2974,49 +3284,77 @@ async def _enrich_domain(
         # Fallback: Blitz API if Contacts DB didn't meet quality threshold
         if not contacts_db_quality_met and not _should_skip_provider("blitz", force_provider):
             _record("blitz")
-            try:
-                icp_result = await blitz_client.waterfall_icp_search(
-                    blitz_http, company_linkedin_url, cascade, max_results
-                )
-                persons = icp_result.get("results", [])
-                # Local title gate: drop Blitz-fuzzy matches that don't match
-                # the user's requested titles before email resolution.
-                if title_filter_active and persons:
-                    _persons_before = len(persons)
-                    persons, _dropped = title_filter.filter_blitz_persons(
-                        persons, include_titles, exclude_titles,
-                        _current_title_fn=_current_title,
+            if _prepass_covered:
+                # Wave 2: the find-people prepass already answered Blitz for
+                # this domain at the job level. Feed its (converted) persons
+                # in exactly where waterfall results enter below, so the SAME
+                # title gate + collector capture apply. A prepass-covered
+                # domain with no/empty persons_by_domain entry is a confirmed
+                # zero-DM answer from Blitz: blitz_batch recorded the
+                # 'contacts' miss marker itself; re-record only when no
+                # marker exists yet (prepass maps built without store access).
+                # persons stays [] and the flow continues to the Step-2.4
+                # GetLeads DM fallback exactly like the waterfall-empty path.
+                _flat_persons = [
+                    fp for fp in (_prepass_persons or []) if isinstance(fp, dict)
+                ]
+                if _flat_persons:
+                    persons = [
+                        _prepass_flat_to_waterfall_item(fp) for fp in _flat_persons
+                    ]
+                elif blitz_miss_skip and _recent_blitz_miss(domain) is None:
+                    _record_blitz_miss(domain, "contacts")
+            else:
+                try:
+                    icp_result = await blitz_client.waterfall_icp_search(
+                        blitz_http, company_linkedin_url, cascade, max_results
                     )
-                    if _dropped:
-                        logger.info(
-                            "Title gate (blitz waterfall) %s: dropped %d/%d off-ICP",
-                            domain, _dropped, _persons_before,
+                    persons = icp_result.get("results", [])
+                    if not persons and blitz_miss_skip:
+                        # Clean 200 with zero results — a definitive contacts
+                        # miss (the RAW result list is empty; a non-empty list
+                        # the title gate then drops is NOT a miss). Safe to
+                        # store. NEVER inside the except block.
+                        _record_blitz_miss(domain, "contacts")
+                except Exception as e:
+                    _record_company_error("blitz", "waterfall_icp_search", str(e))
+                    logger.warning("Blitz waterfall_icp_search failed for %s: %s", company_linkedin_url, e)
+                    err_out = _error_row(base_row, company_linkedin_url)
+                    _stamp_company_errors(err_out, company_provider_errors)
+                    return [err_out]
+            # Local title gate: drop Blitz-fuzzy matches that don't match
+            # the user's requested titles before email resolution. Applied
+            # identically to waterfall results and prepass persons.
+            if title_filter_active and persons:
+                _persons_before = len(persons)
+                persons, _dropped = title_filter.filter_blitz_persons(
+                    persons, include_titles, exclude_titles,
+                    _current_title_fn=_current_title,
+                )
+                if _dropped:
+                    logger.info(
+                        "Title gate (blitz waterfall) %s: dropped %d/%d off-ICP",
+                        domain, _dropped, _persons_before,
+                    )
+            # Phase 1: capture every Blitz contact. Blitz already
+            # truncated server-side to ``max_results``; we keep all of
+            # them in the audit surface even if the cascade later
+            # discards some (e.g., email-resolution drops a person).
+            if collector is not None and persons:
+                for _blitz_person in persons:
+                    try:
+                        collector.capture_company_contact(
+                            source="blitz",
+                            domain=domain,
+                            company_linkedin_url=company_linkedin_url,
+                            contact=_blitz_person,
                         )
-                # Phase 1: capture every Blitz contact. Blitz already
-                # truncated server-side to ``max_results``; we keep all of
-                # them in the audit surface even if the cascade later
-                # discards some (e.g., email-resolution drops a person).
-                if collector is not None and persons:
-                    for _blitz_person in persons:
-                        try:
-                            collector.capture_company_contact(
-                                source="blitz",
-                                domain=domain,
-                                company_linkedin_url=company_linkedin_url,
-                                contact=_blitz_person,
-                            )
-                        except Exception as _cap_err:
-                            logger.debug(
-                                "collector.capture_company_contact(blitz) failed for %s: %s",
-                                domain, _cap_err,
-                            )
-                logger.debug("Using Blitz API for %d decision makers from %s", len(persons), domain)
-            except Exception as e:
-                _record_company_error("blitz", "waterfall_icp_search", str(e))
-                logger.warning("Blitz waterfall_icp_search failed for %s: %s", company_linkedin_url, e)
-                err_out = _error_row(base_row, company_linkedin_url)
-                _stamp_company_errors(err_out, company_provider_errors)
-                return [err_out]
+                    except Exception as _cap_err:
+                        logger.debug(
+                            "collector.capture_company_contact(blitz) failed for %s: %s",
+                            domain, _cap_err,
+                        )
+            logger.debug("Using Blitz API for %d decision makers from %s", len(persons), domain)
 
     # Step 2.4 (2026-09-13): GetLeads decision-makers fallback (coverage
     # layer). When contacts_db AND the Blitz waterfall both found no decision
@@ -3380,6 +3718,18 @@ async def _enrich_domain(
         _merge_company_errors_into_row(row, company_provider_errors)
         output_rows.append(row)
 
+    # Wave 3: optional DM phone bundle (Blitz Direct Phone). Gated twice —
+    # the per-job request flag AND ENABLE_PHONE_BUNDLE (default true) — so
+    # ops can kill the extra Blitz records without a deploy of the flag
+    # plumbing. Never fails the domain (see _attach_dm_phones).
+    if (
+        include_phone
+        and os.environ.get("ENABLE_PHONE_BUNDLE", "true").strip().lower() not in ("false", "0", "no")
+    ):
+        await _attach_dm_phones(
+            blitz_http, output_rows, domain=domain, phone_for_all=phone_for_all,
+        )
+
     return output_rows
 
 
@@ -3411,6 +3761,9 @@ async def run_pipeline(
     record_provider_use: Optional[Callable[[str], None]] = None,
     use_email_cache: bool = True,
     collector: Optional[Any] = None,  # RawContactCollector; Phase 1 capture
+    exact_titles: bool = False,  # Wave 2: server-side exact titles for the prepass
+    include_phone: bool = False,  # Wave 3: DM phone bundle
+    phone_for_all: bool = False,  # Wave 3: lift the 1-call/domain phone cap
 ) -> list[OutputRow]:
     """
     Runs the full pipeline over all rows.
@@ -3424,6 +3777,25 @@ async def run_pipeline(
     If check_cancelled is provided, calls it with job_id to check database status.
 
     The check_cancelled function should return True if job was cancelled or abandoned.
+
+    Wave 2 — Blitz find-people prepass: when ENABLE_BLITZ_FIND_PEOPLE_BATCH
+    (default true), more than _PREPASS_MIN_DOMAINS unique domain-only rows,
+    blitz enabled and no force_provider, the job's domains are covered in
+    bulk by blitz_batch.blitz_find_people_prepass BEFORE the per-domain
+    gather. Covered domains then skip their per-domain Blitz d2l + waterfall
+    calls inside _enrich_domain. Any prepass failure degrades to the legacy
+    per-domain waterfall for every domain (logged, never fatal). The
+    persistent miss-marker wiring (skip + record) is armed here from
+    ENABLE_BLITZ_MISS_SKIP (default true) and threaded into every
+    _enrich_domain call.
+
+    exact_titles: pass through to the prepass — wraps the job's title
+    includes in ``[...]`` (blitz_client.bracket_exact) for server-side
+    EXACT title matching instead of a fuzzy superset the local gate then
+    discards. Default False (fuzzy, legacy behaviour).
+
+    include_phone / phone_for_all: thread into _enrich_domain's DM phone
+    bundle (see its docstring for cost notes).
     """
     domain_semaphore = asyncio.Semaphore(DOMAIN_CONCURRENCY)
     email_semaphore = asyncio.Semaphore(EMAIL_CONCURRENCY)
@@ -3443,6 +3815,89 @@ async def run_pipeline(
         limits=http_limits,
         timeout=httpx.Timeout(30.0, connect=10.0),
     )
+
+    # Wave 2: persistent Blitz miss-marker wiring — armed once per job and
+    # threaded into every _enrich_domain call. Kill switch: ENABLE_BLITZ_MISS_SKIP.
+    _miss_skip_on = _blitz_miss_wiring_armed()
+
+    # Wave 2: Blitz find-people prepass. One bulk /v2/search/people sweep
+    # (chunked at 50 companies) + one d2l per fresh domain replaces the
+    # per-domain d2l + waterfall-icp-keyword record spend for every domain
+    # it conclusively covers. See blitz_batch.blitz_find_people_prepass for
+    # the FUP math. Failure degrades to the legacy per-domain waterfall.
+    _blitz_prepass_map: Optional[dict[str, Any]] = None
+    if (
+        os.environ.get("ENABLE_BLITZ_FIND_PEOPLE_BATCH", "true").strip().lower()
+        not in ("false", "0", "no")
+        and not force_provider
+        and providers.is_provider_enabled("blitz")
+    ):
+        _prepass_domain_list = _collect_domain_only_domains(
+            rows,
+            domain_col=domain_col,
+            name_col=name_col,
+            first_name_col=first_name_col,
+            last_name_col=last_name_col,
+            linkedin_url_col=linkedin_url_col,
+            phone_col=phone_col,
+            company_name_col=company_name_col,
+            force_provider=force_provider,
+        )
+        if len(_prepass_domain_list) > _PREPASS_MIN_DOMAINS:
+            _title_include, _title_exclude = _prepass_title_filters(cascade)
+
+            def _prepass_should_cancel() -> bool:
+                # Mirrors process_row's cancellation checks (in-memory set +
+                # database status) so a user cancel also stops the prepass.
+                if cancelled_jobs is not None and job_id is not None and job_id in cancelled_jobs:
+                    return True
+                if check_cancelled is not None and job_id is not None:
+                    try:
+                        return bool(check_cancelled(job_id))
+                    except Exception:
+                        return False
+                return False
+
+            try:
+                _blitz_prepass_map = await blitz_batch.blitz_find_people_prepass(
+                    blitz_http,
+                    _prepass_domain_list,
+                    is_recent_miss=(
+                        (lambda d: _recent_blitz_miss(d)) if _miss_skip_on
+                        else (lambda d: None)
+                    ),
+                    record_miss=(
+                        (lambda d, k: _record_blitz_miss(d, k)) if _miss_skip_on
+                        else (lambda d, k: None)
+                    ),
+                    title_include=_title_include,
+                    title_exclude=_title_exclude,
+                    exact_titles=exact_titles,
+                    # on_progress deliberately omitted: run_pipeline's
+                    # on_progress is dict-shaped and routes._run_job writes
+                    # index/domain checkpoints from it, while the prepass
+                    # emits string chunk messages — adapting one into the
+                    # other would emit index-less SSE events and spurious
+                    # checkpoint(0) writes.
+                    should_cancel=_prepass_should_cancel,
+                )
+            except Exception as prepass_exc:
+                logger.warning(
+                    "blitz find-people prepass failed (%s) — legacy per-domain waterfall for all domains",
+                    prepass_exc,
+                )
+                _blitz_prepass_map = None
+
+            if _blitz_prepass_map is not None:
+                _covered = _blitz_prepass_map.get("prepass_domains") or set()
+                _persons_map = _blitz_prepass_map.get("persons_by_domain") or {}
+                logger.info(
+                    "blitz find-people prepass: %d/%d domains covered (%d with persons, %d confirmed-empty), %d skipped as recent misses",
+                    len(_covered), len(_prepass_domain_list),
+                    sum(1 for p in _persons_map.values() if p),
+                    sum(1 for d in _covered if not _persons_map.get(d)),
+                    len(_blitz_prepass_map.get("skipped_miss") or set()),
+                )
 
     # Per-job dedupe for company / Facebook page fallbacks. The first row
     # that needs the value per normalized_domain / normalized_facebook_url
@@ -3710,6 +4165,10 @@ async def run_pipeline(
                 force_provider=force_provider,
                 record_provider_use=record_provider_use,
                 collector=collector,
+                blitz_prepass=_blitz_prepass_map,
+                blitz_miss_skip=_miss_skip_on,
+                include_phone=include_phone,
+                phone_for_all=phone_for_all,
             )
             # Add a row-level audit stub for the legacy cascade. Per-DM attempts
             # aren't individually tracked here; we report the row's outcome.
