@@ -72,6 +72,31 @@ TAM_PAGE_SIZE = 50
 # runtime. Requests above this are clamped here (the route model also caps).
 TAM_MAX_COMPANIES = 10_000
 
+
+def _env_int(name: str, default: int) -> int:
+    """Read an int env var, falling back to ``default`` on absent/junk."""
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r — using default %d", name, raw, default)
+        return default
+
+
+# Hard page cap for the pagination loop. A cursor-cycling server bug (cursor
+# never null, pages repeat forever) would otherwise loop endlessly while the
+# 30 s heartbeat keeps the job 'running' and job_events grows unbounded.
+# 400 pages x 50 rows = 2x the TAM_MAX_COMPANIES headroom, so it never fires
+# on a legitimate run. Env-overridable (TAM_MAX_PAGES) for ops emergencies.
+TAM_MAX_PAGES = _env_int("TAM_MAX_PAGES", 400)
+
+# Break after this many CONSECUTIVE empty pages (server signalling exhaustion
+# without a null cursor, or a soft failure loop). Blitz bills 0 for empty
+# pages, but an unbounded request loop is still unacceptable.
+TAM_EMPTY_PAGE_LIMIT = 5
+
 # Marker stamped inside the job_state progress payload (see save_tam_progress).
 TAM_PROGRESS_KIND = "tam_progress"
 
@@ -203,6 +228,13 @@ def create_chained_enrichment_job(
     enrichment chain endpoint does. Rows are deduped by domain with
     normalization on (mirrors the Flow-1 pre-processing).
 
+    Title handling: the stored ``cascade_config`` keeps the titles
+    UNBRACKETED even when ``exact_titles`` is true — the chained job's local
+    title gate matches include-titles literally, so bracketed "[CEO]" tokens
+    would drop every person. Exact matching travels as the ``exact_titles``
+    kwarg on ``_run_domain_enrich_job``, whose callee bracket-wraps at
+    Blitz-call time (``blitz_find_people_prepass``).
+
     Returns ``{"chained_job_id": ..., "chained_total": N,
     "deduped_count": N}`` or ``{"chain_skipped": reason}``.
     """
@@ -220,12 +252,17 @@ def create_chained_enrichment_job(
         chain_rows, "domain", True
     )
 
+    # Store the cascade UNBRACKETED and forward ``exact_titles`` to the
+    # Flow-1 runner instead (mirrors how /flows/domain-enrich persists plain
+    # cascades + forwards the flag). The chained job's LOCAL title gate
+    # (title_filter.person_matches_titles) matches include-titles literally,
+    # so a stored "[CEO]" cascade rejected every person (100% drop).
+    # ``run_domain_enrichment`` brackets the plain titles at Blitz-call time
+    # (blitz_find_people_prepass -> bracket_exact), keeping server-side exact
+    # matching intact.
     cascade_json = None
     if titles:
-        title_tokens = (
-            blitz_client.bracket_exact(list(titles)) if exact_titles else list(titles)
-        )
-        cascade = enrichment_routes._titles_to_cascade(",".join(title_tokens))
+        cascade = enrichment_routes._titles_to_cascade(",".join(list(titles)))
         if cascade:
             cascade_json = json.dumps(cascade)
 
@@ -260,6 +297,7 @@ def create_chained_enrichment_job(
             last_name_col=None,
             max_results=max_decision_makers,
             selected_providers=providers,
+            exact_titles=exact_titles,
         )
     )
     _pending_chain_tasks.add(task)
@@ -308,6 +346,11 @@ async def run_tam_flow(
 
     Cancel semantics: checked between pages; a cancelled run keeps whatever
         rows already flushed (partial CSV) and reports status 'cancelled'.
+
+    Loop guards (safety): the pull hard-stops at ``TAM_MAX_PAGES`` pages
+        (default 400, env ``TAM_MAX_PAGES``) and after ``TAM_EMPTY_PAGE_LIMIT``
+        consecutive empty pages — both keep every row already written and
+        leave ``capped`` true when a cursor was still outstanding.
     """
     company_filters: dict[str, Any] = dict(params.get("company_filters") or {})
     people_filters: dict[str, Any] = dict(params.get("people_filters") or {})
@@ -321,6 +364,7 @@ async def run_tam_flow(
     rows: list[dict[str, Any]] = []
     cursor: Optional[str] = None
     pages = 0
+    consecutive_empty_pages = 0
     cancelled = False
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -339,6 +383,17 @@ async def run_tam_flow(
                     logger.info(
                         "TAM job %s cancelled after %d pages (%d companies)",
                         job_id, pages, len(rows),
+                    )
+                    break
+
+                if pages >= TAM_MAX_PAGES:
+                    # Cursor-cycling server bug guard: without this the loop
+                    # would fetch forever (heartbeat keeps the job alive,
+                    # job_events grows unbounded). Keep everything written.
+                    logger.warning(
+                        "TAM job %s hit the %d-page hard cap (%d companies, "
+                        "cursor still outstanding) — stopping the pull",
+                        job_id, TAM_MAX_PAGES, len(rows),
                     )
                     break
 
@@ -361,6 +416,8 @@ async def run_tam_flow(
                 # Flow-1 incremental writer).
                 csv_file.flush()
                 await asyncio.to_thread(os.fsync, csv_file.fileno())
+
+                consecutive_empty_pages = consecutive_empty_pages + 1 if not entries else 0
 
                 cursor = page.get("cursor") or None
                 save_tam_progress(
@@ -387,6 +444,16 @@ async def run_tam_flow(
                         )
 
                 if cursor is None:
+                    break
+                if consecutive_empty_pages >= TAM_EMPTY_PAGE_LIMIT:
+                    # Server keeps returning a cursor with zero results —
+                    # treat as exhaustion instead of an unbounded request
+                    # loop. Everything written so far is kept.
+                    logger.warning(
+                        "TAM job %s saw %d consecutive empty pages "
+                        "(%d companies kept) — stopping the pull",
+                        job_id, TAM_EMPTY_PAGE_LIMIT, len(rows),
+                    )
                     break
                 if len(rows) >= max_companies:
                     logger.info(

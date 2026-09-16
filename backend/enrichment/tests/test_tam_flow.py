@@ -5,12 +5,17 @@ Coverage:
     first-entry percentage, missing fields -> None.
   * Pagination loop — cursor propagation between pages, stop at cursor null.
   * max_companies cap — mid-page truncation, no extra page fetched.
+  * Loop guards (2026-09 regression) — TAM_MAX_PAGES hard cap breaks a
+    cursor-cycling server bug; 5 consecutive empty pages break the pull;
+    the empty counter resets on a non-empty page (interleaved never trips).
   * Cancel — checked between pages; partial CSV kept, status 'cancelled'.
   * Incremental CSV — header written up-front, rows flushed per page (file
     is complete on disk BEFORE the run finishes).
   * Cursor persistence — job_state row carries the live cursor + row count.
   * Flow-1 chain — reuses routes._run_domain_enrich_job (mocked recorder),
-    dedupes domains, sets source_type='tam_chain' + parent_job_id.
+    dedupes domains, sets source_type='tam_chain' + parent_job_id. With
+    exact_titles the stored cascade stays UNBRACKETED (the local title gate
+    matches literally) and exact_titles=True is forwarded to the runner.
   * Chain skip — create_enrichment_job with zero domains -> chain_skipped.
 
 Network is fully mocked (blitz_client.tam_by_people is monkeypatched); the
@@ -338,6 +343,97 @@ class TestRunTamFlow(_TempDbTestCase):
         self.assertEqual(summary["companies_found"], 2)
         self.assertEqual(cursors_seen, [None, "c1"])
 
+    def test_page_cap_stops_cursor_cycling_loop(self):
+        """Regression (2026-09): a cursor-cycling server bug (cursor never
+        null) must not loop forever — TAM_MAX_PAGES hard-stops the pull,
+        keeping every row already written."""
+        self._create_tam_job()
+        calls = {"count": 0}
+
+        async def cycling_tam(_http, *, company_filters, people_filters,
+                              max_results, cursor):
+            calls["count"] += 1
+            # Always another page, never exhausted (cycling-cursor bug).
+            return _page([_company_entry(calls["count"] - 1)], cursor="cycle")
+
+        with patch("enrichment.blitz_client.tam_by_people", new=cycling_tam), \
+                patch.object(tam_flow, "TAM_MAX_PAGES", 6):
+            summary = asyncio.run(tam_flow.run_tam_flow(
+                "tam-test-job",
+                {
+                    "company_filters": {"employee_range": ["11-50"]},
+                    "people_filters": {"job_level": ["C-Team"]},
+                    "max_companies": 1000,
+                },
+            ))
+
+        self.assertEqual(summary["status"], "done")
+        self.assertEqual(summary["pages"], 6, "hard cap stops the loop")
+        self.assertEqual(calls["count"], 6, "no fetch beyond the cap")
+        self.assertEqual(summary["companies_found"], 6, "every page kept")
+        self.assertTrue(summary["capped"], "stopped with a cursor outstanding")
+        _header, rows = self._read_csv()
+        self.assertEqual(len(rows), 6)
+
+    def test_consecutive_empty_pages_stop_the_pull(self):
+        """5 consecutive empty pages with a live cursor end the run (server
+        signalling exhaustion without a null cursor — or a failure loop)."""
+        self._create_tam_job()
+        calls = {"count": 0}
+
+        async def empty_tam(_http, *, company_filters, people_filters,
+                            max_results, cursor):
+            calls["count"] += 1
+            return _page([], cursor="loop")  # empty but never exhausted
+
+        with patch("enrichment.blitz_client.tam_by_people", new=empty_tam):
+            summary = asyncio.run(tam_flow.run_tam_flow(
+                "tam-test-job",
+                {
+                    "company_filters": {"employee_range": ["11-50"]},
+                    "people_filters": {"job_level": ["C-Team"]},
+                    "max_companies": 1000,
+                },
+            ))
+
+        self.assertEqual(summary["status"], "done")
+        self.assertEqual(summary["pages"], tam_flow.TAM_EMPTY_PAGE_LIMIT)
+        self.assertEqual(calls["count"], tam_flow.TAM_EMPTY_PAGE_LIMIT)
+        self.assertEqual(summary["companies_found"], 0)
+        self.assertTrue(summary["capped"], "stopped with a cursor outstanding")
+
+    def test_empty_page_counter_resets_on_nonempty_page(self):
+        """Interleaved empty pages (empty, empty, hit, empty...) never trip
+        the guard — only CONSECUTIVE empty pages do."""
+        self._create_tam_job()
+        # 2 empty, 1 hit, 2 empty, 1 hit, then exhausted: without the reset
+        # the run would stop at the 5th page instead of draining the cursor.
+        script = [
+            _page([], cursor="c1"),
+            _page([], cursor="c2"),
+            _page([_company_entry(0)], cursor="c3"),
+            _page([], cursor="c4"),
+            _page([], cursor="c5"),
+            _page([_company_entry(1)], cursor=None),
+        ]
+        fake_tam, cursors_seen = self._patch_tam(script)
+
+        with patch("enrichment.blitz_client.tam_by_people", new=fake_tam):
+            summary = asyncio.run(tam_flow.run_tam_flow(
+                "tam-test-job",
+                {
+                    "company_filters": {"employee_range": ["11-50"]},
+                    "people_filters": {"job_level": ["C-Team"]},
+                    "max_companies": 1000,
+                },
+            ))
+
+        self.assertEqual(summary["status"], "done")
+        self.assertEqual(summary["pages"], 6, "drained every page — no false trip")
+        self.assertEqual(summary["companies_found"], 2)
+        self.assertFalse(summary["capped"], "ended on a null cursor")
+        self.assertEqual(cursors_seen, [None, "c1", "c2", "c3", "c4", "c5"])
+
     def test_cancel_between_pages_keeps_partial_csv(self):
         self._create_tam_job()
         cancel_flag = {"armed": False}
@@ -483,7 +579,16 @@ class TestChainedEnrichmentJob(_TempDbTestCase):
         # The Flow-1 runner was scheduled with the TAM job as parent context.
         self.assertEqual(kwargs["rows"][0]["domain"], "a.example")
 
-    def test_chain_exact_titles_bracket_wraps_cascade(self):
+    def test_chain_exact_titles_stores_plain_cascade_and_forwards_flag(self):
+        """Regression (2026-09): the chained job's cascade must stay UNBRACKETED.
+
+        The chained Flow-1 job's local title gate
+        (title_filter.person_matches_titles) matches include-titles literally,
+        so a stored "[CEO]" cascade rejected every person (100% drop).
+        Exact matching now travels as exact_titles=True on the Flow-1 runner,
+        which bracket-wraps at Blitz-call time — mirroring how
+        /flows/domain-enrich persists plain cascades + forwards the flag.
+        """
         self._create_tam_job()
         companies = [{"name": "A", "domain": "a.example"}]
         recorder = AsyncMock()
@@ -495,7 +600,25 @@ class TestChainedEnrichmentJob(_TempDbTestCase):
 
         job = job_store.get_store().get_job(result["chained_job_id"])
         cascade = json.loads(job["cascade_config"])
-        self.assertEqual(cascade[0]["include_title"], ["[CEO]", "[Founder]"])
+        self.assertEqual(
+            cascade[0]["include_title"], ["CEO", "Founder"],
+            "stored cascade must stay unbracketed",
+        )
+
+        recorder.assert_awaited_once()
+        kwargs = recorder.await_args.kwargs
+        self.assertIs(
+            kwargs.get("exact_titles"), True,
+            "exact_titles forwarded to the Flow-1 runner for Blitz-time bracketing",
+        )
+
+        # End-to-end gate sanity: the stored cascade now ADMITS a matching
+        # person (the pre-fix bracketed cascade rejected them).
+        from enrichment.title_filter import person_matches_titles
+        self.assertTrue(person_matches_titles(
+            "CEO", "Chief Executive Officer",
+            cascade[0]["include_title"], cascade[0]["exclude_title"],
+        ))
 
     def test_chain_without_exact_titles_keeps_plain_titles(self):
         self._create_tam_job()
@@ -507,6 +630,8 @@ class TestChainedEnrichmentJob(_TempDbTestCase):
         job = job_store.get_store().get_job(result["chained_job_id"])
         cascade = json.loads(job["cascade_config"])
         self.assertEqual(cascade[0]["include_title"], ["CEO"])
+        recorder.assert_awaited_once()
+        self.assertIs(recorder.await_args.kwargs.get("exact_titles"), False)
 
     def test_chain_skipped_when_no_domains(self):
         self._create_tam_job()

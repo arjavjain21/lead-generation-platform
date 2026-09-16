@@ -1318,6 +1318,7 @@ TAM jobs are plain `job_type='enrichment'` rows (`source_type='tam_flow'`), so *
 - Statuses: the existing literals only — `queued` → `running` → `done` | `partial` | `failed` | `cancelled`.
 - Progress events (SSE / job events): one per page — `{"stage": "tam_page", "page": N, "companies_found": N, "has_next_page": bool, "message": "..."}`. `processed` tracks pages fetched.
 - The CSV is written incrementally (header + per-page flush/fsync), so it is live-downloadable while running, and a cancel between pages keeps completed pages (`status='partial'`). A live cursor + row count is persisted per page for crash diagnostics.
+- **Loop guards (safety):** the pagination hard-stops at **`TAM_MAX_PAGES`** pages (default 400, server env-overridable) and after **5 consecutive empty pages** — both protect against a cursor-cycling server bug looping forever while the heartbeat keeps the job `running`. Every row already written is kept, and the summary reports `capped: true` when a cursor was still outstanding.
 - **Output CSV columns (19, in order):** `name, domain, website, linkedin_url, industry, type, size, employees_on_linkedin, followers, founded_year, hq_city, hq_state, hq_country_code, hq_region, revenue, slogan, employee_growth_1y, matched_people`. `domain` is nullable in the Blitz API — never assume it.
 
 #### Chaining into Flow-1 enrichment
@@ -1326,7 +1327,7 @@ With `create_enrichment_job: true`, after the TAM pages complete the platform cr
 
 - Only companies **with a non-empty `domain`** are chained; rows are deduped by domain with normalization (mirroring Flow-1 pre-processing). No domains → chain skipped (`chain_skipped: "no_companies_with_domain"`), the TAM export itself still completes.
 - The chained job carries `parent_job_id` = the TAM job and `source_type='tam_chain'` — visible in the jobs list; its own SSE/cancel/download work as usual.
-- `titles` / `max_decision_makers` / `providers` / `exact_titles` configure the chained job. `exact_titles: true` bracket-wraps the titles (`[CEO]`) for server-side exact matching.
+- `titles` / `max_decision_makers` / `providers` / `exact_titles` configure the chained job. `exact_titles: true` keeps the stored cascade **unbracketed** (the chained job's local title gate matches titles literally — a stored `[CEO]` would reject everyone) and forwards the flag to the Flow-1 runner, which bracket-wraps the titles at Blitz-call time for server-side exact matching — the exact same mechanics as `/flows/domain-enrich`.
 - A chain failure never loses the TAM export — the job still ends `done` with the CSV, and the skip reason is logged.
 
 ### I.2 New optional request fields — `exact_titles`, `include_phone`, `phone_for_all`
@@ -1335,9 +1336,9 @@ All three default **false** (byte-identical behavior when omitted). Accepted on:
 
 | Field | `POST /enrich` | `POST /flows/domain-enrich` (Flow 1) | `POST /by-linkedin-v2` (Flow 3) |
 | --- | :---: | :---: | :---: |
-| `exact_titles` | ✅ | ✅ | — |
-| `include_phone` | ✅ | ✅ | ✅ |
-| `phone_for_all` | ✅ | ✅ (effective here) | — |
+| `exact_titles` | accepted, currently no-op | ✅ | — |
+| `include_phone` | accepted, currently no-op | ✅ | accepted, currently no-op |
+| `phone_for_all` | accepted, currently no-op | ✅ (effective here) | — |
 
 **`exact_titles` (default false).** When true, title tokens are sent to Blitz bracket-wrapped — `["CEO"]` — which is a server-side **exact** (case- and accent-insensitive) title match instead of the default fuzzy/contains match. This is the cheapest fair-use lever for strict-title jobs: the server returns only people whose title *is* one of the listed titles, instead of a fuzzy superset the local title gate then discards. Exclude filters stay fuzzy (an exclusion should stay broad). On Flow-1 jobs that run the find-people prepass (I.4), the includes are bracket-wrapped there too.
 
@@ -1347,7 +1348,7 @@ All three default **false** (byte-identical behavior when omitted). Accepted on:
 
 **`phone_for_all` (default false).** Lifts the phone cap from 1 call per domain to **one call per eligible row** — same cost per call, more calls. No effect when `include_phone` is false. Behavioral today on the Flow-1 CSV path.
 
-**Rollout note (honest status):** the fields are live in all three request schemas and validated; the *behavioral* wiring is live on **Flow 1** (`/flows/domain-enrich` → `list_builder`) and the legacy CSV-job path (`/by-domains` → `pipeline`). On `/enrich` and `/by-linkedin-v2` the flags are accepted and threaded through a forward-compat shim that currently drops them at the callee — accepted, no error, no cost — until the parallel signature wave lands.
+**Rollout note (honest status):** the fields are live in all three request schemas and validated; the *behavioral* wiring is live on **Flow 1** (`/flows/domain-enrich` → `list_builder`) and the legacy CSV-job path (`/by-domains` → `pipeline`). On `/enrich` and `/by-linkedin-v2` the "accepted, currently no-op" cells above mean exactly that: the flags pass validation and are threaded through a forward-compat shim (`routes._forward_compat_kwargs`) that drops them at the callee until the callee signatures gain the same-named params (`pipeline.run_enrichment_route`: `exact_titles`/`include_phone`/`phone_for_all`; `list_builder.run_unified_linkedin_enrichment`: `include_phone`). Accepted, no error, no cost — behavior is byte-identical to omitting them. When that signature wave lands, the shim forwards them with no further route changes; this note and the two matrix columns flip to full wiring at the same time.
 
 ### I.3 New CSV columns — `dm_previous_companies`, `dm_previous_titles`
 
@@ -1446,6 +1447,7 @@ Plain-text message about daily quota. No `Retry-After` header.
 
 | Date | Change |
 | --- | --- |
+| 2026-09-16 | **Section I fixes — TAM chain + loop guards + rollout honesty.** (1) TAM→Flow-1 chaining with `exact_titles: true` now stores the chained job's cascade **unbracketed** (a stored `[CEO]` cascade made the chained job's local title gate reject 100% of persons) and forwards `exact_titles` to the Flow-1 runner, which bracket-wraps at Blitz-call time — same mechanics as `/flows/domain-enrich` (I.1 Chaining). (2) TAM pagination hard-stops at `TAM_MAX_PAGES` pages (default 400, env-overridable) and after 5 consecutive empty pages — cursor-cycling server bugs can no longer loop forever; everything written is kept and `capped: true` reflects an outstanding cursor (I.1 Job lifecycle). (3) I.2 matrix honesty: `/enrich` and `/by-linkedin-v2` cells relabeled "accepted, currently no-op" — the forward-compat shim drops the flags at the callee until the callee signature wave lands; behavior is byte-identical to omitting them. |
 | 2026-09-16 | **Section I added — TAM flow + Blitz summer release additions.** New `POST /api/enrichment/flows/tam` (TAM-by-People: persona + firmographic filters → deduplicated company CSV with `matched_people` counts; 1 Blitz record/company, 50/page cursor pagination, optional Flow-1 chaining; reuses the Section B job endpoints). New optional request fields `exact_titles` / `include_phone` / `phone_for_all` on `/enrich` + Flow 1 (`include_phone` also Flow 3; defaults all false; phone bills 1 Blitz record per call, US-only). New trailing CSV columns `dm_previous_companies` / `dm_previous_titles`. Under the hood: job-level Blitz find-people prepass (50 companies/call), persistent miss-store `blitz_domain_miss` (30-day TTL, definitive misses only), 422 URL guard, `TITLE_SEARCH_POOL` 50→12, and the Blitz billing truths documented in I.4. |
 | 2026-09-07 | **Enrichment API-key surface opened** — every `/api/enrichment/*` endpoint now accepts `X-API-Key` (or key-as-Bearer) in addition to JWT: upload, all job endpoints (create/list/status/download/partial/shards/cancel/restart/resume-info/recover-partial), Flow 1 `/flows/domain-enrich`, Flow 3 `/by-linkedin-v2`, legacy `/by-*` + `/jobs` + `/search/companies/enrich`, `/search/employees`, `/search/companies`, `/search/options`, `/website-scrape/status`, `/stats/sources`. **Exception:** `GET /jobs/{job_id}/stream` (SSE) stays JWT-only — API-key clients poll `GET /jobs/{job_id}`. `/flows/help` auth labels updated; missing `/search/employees` entry added. MCP oracle 401 guidance + quota text corrected (enrichment is not metered by the 50K/day quota). |
 | 2026-08-30 | **Section H added — External Scraper API** (`/api/external/scraper/*`, API-key auth, `{success,data,error,meta}` envelope): estimate, cache (free instant hits), job create/list/status/results (JSON rows)/cancel, quota. 5 MCP **action tools** added to the ListBuilding MCP (Section H.9; `scrape_local_businesses` defaults to dry_run). Scraper shard/partial endpoints added to D.4 table. |
