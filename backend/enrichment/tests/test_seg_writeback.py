@@ -163,12 +163,16 @@ class TestFirmographicTuple:
         """FIRST element = custom_fields key, SECOND = payload key (read off
         the pre-existing entries: 'headline' is the custom_fields key for
         payload key 'dm_headline'). The two seg entries are appended at the
-        END so any position-sensitive reader of the tuple is unaffected."""
+        END so any position-sensitive reader of the tuple is unaffected —
+        followed by the past-experiences pair (2026-09-16), which keeps seg
+        as the last-but-one pair."""
         entries = cw._FIRMOGRAPHIC_CUSTOM_FIELDS
         assert entries[0] == ("headline", "dm_headline")
-        assert entries[-2] == ("seg_classification", "seg_classification")
-        assert entries[-1] == ("seg_provider", "seg_provider")
-        assert len(entries) == 10
+        assert entries[-4] == ("seg_classification", "seg_classification")
+        assert entries[-3] == ("seg_provider", "seg_provider")
+        assert entries[-2] == ("previous_companies", "dm_previous_companies")
+        assert entries[-1] == ("previous_titles", "dm_previous_titles")
+        assert len(entries) == 12
 
     def test_seg_payload_keys_read_defensively(self):
         """The loop reads via payload.get(), so an absent key (the normal

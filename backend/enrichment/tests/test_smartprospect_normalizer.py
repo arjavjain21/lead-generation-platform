@@ -44,6 +44,8 @@ from enrichment import response_normalizer as rn  # noqa: E402
 EXPECTED_KEYS = {
     "email", "first_name", "last_name", "full_name",
     "title", "headline", "linkedin_url", "domain", "source",
+    # past-experiences pair (2026-09-16): "|"-joined NON-current history
+    "previous_companies", "previous_titles",
     "phone", "city", "country", "company_name", "company_industry",
     "employee_count", "revenue", "linkedin_connections",
     "email_last_verified_at", "job_level", "job_function",

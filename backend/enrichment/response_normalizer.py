@@ -14,8 +14,9 @@ Design contract:
   * All public functions are type-annotated.
   * Output dict shape is fixed (the canonical keys are email,
     first_name, last_name, full_name, title, headline, linkedin_url,
-    domain, source) so downstream code can rely on every key being
-    present.
+    domain, source — plus the passthrough fields phone/city/... and the
+    past-experiences pair previous_companies/previous_titles) so
+    downstream code can rely on every key being present.
 
 The normalized dict is intended to be consumed by:
   * The upcoming ``RawContactCollector`` (per-row capture of every
@@ -351,6 +352,8 @@ def _build_record(
     headline: Any = "",
     linkedin_url: Any = "",
     domain: Any = "",
+    previous_companies: Any = "",
+    previous_titles: Any = "",
     phone: Any = "",
     city: Any = "",
     country: Any = "",
@@ -373,7 +376,9 @@ def _build_record(
     company_industry, employee_count, revenue, linkedin_connections,
     email_last_verified_at, job_level, job_function) are stringified and
     stripped but NOT junk-filtered — the junk filter still only depends on
-    email/full_name/linkedin_url.
+    email/full_name/linkedin_url. The past-experiences fields
+    (previous_companies, previous_titles — 2026-09-16 wave) follow the same
+    passthrough rule.
 
     ``extra`` is an optional passthrough dict merged into the result AFTER
     the canonical keys are placed (canonical keys win on conflict), so
@@ -406,6 +411,13 @@ def _build_record(
         "linkedin_url": n_linkedin,
         "domain": n_domain,
         "source": source,
+        # Past-experiences passthrough (2026-09-16): "|"-joined NON-current
+        # companies/titles from a Blitz-style experiences[] list. Deriving
+        # them in the normalizer (not just list_builder) means the
+        # RawContactCollector write-back carries them for every capture
+        # shape that includes experiences[].
+        "previous_companies": _plain_str(previous_companies),
+        "previous_titles": _plain_str(previous_titles),
         # Phase 2 passthrough fields (see docstring).
         "phone": _plain_str(phone),
         "city": _plain_str(city),
@@ -423,6 +435,63 @@ def _build_record(
         # Canonical keys win: merge extra first, then re-apply the record.
         return {**extra, **record}
     return record
+
+
+def previous_companies_titles(
+    experiences: Any,
+    *,
+    max_chars: int = 500,
+) -> tuple[str, str]:
+    """Derive ``(previous_companies, previous_titles)`` from a Blitz-style
+    ``experiences[]`` list.
+
+    Rules (canonical — list_builder, the normalizer, and the collector all
+    share this ONE implementation):
+      * Only NON-current entries count (``job_is_current`` falsy): the
+        current role already lands in ``dm_title``; duplicating it here
+        would just pad the CSV.
+      * ``previous_companies``: ``" | "``-joined ``company_name`` values in
+        provider order (Blitz orders most-recent-first), duplicates KEPT
+        (two stints at one company is signal, not noise).
+      * ``previous_titles``: ``" | "``-joined ``job_title`` values,
+        deduplicated case-insensitively (first occurrence wins, order
+        preserved).
+      * Both strings capped at ``max_chars`` (default 500) — CSV cell
+        hygiene for profiles with 40-year histories.
+      * Total function: non-list input, non-dict entries, and non-string
+        fields yield ``("", "")``. Never raises.
+
+    Args:
+        experiences: the raw ``experiences`` value off a provider person
+            dict (list of dicts, or anything else).
+        max_chars: per-field character cap.
+
+    Returns:
+        ``(previous_companies, previous_titles)`` tuple of strings.
+    """
+    companies: list[str] = []
+    titles: list[str] = []
+    seen_titles: set[str] = set()
+    if not isinstance(experiences, list):
+        return "", ""
+    for exp in experiences:
+        if not isinstance(exp, dict):
+            continue
+        if exp.get("job_is_current"):
+            continue  # current job lives in dm_title, not here
+        company = exp.get("company_name")
+        if isinstance(company, str) and company.strip():
+            companies.append(company.strip())
+        title = exp.get("job_title")
+        if isinstance(title, str) and title.strip():
+            key = title.strip().lower()
+            if key not in seen_titles:
+                seen_titles.add(key)
+                titles.append(title.strip())
+    return (
+        " | ".join(companies)[:max_chars],
+        " | ".join(titles)[:max_chars],
+    )
 
 
 def _extract_blitz_title(person: dict) -> str:
@@ -535,6 +604,9 @@ def normalize_blitz_contact(raw: dict) -> Optional[dict[str, str]]:
 
     title = _extract_blitz_title(person)
     email = _extract_blitz_email(person)
+    previous_companies, previous_titles = previous_companies_titles(
+        person.get("experiences")
+    )
 
     return _build_record(
         source="blitz",
@@ -546,6 +618,8 @@ def normalize_blitz_contact(raw: dict) -> Optional[dict[str, str]]:
         headline=person.get("headline"),
         linkedin_url=person.get("linkedin_url"),
         domain="",  # Blitz person responses don't carry a domain.
+        previous_companies=previous_companies,
+        previous_titles=previous_titles,
     )
 
 
@@ -879,4 +953,5 @@ __all__ = [
     "normalize_wizleads_contact",
     "normalize_getleads_contact",
     "normalize_provider_contact",
+    "previous_companies_titles",
 ]

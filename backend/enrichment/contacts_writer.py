@@ -109,6 +109,10 @@ def classify_industry(industry: str) -> str:
 # seg_classification / seg_provider (2026-08-25) carry the platform's SEG
 # (MX gateway) verdict — belt-and-suspenders for the contacts DB's own 6h
 # domain-map cron, which populates the canonical core.email.seg_* columns.
+# previous_companies / previous_titles (2026-09-16) carry the "|"-joined
+# NON-current career history derived from Blitz experiences[] (see
+# response_normalizer.previous_companies_titles) — appended at the END so
+# position-sensitive readers of the tuple are unaffected.
 _FIRMOGRAPHIC_CUSTOM_FIELDS: tuple[tuple[str, str], ...] = (
     ("headline", "dm_headline"),
     ("industry", "company_industry"),
@@ -120,6 +124,8 @@ _FIRMOGRAPHIC_CUSTOM_FIELDS: tuple[tuple[str, str], ...] = (
     ("email_last_verified_at", "dm_email_last_verified_at"),
     ("seg_classification", "seg_classification"),
     ("seg_provider", "seg_provider"),
+    ("previous_companies", "dm_previous_companies"),
+    ("previous_titles", "dm_previous_titles"),
 )
 
 

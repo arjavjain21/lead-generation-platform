@@ -355,6 +355,18 @@ class RawContactCollector:
         if dm_email_last_verified_at:
             payload["dm_email_last_verified_at"] = dm_email_last_verified_at
 
+        # Past-experiences pair (2026-09-16): "|"-joined NON-current
+        # companies/titles derived from a Blitz experiences[] list by the
+        # normalizer. Only when non-empty — the writer's custom_fields loop
+        # must stay quiet for captures without experiences.
+        dm_previous_companies = normalized.get("previous_companies")
+        if dm_previous_companies:
+            payload["dm_previous_companies"] = dm_previous_companies
+
+        dm_previous_titles = normalized.get("previous_titles")
+        if dm_previous_titles:
+            payload["dm_previous_titles"] = dm_previous_titles
+
         # Job lineage
         if self.job_id is not None:
             payload["job_id"] = self.job_id

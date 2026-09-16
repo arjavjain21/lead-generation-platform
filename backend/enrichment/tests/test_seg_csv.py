@@ -107,9 +107,13 @@ def _run_flow1(tmpdir: str, rows: list[dict[str, Any]], extra_patches: list = ()
 
 class TestSegColumnsPinned(unittest.TestCase):
     def test_seg_columns_are_last_two_in_list_builder(self):
+        # 2026-09-16: dm_previous_companies/dm_previous_titles were APPENDED
+        # after the seg pair (append-at-END keeps resume-safe DictWriter
+        # blanks working) — seg is now the last-but-one pair.
         self.assertEqual(
-            list_builder.ENRICHED_COLUMNS[-2:],
-            ["seg_classification", "seg_provider"],
+            list_builder.ENRICHED_COLUMNS[-4:],
+            ["seg_classification", "seg_provider",
+             "dm_previous_companies", "dm_previous_titles"],
         )
 
     def test_seg_columns_are_last_two_in_pipeline(self):
@@ -119,8 +123,13 @@ class TestSegColumnsPinned(unittest.TestCase):
         )
 
     def test_both_lists_in_sync(self):
+        # list_builder gained the trailing experiences pair (2026-09-16);
+        # pipeline's list must remain an exact PREFIX of list_builder's
+        # until it adopts the columns too. A prefix still catches every
+        # dangerous divergence (mid-list insertion, removal, reorder).
         self.assertEqual(
-            list(pipeline.ENRICHED_COLUMNS), list(list_builder.ENRICHED_COLUMNS)
+            list_builder.ENRICHED_COLUMNS[:len(pipeline.ENRICHED_COLUMNS)],
+            list(pipeline.ENRICHED_COLUMNS),
         )
 
     def test_seg_columns_present_exactly_once_each(self):
@@ -172,7 +181,8 @@ class TestSegPrepassStampsRows(unittest.TestCase):
                 ])
             header, rows = _read_csv(out)
 
-        self.assertEqual(header[-2:], ["seg_classification", "seg_provider"])
+        self.assertEqual(header[-4:], ["seg_classification", "seg_provider",
+                                        "dm_previous_companies", "dm_previous_titles"])
         self.assertEqual(len(rows), 2)
         by_input = {r["domain"]: r for r in rows}
         self.assertEqual(by_input["https://www.acme.com/about"]["seg_classification"],
@@ -241,7 +251,8 @@ class TestSegFlagOffAndMissingDomain(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             out = _run_flow1(td, [{"domain": "acme.com"}])
             header, rows = _read_csv(out)
-        self.assertEqual(header[-2:], ["seg_classification", "seg_provider"])
+        self.assertEqual(header[-4:], ["seg_classification", "seg_provider",
+                                        "dm_previous_companies", "dm_previous_titles"])
         self.assertEqual(rows[0]["seg_classification"], "")
         self.assertEqual(rows[0]["seg_provider"], "")
 
@@ -253,7 +264,8 @@ class TestSegFlagOffAndMissingDomain(unittest.TestCase):
             with patch("enrichment.seg.classify_domains", new=fake_classify):
                 out = _run_flow1(td, [{"domain": "acme.com"}])
             header, rows = _read_csv(out)
-        self.assertEqual(header[-2:], ["seg_classification", "seg_provider"])
+        self.assertEqual(header[-4:], ["seg_classification", "seg_provider",
+                                        "dm_previous_companies", "dm_previous_titles"])
         self.assertEqual(rows[0]["seg_classification"], "")
         self.assertEqual(rows[0]["seg_provider"], "")
 
@@ -293,7 +305,8 @@ class TestSegPrepassFailureSwallowed(unittest.TestCase):
                 out = _run_flow1(td, [{"domain": "acme.com"}, {"domain": "stripe.com"}])
             header, rows = _read_csv(out)
 
-        self.assertEqual(header[-2:], ["seg_classification", "seg_provider"])
+        self.assertEqual(header[-4:], ["seg_classification", "seg_provider",
+                                        "dm_previous_companies", "dm_previous_titles"])
         self.assertEqual(len(rows), 2)
         for r in rows:
             self.assertEqual(r["seg_classification"], "")
@@ -361,7 +374,8 @@ class TestResumeCarryOver(unittest.TestCase):
                 writer.writerow(old_row)  # resume prepend path
             header, rows = _read_csv(out)
 
-        self.assertEqual(header[-2:], ["seg_classification", "seg_provider"])
+        self.assertEqual(header[-4:], ["seg_classification", "seg_provider",
+                                        "dm_previous_companies", "dm_previous_titles"])
         self.assertEqual(len(rows), 1)
         # No misalignment: the old cells kept their columns, seg cells blank.
         self.assertEqual(rows[0]["domain"], "acme.com")
@@ -429,7 +443,8 @@ class TestFlushPurity(unittest.TestCase):
         # The pre-pass DID run (it called the sentinel) — but the assertion
         # above proves it fired only BEFORE the flush wrote the rows. The CSV
         # carries the (blank) stamped columns and the flush completed.
-        self.assertEqual(header[-2:], ["seg_classification", "seg_provider"])
+        self.assertEqual(header[-4:], ["seg_classification", "seg_provider",
+                                        "dm_previous_companies", "dm_previous_titles"])
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["seg_classification"], "")
         self.assertEqual(result[0]["seg_classification"], "")

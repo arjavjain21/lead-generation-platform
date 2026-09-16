@@ -463,4 +463,13 @@ def test_valid_providers_mirror_x3():
 
 
 def test_enriched_columns_mirror_x2():
-    assert list(pipeline_mod.ENRICHED_COLUMNS) == list(lb.ENRICHED_COLUMNS)
+    # 2026-09-16: list_builder APPENDED dm_previous_companies /
+    # dm_previous_titles (experiences end-to-end wave); pipeline hasn't
+    # adopted them yet — it must remain an exact PREFIX (which still
+    # catches mid-list insertion, removal, and reorder divergences).
+    assert list(lb.ENRICHED_COLUMNS)[:len(pipeline_mod.ENRICHED_COLUMNS)] == list(
+        pipeline_mod.ENRICHED_COLUMNS
+    )
+    assert lb.ENRICHED_COLUMNS[len(pipeline_mod.ENRICHED_COLUMNS):] == [
+        "dm_previous_companies", "dm_previous_titles",
+    ]

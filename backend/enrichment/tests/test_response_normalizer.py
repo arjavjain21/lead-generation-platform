@@ -826,14 +826,18 @@ class TestOutputShapeInvariants:
 
     Phase 2 (full capture, 2026-08-14) widened the canonical record shared
     by ALL providers: the 9 original identity keys plus 11 passthrough
-    firmographic fields ("" when the provider doesn't emit them). Providers
-    that pass an ``extra`` blob (GetLeads: ``_raw_getleads``) add that key
-    too — these fixtures carry no blob.
+    firmographic fields ("" when the provider doesn't emit them). The
+    past-experiences pair (2026-09-16: previous_companies /
+    previous_titles, "|"-joined NON-current history from Blitz
+    experiences[]) follows the same rule. Providers that pass an ``extra``
+    blob (GetLeads: ``_raw_getleads``) add that key too — these fixtures
+    carry no blob.
     """
 
     EXPECTED_KEYS = {
         "email", "first_name", "last_name", "full_name",
         "title", "headline", "linkedin_url", "domain", "source",
+        "previous_companies", "previous_titles",
         "phone", "city", "country", "company_name", "company_industry",
         "employee_count", "revenue", "linkedin_connections",
         "email_last_verified_at", "job_level", "job_function",
