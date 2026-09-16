@@ -6,16 +6,22 @@ These tests pin the contract the caller (pipeline/list_builder wiring) relies
 on:
 
 - miss recording happens ONLY on conclusive answers (domain-to-linkedin
-  found=false -> kind "company"; zero persons -> kind "contacts") and NEVER
-  on exceptions — a transient 429/5xx must not poison a domain for the
-  miss store's TTL;
+  found=false -> kind "company"; zero persons AFTER a conclusive pagination
+  end -> kind "contacts") and NEVER on exceptions — a transient 429/5xx must
+  not poison a domain for the miss store's TTL — and never when the chunk's
+  pagination was TRUNCATED at the max_pages cap with a pending cursor
+  (matches may exist past the last page; suppression is per chunk);
 - domains that fail (per-domain lookup error, chunk-level error, cancel
   between chunks) are absent from prepass_domains -> the caller falls back
   to the per-domain waterfall;
 - is_recent_miss domains short-circuit (skipped_miss) and are never touched;
 - exact_titles wraps the include list via bracket_exact; excludes stay raw;
 - chunks of 50, one find_people_batch call each, progress + cancel hooks
-  fire between chunks.
+  fire between chunks;
+- default max_pages is adaptive per chunk — min(30, max(6,
+  ceil(target_per_company * chunk_size / 50) + 1)) — so target>5 jobs page
+  enough to actually fill their targets; an explicit max_pages passes
+  through verbatim (see TestPrepassAdaptiveMaxPages).
 
 Async pattern: no pytest-asyncio — asyncio.run(...) in sync tests, matching
 the suite convention. Blitz client functions are monkeypatched on the
@@ -88,11 +94,19 @@ def _wire_domain_lookup(monkeypatch, mapping: dict, fail: set[str] = set()) -> d
     return calls
 
 
-def _wire_find_people(monkeypatch, grouped_by_url: dict, fail_urls: set[str] = set()) -> dict:
+def _wire_find_people(
+    monkeypatch,
+    grouped_by_url: dict,
+    fail_urls: set[str] = set(),
+    truncated_urls: set[str] = set(),
+) -> dict:
     """Patch blitz_client.find_people_batch.
 
     grouped_by_url: normalized company url -> [rows].
     fail_urls: any chunk CONTAINING one of these urls raises (chunk failure).
+    truncated_urls: any chunk CONTAINING one of these urls reports
+        stats={"truncated": True, ...} — pagination stopped at the page cap
+        with a pending cursor (matches may exist past the last page).
     Returns a call counter dict capturing the URL batches.
     """
     calls = {"n": 0, "batches": [], "kwargs": []}
@@ -101,12 +115,17 @@ def _wire_find_people(monkeypatch, grouped_by_url: dict, fail_urls: set[str] = s
         calls["n"] += 1
         calls["batches"].append(list(urls))
         calls["kwargs"].append(kwargs)
-        if any(bc._normalize_company_url(u) in fail_urls for u in urls):
+        normalized = {bc._normalize_company_url(u) for u in urls}
+        if normalized & fail_urls:
             raise RuntimeError("429 after retries")
+        stats = kwargs.get("stats")
+        if stats is not None:
+            stats["truncated"] = bool(normalized & truncated_urls)
+            stats["pages"] = 4
         return {
             key: list(rows)
             for key, rows in grouped_by_url.items()
-            if key in {bc._normalize_company_url(u) for u in urls}
+            if key in normalized
         }
 
     monkeypatch.setattr(bc, "find_people_batch", fake_batch)
@@ -140,8 +159,8 @@ class TestPrepassHappyPath:
         _wire_find_people(
             monkeypatch,
             {
-                "www.linkedin.com/company/acme": [_flat_row("A", "acme")],
-                "www.linkedin.com/company/beta": [_flat_row("B", "beta")],
+                "linkedin.com/company/acme": [_flat_row("A", "acme")],
+                "linkedin.com/company/beta": [_flat_row("B", "beta")],
             },
         )
 
@@ -165,7 +184,7 @@ class TestPrepassMissRecording:
     def test_company_miss_recorded_and_still_covered(self, monkeypatch):
         _wire_domain_lookup(monkeypatch, {"acme.com": None, "beta.com": "https://www.linkedin.com/company/beta"})
         misses = []
-        _wire_find_people(monkeypatch, {"www.linkedin.com/company/beta": [_flat_row("B", "beta")]})
+        _wire_find_people(monkeypatch, {"linkedin.com/company/beta": [_flat_row("B", "beta")]})
 
         result = _run(
             domains=["acme.com", "beta.com"],
@@ -200,7 +219,7 @@ class TestPrepassMissRecording:
             fail={"boom.com"},
         )
         misses = []
-        _wire_find_people(monkeypatch, {"www.linkedin.com/company/ok": [_flat_row("O", "ok")]})
+        _wire_find_people(monkeypatch, {"linkedin.com/company/ok": [_flat_row("O", "ok")]})
 
         result = _run(
             domains=["boom.com", "ok.com"],
@@ -227,8 +246,8 @@ class TestPrepassMissRecording:
         misses = []
         _wire_find_people(
             monkeypatch,
-            {"www.linkedin.com/company/zeta": [_flat_row("Z", "zeta")]},
-            fail_urls={"www.linkedin.com/company/acme"},
+            {"linkedin.com/company/zeta": [_flat_row("Z", "zeta")]},
+            fail_urls={"linkedin.com/company/acme"},
         )
 
         result = _run(
@@ -264,8 +283,8 @@ class TestPrepassSkippedMiss:
         _wire_find_people(
             monkeypatch,
             {
-                "www.linkedin.com/company/x": [_flat_row("X", "x")],
-                "www.linkedin.com/company/fresh": [_flat_row("F", "fresh")],
+                "linkedin.com/company/x": [_flat_row("X", "x")],
+                "linkedin.com/company/fresh": [_flat_row("F", "fresh")],
             },
         )
 
@@ -378,13 +397,137 @@ class TestPrepassChunkingAndOptions:
         )
 
 
+class TestPrepassAdaptiveMaxPages:
+    """Default max_pages (None) scales with target x chunk so target>5 jobs
+    page enough to actually FILL targets; explicit caps pass through
+    verbatim. Formula: min(30, max(6, ceil(target * chunk / 50) + 1))."""
+
+    @pytest.mark.parametrize(
+        "n_companies,target,expected",
+        [
+            (1, 5, 6),     # floor: small chunks never page below the legacy 6
+            (50, 5, 6),    # legacy default exactly reproduced (target 5)
+            (50, 10, 11),  # target 10 over a full chunk needs ~10 pages
+            (3, 100, 7),   # small chunk still scales: ceil(300/50)+1
+            (50, 200, 30), # ceiling cap
+        ],
+    )
+    def test_default_max_pages_is_adaptive(self, monkeypatch, n_companies, target, expected):
+        mapping = {f"d{i}.com": f"https://www.linkedin.com/company/c{i}" for i in range(n_companies)}
+        _wire_domain_lookup(monkeypatch, mapping)
+        batch = _wire_find_people(monkeypatch, {})
+
+        _run(domains=list(mapping), target_per_company=target)
+        assert batch["kwargs"][0]["max_pages"] == expected
+
+    def test_explicit_max_pages_respected_verbatim(self, monkeypatch):
+        # An explicit cap is a hard cap — even when the adaptive default for
+        # this target/chunk would be larger (target 100, 1 company -> 3).
+        _wire_domain_lookup(monkeypatch, {"acme.com": "https://www.linkedin.com/company/acme"})
+        batch = _wire_find_people(monkeypatch, {})
+
+        _run(domains=["acme.com"], target_per_company=100, max_pages=2)
+        assert batch["kwargs"][0]["max_pages"] == 2
+
+    def test_stats_out_param_forwarded(self, monkeypatch):
+        # blitz_batch must pass the mutable stats dict so truncation is
+        # observable per chunk (find_people_batch fills it).
+        _wire_domain_lookup(monkeypatch, {"acme.com": "https://www.linkedin.com/company/acme"})
+        batch = _wire_find_people(monkeypatch, {})
+
+        _run(domains=["acme.com"])
+        assert isinstance(batch["kwargs"][0].get("stats"), dict)
+
+
+class TestPrepassTruncationMissSuppression:
+    """Regression (2026-09-16): a chunk whose pagination stopped at the
+    max_pages cap WITH a pending cursor is TRUNCATED, not conclusive —
+    zero-person domains there must NOT get a 'contacts' miss marker (30-day
+    poison on an unanswered question). They are still covered: the persons
+    the prepass did get are used, empty list and all."""
+
+    def test_truncated_chunk_records_no_contacts_miss_but_covers(self, monkeypatch):
+        _wire_domain_lookup(monkeypatch, {"acme.com": "https://www.linkedin.com/company/acme"})
+        misses = []
+        _wire_find_people(
+            monkeypatch,
+            {},  # zero persons
+            truncated_urls={"linkedin.com/company/acme"},  # cap hit, cursor pending
+        )
+
+        result = _run(
+            domains=["acme.com"],
+            record_miss=lambda domain, kind: misses.append((domain, kind)),
+        )
+
+        assert misses == [], "truncation is not a conclusive answer — no poison"
+        assert "acme.com" in result["prepass_domains"], "domain still counts as covered"
+        assert result["persons_by_domain"]["acme.com"] == []
+
+    def test_truncation_suppression_is_per_chunk(self, monkeypatch):
+        # Chunk 1 (sorted: acme + 49 fillers) truncated; chunk 2 (zeta)
+        # conclusive zero -> ONLY zeta gets the contacts miss.
+        fillers = {f"f{i:02d}.com": f"https://www.linkedin.com/company/f{i:02d}" for i in range(49)}
+        _wire_domain_lookup(
+            monkeypatch,
+            {
+                "acme.com": "https://www.linkedin.com/company/acme",
+                "zeta.com": "https://www.linkedin.com/company/zeta",
+                **fillers,
+            },
+        )
+        misses = []
+        _wire_find_people(
+            monkeypatch,
+            {},
+            truncated_urls={"linkedin.com/company/acme"},
+        )
+
+        result = _run(
+            domains=["acme.com", "zeta.com", *fillers],
+            record_miss=lambda domain, kind: misses.append((domain, kind)),
+        )
+
+        assert misses == [("zeta.com", "contacts")], (
+            "conclusive chunk still records; truncated chunk does not"
+        )
+        assert result["prepass_domains"] == {"acme.com", "zeta.com", *fillers}
+
+    def test_truncated_chunk_with_persons_never_missed_anyway(self, monkeypatch):
+        # A truncated chunk that DID return persons: hits were never misses;
+        # the empty sibling is suppressed. Both covered.
+        _wire_domain_lookup(
+            monkeypatch,
+            {
+                "acme.com": "https://www.linkedin.com/company/acme",
+                "beta.com": "https://www.linkedin.com/company/beta",
+            },
+        )
+        misses = []
+        _wire_find_people(
+            monkeypatch,
+            {"linkedin.com/company/acme": [_flat_row("A", "acme")]},
+            truncated_urls={"linkedin.com/company/acme"},
+        )
+
+        result = _run(
+            domains=["acme.com", "beta.com"],
+            record_miss=lambda domain, kind: misses.append((domain, kind)),
+        )
+
+        assert misses == []
+        assert [row["first_name"] for row in result["persons_by_domain"]["acme.com"]] == ["A"]
+        assert result["persons_by_domain"]["beta.com"] == []
+        assert result["prepass_domains"] == {"acme.com", "beta.com"}
+
+
 class TestPrepassAttachmentEdgeCases:
     def test_persons_attached_via_normalized_url(self, monkeypatch):
         # domain_to_linkedin returns a trailing-slash URL; find_people_batch
         # keys are normalized — attachment must bridge the two shapes.
         _wire_domain_lookup(monkeypatch, {"acme.com": "https://www.linkedin.com/company/acme/"})
         _wire_find_people(
-            monkeypatch, {"www.linkedin.com/company/acme": [_flat_row("A", "acme")]}
+            monkeypatch, {"linkedin.com/company/acme": [_flat_row("A", "acme")]}
         )
 
         result = _run(domains=["acme.com"])
@@ -398,7 +541,7 @@ class TestPrepassAttachmentEdgeCases:
                 "acme.co": "https://www.linkedin.com/company/acme/",
             },
         )
-        _wire_find_people(monkeypatch, {"www.linkedin.com/company/acme": [_flat_row("A", "acme")]})
+        _wire_find_people(monkeypatch, {"linkedin.com/company/acme": [_flat_row("A", "acme")]})
 
         result = _run(domains=["acme.com", "acme.co"])
         assert result["prepass_domains"] == {"acme.com", "acme.co"}

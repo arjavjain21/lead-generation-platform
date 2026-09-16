@@ -10,10 +10,19 @@ only (never the URL itself).
 find_people_batch is the batch DM-discovery endpoint (POST /v2/search/people,
 max 50 companies/call, cursor-paginated, 1 FUP record/result). These tests
 pin: the waterfall-flat row mapping (title from the CURRENT experience),
-grouping under normalized company URLs, and all three pagination stop
-conditions (cursor null / every company at target / max_pages).
+grouping under normalized company URLs (host case + "www." prefix +
+/company/<slug> case + trailing slash + query/fragment all collapse — see
+TestNormalizeCompanyUrl), the pagination stop conditions (cursor null /
+every company at target / max_pages), and the ``stats`` out-param that
+separates CONCLUSIVE ends (truncated=False) from max_pages TRUNCATION
+(truncated=True — matches may exist past the last page, so an empty company
+is not a definitive miss).
 
 tam_by_people is a payload passthrough (POST /v2/company/tam-by-people).
+
+The find-people/TAM functions live in enrichment/blitz_search.py and are
+re-exported from blitz_client (TestBlitzSearchReExport pins identity +
+transport patchability so the extraction is invisible to callers).
 
 Async pattern: this project does NOT use pytest-asyncio — async code is
 driven with ``asyncio.run(...)`` inside sync test functions, matching
@@ -168,6 +177,69 @@ class TestBracketExact:
 
 
 # ---------------------------------------------------------------------------
+# 3b. _normalize_company_url — the batch attribution key
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeCompanyUrl:
+    """The grouping key MUST collapse every cosmetic form in which the
+    d2l answer and experiences[].company_linkedin_url differ, or persons
+    are silently dropped and the prepass records a FALSE definitive
+    'contacts' miss (30-day negative-cache poison)."""
+
+    @pytest.mark.parametrize(
+        "url,expected",
+        [
+            # www prefix stripped (host case-insensitive)
+            ("https://www.linkedin.com/company/acme", "linkedin.com/company/acme"),
+            ("https://linkedin.com/company/acme", "linkedin.com/company/acme"),
+            ("http://WWW.LinkedIn.com/company/acme", "linkedin.com/company/acme"),
+            # /company/<slug> case collapsed both directions
+            ("https://www.linkedin.com/company/Acme", "linkedin.com/company/acme"),
+            ("https://www.linkedin.com/Company/ACME/", "linkedin.com/company/acme"),
+            # trailing slashes (one or many)
+            ("https://www.linkedin.com/company/acme/", "linkedin.com/company/acme"),
+            ("https://www.linkedin.com/company/acme///", "linkedin.com/company/acme"),
+            # query + fragment stripped
+            ("https://www.linkedin.com/company/acme?trk=feed", "linkedin.com/company/acme"),
+            ("https://www.linkedin.com/company/acme#section", "linkedin.com/company/acme"),
+            ("https://www.linkedin.com/company/acme/?page=2", "linkedin.com/company/acme"),
+            # schemeless forms still recognize the host
+            ("www.linkedin.com/company/Acme", "linkedin.com/company/acme"),
+            ("linkedin.com/company/acme", "linkedin.com/company/acme"),
+            # meaningful subdomains survive (only bare www is stripped)
+            ("https://uk.linkedin.com/company/acme", "uk.linkedin.com/company/acme"),
+            # extra path segments keep the slug lowercased, rest verbatim
+            ("https://www.linkedin.com/company/Acme/about", "linkedin.com/company/acme/about"),
+            # non-company paths: host still normalized, path untouched
+            ("https://www.linkedin.com/school/Stanford", "linkedin.com/school/Stanford"),
+            # degenerate inputs
+            ("", ""),
+            ("   ", ""),
+            ("https://www.linkedin.com", "linkedin.com"),
+        ],
+    )
+    def test_collapses_cosmetic_variants(self, url, expected):
+        assert bc._normalize_company_url(url) == expected
+
+    @pytest.mark.parametrize("bad", [None, 123, [], {}])
+    def test_non_string_returns_empty(self, bad):
+        assert bc._normalize_company_url(bad) == ""
+
+    def test_all_forms_of_one_company_share_one_key(self):
+        forms = [
+            "https://www.linkedin.com/company/Acme/",
+            "https://linkedin.com/company/acme?trk=xyz",
+            "http://WWW.LinkedIn.com/Company/ACME",
+            "www.linkedin.com/company/Acme",
+        ]
+        keys = {bc._normalize_company_url(form) for form in forms}
+        assert keys == {"linkedin.com/company/acme"}, (
+            "every cosmetic form of one company must be ONE grouping key"
+        )
+
+
+# ---------------------------------------------------------------------------
 # 4. find_people_batch
 # ---------------------------------------------------------------------------
 
@@ -213,7 +285,7 @@ class TestFindPeopleBatchMapping:
         with patch.object(bc, "_post_with_retry", AsyncMock(return_value=page)):
             grouped = asyncio.run(bc.find_people_batch(MagicMock(), [acme]))
 
-        rows = grouped["www.linkedin.com/company/acme"]
+        rows = grouped["linkedin.com/company/acme"]
         assert len(rows) == 1
         row = rows[0]
         assert row["first_name"] == "John"
@@ -242,7 +314,7 @@ class TestFindPeopleBatchMapping:
         page = {"results": [person], "cursor": None}
         with patch.object(bc, "_post_with_retry", AsyncMock(return_value=page)):
             grouped = asyncio.run(bc.find_people_batch(MagicMock(), [acme]))
-        assert grouped["www.linkedin.com/company/acme"][0]["full_name"] == "John Doe"
+        assert grouped["linkedin.com/company/acme"][0]["full_name"] == "John Doe"
 
     def test_grouping_normalizes_host_case_and_trailing_slash(self):
         requested = "https://WWW.LinkedIn.com/company/acme/"
@@ -250,19 +322,37 @@ class TestFindPeopleBatchMapping:
         page = {"results": [person], "cursor": None}
         with patch.object(bc, "_post_with_retry", AsyncMock(return_value=page)):
             grouped = asyncio.run(bc.find_people_batch(MagicMock(), [requested]))
-        assert len(grouped["www.linkedin.com/company/acme"]) == 1, (
+        assert len(grouped["linkedin.com/company/acme"]) == 1, (
             "host case + trailing slash must collapse to one key"
         )
 
-    def test_grouping_preserves_path_case(self):
-        # Only the HOST is lowercased (per contract); a mixed-case path is a
-        # different key, so a lowercase person href stays unattributable.
+    def test_grouping_collapses_path_case(self):
+        # Regression (2026-09-16): /company/<slug> case differences between
+        # the d2l answer and experiences[].company_linkedin_url used to split
+        # keys, silently dropping the person and poisoning a FALSE definitive
+        # 'contacts' miss. LinkedIn slugs are case-insensitive identifiers —
+        # "/Company/Acme" and "/company/acme" are the SAME company.
         requested = "https://www.linkedin.com/Company/Acme/"
         person = _person("https://www.linkedin.com/in/john", "https://www.linkedin.com/company/acme")
         page = {"results": [person], "cursor": None}
         with patch.object(bc, "_post_with_retry", AsyncMock(return_value=page)):
             grouped = asyncio.run(bc.find_people_batch(MagicMock(), [requested]))
-        assert grouped["www.linkedin.com/Company/Acme"] == []
+        assert grouped["linkedin.com/company/acme"], (
+            "the /Company/Acme request must attribute the /company/acme person"
+        )
+        assert len(grouped["linkedin.com/company/acme"]) == 1
+
+    def test_grouping_collapses_www_prefix(self):
+        # Regression (2026-09-16): d2l returns "linkedin.com/company/x" while
+        # experiences carry "www.linkedin.com/company/x" — same company, one key.
+        requested = "https://linkedin.com/company/acme"
+        person = _person("https://www.linkedin.com/in/john", "https://www.linkedin.com/company/acme/")
+        page = {"results": [person], "cursor": None}
+        with patch.object(bc, "_post_with_retry", AsyncMock(return_value=page)):
+            grouped = asyncio.run(bc.find_people_batch(MagicMock(), [requested]))
+        assert len(grouped["linkedin.com/company/acme"]) == 1, (
+            "www vs bare host must collapse to one key or the person is dropped"
+        )
 
     def test_person_without_current_experience_is_skipped(self):
         acme = "https://www.linkedin.com/company/acme"
@@ -273,7 +363,7 @@ class TestFindPeopleBatchMapping:
         page = {"results": [person], "cursor": None}
         with patch.object(bc, "_post_with_retry", AsyncMock(return_value=page)):
             grouped = asyncio.run(bc.find_people_batch(MagicMock(), [acme]))
-        assert grouped["www.linkedin.com/company/acme"] == []
+        assert grouped["linkedin.com/company/acme"] == []
 
     def test_person_from_unrequested_company_is_skipped(self):
         acme = "https://www.linkedin.com/company/acme"
@@ -281,7 +371,7 @@ class TestFindPeopleBatchMapping:
         page = {"results": [person], "cursor": None}
         with patch.object(bc, "_post_with_retry", AsyncMock(return_value=page)):
             grouped = asyncio.run(bc.find_people_batch(MagicMock(), [acme]))
-        assert grouped["www.linkedin.com/company/acme"] == []
+        assert grouped["linkedin.com/company/acme"] == []
 
     def test_ranking_is_per_company_one_based(self):
         acme = "https://www.linkedin.com/company/acme"
@@ -296,8 +386,8 @@ class TestFindPeopleBatchMapping:
         }
         with patch.object(bc, "_post_with_retry", AsyncMock(return_value=page)):
             grouped = asyncio.run(bc.find_people_batch(MagicMock(), [acme, beta]))
-        assert [row["ranking"] for row in grouped["www.linkedin.com/company/acme"]] == [1, 2]
-        assert [row["ranking"] for row in grouped["www.linkedin.com/company/beta"]] == [1]
+        assert [row["ranking"] for row in grouped["linkedin.com/company/acme"]] == [1, 2]
+        assert [row["ranking"] for row in grouped["linkedin.com/company/beta"]] == [1]
 
     def test_empty_company_list_returns_empty_dict_without_http(self):
         posted = AsyncMock()
@@ -377,7 +467,7 @@ class TestFindPeopleBatchPaginationStops:
         with patch.object(bc, "_post_with_retry", posted):
             grouped = asyncio.run(bc.find_people_batch(MagicMock(), [acme]))
         assert posted.await_count == 1
-        assert len(grouped["www.linkedin.com/company/acme"]) == 1
+        assert len(grouped["linkedin.com/company/acme"]) == 1
 
     def test_stops_when_every_company_reaches_target(self):
         acme, page1 = self._acme_pages(5, "cursor-more")
@@ -391,8 +481,8 @@ class TestFindPeopleBatchPaginationStops:
                 bc.find_people_batch(MagicMock(), [acme, beta], target_per_company=5)
             )
         assert posted.await_count == 1, "all companies at target -> no second page"
-        assert len(grouped["www.linkedin.com/company/acme"]) == 5
-        assert len(grouped["www.linkedin.com/company/beta"]) == 5
+        assert len(grouped["linkedin.com/company/acme"]) == 5
+        assert len(grouped["linkedin.com/company/beta"]) == 5
 
     def test_paginates_while_any_company_below_target(self):
         acme, page1 = self._acme_pages(5, "cursor-more")
@@ -410,7 +500,7 @@ class TestFindPeopleBatchPaginationStops:
                 bc.find_people_batch(MagicMock(), [acme, beta], target_per_company=5)
             )
         assert posted.await_count == 2, "beta below target -> one more page"
-        assert len(grouped["www.linkedin.com/company/beta"]) == 2
+        assert len(grouped["linkedin.com/company/beta"]) == 2
 
     def test_stops_at_max_pages_even_with_cursor_and_deficit(self):
         acme = "https://www.linkedin.com/company/acme"
@@ -428,7 +518,7 @@ class TestFindPeopleBatchPaginationStops:
                 bc.find_people_batch(MagicMock(), [acme], target_per_company=5, max_pages=3)
             )
         assert posted.await_count == 3, "max_pages is a hard cap"
-        assert len(grouped["www.linkedin.com/company/acme"]) == 3
+        assert len(grouped["linkedin.com/company/acme"]) == 3
 
     def test_error_propagates_for_caller_fallback(self):
         posted = AsyncMock(side_effect=httpx.ConnectError("blitz unreachable"))
@@ -437,6 +527,108 @@ class TestFindPeopleBatchPaginationStops:
                 asyncio.run(bc.find_people_batch(MagicMock(), ["https://www.linkedin.com/company/x"]))
         # Documented contract: unwrapped propagation, no swallowing here —
         # blitz_batch's prepass owns the per-chunk fallback.
+
+
+class TestFindPeopleBatchStats:
+    """The optional ``stats`` out-param tells blitz_batch whether pagination
+    ended CONCLUSIVELY (cursor exhausted / every company at target) or was
+    TRUNCATED at the max_pages cap — truncation means matches may exist past
+    the last page, so an empty company is NOT a definitive miss."""
+
+    def _acme_page(self, n_results: int, cursor) -> dict:
+        acme = "https://www.linkedin.com/company/acme"
+        return {
+            "results": [
+                _person(f"https://www.linkedin.com/in/p{i}", acme, title=f"T{i}")
+                for i in range(n_results)
+            ],
+            "cursor": cursor,
+        }
+
+    def test_truncated_true_when_page_cap_hits_with_pending_cursor(self):
+        pages = [self._acme_page(1, f"cursor-{i}") for i in range(5)]
+        pages[-1] = {"results": [], "cursor": "cursor-last"}
+        posted = AsyncMock(side_effect=pages)
+        stats: dict = {}
+        with patch.object(bc, "_post_with_retry", posted):
+            asyncio.run(bc.find_people_batch(
+                MagicMock(), ["https://www.linkedin.com/company/acme"],
+                target_per_company=5, max_pages=3, stats=stats,
+            ))
+        assert stats == {"truncated": True, "pages": 3}
+
+    def test_truncated_false_when_cursor_null(self):
+        posted = AsyncMock(return_value=self._acme_page(1, None))
+        stats: dict = {}
+        with patch.object(bc, "_post_with_retry", posted):
+            grouped = asyncio.run(bc.find_people_batch(
+                MagicMock(), ["https://www.linkedin.com/company/acme"], stats=stats,
+            ))
+        assert stats == {"truncated": False, "pages": 1}
+        assert len(grouped["linkedin.com/company/acme"]) == 1
+
+    def test_truncated_false_when_every_company_reaches_target(self):
+        # Cursor still pending but demand met — a definitive end for miss
+        # purposes (no company can be below target on this exit path).
+        page = self._acme_page(5, "cursor-more")
+        posted = AsyncMock(return_value=page)
+        stats: dict = {}
+        with patch.object(bc, "_post_with_retry", posted):
+            asyncio.run(bc.find_people_batch(
+                MagicMock(), ["https://www.linkedin.com/company/acme"],
+                target_per_company=5, stats=stats,
+            ))
+        assert stats == {"truncated": False, "pages": 1}
+
+    def test_truncated_false_when_cap_hits_on_final_page_with_null_cursor(self):
+        # The last allowed page happens to exhaust the cursor: conclusive end.
+        pages = [self._acme_page(1, "cursor-1"), self._acme_page(1, None)]
+        posted = AsyncMock(side_effect=pages)
+        stats: dict = {}
+        with patch.object(bc, "_post_with_retry", posted):
+            asyncio.run(bc.find_people_batch(
+                MagicMock(), ["https://www.linkedin.com/company/acme"],
+                target_per_company=5, max_pages=2, stats=stats,
+            ))
+        assert stats == {"truncated": False, "pages": 2}
+
+    def test_truncated_true_when_cap_hits_with_deficit_on_last_page(self):
+        # Cap + pending cursor + at least one company below target even when
+        # other companies are full: still a truncation (the empty company's
+        # answer is unknown).
+        beta = "https://www.linkedin.com/company/beta"
+        page = {
+            "results": [
+                *self._acme_page(5, None)["results"],
+                _person("https://www.linkedin.com/in/q1", beta, title="Q"),
+            ],
+            "cursor": "cursor-more",
+        }
+        posted = AsyncMock(return_value=page)
+        stats: dict = {}
+        with patch.object(bc, "_post_with_retry", posted):
+            asyncio.run(bc.find_people_batch(
+                MagicMock(),
+                ["https://www.linkedin.com/company/acme", beta],
+                target_per_company=5, max_pages=1, stats=stats,
+            ))
+        assert stats == {"truncated": True, "pages": 1}
+
+    def test_empty_company_list_fills_stats_without_http(self):
+        posted = AsyncMock()
+        stats: dict = {}
+        with patch.object(bc, "_post_with_retry", posted):
+            grouped = asyncio.run(bc.find_people_batch(MagicMock(), [], stats=stats))
+        assert grouped == {}
+        assert stats == {"truncated": False, "pages": 0}
+        posted.assert_not_called()
+
+    def test_stats_optional_and_untouched_when_omitted(self):
+        posted = AsyncMock(return_value=self._acme_page(1, None))
+        with patch.object(bc, "_post_with_retry", posted):
+            asyncio.run(bc.find_people_batch(MagicMock(), ["https://www.linkedin.com/company/acme"]))
+        # No stats passed -> no error; return shape unchanged for old callers.
+        assert posted.await_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -482,3 +674,50 @@ class TestTamByPeople:
         payload = posted.call_args.args[2]
         assert "cursor" not in payload
         assert payload["max_results"] == 50
+
+
+# ---------------------------------------------------------------------------
+# 6. blitz_search extraction — re-export contract
+# ---------------------------------------------------------------------------
+
+
+class TestBlitzSearchReExport:
+    """find_people_batch / tam_by_people / bracket_exact / the batch helpers
+    live in enrichment/blitz_search.py but are RE-EXPORTED from blitz_client
+    so every existing import keeps working. Two contracts must hold:
+      1. identity — the names on blitz_client ARE blitz_search's objects;
+      2. patchability — patching blitz_client._post_with_retry still governs
+         the re-exported functions (blitz_search resolves the transport at
+         call time through the blitz_client module object)."""
+
+    def test_re_exported_names_are_blitz_search_objects(self):
+        from enrichment import blitz_search
+
+        assert bc.find_people_batch is blitz_search.find_people_batch
+        assert bc.tam_by_people is blitz_search.tam_by_people
+        assert bc.bracket_exact is blitz_search.bracket_exact
+        assert bc._normalize_company_url is blitz_search._normalize_company_url
+        assert bc._current_experience is blitz_search._current_experience
+        assert bc._append_batch_person is blitz_search._append_batch_person
+
+    def test_blitz_search_first_import_order_is_safe(self):
+        # Whichever module loads first must not create a circular import.
+        import subprocess
+        import sys as _sys
+
+        code = (
+            "import enrichment.blitz_search, enrichment.blitz_client as bc;"
+            "assert bc.find_people_batch.__module__ == 'enrichment.blitz_search'"
+        )
+        proc = subprocess.run(
+            [_sys.executable, "-c", code], capture_output=True, text=True
+        )
+        assert proc.returncode == 0, proc.stderr
+
+    def test_patching_blitz_client_transport_governs_re_exported_batch(self):
+        # blitz_search binds _post_with_retry at CALL time via the module —
+        # the pattern every other test in this file relies on.
+        posted = AsyncMock(return_value={"results": [], "cursor": None})
+        with patch.object(bc, "_post_with_retry", posted):
+            asyncio.run(bc.find_people_batch(MagicMock(), ["https://www.linkedin.com/company/x"]))
+        posted.assert_called_once()

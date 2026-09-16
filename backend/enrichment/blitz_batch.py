@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from typing import Any, Callable, Optional
 
 import httpx
@@ -20,6 +21,29 @@ logger = logging.getLogger(__name__)
 
 # /v2/search/people accepts at most 50 company URLs per call.
 _COMPANY_URLS_PER_CHUNK = 50
+
+# Adaptive max_pages bounds (used when the caller does not pin a cap):
+# enough pages that a full 50-company chunk can actually REACH the target
+# (each page returns at most 50 results), with the legacy floor/ceiling.
+_MAX_PAGES_FLOOR = 6
+_MAX_PAGES_CEILING = 30
+
+
+def _effective_max_pages(
+    max_pages: Optional[int], target_per_company: int, chunk_size: int
+) -> int:
+    """Resolve the per-chunk pagination cap.
+
+    An explicit ``max_pages`` is respected verbatim (callers/tests pinning a
+    hard cap keep their semantics). The default (``None``) is adaptive:
+    ``min(30, max(6, ceil(target * chunk / 50) + 1))`` — a target-10 job
+    over a full 50-company chunk needs ~10 pages of up to 50 results to fill
+    everyone; the old flat 6 silently truncated and under-filled targets > 5.
+    """
+    if max_pages is not None:
+        return max_pages
+    adaptive = math.ceil(target_per_company * chunk_size / _COMPANY_URLS_PER_CHUNK) + 1
+    return min(_MAX_PAGES_CEILING, max(_MAX_PAGES_FLOOR, adaptive))
 
 
 def _safe_record_miss(record_miss: Callable[[str, str], None], domain: str, kind: str) -> None:
@@ -40,7 +64,7 @@ async def blitz_find_people_prepass(
     title_exclude: list[str],
     exact_titles: bool,
     target_per_company: int = 5,
-    max_pages: int = 6,
+    max_pages: Optional[int] = None,
     domain_concurrency: int = 20,
     on_progress: Optional[Callable[[str], Any]] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
@@ -69,16 +93,24 @@ async def blitz_find_people_prepass(
             (the miss store already paid for this answer).
         record_miss: sync best-effort ``(domain, kind) -> None``;
             kind is ``"company"`` (domain-to-linkedin found=false) or
-            ``"contacts"`` (company resolved but zero matching people).
-            NEVER called for exception-path domains — a transient error must
-            not poison the domain for the store's TTL.
+            ``"contacts"`` (company resolved but zero matching people after
+            a CONCLUSIVE pagination end — cursor exhausted, or every company
+            at target). NEVER called for exception-path domains (a transient
+            error must not poison the domain for the store's TTL) and never
+            when the chunk's pagination was truncated at the page cap:
+            matches may still exist past the last fetched page, so an empty
+            result there is not a definitive miss.
         title_include/title_exclude: job-title filters for the people search.
         exact_titles: wrap ``title_include`` values in ``[...]`` via
             bracket_exact() for server-side exact matching (excludes stay
             fuzzy — an exclusion should stay broad).
         target_per_company: stop paginating once every company in the chunk
             has this many people.
-        max_pages: hard cursor-pagination cap per chunk.
+        max_pages: hard cursor-pagination cap per chunk. None (default) is
+            adaptive per chunk — ``min(30, max(6, ceil(target *
+            chunk_size / 50) + 1))`` — so target>5 jobs page enough to
+            actually fill their targets; an explicit int is respected
+            verbatim.
         domain_concurrency: in-flight cap for domain-to-linkedin calls (a
             concurrency cap, NOT a rate limit — the discovery lane paces).
         on_progress: optional async ``callable(str)`` — one SSE event per
@@ -168,6 +200,10 @@ async def blitz_find_people_prepass(
             except Exception as exc:  # noqa: BLE001 — progress is best-effort
                 logger.debug("blitz prepass progress callback failed: %s", exc)
 
+        chunk_max_pages = _effective_max_pages(max_pages, target_per_company, len(chunk))
+        # Out-param contract with find_people_batch: filled with
+        # {"truncated": bool, "pages": int} on every non-exception path.
+        chunk_stats: dict[str, Any] = {}
         try:
             grouped = await blitz_client.find_people_batch(
                 http,
@@ -175,7 +211,8 @@ async def blitz_find_people_prepass(
                 job_title_include=effective_include or None,
                 job_title_exclude=title_exclude or None,
                 target_per_company=target_per_company,
-                max_pages=max_pages,
+                max_pages=chunk_max_pages,
+                stats=chunk_stats,
             )
         except Exception as exc:  # noqa: BLE001 — chunk-level fallback, NOT a miss
             # 429/5xx after retries or a network error: fall back to the
@@ -190,15 +227,33 @@ async def blitz_find_people_prepass(
             )
             continue
 
+        # Pagination stopped at the page cap while the server still offered
+        # a cursor: zero-person companies here are NOT a definitive answer —
+        # matches may exist past the last fetched page. Recording a
+        # 'contacts' miss anyway would poison the domain for the miss
+        # store's TTL (default 30 days) on an unanswered question.
+        truncated = bool(chunk_stats.get("truncated"))
+        if truncated:
+            logger.info(
+                "blitz find-people prepass chunk %d/%d truncated at max_pages=%d "
+                "(cursor pending after %d pages) — contacts misses suppressed for %d domains",
+                index,
+                total_chunks,
+                chunk_max_pages,
+                chunk_stats.get("pages", 0),
+                len(chunk),
+            )
+
         for domain, url in chunk:
             key = blitz_client._normalize_company_url(url)
             persons = grouped.get(key) or []
             persons_by_domain[domain] = persons
-            if not persons:
-                # Company resolved but Blitz returned zero matching people:
-                # conclusive contacts miss. Still covered — the per-domain
-                # code treats this as "blitz found nobody" and proceeds to
-                # the GetLeads decision-makers fallback.
+            if not persons and not truncated:
+                # Company resolved, pagination ran to a CONCLUSIVE end, and
+                # Blitz returned zero matching people: conclusive contacts
+                # miss. Still covered — the per-domain code treats this as
+                # "blitz found nobody" and proceeds to the GetLeads
+                # decision-makers fallback.
                 _safe_record_miss(record_miss, domain, "contacts")
             prepass_domains.add(domain)
 
