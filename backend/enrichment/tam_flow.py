@@ -31,6 +31,7 @@ from typing import Any, Callable, Optional
 import httpx
 
 from enrichment import blitz_client
+from enrichment import contacts_client
 from enrichment import identifier_utils
 from enrichment import job_store
 
@@ -315,6 +316,56 @@ def create_chained_enrichment_job(
 
 
 # ---------------------------------------------------------------------------
+# Contacts-DB backup
+# ---------------------------------------------------------------------------
+
+async def _backup_companies_to_contacts_db(
+    http: httpx.AsyncClient, rows: list[dict[str, Any]]
+) -> dict[str, int]:
+    """Upsert every domain-bearing TAM company into the Contacts DB.
+
+    Mirrors the write-back guarantee of the enrichment waterfall: new data
+    the platform produces lands in the contacts database (leadsdatabase.cc),
+    not only in a job CSV. The business upsert is domain-keyed, so
+    domain-less companies are counted and skipped; duplicate domains are
+    collapsed. Individual failures are logged and NEVER propagated — the
+    TAM job's own status must not depend on backup health.
+    """
+    backed_up = 0
+    skipped_no_domain = 0
+    failed = 0
+    seen_domains: set[str] = set()
+    for row in rows:
+        domain = (row.get("domain") or "").strip().lower()
+        if not domain:
+            skipped_no_domain += 1
+            continue
+        if domain in seen_domains:
+            continue
+        seen_domains.add(domain)
+        try:
+            await contacts_client.upsert_business_record_async(
+                http,
+                domain=domain,
+                company_name=row.get("name") or "",
+                company_website=row.get("website") or "",
+                city=row.get("hq_city") or "",
+                city_state=row.get("hq_state") or "",
+            )
+            backed_up += 1
+        except Exception as upsert_err:  # best-effort by contract
+            failed += 1
+            logger.warning(
+                "TAM company backup failed for %s: %s", domain, upsert_err
+            )
+    return {
+        "companies_backed_up": backed_up,
+        "companies_skipped_no_domain": skipped_no_domain,
+        "companies_backup_failed": failed,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -426,6 +477,16 @@ async def run_tam_flow(
                     rows_written=len(rows),
                     pages=pages,
                 )
+                # Live result-count on the job row so the Jobs page card
+                # counts up while the pull runs (best-effort: a transient
+                # SQLite hiccup must not kill a long pull).
+                try:
+                    job_store.get_store().update_result_count(job_id, len(rows))
+                except Exception as count_err:
+                    logger.debug(
+                        "TAM per-page result-count update failed for %s: %s",
+                        job_id, count_err,
+                    )
                 if on_progress:
                     try:
                         await _emit_progress(on_progress, {
@@ -461,6 +522,26 @@ async def run_tam_flow(
                         job_id, max_companies, pages,
                     )
                     break
+
+            # Backup every discovered company into the Contacts DB — same
+            # system of record the enrichment waterfall writes to. Runs for
+            # cancelled pulls too: the rows already flushed are real data.
+            backup_stats = await _backup_companies_to_contacts_db(http, rows)
+            if on_progress:
+                try:
+                    await _emit_progress(on_progress, {
+                        "stage": "tam_backup",
+                        "message": (
+                            f"Saved {backup_stats['companies_backed_up']} "
+                            f"companies to the contacts database"
+                        ),
+                        **backup_stats,
+                    })
+                except Exception as prog_err:
+                    logger.error(
+                        "TAM backup progress callback failed for %s: %s",
+                        job_id, prog_err,
+                    )
     finally:
         csv_file.close()
 
@@ -473,6 +554,7 @@ async def run_tam_flow(
         "pages": pages,
         "csv_path": str(output_path),
         "capped": not cancelled and cursor is not None,
+        **backup_stats,
     }
 
     if cancelled:

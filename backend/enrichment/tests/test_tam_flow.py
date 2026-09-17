@@ -110,6 +110,12 @@ class _TempDbTestCase(unittest.TestCase):
         shared_auth.init_auth_db()
         self._orig_output_dir = tam_flow.OUTPUT_DIR
         tam_flow.OUTPUT_DIR = Path(self._tmpdir.name) / "outputs"
+        # The runner backs companies up to the real contacts DB by default —
+        # mock the upsert for EVERY test so no test ever writes to
+        # leadsdatabase.cc. Individual backup tests override the mock.
+        self._backup_mock = AsyncMock(return_value={"success": True})
+        self._orig_upsert = tam_flow.contacts_client.upsert_business_record_async
+        tam_flow.contacts_client.upsert_business_record_async = self._backup_mock
 
     @staticmethod
     def _ensure_restart_support_columns() -> None:
@@ -145,6 +151,7 @@ class _TempDbTestCase(unittest.TestCase):
         shared_auth.DB_PATH = self._orig_auth_db_path
         shared_db.DB_PATH = self._orig_db_path
         tam_flow.OUTPUT_DIR = self._orig_output_dir
+        tam_flow.contacts_client.upsert_business_record_async = self._orig_upsert
         self._tmpdir.cleanup()
 
     def _create_tam_job(self, job_id: str = "tam-test-job") -> str:
@@ -289,10 +296,12 @@ class TestRunTamFlow(_TempDbTestCase):
         self.assertEqual(header, list(tam_flow.TAM_CSV_COLUMNS))
         self.assertEqual(len(rows), 4)
         self.assertEqual(rows[0]["name"], "Company 0")
-        # One SSE event per page.
-        self.assertEqual(len(events), 2)
-        self.assertEqual(events[-1]["companies_found"], 4)
-        self.assertFalse(events[-1]["has_next_page"])
+        # One SSE event per page + one final tam_backup event.
+        self.assertEqual(len(events), 3)
+        self.assertEqual(events[1]["companies_found"], 4)
+        self.assertFalse(events[1]["has_next_page"])
+        self.assertEqual(events[-1]["stage"], "tam_backup")
+        self.assertEqual(events[-1]["companies_backed_up"], 4)
         # result_count is persisted on the job row.
         job = job_store.get_store().get_job("tam-test-job")
         self.assertEqual(job["result_count"], 4)
@@ -656,6 +665,103 @@ class TestChainedEnrichmentJob(_TempDbTestCase):
         # assertions below are deterministic.
         await asyncio.sleep(0)
         return result
+
+
+class TestCompanyBackup(_TempDbTestCase):
+    """The contacts-DB backup guarantee: every domain-bearing company the
+    TAM flow produces lands in the contacts database, best-effort."""
+
+    def _run(self, entries, *, max_companies=100):
+        self._create_tam_job()
+
+        async def fake_tam(_http, *, company_filters, people_filters,
+                           max_results, cursor):
+            return _page(entries, cursor=None)
+
+        with patch("enrichment.blitz_client.tam_by_people", new=fake_tam):
+            return asyncio.run(tam_flow.run_tam_flow(
+                "tam-test-job",
+                {
+                    "company_filters": {"employee_range": ["11-50"]},
+                    "people_filters": {"job_level": ["C-Team"]},
+                    "max_companies": max_companies,
+                },
+            ))
+
+    def test_domain_rows_backed_up_domainless_skipped(self):
+        entries = [
+            _company_entry(0, domain="alpha.example"),
+            _company_entry(1, domain=""),            # domainless -> skipped
+            _company_entry(2, domain="gamma.example"),
+        ]
+        summary = self._run(entries)
+
+        self.assertEqual(summary["companies_found"], 3)
+        self.assertEqual(summary["companies_backed_up"], 2)
+        self.assertEqual(summary["companies_skipped_no_domain"], 1)
+        self.assertEqual(summary["companies_backup_failed"], 0)
+        backed_up_domains = [
+            call.kwargs["domain"] for call in self._backup_mock.await_args_list
+        ]
+        self.assertEqual(backed_up_domains, ["alpha.example", "gamma.example"])
+        # Full company shape forwarded to the business upsert.
+        first = self._backup_mock.await_args_list[0].kwargs
+        self.assertEqual(first["company_name"], "Company 0")
+        self.assertEqual(first["company_website"], "https://co0.example")
+        self.assertEqual(first["city"], "Berlin")
+        self.assertEqual(first["city_state"], "Berlin")
+
+    def test_duplicate_domains_backed_up_once(self):
+        entries = [
+            _company_entry(0, domain="dupe.example"),
+            _company_entry(1, domain="dupe.example"),
+            _company_entry(2, domain="solo.example"),
+        ]
+        summary = self._run(entries)
+
+        self.assertEqual(summary["companies_backed_up"], 2)
+        self.assertEqual(self._backup_mock.await_count, 2)
+
+    def test_upsert_failure_never_fails_the_job(self):
+        self._backup_mock.side_effect = RuntimeError("contacts DB down")
+        summary = self._run([
+            _company_entry(0, domain="alpha.example"),
+            _company_entry(1, domain=""),
+        ])
+
+        self.assertEqual(summary["status"], "done")
+        self.assertEqual(summary["companies_found"], 2)
+        self.assertEqual(summary["companies_backed_up"], 0)
+        self.assertEqual(summary["companies_backup_failed"], 1)
+        # CSV is complete regardless of backup health.
+        _header, rows = self._read_csv()
+        self.assertEqual(len(rows), 2)
+
+    def test_cancelled_pull_still_backs_up_flushed_rows(self):
+        self._create_tam_job()
+        state = {"calls": 0}
+
+        async def fake_tam(_http, *, company_filters, people_filters,
+                           max_results, cursor):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                return _page([_company_entry(0, domain="kept.example")],
+                             cursor="c1")
+            raise AssertionError("cancel must stop the next page fetch")
+
+        with patch("enrichment.blitz_client.tam_by_people", new=fake_tam):
+            summary = asyncio.run(tam_flow.run_tam_flow(
+                "tam-test-job",
+                {
+                    "company_filters": {"employee_range": ["11-50"]},
+                    "people_filters": {"job_level": ["C-Team"]},
+                    "max_companies": 100,
+                    "should_cancel": lambda: state["calls"] >= 1,
+                },
+            ))
+
+        self.assertEqual(summary["status"], "cancelled")
+        self.assertEqual(summary["companies_backed_up"], 1)
 
 
 if __name__ == "__main__":
