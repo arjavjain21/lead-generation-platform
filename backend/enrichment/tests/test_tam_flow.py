@@ -36,6 +36,8 @@ from pathlib import Path
 from typing import Any, Optional
 from unittest.mock import AsyncMock, patch
 
+import httpx
+
 _BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -762,6 +764,149 @@ class TestCompanyBackup(_TempDbTestCase):
 
         self.assertEqual(summary["status"], "cancelled")
         self.assertEqual(summary["companies_backed_up"], 1)
+
+
+class TestIndustryEnumFallback(_TempDbTestCase):
+    """Blitz's TAM industry filter is a strict ~700-value enum; the UI
+    dropdown serves a different 43-value taxonomy. On the enum 422 the
+    runner converts industry -> fuzzy keywords and retries once."""
+
+    @staticmethod
+    def _validation_422() -> httpx.HTTPStatusError:
+        request = httpx.Request(
+            "POST", "https://api.blitz-api.ai/v2/company/tam-by-people"
+        )
+        response = httpx.Response(
+            422,
+            text='{"type": "validation", "property": "company",'
+                 ' "message": "Invalid option: expected one of '
+                 '\\"Abrasives...\\"|\\"Advertising Services\\"|..."}',
+            request=request,
+        )
+        return httpx.HTTPStatusError(
+            "Client error '422 Unprocessable Entity'", request=request,
+            response=response,
+        )
+
+    def _run_with_fake(self, fake_tam, *, company_filters):
+        self._create_tam_job()
+        events: list[dict[str, Any]] = []
+
+        async def on_progress(event):
+            events.append(event)
+
+        with patch("enrichment.blitz_client.tam_by_people", new=fake_tam):
+            summary = asyncio.run(tam_flow.run_tam_flow(
+                "tam-test-job",
+                {
+                    "company_filters": company_filters,
+                    "people_filters": {"job_level": ["C-Team"]},
+                    "max_companies": 10,
+                },
+                on_progress=on_progress,
+            ))
+        return summary, events
+
+    def test_industry_422_falls_back_to_keywords(self):
+        seen: list[dict[str, Any]] = []
+
+        async def fake_tam(_http, *, company_filters, people_filters,
+                           max_results, cursor):
+            seen.append(dict(company_filters))
+            if "industry" in company_filters:
+                raise self._validation_422()
+            return _page([_company_entry(0, domain="ok.example")], cursor=None)
+
+        summary, events = self._run_with_fake(
+            fake_tam,
+            company_filters={
+                "employee_range": ["11-50"],
+                "industry": {"include": ["Marketing"]},
+            },
+        )
+
+        self.assertEqual(summary["status"], "done")
+        self.assertEqual(summary["companies_found"], 1)
+        # First call had the enum industry; the retry carries it as keywords.
+        self.assertIn("industry", seen[0])
+        self.assertNotIn("industry", seen[1])
+        self.assertEqual(seen[1]["keywords"]["include"], ["Marketing"])
+        self.assertEqual(seen[1]["employee_range"], ["11-50"])
+        # The adjustment surfaced as a job event.
+        adjust = [e for e in events if e["stage"] == "tam_filter_adjust"]
+        self.assertEqual(len(adjust), 1)
+        self.assertIn("keyword", adjust[0]["message"])
+
+    def test_existing_keywords_merge_with_industry_fallback(self):
+        seen: list[dict[str, Any]] = []
+
+        async def fake_tam(_http, *, company_filters, people_filters,
+                           max_results, cursor):
+            seen.append(dict(company_filters))
+            if "industry" in company_filters:
+                raise self._validation_422()
+            return _page([_company_entry(0, domain="ok.example")], cursor=None)
+
+        summary, _events = self._run_with_fake(
+            fake_tam,
+            company_filters={
+                "industry": {"include": ["Marketing"]},
+                "keywords": {"include": ["boutique"]},
+            },
+        )
+
+        self.assertEqual(summary["status"], "done")
+        self.assertEqual(
+            sorted(seen[1]["keywords"]["include"]),
+            ["Marketing", "boutique"],
+        )
+
+    def test_non_enum_422_fails_with_readable_error(self):
+        async def fake_tam(_http, *, company_filters, people_filters,
+                           max_results, cursor):
+            request = httpx.Request("POST", "https://api.blitz-api.ai/x")
+            response = httpx.Response(
+                422, text='{"message": "bad shape"}', request=request,
+            )
+            raise httpx.HTTPStatusError(
+                "422", request=request, response=response,
+            )
+
+        self._create_tam_job()
+        with patch("enrichment.blitz_client.tam_by_people", new=fake_tam):
+            with self.assertRaises(RuntimeError) as ctx:
+                asyncio.run(tam_flow.run_tam_flow(
+                    "tam-test-job",
+                    {
+                        "company_filters": {"employee_range": ["11-50"]},
+                        "people_filters": {"job_level": ["C-Team"]},
+                        "max_companies": 10,
+                    },
+                ))
+        self.assertIn("Blitz rejected the TAM filters", str(ctx.exception))
+        self.assertIn("bad shape", str(ctx.exception))
+
+    def test_fallback_attempts_once_then_fails_readable(self):
+        calls = {"n": 0}
+
+        async def fake_tam(_http, *, company_filters, people_filters,
+                           max_results, cursor):
+            calls["n"] += 1
+            raise self._validation_422()  # even after the keywords rebuild
+
+        self._create_tam_job()
+        with patch("enrichment.blitz_client.tam_by_people", new=fake_tam):
+            with self.assertRaises(RuntimeError) as ctx:
+                asyncio.run(tam_flow.run_tam_flow(
+                    "tam-test-job",
+                    {
+                        "company_filters": {"industry": {"include": ["X"]}},
+                        "people_filters": {"job_level": ["C-Team"]},
+                        "max_companies": 10,
+                    },
+                ))
+        self.assertEqual(calls["n"], 2, "exactly one fallback retry")
+        self.assertIn("Blitz rejected the TAM filters", str(ctx.exception))
 
 
 if __name__ == "__main__":

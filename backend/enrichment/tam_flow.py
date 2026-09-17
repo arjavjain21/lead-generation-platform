@@ -366,6 +366,59 @@ async def _backup_companies_to_contacts_db(
 
 
 # ---------------------------------------------------------------------------
+# Industry-enum fallback
+# ---------------------------------------------------------------------------
+
+def _industry_to_keywords_on_422(
+    company_filters: dict[str, Any], body: str, *, already_used: bool
+) -> Optional[dict[str, Any]]:
+    """Rebuild company filters with ``industry`` moved into ``keywords``.
+
+    Blitz's TAM ``industry`` filter is a STRICT ENUM (~700 exact taxonomy
+    values like "Advertising Services"). The web UI's industry dropdown
+    serves a different 43-value LinkedIn-style list, so any industry-picked
+    TAM run 422s at the enum check. Rather than maintaining a second
+    taxonomy copy, the failing industry selection is converted to the fuzzy
+    ``keywords`` include filter (searches description/specialties/categories
+    — semantically close for industry-style filtering).
+
+    Returns the rebuilt filters when the fallback applies, else None:
+    already attempted, industry not in the filters, or the 422 body does
+    not look like an enum rejection (a different validation problem).
+    """
+    if already_used:
+        return None
+    if "industry" not in company_filters:
+        return None
+    if "Invalid option" not in body:
+        return None
+    rebuilt = dict(company_filters)
+    industry = rebuilt.pop("industry") or {}
+    include = list(industry.get("include") or [])
+    exclude = list(industry.get("exclude") or [])
+    if not include and not exclude:
+        return None
+    keywords = dict(rebuilt.get("keywords") or {})
+    keywords["include"] = list(keywords.get("include") or []) + include
+    keywords["exclude"] = list(keywords.get("exclude") or []) + exclude
+    rebuilt["keywords"] = keywords
+    return rebuilt
+
+
+def _tam_validation_error(exc: httpx.HTTPStatusError) -> RuntimeError:
+    """Readable error for a filter-validation 422 (Blitz's body lists the
+    valid options — keep a snippet instead of the raw httpx text)."""
+    snippet = ""
+    try:
+        snippet = (exc.response.text or "")[:300]
+    except Exception:  # response already closed / streamed
+        pass
+    return RuntimeError(
+        f"Blitz rejected the TAM filters (422 validation): {snippet}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -417,6 +470,7 @@ async def run_tam_flow(
     pages = 0
     consecutive_empty_pages = 0
     cancelled = False
+    industry_fallback_used = False
 
     output_dir.mkdir(parents=True, exist_ok=True)
     csv_file = open(output_path, "w", newline="", encoding="utf-8")
@@ -448,13 +502,52 @@ async def run_tam_flow(
                     )
                     break
 
-                page = await blitz_client.tam_by_people(
-                    http,
-                    company_filters=company_filters,
-                    people_filters=people_filters,
-                    max_results=TAM_PAGE_SIZE,
-                    cursor=cursor,
-                )
+                try:
+                    page = await blitz_client.tam_by_people(
+                        http,
+                        company_filters=company_filters,
+                        people_filters=people_filters,
+                        max_results=TAM_PAGE_SIZE,
+                        cursor=cursor,
+                    )
+                except httpx.HTTPStatusError as http_err:
+                    status = getattr(http_err.response, "status_code", None)
+                    body = ""
+                    try:
+                        body = http_err.response.text or ""
+                    except Exception:
+                        pass
+                    if status == 422:
+                        rebuilt = _industry_to_keywords_on_422(
+                            company_filters, body,
+                            already_used=industry_fallback_used,
+                        )
+                        if rebuilt is not None:
+                            industry_fallback_used = True
+                            company_filters = rebuilt
+                            logger.warning(
+                                "TAM job %s: industry filter rejected by "
+                                "Blitz's strict taxonomy — retrying as "
+                                "keyword filter", job_id,
+                            )
+                            if on_progress:
+                                try:
+                                    await _emit_progress(on_progress, {
+                                        "stage": "tam_filter_adjust",
+                                        "message": (
+                                            "Industry filter converted to a "
+                                            "keyword search (no exact match "
+                                            "in the data provider's industry "
+                                            "list) — continuing"
+                                        ),
+                                    })
+                                except Exception:
+                                    pass
+                            # Retry the same cursor; the rejected request
+                            # did not count as a page (422 never bills).
+                            continue
+                        raise _tam_validation_error(http_err) from http_err
+                    raise
                 pages += 1
 
                 entries = page.get("results") or []
