@@ -110,6 +110,16 @@ class _TamRouteTestCase(unittest.TestCase):
         tam_flow.OUTPUT_DIR = Path(self._tmpdir.name) / "outputs"
         app.dependency_overrides.update(_override_auth())
         self._client = TestClient(app)
+        # Order-pollution guard: earlier suites can leave the SHARED GetLeads
+        # circuit breaker OPEN (state lingers module-wide), which fails
+        # lookalike seed resolution with circuit_open -> flaky 400s.
+        from enrichment import getleads_client as _glc
+        _glc._getleads_circuit = type(_glc._getleads_circuit)(
+            _glc._getleads_circuit.name,
+            failure_threshold=_glc._getleads_circuit.failure_threshold,
+            recovery_timeout=_glc._getleads_circuit.recovery_timeout,
+            half_open_max_calls=_glc._getleads_circuit.half_open_max_calls,
+        ) if hasattr(_glc._getleads_circuit, "name") else _glc._getleads_circuit
 
     @staticmethod
     def _ensure_restart_support_columns() -> None:
