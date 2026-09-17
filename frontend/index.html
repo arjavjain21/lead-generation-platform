@@ -1087,7 +1087,7 @@
                 <a class="nav-item active" href="#" data-page="home"><span class="nav-icon" aria-label="Home"><i data-lucide="house"></i></span>Home</a>
                 <a class="nav-item" href="#" data-page="scraper"><span class="nav-icon" aria-label="Google Maps Scraper"><i data-lucide="map-pin"></i></span>Google Maps Scraper</a>
                 <a class="nav-item" href="#" data-page="domains"><span class="nav-icon" aria-label="Upload Domains"><i data-lucide="upload"></i></span>Upload Domains</a>
-                <a class="nav-item" href="#" data-page="search"><span class="nav-icon" aria-label="Company Search"><i data-lucide="search"></i></span>Company Search</a>
+                <a class="nav-item" href="#" data-page="search"><span class="nav-icon" aria-label="Find Companies (TAM)"><i data-lucide="search"></i></span>Find Companies (TAM)</a>
                 <a class="nav-item" href="#" data-page="people"><span class="nav-icon" aria-label="Find People"><i data-lucide="users"></i></span>Find People</a>
                 <a class="nav-item" href="#" data-page="linkedin"><span class="nav-icon" aria-label="LinkedIn Enrich"><i data-lucide="link"></i></span>LinkedIn Enrich</a>
                 <a class="nav-item" href="#" data-page="phones"><span class="nav-icon" aria-label="Phone Enrichment"><i data-lucide="phone"></i></span>Phone Enrichment</a>
@@ -1205,8 +1205,8 @@
                 </div>
                 <div class="flow-card" role="button" tabindex="0" data-page="search">
                     <div class="flow-icon"><i data-lucide="search" class="icon-lg"></i></div>
-                    <h4>Search Companies</h4>
-                    <p>Search by industry, size, location. Then enrich the results with contact data.</p>
+                    <h4>Find Companies (TAM)</h4>
+                    <p>Describe who you want to reach (e.g. "Head of Marketing") — we find every company that employs them.</p>
                 </div>
                 <div class="flow-card" role="button" tabindex="0" data-page="linkedin">
                     <div class="flow-icon"><i data-lucide="link" class="icon-lg"></i></div>
@@ -1761,11 +1761,17 @@
         <!-- Search Page -->
         <div class="page" id="page-search">
             <div class="form-card">
-                <h3><i data-lucide="search" class="icon" style="vertical-align:text-bottom"></i> Search Companies</h3>
+                <h3><i data-lucide="search" class="icon" style="vertical-align:text-bottom"></i> Find Companies (TAM)</h3>
                 <div style="background:#f0f9ff;border-left:4px solid #1a315d;padding:12px;margin-bottom:1rem;border-radius:4px;font-size:0.85rem;color:#374151;">
-                    <strong>How to use:</strong> Search for companies using filters like industry, employee count, company type, and country. Click "Search" to find companies, then "Search & Enrich" to get contact data (emails, phone numbers) for decision makers.
+                    <strong>What this page does:</strong> Most search tools ask you to describe a <em>company</em>. This one asks you to describe the <em>person you want to reach</em> — and finds every company that employs someone like that.<br><br>
+                    <strong>Example:</strong> "Find me marketing agencies in the US with 11–50 employees that have a <em>Head of Marketing</em>." You get a clean list of companies, each with a <em>match count</em> (how many matching people work there), so you know where the richest opportunities are before spending anything on contact enrichment.<br><br>
+                    <strong>How to use:</strong> 1) Describe the company (industry, size, country — any or all). 2) Describe who works there (job title, seniority). 3) Set how many companies you want. Optionally tick "find contact emails" and we'll automatically start a follow-up enrichment on the results.<br><br>
+                    <strong>Where results go:</strong> Your run appears on the <strong>Jobs</strong> page like every other job, with live progress and a CSV download. Every company found is also <strong>saved to your contacts database automatically</strong> — nothing is lost.<br>
+                    <span style="color:#6b7280;">Cost note: each company returned uses 1 search record from our data plan; an empty result costs nothing.</span>
                 </div>
                 <div id="searchFormError" class="validation-message error" style="display:none;"></div>
+
+                <h4 style="margin:0.5rem 0 0.25rem;font-size:0.9rem;color:#1a315d;">1. Describe the company</h4>
                 <div class="filters">
                     <div class="filter-group">
                         <label>Company Name</label>
@@ -1796,33 +1802,72 @@
                         <span class="field-helper">Filter by country (optional)</span>
                     </div>
                 </div>
+
+                <h4 style="margin:1.25rem 0 0.25rem;font-size:0.9rem;color:#1a315d;">2. Describe who works there</h4>
+                <div class="filters">
+                    <div class="filter-group">
+                        <label>Job Titles to Find</label>
+                        <div class="search-input-wrapper">
+                            <input type="text" id="tamTitleInclude" class="search-input" placeholder="e.g. Head of Marketing, CMO">
+                            <i data-lucide="user-search" class="search-icon"></i>
+                        </div>
+                        <span class="field-helper">Comma-separated. This is the key filter — the companies returned employ people with these titles.</span>
+                    </div>
+                    <div class="filter-group">
+                        <label>Titles to Avoid</label>
+                        <input type="text" id="tamTitleExclude" placeholder="e.g. intern, assistant (optional)">
+                        <span class="field-helper">Comma-separated (optional)</span>
+                    </div>
+                    <div class="filter-group">
+                        <label>Seniority</label>
+                        <div id="tamJobLevels" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding:6px 0;">
+                            <label style="display:flex;align-items:center;gap:4px;font-weight:400;font-size:0.85rem;"><input type="checkbox" name="tamJobLevel" value="C-Team"> C-Team</label>
+                            <label style="display:flex;align-items:center;gap:4px;font-weight:400;font-size:0.85rem;"><input type="checkbox" name="tamJobLevel" value="VP"> VP</label>
+                            <label style="display:flex;align-items:center;gap:4px;font-weight:400;font-size:0.85rem;"><input type="checkbox" name="tamJobLevel" value="Director"> Director</label>
+                            <label style="display:flex;align-items:center;gap:4px;font-weight:400;font-size:0.85rem;"><input type="checkbox" name="tamJobLevel" value="Manager"> Manager</label>
+                            <label style="display:flex;align-items:center;gap:4px;font-weight:400;font-size:0.85rem;"><input type="checkbox" name="tamJobLevel" value="Staff"> Staff</label>
+                        </div>
+                        <span class="field-helper">Optional — narrows to these levels</span>
+                    </div>
+                    <div class="filter-group">
+                        <label>Min. Matches per Company</label>
+                        <input type="number" id="tamMinPerCompany" min="0" max="25" value="0">
+                        <span class="field-helper">Only keep companies with at least this many matching people (0 = keep all)</span>
+                    </div>
+                </div>
+
+                <h4 style="margin:1.25rem 0 0.25rem;font-size:0.9rem;color:#1a315d;">3. Results</h4>
+                <div class="filters">
+                    <div class="filter-group">
+                        <label>Max Companies</label>
+                        <input type="number" id="tamMaxCompanies" min="1" max="10000" value="500">
+                        <span class="field-helper">Hard cap — the run stops here (also the cost ceiling)</span>
+                    </div>
+                </div>
+                <div style="margin-top:0.75rem;padding:10px 12px;border:1px solid #e5e7eb;border-radius:6px;">
+                    <label style="display:flex;align-items:center;gap:8px;font-weight:500;font-size:0.88rem;cursor:pointer;">
+                        <input type="checkbox" id="tamChainEnrich">
+                        Also find contact emails for these companies (starts a follow-up enrichment job)
+                    </label>
+                    <div id="tamChainOptions" style="display:none;margin-top:10px;padding:10px;background:#f9fafb;border-radius:6px;">
+                        <div class="filters">
+                            <div class="filter-group">
+                                <label>Contacts per Company</label>
+                                <input type="number" id="tamMaxDms" min="1" max="25" value="5">
+                                <span class="field-helper">How many decision makers to find per company</span>
+                            </div>
+                            <div class="filter-group">
+                                <label>Only These Titles (optional)</label>
+                                <input type="text" id="tamChainTitles" placeholder="e.g. CEO, Founder — blank = default cascade">
+                                <span class="field-helper">Restricts the follow-up enrichment to these titles</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="actions" style="margin-top:1rem;">
-                    <button class="btn btn-secondary" id="searchCompanies">Search</button>
-                    <button class="btn btn-primary" id="searchAndEnrich" disabled>Search & Enrich</button>
+                    <button class="btn btn-primary" id="tamFindCompanies">Find Companies</button>
                 </div>
-            </div>
-            
-            <div class="form-card" id="searchResults" style="display:none;">
-                <h3>📋 Results <span id="searchResultsCount"></span></h3>
-                <div style="overflow-x:auto;">
-                    <table class="results-table">
-                        <thead><tr><th>Company</th><th>Industry</th><th>Employees</th><th>Type</th><th>Country</th></tr></thead>
-                        <tbody id="searchResultsBody"></tbody>
-                    </table>
-                </div>
-            </div>
-            
-            <div class="form-card" id="searchProgress" style="display:none;">
-                <h3>📊 Enrichment Progress</h3>
-                <div class="stats-grid">
-                    <div class="stat-card"><div class="stat-value" id="searchTotal">0</div><div class="stat-label">Total</div></div>
-                    <div class="stat-card"><div class="stat-value" id="searchProcessed">0</div><div class="stat-label">Processed</div></div>
-                    <div class="stat-card"><div class="stat-value" id="searchEmails">0</div><div class="stat-label">Emails</div></div>
-                </div>
-                <div class="progress-bar"><div class="progress-fill" id="searchProgressBar" style="width:0%"></div></div>
-                <div class="progress-text"><span id="searchProgressText">0%</span><span id="searchStatus">Running...</span></div>
-                <div id="searchErrors" class="error-list" style="display:none;margin-top:0.75rem;"></div>
-                <div style="margin-top:1rem;"><button class="btn btn-success btn-sm" id="downloadSearchResults" disabled>Download CSV</button></div>
             </div>
         </div>
         
@@ -2072,7 +2117,7 @@
                 <p>List Building Tool helps you find decision makers and their verified work emails. You can:</p>
                 <ul>
                     <li><strong>Upload domains</strong> - Get all decision makers from company websites</li>
-                    <li><strong>Search companies</strong> - Find companies by industry, size, location</li>
+                    <li><strong>Find Companies (TAM)</strong> - Describe the person you want to reach (e.g. "Head of Marketing") and get every company that employs them; optionally follow up with contact enrichment</li>
                     <li><strong>Enrich LinkedIn profiles</strong> - Add emails to your existing leads</li>
                 </ul>
             </div>
@@ -4255,38 +4300,101 @@ example.org,Jane Doe</pre>
         });
 
         // Search
-        document.getElementById('searchCompanies').addEventListener('click', async () => {
-            const btn = document.getElementById('searchCompanies');
+        // --- Find Companies (TAM): persona-based company discovery ---
+        // Replaces the old sync company search (2026-09-17). Builds the
+        // /flows/tam payload from the page filters, starts the TAM job, and
+        // hands monitoring to the Jobs page (same convention as the
+        // domain-enrich flow). CSV download + live progress live there.
+        function _tamErrorText(err, res) {
+            let detail = (err && err.detail) || 'Unknown error';
+            if (Array.isArray(detail)) {
+                // FastAPI validation errors: show the first field message.
+                detail = (detail[0] && detail[0].msg) || 'Invalid request';
+                const loc = err.detail[0] && err.detail[0].loc;
+                if (loc && loc.length) detail += ' (' + loc[loc.length - 1] + ')';
+            }
+            return detail;
+        }
+
+        document.getElementById('tamChainEnrich').addEventListener('change', (e) => {
+            document.getElementById('tamChainOptions').style.display = e.target.checked ? 'block' : 'none';
+        });
+
+        document.getElementById('tamFindCompanies').addEventListener('click', async () => {
+            const btn = document.getElementById('tamFindCompanies');
             const errorContainer = document.getElementById('searchFormError');
 
-            // Clear previous errors
             errorContainer.style.display = 'none';
             errorContainer.textContent = '';
 
-            setButtonLoading(btn, true, 'Searching...');
+            // 1. Company filters (same element ids the options loader fills)
+            const company = {};
+            const searchName = document.getElementById('searchName').value.trim();
+            const searchIndustry = document.getElementById('searchIndustry').value;
+            const searchEmployeeRange = document.getElementById('searchEmployeeRange').value;
+            const searchCompanyType = document.getElementById('searchCompanyType').value;
+            const searchCountry = document.getElementById('searchCountry').value;
+            if (searchName) company.name_include = [searchName];
+            if (searchIndustry) company.industry_include = [searchIndustry];
+            if (searchEmployeeRange) company.employee_range = [searchEmployeeRange];
+            if (searchCompanyType) company.type_include = [searchCompanyType];
+            if (searchCountry) company.hq_country_code = [searchCountry];
 
-            const payload = { limit: 50 };
-            if (document.getElementById('searchName').value) payload.name = document.getElementById('searchName').value;
-            if (document.getElementById('searchIndustry').value) payload.industry = [document.getElementById('searchIndustry').value];
-            if (document.getElementById('searchEmployeeRange').value) payload.employee_range = [document.getElementById('searchEmployeeRange').value];
-            if (document.getElementById('searchCompanyType').value) payload.company_type = [document.getElementById('searchCompanyType').value];
-            if (document.getElementById('searchCountry').value) payload.country_code = document.getElementById('searchCountry').value;
+            // 2. People filters — the persona that defines the TAM
+            const people = {};
+            const titlesInclude = csvList(document.getElementById('tamTitleInclude').value);
+            const titlesExclude = csvList(document.getElementById('tamTitleExclude').value);
+            if (titlesInclude.length) people.job_title_include = titlesInclude;
+            if (titlesExclude.length) people.job_title_exclude = titlesExclude;
+            const levels = Array.from(document.querySelectorAll('input[name="tamJobLevel"]:checked')).map(cb => cb.value);
+            if (levels.length) people.job_levels = levels;
+            const minPer = parseInt(document.getElementById('tamMinPerCompany').value, 10) || 0;
+            if (minPer > 0) people.min_per_company = minPer;
 
-            const res = await fetch('/api/enrichment/search/companies', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-            if (res.ok) { const data = await res.json(); displaySearchResults(data.results); document.getElementById('searchAndEnrich').disabled = false; setButtonLoading(btn, false, 'Search'); }
-            else {
-                errorContainer.textContent = 'Search failed. Please try again.';
+            if (!Object.keys(company).length && !Object.keys(people).length) {
+                errorContainer.textContent = 'Choose at least one filter — a company detail (industry, size, country…) or a job title to find. An unbounded search would bill the full data budget.';
                 errorContainer.style.display = 'block';
-                setButtonLoading(btn, false, 'Search');
+                return;
+            }
+
+            // 3. Payload
+            const payload = {
+                company,
+                people,
+                max_companies: Math.min(Math.max(parseInt(document.getElementById('tamMaxCompanies').value, 10) || 500, 1), 10000)
+            };
+            if (document.getElementById('tamChainEnrich').checked) {
+                payload.create_enrichment_job = true;
+                payload.max_decision_makers = Math.min(Math.max(parseInt(document.getElementById('tamMaxDms').value, 10) || 5, 1), 25);
+                const chainTitles = csvList(document.getElementById('tamChainTitles').value);
+                if (chainTitles.length) payload.titles = chainTitles;
+            }
+
+            setButtonLoading(btn, true, 'Starting...');
+            try {
+                const res = await fetch('/api/enrichment/flows/tam', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    setButtonLoading(btn, false, 'Started!');
+                    // Same convention as domain-enrich: monitor on the Jobs page.
+                    navigateToPage('jobs');
+                    if (typeof refreshJobs === 'function') refreshJobs();
+                } else {
+                    const err = await res.json().catch(() => ({}));
+                    errorContainer.textContent = 'Failed to start: ' + _tamErrorText(err, res);
+                    errorContainer.style.display = 'block';
+                    setButtonLoading(btn, false, 'Find Companies');
+                }
+            } catch (e) {
+                errorContainer.textContent = 'Failed to start: ' + e.message;
+                errorContainer.style.display = 'block';
+                setButtonLoading(btn, false, 'Find Companies');
             }
         });
-        
-        function displaySearchResults(companies) {
-            const tbody = document.getElementById('searchResultsBody'); tbody.innerHTML = '';
-            companies.forEach(c => { const tr = document.createElement('tr'); tr.innerHTML = '<td>'+(c.name||'')+'</td><td>'+(c.industry||'')+'</td><td>'+(c.employee_count||'')+'</td><td>'+(c.company_type||'')+'</td><td>'+(c.hq?.country_code||'')+'</td>'; tbody.appendChild(tr); });
-            document.getElementById('searchResultsCount').textContent = '(' + companies.length + ')';
-            document.getElementById('searchResults').style.display = 'block';
-        }
 
         // --- Find People (direct people search against the contacts DB) ---
         function escHtml(s){ return (s==null?'':String(s)).replace(/[&<>"']/g, function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
@@ -4392,39 +4500,9 @@ example.org,Jane Doe</pre>
             document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
         });
 
-        document.getElementById('searchAndEnrich').addEventListener('click', async () => {
-            const btn = document.getElementById('searchAndEnrich');
-            const errorContainer = document.getElementById('searchFormError');
+        // (The old "Search & Enrich" flow was removed with the sync company
+        // search — the TAM page now chains enrichment via create_enrichment_job.)
 
-            // Clear previous errors
-            errorContainer.style.display = 'none';
-            errorContainer.textContent = '';
-
-            const payload = { max_decision_makers: parseInt(document.getElementById('maxResults').value, 10) || 5, include_generic_emails: true };
-            if (document.getElementById('searchName').value) payload.name = document.getElementById('searchName').value;
-            if (document.getElementById('searchIndustry').value) payload.industry = [document.getElementById('searchIndustry').value];
-            if (document.getElementById('searchEmployeeRange').value) payload.employee_range = [document.getElementById('searchEmployeeRange').value];
-            if (document.getElementById('searchCompanyType').value) payload.company_type = [document.getElementById('searchCompanyType').value];
-            if (document.getElementById('searchCountry').value) payload.country_code = document.getElementById('searchCountry').value;
-
-            setButtonLoading(btn, true, 'Enriching...');
-
-            const res = await fetch('/api/enrichment/search/companies/enrich', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-            if (res.ok) {
-                const data = await res.json();
-                currentJobId = data.job_id;
-                document.getElementById('searchTotal').textContent = data.total;
-                document.getElementById('searchProgress').style.display = 'block';
-                startProgressStream(currentJobId, 'search');
-                setButtonLoading(btn, false, 'Search & Enrich');
-            } else {
-                const err = await res.json().catch(() => ({}));
-                errorContainer.textContent = 'Failed to start enrichment: ' + (err.detail || 'Unknown error');
-                errorContainer.style.display = 'block';
-                setButtonLoading(btn, false, 'Search & Enrich');
-            }
-        });
-        
         // LinkedIn Upload
         const linkedinUploadZone = document.getElementById('linkedinUploadZone'), linkedinFile = document.getElementById('linkedinFile');
         linkedinUploadZone.addEventListener('click', () => linkedinFile.click());
@@ -5161,7 +5239,6 @@ example.org,Jane Doe</pre>
         }
         
         document.getElementById('downloadDomainResults').addEventListener('click', () => { downloadFile(currentJobId, 'domain_enrichment.csv'); });
-        document.getElementById('downloadSearchResults').addEventListener('click', () => { downloadFile(currentJobId, 'company_search.csv'); });
         document.getElementById('downloadLinkedinResults').addEventListener('click', () => { downloadFile(currentJobId, 'linkedin_enrichment.csv'); });
         
         // Jobs - refresh with user feedback

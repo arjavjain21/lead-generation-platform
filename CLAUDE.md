@@ -33,7 +33,7 @@ DB changes (`everything-claude-code:database-reviewer`), security (`everything-c
 2. **Domain Enrichment** - Enriches domains with decision-maker contacts via cascading API calls
 3. **Phone Enrichment** - Enriches LinkedIn profiles with phone numbers via Blitz Direct Phone API
 
-**Architecture:** FastAPI backend (Python) + React frontend (static build via Nginx reverse proxy)
+**Architecture:** FastAPI backend (Python) + single-file vanilla HTML/JS frontend (`frontend/index.html`, hash-routed pages, served by nginx no-cache) — edited directly with `.bak_pre_*` backups; structure pinned by tests in `frontend/tests/`
 **URL:** https://listbuilding.eagleinfoservice.com/
 **Backend Port:** 8765 (managed by systemd: `lead-generation-platform.service`)
 
@@ -79,7 +79,7 @@ DB changes (`everything-claude-code:database-reviewer`), security (`everything-c
 ├── scripts/
 │   ├── migrate_scraped_places_to_pg.py  # One-time SQLite → PG migration (Phase 1)
 │   └── validate_migration.py             # Post-migration validation
-├── frontend/                    # Pre-built static files (React)
+├── frontend/                    # index.html (single-file app) + tests/ (served-HTML assertions)
 ├── *.sh                         # backup.sh, restore.sh, monitor.sh
 └── *.service, *.timer          # Systemd service/timer files
 ```
@@ -180,7 +180,7 @@ Both accept request-time cascade restrictors (mutually exclusive): `force_provid
 **Flow 1:** `POST /api/enrichment/flows/domain-enrich` - Domain CSV → decision makers
 **Flow 2:** `POST /api/enrichment/flows/search` - Company search by criteria
 **Flow 3:** `POST /api/enrichment/flows/linkedin-enrich` - Bulk LinkedIn enrichment (3 steps per URL: Contacts DB → Blitz → GetLeads from-linkedin fallback, with a GetLeads batch pre-pass of 100/chunk)
-**TAM flow:** `POST /api/enrichment/flows/tam` (2026-09-16) - TAM-by-People: persona + firmographic filters → deduplicated company CSV with `matched_people` counts (job-based `job_type='enrichment'`; 1 Blitz record/company, cursor-paginated 50/page; optional chaining into Flow-1 enrichment for rows with domains; `routes: tam_routes.py`, runner: `tam_flow.py`)
+**TAM flow:** `POST /api/enrichment/flows/tam` (2026-09-16; **UI: "Find Companies (TAM)" page**, which replaced the old sync Company Search) - TAM-by-People: persona + firmographic filters → deduplicated company CSV with `matched_people` counts (job-based `job_type='enrichment'`; 1 Blitz record/company, cursor-paginated 50/page; optional chaining into Flow-1 enrichment for rows with domains; `routes: tam_routes.py`, runner: `tam_flow.py`)
 
 **Concurrency:** 25 domains, 15 LinkedIn URLs, 5 searches in parallel
 
@@ -434,6 +434,7 @@ This project changes often; do not rely on a frozen snapshot here. For current s
   `~/.claude/projects/-var-www-lead-generation-platform/memory/`.
 - **Live health:** `curl -s http://localhost:8765/api/health` and `./monitor.sh`.
 - **Canonical API contract:** `docs/ListBuilding_Platform_Full_API_Reference_2026-07-16.md`.
+- **2026-09-17 shipped:** TAM UI page ("Find Companies (TAM)" — replaces the old sync Company Search page) + every TAM company auto-saved to the contacts DB.
 - **2026-09-16 shipped:** TAM-by-People flow (`/flows/tam`), `exact_titles`/`include_phone`/`phone_for_all`
   request fields, `dm_previous_companies`/`dm_previous_titles` CSV columns, Blitz find-people prepass +
   miss-store + phone bundle — full contract in **Section I** of the API reference.
