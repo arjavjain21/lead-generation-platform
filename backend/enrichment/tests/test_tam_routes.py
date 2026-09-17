@@ -199,8 +199,12 @@ class TestTamRoute(_TamRouteTestCase):
                 "employee_count_range": "11 to 50",
             }]}
 
+        async def miss_d2l(client, domain):
+            return {"found": False, "company_linkedin_url": None}
+
         with patch("enrichment.getleads_client.search_contacts_companies",
-                   new=fake_gl):
+                   new=fake_gl), \
+             patch("enrichment.blitz_client.domain_to_linkedin", new=miss_d2l):
             resp = self._client.post("/api/enrichment/flows/tam", json={
                 "seed_companies": ["acme.com", "acme2.com"],
                 "analyze_seeds": True,
@@ -236,9 +240,13 @@ class TestTamRoute(_TamRouteTestCase):
                 "employee_count_range": "11 to 50",
             }]}
 
+        async def miss_d2l(client, domain):
+            return {"found": False, "company_linkedin_url": None}
+
         with patch("enrichment.blitz_client.tam_by_people", new=fake_tam), \
              patch("enrichment.getleads_client.search_contacts_companies",
-                   new=fake_gl):
+                   new=fake_gl), \
+             patch("enrichment.blitz_client.domain_to_linkedin", new=miss_d2l):
             resp = self._client.post("/api/enrichment/flows/tam", json={
                 "seed_companies": ["acme.com"],
                 "people": {"job_title_include": ["CEO"]},

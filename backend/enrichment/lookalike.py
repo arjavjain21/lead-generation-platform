@@ -90,44 +90,51 @@ async def resolve_seed(
         "specialties": [], "country": None,
     }
     try:
+        # Blitz profiles FIRST (LinkedIn-keyed, trustworthy). GetLeads'
+        # domain filter live-returned a WRONG company for notion.so
+        # (org_domain matched, org was unrelated) — its data bug is not
+        # detectable by domain check, so GetLeads is only a fallback for
+        # domain seeds Blitz cannot resolve.
+        company_url = None
         if parsed["kind"] == "domain":
             result["domain"] = parsed["value"]
+            d2l = await blitz_client.domain_to_linkedin(http, parsed["value"])
+            company_url = (d2l or {}).get("company_linkedin_url")
+            result["linkedin_url"] = company_url
+        elif parsed["kind"] == "linkedin_url":
+            result["linkedin_url"] = parsed["value"]
+            company_url = parsed["value"]
+        else:
+            return result
+
+        if company_url:
+            enrich = await blitz_search.company_enrich(http, company_url)
+            company = enrich.get("company") or {}
+            if company:
+                result.update({
+                    "resolved": True, "source": "blitz",
+                    "name": company.get("name"),
+                    "domain": company.get("domain") or result.get("domain"),
+                    "linkedin_url": company.get("linkedin_url") or company_url,
+                    "industry": company.get("industry"),
+                    "size_band": normalize_band(company.get("size")),
+                    "specialties": [x for x in (company.get("specialties") or []) if x][:12],
+                    "country": ((company.get("hq") or {}).get("country_code")),
+                })
+                return result
+
+        if parsed["kind"] == "domain":
             gl = await getleads_client.search_contacts_companies(
                 http, domains=[parsed["value"]], limit=1,
             )
             contact = (gl.get("contacts") or [None])[0]
-            # Trust guard: GetLeads' domain filter occasionally returns a
-            # fuzzy-mismatched company (live-seen: notion.so -> a Korean pet
-            # company). Only accept an exact org_domain match; anything else
-            # is a miss and falls through to the Blitz leg.
-            if contact and (contact.get("org_domain") or "").strip().lower() != parsed["value"]:
-                contact = None
             if contact:
                 result.update({
                     "resolved": True, "source": "getleads",
                     "name": contact.get("org_company_name"),
                     "industry": contact.get("org_industry_linkedin"),
                     "size_band": normalize_band(contact.get("employee_count_range")),
-                    "linkedin_url": contact.get("org_linkedin_url"),
                 })
-                return result
-        elif parsed["kind"] == "linkedin_url":
-            result["linkedin_url"] = parsed["value"]
-        else:
-            return result
-
-        # GetLeads missed (or URL seed) -> Blitz company enrichment.
-        company_url = result.get("linkedin_url") or parsed.get("value")
-        if parsed["kind"] == "domain":
-            d2l = await blitz_client.domain_to_linkedin(http, parsed["value"])
-            company_url = (d2l or {}).get("company_linkedin_url")
-            result["linkedin_url"] = company_url
-        if not company_url:
-            return result
-        enrich = await blitz_search.company_enrich(http, company_url)
-        company = enrich.get("company") or {}
-        if not company:
-            return result
         result.update({
             "resolved": True, "source": "blitz",
             "name": company.get("name"),

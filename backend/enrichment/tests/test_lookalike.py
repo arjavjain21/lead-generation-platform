@@ -108,34 +108,40 @@ class TestSynthesizeProfile(unittest.TestCase):
 
 
 class TestResolveSeed(unittest.TestCase):
-    def test_getleads_hit_skips_blitz(self):
-        async def fake_gl(client, *, domains, limit=1, **kw):
+    def test_blitz_hit_skips_getleads(self):
+        """Blitz profiles first; a Blitz hit must not spend a GetLeads credit."""
+        async def fake_gl(client, *, domains=None, limit=1, **kw):
+            raise AssertionError("getleads must not be called when Blitz profiles")
             return {"ok": True, "contacts": [{
                 "org_company_name": "Acme", "org_domain": "acme.com",
                 "org_industry_linkedin": "Software Development",
                 "employee_count_range": "11 to 50",
             }]}
 
-        async def fail_d2l(client, domain):
-            raise AssertionError("d2l must not be called when GetLeads profiles")
+        async def fake_d2l(client, domain):
+            return {"found": True,
+                    "company_linkedin_url": "https://linkedin.com/company/acme"}
 
-        async def fail_enrich(client, url):
-            raise AssertionError("company_enrich must not be called")
+        async def fake_enrich(client, url):
+            return {"company": {"name": "Acme", "domain": "acme.com",
+                                "industry": "Software Development",
+                                "size": "11-50", "specialties": [],
+                                "hq": {"country_code": "US"}}}
 
         async def run():
             async with httpx.AsyncClient() as c:
                 with patch.object(lookalike.getleads_client,
                                   "search_contacts_companies", fake_gl), \
                      patch.object(lookalike.blitz_client,
-                                  "domain_to_linkedin", fail_d2l), \
+                                  "domain_to_linkedin", fake_d2l), \
                      patch.object(lookalike.blitz_search,
-                                  "company_enrich", fail_enrich):
+                                  "company_enrich", fake_enrich):
                     return await lookalike.resolve_seed(
                         c, lookalike.parse_seed("acme.com"))
 
         result = asyncio.run(run())
         self.assertTrue(result["resolved"])
-        self.assertEqual(result["source"], "getleads")
+        self.assertEqual(result["source"], "blitz")
         self.assertEqual(result["size_band"], "11-50")
 
     def test_getleads_domain_mismatch_treated_as_miss(self):
@@ -171,7 +177,7 @@ class TestResolveSeed(unittest.TestCase):
                         c, lookalike.parse_seed("acme.com"))
 
         result = asyncio.run(run())
-        self.assertEqual(result["source"], "blitz")  # mismatch discarded
+        self.assertEqual(result["source"], "blitz")  # GL only as fallback
         self.assertEqual(result["industry"], "Software Development")
 
     def test_blitz_fallback_on_getleads_miss(self):
