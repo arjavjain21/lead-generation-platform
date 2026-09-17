@@ -299,6 +299,32 @@ class TestTamRoute(_TamRouteTestCase):
         self.assertIn("GL Co", csv_text)
         self.assertIn("getleads", csv_text)
 
+    def test_lookalike_run_without_targeting_is_rejected(self):
+        """No industry AND no keywords (from seeds or explicit) = random-mix
+        search; the route must refuse with actionable guidance."""
+        # Seeds RESOLVE but share nothing (different industries, no
+        # specialties) — synthesis yields no industry/keyword chips, so the
+        # run must be refused instead of searching size-only.
+        async def miss_d2l(client, domain):
+            return {"found": False, "company_linkedin_url": None}
+
+        async def gl_conflicting(client, *, domains=None, limit=1, **kw):
+            industry = "Financial Services" if domains and domains[0] == "a.com" else "Dental Care"
+            return {"ok": True, "contacts": [{
+                "org_company_name": "Co", "org_domain": (domains or ["x.com"])[0],
+                "org_industry_linkedin": industry,
+                "employee_count_range": "51 to 200",
+            }]}
+
+        with patch("enrichment.blitz_client.domain_to_linkedin", new=miss_d2l), \
+             patch("enrichment.getleads_client.search_contacts_companies", new=gl_conflicting):
+            resp = self._client.post("/api/enrichment/flows/tam", json={
+                "seed_companies": ["a.com", "b.com"],
+                "max_companies": 10,
+            })
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("random mix", resp.json()["detail"])
+
     def test_unknown_company_filter_key_is_422(self):
         resp = self._client.post("/api/enrichment/flows/tam", json={
             "company": {"bogus_filter": ["x"], "employee_range": ["11-50"]},

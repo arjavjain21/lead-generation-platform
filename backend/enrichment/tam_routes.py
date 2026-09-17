@@ -354,6 +354,21 @@ async def start_tam_flow(
         if not company_filters.get("hq") and profile.get("countries"):
             req.company.hq_country_code = list(profile["countries"])
             company_filters = req.company.to_payload()
+        # Guard (2026-09-19): a lookalike run with NO industry and NO keyword
+        # targeting degrades to a size/geo-only search that returns a random
+        # industry mix (live-seen: prediction-app seeds -> construction +
+        # hospitals + law firms). Refuse and tell the user what to do.
+        if not company_filters.get("industry") and not company_filters.get("keywords"):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Your examples didn't share a clear industry or keywords, "
+                    "so a lookalike search would return a random mix. Fix: "
+                    "describe the niche in the 'What connects them' box (e.g. "
+                    "'fantasy sports apps'), or switch to 'Search by filters' "
+                    "and set the industry yourself."
+                ),
+            )
 
     sources = [s for s in (req.sources or ["blitz"]) if s in ("blitz", "getleads")] or ["blitz"]
     if not req.seed_companies and not company_filters and not people_filters:

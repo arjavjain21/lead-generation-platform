@@ -1780,6 +1780,9 @@
                     <label style="font-weight:600;font-size:0.88rem;">Your example companies (3–5)</label>
                     <textarea id="tamSeeds" rows="4" style="width:100%;margin-top:6px;padding:8px;border:1px solid #d1d5db;border-radius:6px;font-size:0.85rem;" placeholder="stripe.com&#10;https://www.linkedin.com/company/notion&#10;mailchimp.com"></textarea>
                     <span class="field-helper">One per line — domains or LinkedIn company URLs. Best customers, past clients, or companies your targets look like.</span>
+                    <label style="font-weight:600;font-size:0.88rem;margin-top:10px;display:block;">What connects them (optional — recommended)</label>
+                    <input type="text" id="tamNiche" style="width:100%;margin-top:4px;padding:8px;border:1px solid #d1d5db;border-radius:6px;font-size:0.85rem;" placeholder="e.g. fantasy sports apps, prediction markets, dental SaaS">
+                    <span class="field-helper">In plain words, what kind of company these are. This is the strongest signal — use it when the examples span different industries.</span>
                     <div style="margin-top:8px;display:flex;gap:8px;align-items:center;">
                         <button type="button" class="btn btn-secondary btn-sm" id="tamAnalyzeSeeds">Analyze examples</button>
                         <button type="button" class="btn btn-primary btn-sm" id="tamFindLookalikes" disabled>Find lookalikes</button>
@@ -4383,6 +4386,7 @@ example.org,Jane Doe</pre>
         function _tamRenderSeedPanel(seeds, profile) {
             const panel = document.getElementById('tamSeedPanel');
             _tamChips = [];
+            csvList(document.getElementById('tamNiche').value).forEach(v => _tamChips.push({ type: 'keyword', value: v }));
             (profile.industries || []).forEach(v => _tamChips.push({ type: 'industry', value: v }));
             (profile.keywords || []).forEach(v => _tamChips.push({ type: 'keyword', value: v }));
             if (profile.size_band) _tamChips.push({ type: 'size', value: profile.size_band });
@@ -4448,7 +4452,7 @@ example.org,Jane Doe</pre>
             const company = {};
             const active = _tamChips.filter(c => c.checked !== false);
             const industries = active.filter(c => c.type === 'industry').map(c => c.value);
-            const keywords = active.filter(c => c.type === 'keyword').map(c => c.value);
+            const keywords = Array.from(new Set(active.filter(c => c.type === 'keyword').map(c => c.value).concat(csvList(document.getElementById('tamNiche').value))));
             const size = active.filter(c => c.type === 'size').map(c => c.value);
             const countries = active.filter(c => c.type === 'country').map(c => c.value);
             if (industries.length) company.industry_include = industries;
