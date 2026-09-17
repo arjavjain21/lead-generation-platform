@@ -86,6 +86,28 @@ def test_tam_requires_at_least_one_filter_client_side(html):
 
 # --- Old sync search removed -----------------------------------------------
 
+def test_jobs_card_renders_tam_vocabulary(html):
+    # Jobs page must not describe a company search in email/rows terms.
+    assert "tam_flow: { t: '🎯 Find Companies (TAM)'" in html
+    assert "tam_chain: { t: '🎯→📧 TAM → Contacts'" in html
+    assert "const _isTamFlow = job.source_type === 'tam_flow';" in html
+    # TAM jobs are exempt from the 0-emails bug warning; they get a
+    # "no companies matched" hint instead.
+    assert "_isTamFlow && job.status === 'done'" in html
+    assert "No companies matched" in html
+    # Providers block swaps to a single Source line for TAM jobs.
+    assert "Blitz company search (TAM by People)" in html
+    # Job titles may come from display_name (what was submitted).
+    assert "job.display_name || job.display_filename" in html
+
+
+def test_tam_page_lists_own_runs(html):
+    assert 'id="tamRunsCard"' in html
+    assert 'id="tamRunsBody"' in html
+    assert "function loadTamRuns" in html
+    assert "if (pageId === 'search') loadTamRuns();" in html
+
+
 def test_old_sync_company_search_buttons_gone(html):
     assert "searchAndEnrich" not in html
     assert "searchCompanies" not in html

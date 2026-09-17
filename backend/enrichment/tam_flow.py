@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -219,6 +220,7 @@ def create_chained_enrichment_job(
     max_decision_makers: int,
     providers: Optional[list[str]],
     exact_titles: bool = False,
+    tam_display_name: str = "",
 ) -> dict[str, Any]:
     """Create a Flow-1 domain-enrichment job over a TAM run's domains.
 
@@ -269,18 +271,24 @@ def create_chained_enrichment_job(
 
     chained_job_id = str(uuid.uuid4())
     store = job_store.get_store()
+    # Friendlier identity than the old tam_<id>_<id> pattern: the download
+    # filename says what it is, display_name says where it came from.
+    chain_stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
     store.create_enrichment_job(
         job_id=chained_job_id,
         user_id=user_id,
         total=len(deduped_rows),
-        filename=f"tam_{tam_job_id[:8]}_{chained_job_id[:8]}.csv",
+        filename=f"find_companies_contacts_{chain_stamp}.csv",
         domain_col="domain",
-        original_filename=f"tam_{tam_job_id[:8]}.csv",
+        original_filename=f"find_companies_contacts_{chain_stamp}.csv",
         parent_job_id=tam_job_id,
         cascade_config=cascade_json,
         max_results=max_decision_makers,
         selected_providers=providers,
         source_type="tam_chain",
+        display_name=(
+            f"Contacts for TAM companies{(' — ' + tam_display_name) if tam_display_name else ''}"
+        )[:120],
     )
 
     # Same in-memory plumbing the flow endpoints use so the generic SSE /
@@ -663,6 +671,7 @@ async def run_tam_flow(
                 max_decision_makers=int(params.get("max_decision_makers") or 5),
                 providers=params.get("providers"),
                 exact_titles=bool(params.get("exact_titles")),
+                tam_display_name=params.get("display_name") or "",
             )
             return {**summary, **chain_result}
         except Exception as chain_err:

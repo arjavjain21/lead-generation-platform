@@ -394,6 +394,13 @@ def init_db() -> None:
     # the mode; '0'/NULL = normal cascade (today's behavior).
     if "website_only" not in existing_columns:
         c.execute("ALTER TABLE jobs ADD COLUMN website_only INTEGER DEFAULT 0")
+    # Human-readable job title. Scraper jobs have used it via a legacy
+    # migration; enrichment TAM jobs (2026-09-18) set it to the submitted-
+    # filter summary so the Jobs page shows WHAT was run, not a generated
+    # filename. Guarded ALTER keeps fresh installs + test DBs in sync with
+    # the already-migrated production table.
+    if "display_name" not in existing_columns:
+        c.execute("ALTER TABLE jobs ADD COLUMN display_name TEXT")
     # Resume claim marker (2026-08-24) — cross-process mutex for enrichment
     # auto-resume. The 4-worker fan-out bug (hyperke-saas chain, 4 children in
     # 5ms) happened because the "already has a child?" check and the child

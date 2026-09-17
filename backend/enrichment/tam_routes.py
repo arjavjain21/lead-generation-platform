@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -232,6 +233,23 @@ class TamRequest(BaseModel):
 # Endpoint
 # ---------------------------------------------------------------------------
 
+def _tam_display_summary(req: "TamRequest") -> str:
+    """One-line plain-language summary of what was submitted, for the job's
+    display_name (Jobs page title). Kept short — first filter of each kind,
+    ' · ' separated."""
+    parts: list[str] = []
+    titles = (req.people.job_title_include or [])[:2]
+    parts.append("/".join(titles) if titles else "any role")
+    industry = (req.company.industry_include or [])[:1]
+    parts.append(industry[0] if industry else "any industry")
+    size = (req.company.employee_range or [])[:1]
+    parts.append(size[0] + " emp" if size else "any size")
+    country = (req.company.hq_country_code or [])[:1]
+    parts.append(country[0] if country else "all countries")
+    summary = " · ".join(parts)
+    return summary[:100]
+
+
 @router.post("/flows/tam")
 async def start_tam_flow(
     req: TamRequest,
@@ -275,18 +293,22 @@ async def start_tam_flow(
 
     job_id = str(uuid.uuid4())
     store = job_store.get_store()
+    # Human-readable identity: the Jobs page title comes from display_name
+    # (what was submitted), the downloaded file from the timestamped filename.
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
     store.create_enrichment_job(
         job_id=job_id,
         user_id=current_user["user_id"],
         # total is the budget ceiling — the real count is unknown until the
         # cursor runs dry; processed tracks pages fetched.
         total=req.max_companies,
-        filename=f"tam_{job_id[:8]}.csv",
+        filename=f"find_companies_{stamp}.csv",
         domain_col="domain",
-        original_filename=f"tam_{job_id[:8]}.csv",
+        original_filename=f"find_companies_{stamp}.csv",
         max_results=req.max_decision_makers,
         selected_providers=req.providers,
         source_type="tam_flow",
+        display_name=f"Find Companies — {_tam_display_summary(req)}",
     )
 
     _job_signals[job_id] = asyncio.Event()
@@ -307,6 +329,7 @@ async def start_tam_flow(
         "max_decision_makers": req.max_decision_makers,
         "providers": req.providers,
         "exact_titles": req.exact_titles,
+        "display_name": _tam_display_summary(req),
         "should_cancel": check_cancelled,
     }
 

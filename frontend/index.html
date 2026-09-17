@@ -1869,6 +1869,17 @@
                     <button class="btn btn-primary" id="tamFindCompanies">Find Companies</button>
                 </div>
             </div>
+
+            <div class="form-card" id="tamRunsCard" style="display:none;">
+                <h3>🕐 Your TAM Runs</h3>
+                <div style="font-size:0.8rem;color:#6b7280;margin-bottom:0.5rem;">Your recent Find Companies searches. Download the company CSV here, or open the Jobs page for the full history (these runs also appear there, badged 🎯).</div>
+                <div style="overflow-x:auto;">
+                    <table class="results-table">
+                        <thead><tr><th>When</th><th>Search</th><th>Companies</th><th>Status</th><th>Contacts Job</th><th></th></tr></thead>
+                        <tbody id="tamRunsBody"></tbody>
+                    </table>
+                </div>
+            </div>
         </div>
         
         <!-- Find People Page -->
@@ -2779,6 +2790,7 @@ example.org,Jane Doe</pre>
             // Load data when switching to specific pages
             if (pageId === 'scraper') loadScraperJobs();
             if (pageId === 'jobs') loadJobs();
+            if (pageId === 'search') loadTamRuns();
             if (pageId === 'apikeys') loadApiKeys();
         }
 
@@ -4396,6 +4408,44 @@ example.org,Jane Doe</pre>
             }
         });
 
+        // --- Your TAM Runs: recent Find Companies searches on the TAM page ---
+        async function loadTamRuns() {
+            const card = document.getElementById('tamRunsCard');
+            const tbody = document.getElementById('tamRunsBody');
+            if (!card || !tbody || !token) return;
+            try {
+                const res = await fetch('/api/enrichment/jobs?limit=50', { headers: { 'Authorization': 'Bearer ' + token } });
+                if (!res.ok) return;
+                const data = await res.json();
+                const jobs = data.jobs || [];
+                // Map chained contacts jobs to their TAM parent for the last column.
+                const chainByParent = {};
+                jobs.forEach(j => { if (j.source_type === 'tam_chain' && j.parent_job_id) chainByParent[j.parent_job_id] = j; });
+                const runs = jobs.filter(j => j.source_type === 'tam_flow').slice(0, 8);
+                if (!runs.length) return;
+                tbody.innerHTML = runs.map(j => {
+                    const chain = chainByParent[j.job_id];
+                    const chainCell = chain
+                        ? ('<span class="job-status status-' + chain.status + '">' + chain.status + '</span> ' + (chain.result_count || 0) + ' contacts')
+                        : '<span style="color:#9ca3af;">—</span>';
+                    const dl = (j.status === 'done' || j.status === 'partial')
+                        ? ' <button class="btn btn-success btn-sm" onclick="downloadFile(\'' + j.job_id + '\',\'' + (j.filename || 'find_companies').replace(/[^a-z0-9.]/gi, '_') + '\')">Download</button>'
+                        : '';
+                    return '<tr>'
+                        + '<td>' + new Date(j.created_at).toLocaleString() + '</td>'
+                        + '<td>' + escHtml(j.display_name || j.filename || '') + '</td>'
+                        + '<td><strong>' + (j.result_count || 0) + '</strong>' + (j.status === 'done' ? '' : ' so far') + '</td>'
+                        + '<td><span class="job-status status-' + j.status + '">' + j.status + '</span></td>'
+                        + '<td>' + chainCell + '</td>'
+                        + '<td>' + dl + '</td>'
+                        + '</tr>';
+                }).join('');
+                card.style.display = 'block';
+            } catch (e) {
+                // Runs list is a convenience — never block the page on it.
+            }
+        }
+
         // --- Find People (direct people search against the contacts DB) ---
         function escHtml(s){ return (s==null?'':String(s)).replace(/[&<>"']/g, function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
         function csvList(v){ return (v||'').split(',').map(s=>s.trim()).filter(Boolean); }
@@ -5895,7 +5945,8 @@ example.org,Jane Doe</pre>
             // origin. 'restart' is not an origin — when no member knows it,
             // hide the chip rather than show a wrong one.
             const originMember = members.find(m =>
-                m.source_type === 'csv_upload' || m.source_type === 'google_maps_chain');
+                m.source_type === 'csv_upload' || m.source_type === 'google_maps_chain'
+                || m.source_type === 'tam_flow' || m.source_type === 'tam_chain');
             const resolvedOrigin = originMember ? originMember.source_type : null;
 
             return {
@@ -5988,6 +6039,15 @@ example.org,Jane Doe</pre>
                         }
 
                         const statusBadge = '<span class="job-status status-' + job.status + '">' + statusDisplay + '</span>';
+
+                        // TAM company-search jobs use ONE source (Blitz TAM);
+                        // the generic Selected/Used provider lines are wrong
+                        // vocabulary for them ("0 emails", provider waterfall).
+                        // The chained contacts job (tam_chain) DOES use the
+                        // normal waterfall — keep providers there, labelled.
+                        const _tamProvidersHtml = '<div class="job-providers" style="font-size: 0.75rem; margin-top: 4px;">'
+                            + '<div style="color: #1e40af;"><strong>Source:</strong> ' + (job.source_type === 'tam_flow' ? 'Blitz company search (TAM by People)' : 'Contacts phase — normal enrichment waterfall') + '</div>'
+                            + '</div>';
                         let actions = '';
                         if (job.status === 'done') {
                             const fname = job.display_filename || job.filename || 'enrichment_job';
@@ -6084,11 +6144,19 @@ example.org,Jane Doe</pre>
                         // downloading a 0-byte CSV. For grouped cards, use the
                         // CHAIN-level numbers (the head's own counters only
                         // cover its slice of the file).
+                        // TAM company-search jobs (tam_flow) are EXEMPT — they
+                        // find companies, not emails; 0 emails is their normal
+                        // state and 0 companies is a filters question, not a bug.
+                        const _isTamFlow = job.source_type === 'tam_flow';
                         const _effTotal = ctx.chainMeta ? (ctx.chainMeta.total || 0) : (job.total || 0);
                         const _effEmails = ctx.chainMeta ? (ctx.chainMeta.emails || 0) : (job.emails_found || 0);
                         let zeroEmailWarning = '';
                         let zeroEmailCardClass = '';
-                        if (job.status === 'done' && _effTotal > 0 && _effEmails === 0) {
+                        if (_isTamFlow && job.status === 'done' && (job.result_count || 0) === 0) {
+                            zeroEmailWarning = '<div class="zero-email-warning" style="background:#fef9c3;border-color:#ca8a04;" title="No companies matched the filters.">' +
+                                '<strong>No companies matched</strong> these filters. Try widening them (fewer filters, bigger size range, more countries).' +
+                                '</div>';
+                        } else if (!_isTamFlow && job.status === 'done' && _effTotal > 0 && _effEmails === 0) {
                             zeroEmailCardClass = ' zero-email-card';
                             zeroEmailWarning = '<div class="zero-email-warning" title="Job completed but produced no data. This is almost always a bug — contact support or retry.">' +
                                 '<strong>⚠ 0 emails found</strong> on a ' + _effTotal + '-row input. ' +
@@ -6098,12 +6166,18 @@ example.org,Jane Doe</pre>
 
                         // Meta line: file-level numbers for grouped cards
                         // (root's upload date + accumulated chain progress),
-                        // per-job numbers otherwise.
-                        const metaParts = ctx.chainMeta ? ctx.chainMeta.parts : [
-                            new Date(job.created_at).toLocaleString(),
-                            (job.processed||0) + '/' + (job.total||0) + ' rows',
-                            (job.emails_found||0) + ' emails',
-                        ];
+                        // per-job numbers otherwise. TAM company-search jobs
+                        // speak in companies, not rows/emails.
+                        const metaParts = ctx.chainMeta ? ctx.chainMeta.parts : (
+                            _isTamFlow ? [
+                                new Date(job.created_at).toLocaleString(),
+                                (job.result_count || 0) + ' companies' + (job.status === 'done' ? '' : ' so far'),
+                                (job.processed || 0) + ' pages',
+                            ] : [
+                                new Date(job.created_at).toLocaleString(),
+                                (job.processed||0) + '/' + (job.total||0) + ' rows',
+                                (job.emails_found||0) + ' emails',
+                            ]);
                         const metaHtml = metaParts.map(p => '<span class="meta-item">' + p + '</span>').join('<span class="meta-sep" aria-hidden="true">·</span>');
 
                         const _isTerminal = ['done','failed','abandoned','cancelled','partial'].includes(job.status);
@@ -6123,6 +6197,8 @@ example.org,Jane Doe</pre>
                             csv_upload: { t: '📤 Upload', c: '#475569', b: '#f1f5f9' },
                             linkedin: { t: '🔗 LinkedIn', c: '#075985', b: '#e0f2fe' },
                             search: { t: '🔎 Search', c: '#6b21a8', b: '#f3e8ff' },
+                            tam_flow: { t: '🎯 Find Companies (TAM)', c: '#065f46', b: '#d1fae5' },
+                            tam_chain: { t: '🎯→📧 TAM → Contacts', c: '#065f46', b: '#d1fae5' },
                             restart: { t: '↻ Restart', c: '#92400e', b: '#fef3c7' },
                         };
                         const _srcKey = ctx.group ? ctx.sourceType : (ctx.sourceType || job.source_type);
@@ -6163,7 +6239,7 @@ example.org,Jane Doe</pre>
 
                         return '<div class="job-card' + zeroEmailCardClass + '">'
                             + '<div class="job-info">'
-                            + '<h4>' + esc(ctx.title || job.display_filename || job.filename || 'Job') + '</h4>'
+                            + '<h4>' + esc(ctx.title || job.display_name || job.display_filename || job.filename || 'Job') + '</h4>'
                             + '<div class="job-meta">' + metaHtml + '</div>'
                             + fileChip
                             + sourceChip
@@ -6171,7 +6247,8 @@ example.org,Jane Doe</pre>
                             + supersededBadge
                             + (ctx.chainProgressHtml || '')
                             + '<div style="margin-top:.2rem;">' + (ctx.historyToggleHtml || '') + '</div>'
-                            + '<div class="job-providers" style="font-size: 0.75rem; margin-top: 4px;"><div style="color: #1e40af;"><strong>Selected:</strong> ' + selectedDisplay + '</div><div style="color: #059669;"><strong>Used:</strong> ' + usedDisplay + '</div></div>'
+                            + ((_isTamFlow || job.source_type === 'tam_chain') ? _tamProvidersHtml
+                                : '<div class="job-providers" style="font-size: 0.75rem; margin-top: 4px;"><div style="color: #1e40af;"><strong>Selected:</strong> ' + selectedDisplay + '</div><div style="color: #059669;"><strong>Used:</strong> ' + usedDisplay + '</div></div>')
                             + errorInfo + providerErrorsDisplay + zeroEmailWarning
                             + '</div>'
                             + '<div class="job-status-wrap">' + statusBadge + '</div>'
