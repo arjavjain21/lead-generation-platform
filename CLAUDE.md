@@ -180,7 +180,7 @@ Both accept request-time cascade restrictors (mutually exclusive): `force_provid
 **Flow 1:** `POST /api/enrichment/flows/domain-enrich` - Domain CSV → decision makers
 **Flow 2:** `POST /api/enrichment/flows/search` - Company search by criteria
 **Flow 3:** `POST /api/enrichment/flows/linkedin-enrich` - Bulk LinkedIn enrichment (3 steps per URL: Contacts DB → Blitz → GetLeads from-linkedin fallback, with a GetLeads batch pre-pass of 100/chunk)
-**TAM flow:** `POST /api/enrichment/flows/tam` (2026-09-16; **UI: "Find Companies (TAM)" page**, which replaced the old sync Company Search) - TAM-by-People: persona + firmographic filters → deduplicated company CSV with `matched_people` counts (job-based `job_type='enrichment'`; 1 Blitz record/company, cursor-paginated 50/page; optional chaining into Flow-1 enrichment for rows with domains; `routes: tam_routes.py`, runner: `tam_flow.py`)
+**TAM flow:** `POST /api/enrichment/flows/tam` (2026-09-16; **UI: "Find Companies (TAM)" page**; 2026-09-18 lookalike mode (`seed_companies` + `analyze_seeds`; sources blitz/getleads/both; GetLeads leg capped `GETLEADS_LOOKALIKE_MAX_CREDITS`=500), which replaced the old sync Company Search) - TAM-by-People: persona + firmographic filters → deduplicated company CSV with `matched_people` counts (job-based `job_type='enrichment'`; 1 Blitz record/company, cursor-paginated 50/page; optional chaining into Flow-1 enrichment for rows with domains; `routes: tam_routes.py`, runner: `tam_flow.py`)
 
 **Concurrency:** 25 domains, 15 LinkedIn URLs, 5 searches in parallel
 

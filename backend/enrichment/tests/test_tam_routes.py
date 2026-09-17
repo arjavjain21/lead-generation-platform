@@ -190,6 +190,107 @@ class TestTamRoute(_TamRouteTestCase):
         self.assertTrue(csv_path.exists())
         self.assertIn("TAM Co 0", csv_path.read_text(encoding="utf-8"))
 
+
+    def test_lookalike_analyze_mode_returns_profile_no_job(self):
+        async def fake_gl(client, *, domains, limit=1, **kw):
+            return {"ok": True, "contacts": [{
+                "org_company_name": "Acme", "org_domain": domains[0],
+                "org_industry_linkedin": "Software Development",
+                "employee_count_range": "11 to 50",
+            }]}
+
+        with patch("enrichment.getleads_client.search_contacts_companies",
+                   new=fake_gl):
+            resp = self._client.post("/api/enrichment/flows/tam", json={
+                "seed_companies": ["acme.com", "acme2.com"],
+                "analyze_seeds": True,
+            })
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(len(body["seeds"]), 2)
+        self.assertEqual(body["profile"]["industries"], ["Software Development"])
+        self.assertEqual(body["profile"]["size_band"], "11-50")
+
+    def test_lookalike_run_merges_filters_and_excludes_seeds(self):
+        captured = {}
+
+        async def fake_tam(_http, *, company_filters, people_filters,
+                           max_results, cursor):
+            captured["company"] = company_filters
+            return {"results": [
+                {"company": {"name": "Lookalike Co", "domain": "lookalike.com",
+                             "linkedin_url": "https://linkedin.com/company/lk",
+                             "industry": "Software Development", "size": "11-50"},
+                 "matched_people": 1},
+                {"company": {"name": "Seed Echo", "domain": "acme.com",
+                             "linkedin_url": "https://linkedin.com/company/acme",
+                             "industry": "Software Development", "size": "11-50"},
+                 "matched_people": 1},
+            ], "cursor": None}
+
+        async def fake_gl(client, *, domains, limit=1, **kw):
+            return {"ok": True, "contacts": [{
+                "org_company_name": "Acme", "org_domain": domains[0],
+                "org_industry_linkedin": "Software Development",
+                "employee_count_range": "11 to 50",
+            }]}
+
+        with patch("enrichment.blitz_client.tam_by_people", new=fake_tam), \
+             patch("enrichment.getleads_client.search_contacts_companies",
+                   new=fake_gl):
+            resp = self._client.post("/api/enrichment/flows/tam", json={
+                "seed_companies": ["acme.com"],
+                "people": {"job_title_include": ["CEO"]},
+                "max_companies": 10,
+            })
+        self.assertEqual(resp.status_code, 200)
+        job_id = resp.json()["job_id"]
+        job = job_store.get_store().get_job(job_id)
+        self.assertEqual(job["status"], "done")
+        self.assertEqual(captured["company"].get("industry"),
+                         {"include": ["Software Development"]})
+        self.assertEqual(captured["company"].get("employee_range"), ["11-50"])
+        csv_text = Path(job["output_path"]).read_text(encoding="utf-8")
+        self.assertIn("Lookalike Co", csv_text)
+        self.assertNotIn("Seed Echo", csv_text)
+        self.assertIn("Lookalikes", job["display_name"])
+        self.assertIn("source", csv_text.splitlines()[0])
+
+    def test_lookalike_getleads_only_source_runs_gl_leg(self):
+        # ONE fake serves both call sites (profile-by-domain + the pull leg)
+        # — patching the module attribute covers lookalike's reference too.
+        async def fake_gl(client, *, domains=None, limit=1, offset=0, **kw):
+            if domains:
+                return {"ok": True, "contacts": [{
+                    "org_company_name": "Acme", "org_domain": domains[0],
+                    "org_industry_linkedin": "Software Development",
+                    "employee_count_range": "11 to 50",
+                }]}
+            return {"ok": True, "contacts": [
+                {"org_company_name": "GL Co", "org_domain": "glco.com",
+                 "org_industry_linkedin": "Software Development",
+                 "employee_count_range": "11 to 50"},
+            ], "has_more": False, "next_offset": 1, "query_credits_used": 1}
+
+        async def fake_tam(*a, **kw):
+            raise AssertionError("blitz leg must not run when getleads-only")
+
+        with patch("enrichment.blitz_client.tam_by_people", new=fake_tam), \
+             patch("enrichment.getleads_client.search_contacts_companies",
+                   new=fake_gl):
+            resp = self._client.post("/api/enrichment/flows/tam", json={
+                "seed_companies": ["acme.com"],
+                "sources": ["getleads"],
+                "max_companies": 10,
+            })
+        self.assertEqual(resp.status_code, 200)
+        job = job_store.get_store().get_job(resp.json()["job_id"])
+        self.assertEqual(job["status"], "done")
+        csv_text = Path(job["output_path"]).read_text(encoding="utf-8")
+        self.assertIn("GL Co", csv_text)
+        self.assertIn("getleads", csv_text)
+
     def test_unknown_company_filter_key_is_422(self):
         resp = self._client.post("/api/enrichment/flows/tam", json={
             "company": {"bogus_filter": ["x"], "employee_range": ["11-50"]},

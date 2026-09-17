@@ -239,7 +239,9 @@ class TestFlattenTamCompany(unittest.TestCase):
     def test_empty_entry_is_all_none(self):
         row = tam_flow.flatten_tam_company({})
         self.assertEqual(list(row.keys()), list(tam_flow.TAM_CSV_COLUMNS))
-        self.assertTrue(all(value is None for value in row.values()))
+        # `source` is the one non-None default ("blitz"); everything else None.
+        self.assertEqual(row["source"], "blitz")
+        self.assertTrue(all(v is None for k, v in row.items() if k != "source"))
 
 
 # ---------------------------------------------------------------------------

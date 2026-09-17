@@ -1771,7 +1771,23 @@
                 </div>
                 <div id="searchFormError" class="validation-message error" style="display:none;"></div>
 
-                <h4 style="margin:0.5rem 0 0.25rem;font-size:0.9rem;color:#1a315d;">1. Describe the company</h4>
+                <div style="display:flex;gap:8px;margin-bottom:1rem;">
+                    <button type="button" class="btn btn-primary btn-sm" id="tamModeFilters">Search by filters</button>
+                    <button type="button" class="btn btn-secondary btn-sm" id="tamModeExamples">Search by example companies (lookalikes)</button>
+                </div>
+
+                <div id="tamExamplesCard" style="display:none;margin-bottom:1rem;padding:12px;border:1px solid #e5e7eb;border-radius:6px;">
+                    <label style="font-weight:600;font-size:0.88rem;">Your example companies (3–5)</label>
+                    <textarea id="tamSeeds" rows="4" style="width:100%;margin-top:6px;padding:8px;border:1px solid #d1d5db;border-radius:6px;font-size:0.85rem;" placeholder="stripe.com&#10;https://www.linkedin.com/company/notion&#10;mailchimp.com"></textarea>
+                    <span class="field-helper">One per line — domains or LinkedIn company URLs. Best customers, past clients, or companies your targets look like.</span>
+                    <div style="margin-top:8px;display:flex;gap:8px;align-items:center;">
+                        <button type="button" class="btn btn-secondary btn-sm" id="tamAnalyzeSeeds">Analyze examples</button>
+                        <button type="button" class="btn btn-primary btn-sm" id="tamFindLookalikes" disabled>Find lookalikes</button>
+                    </div>
+                    <div id="tamSeedPanel" style="display:none;margin-top:10px;"></div>
+                </div>
+
+                <h4 style="margin:0.5rem 0 0.25rem;font-size:0.9rem;color:#1a315d;" id="tamCompanySectionTitle">1. Describe the company</h4>
                 <div class="filters">
                     <div class="filter-group">
                         <label>Company Name</label>
@@ -1842,6 +1858,15 @@
                         <label>Max Companies</label>
                         <input type="number" id="tamMaxCompanies" min="1" max="10000" value="500">
                         <span class="field-helper">Hard cap — the run stops here (also the cost ceiling)</span>
+                    </div>
+                    <div class="filter-group">
+                        <label>Search Source</label>
+                        <select id="tamSources">
+                            <option value="blitz" selected>Blitz company data (default)</option>
+                            <option value="getleads">GetLeads data (credits)</option>
+                            <option value="both">Both — merged &amp; deduped</option>
+                        </select>
+                        <span class="field-helper">Where the company list comes from</span>
                     </div>
                 </div>
                 <div style="margin-top:0.75rem;padding:10px 12px;border:1px solid #e5e7eb;border-radius:6px;">
@@ -4332,6 +4357,142 @@ example.org,Jane Doe</pre>
             document.getElementById('tamChainOptions').style.display = e.target.checked ? 'block' : 'none';
         });
 
+        // --- Lookalike mode: analyze examples -> chips -> run ---
+        let _tamMode = 'filters';
+        let _tamChips = [];  // [{type, value, checked}] from the last analysis
+
+        function setTamMode(mode) {
+            _tamMode = mode;
+            document.getElementById('tamExamplesCard').style.display = mode === 'examples' ? 'block' : 'none';
+            document.getElementById('tamCompanySectionTitle').style.display = mode === 'examples' ? 'none' : 'block';
+            const filtersEl = document.getElementById('tamCompanySectionTitle');
+            // Hide the whole company-filters grid in examples mode (chips replace it).
+            const filtersGrid = filtersEl.nextElementSibling;
+            if (filtersGrid && filtersGrid.classList.contains('filters')) filtersGrid.style.display = mode === 'examples' ? 'none' : 'grid';
+            document.getElementById('tamModeFilters').className = 'btn btn-' + (mode === 'filters' ? 'primary' : 'secondary') + ' btn-sm';
+            document.getElementById('tamModeExamples').className = 'btn btn-' + (mode === 'examples' ? 'primary' : 'secondary') + ' btn-sm';
+        }
+        document.getElementById('tamModeFilters').addEventListener('click', () => setTamMode('filters'));
+        document.getElementById('tamModeExamples').addEventListener('click', () => setTamMode('examples'));
+
+        function _tamSourcesPayload() {
+            const v = document.getElementById('tamSources').value;
+            return v === 'both' ? ['blitz', 'getleads'] : [v];
+        }
+
+        function _tamRenderSeedPanel(seeds, profile) {
+            const panel = document.getElementById('tamSeedPanel');
+            _tamChips = [];
+            (profile.industries || []).forEach(v => _tamChips.push({ type: 'industry', value: v }));
+            (profile.keywords || []).forEach(v => _tamChips.push({ type: 'keyword', value: v }));
+            if (profile.size_band) _tamChips.push({ type: 'size', value: profile.size_band });
+            (profile.countries || []).forEach(v => _tamChips.push({ type: 'country', value: v }));
+            const seedsRows = seeds.map(sd => '<tr><td>' + escHtml(sd.input) + '</td><td>' +
+                escHtml(sd.resolved ? (sd.name || '') : '') + '</td><td>' +
+                escHtml(sd.industry || '') + '</td><td>' +
+                escHtml(sd.size_band || '') + '</td><td>' +
+                (sd.resolved ? '<span style="color:#059669;">✓ ' + escHtml(sd.source) + '</span>' : '<span style="color:#b91c1c;">not found</span>') +
+                '</td></tr>').join('');
+            const chipHtml = _tamChips.length
+                ? '<div style="font-size:0.8rem;font-weight:600;margin:8px 0 4px;">What your examples have in common (untick to ignore):</div>'
+                  + '<div style="display:flex;flex-wrap:wrap;gap:6px;">'
+                  + _tamChips.map((c, i) => '<label style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:999px;font-size:0.78rem;border:1px solid #d1fae5;background:#d1fae5;color:#065f46;cursor:pointer;"><input type="checkbox" data-tamchip="' + i + '" checked> ' + escHtml(c.type === 'size' ? c.value + ' employees' : c.value) + '</label>').join('')
+                  + '</div>'
+                : '';
+            const warn = profile.conflicting_profiles
+                ? '<div style="margin-top:8px;font-size:0.8rem;color:#92400e;background:#fef3c7;padding:6px 10px;border-radius:6px;">Your examples are quite different from each other — results will be broad. Add 1–2 more similar examples for sharper lookalikes.</div>'
+                : (profile.seeds_resolved < profile.seeds_total
+                    ? '<div style="margin-top:8px;font-size:0.8rem;color:#92400e;background:#fef3c7;padding:6px 10px;border-radius:6px;">We could profile ' + profile.seeds_resolved + ' of ' + profile.seeds_total + ' examples — running with those.</div>' : '');
+            panel.innerHTML = '<div style="overflow-x:auto;"><table class="results-table"><thead><tr><th>Example</th><th>Company</th><th>Industry</th><th>Size</th><th>Status</th></tr></thead><tbody>' + seedsRows + '</tbody></table></div>' + chipHtml + warn;
+            panel.style.display = 'block';
+            panel.querySelectorAll('input[data-tamchip]').forEach(cb => {
+                cb.addEventListener('change', () => { _tamChips[parseInt(cb.dataset.tamchip, 10)].checked = cb.checked; });
+            });
+        }
+
+        document.getElementById('tamAnalyzeSeeds').addEventListener('click', async () => {
+            const btn = document.getElementById('tamAnalyzeSeeds');
+            const errorContainer = document.getElementById('searchFormError');
+            errorContainer.style.display = 'none'; errorContainer.textContent = '';
+            const seeds = document.getElementById('tamSeeds').value.split(/[\n,]/).map(x => x.trim()).filter(Boolean).slice(0, 5);
+            if (!seeds.length) { errorContainer.textContent = 'Paste at least one example company (domain or LinkedIn URL).'; errorContainer.style.display = 'block'; return; }
+            setButtonLoading(btn, true, 'Analyzing...');
+            try {
+                const res = await fetch('/api/enrichment/flows/tam', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ seed_companies: seeds, analyze_seeds: true })
+                });
+                const data = await res.json();
+                if (res.ok && data.ok) {
+                    _tamRenderSeedPanel(data.seeds, data.profile);
+                    document.getElementById('tamFindLookalikes').disabled = false;
+                    setButtonLoading(btn, false, 'Re-analyze');
+                } else {
+                    errorContainer.textContent = 'Analysis failed: ' + _tamErrorText(data, res);
+                    errorContainer.style.display = 'block';
+                    setButtonLoading(btn, false, 'Analyze examples');
+                }
+            } catch (e) {
+                errorContainer.textContent = 'Analysis failed: ' + e.message;
+                errorContainer.style.display = 'block';
+                setButtonLoading(btn, false, 'Analyze examples');
+            }
+        });
+
+        document.getElementById('tamFindLookalikes').addEventListener('click', async () => {
+            const btn = document.getElementById('tamFindLookalikes');
+            const errorContainer = document.getElementById('searchFormError');
+            errorContainer.style.display = 'none'; errorContainer.textContent = '';
+            const seeds = document.getElementById('tamSeeds').value.split(/[\n,]/).map(x => x.trim()).filter(Boolean).slice(0, 5);
+            const company = {};
+            const active = _tamChips.filter(c => c.checked !== false);
+            const industries = active.filter(c => c.type === 'industry').map(c => c.value);
+            const keywords = active.filter(c => c.type === 'keyword').map(c => c.value);
+            const size = active.filter(c => c.type === 'size').map(c => c.value);
+            const countries = active.filter(c => c.type === 'country').map(c => c.value);
+            if (industries.length) company.industry_include = industries;
+            if (keywords.length) company.keywords_include = keywords;
+            if (size.length) company.employee_range = size;
+            if (countries.length) company.hq_country_code = countries;
+            const people = {};
+            const titlesInclude = csvList(document.getElementById('tamTitleInclude').value);
+            if (titlesInclude.length) people.job_title_include = titlesInclude;
+            const payload = {
+                seed_companies: seeds, company, people,
+                max_companies: Math.min(Math.max(parseInt(document.getElementById('tamMaxCompanies').value, 10) || 500, 1), 10000),
+                sources: _tamSourcesPayload()
+            };
+            if (document.getElementById('tamChainEnrich').checked) {
+                payload.create_enrichment_job = true;
+                payload.max_decision_makers = Math.min(Math.max(parseInt(document.getElementById('tamMaxDms').value, 10) || 5, 1), 25);
+                const chainTitles = csvList(document.getElementById('tamChainTitles').value);
+                if (chainTitles.length) payload.titles = chainTitles;
+            }
+            setButtonLoading(btn, true, 'Starting...');
+            try {
+                const res = await fetch('/api/enrichment/flows/tam', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (res.ok) {
+                    setButtonLoading(btn, false, 'Started!');
+                    navigateToPage('jobs');
+                    if (typeof refreshJobs === 'function') refreshJobs();
+                } else {
+                    const err = await res.json().catch(() => ({}));
+                    errorContainer.textContent = 'Failed to start: ' + _tamErrorText(err, res);
+                    errorContainer.style.display = 'block';
+                    setButtonLoading(btn, false, 'Find lookalikes');
+                }
+            } catch (e) {
+                errorContainer.textContent = 'Failed to start: ' + e.message;
+                errorContainer.style.display = 'block';
+                setButtonLoading(btn, false, 'Find lookalikes');
+            }
+        });
+
         document.getElementById('tamFindCompanies').addEventListener('click', async () => {
             const btn = document.getElementById('tamFindCompanies');
             const errorContainer = document.getElementById('searchFormError');
@@ -4373,7 +4534,8 @@ example.org,Jane Doe</pre>
             const payload = {
                 company,
                 people,
-                max_companies: Math.min(Math.max(parseInt(document.getElementById('tamMaxCompanies').value, 10) || 500, 1), 10000)
+                max_companies: Math.min(Math.max(parseInt(document.getElementById('tamMaxCompanies').value, 10) || 500, 1), 10000),
+                sources: _tamSourcesPayload()
             };
             if (document.getElementById('tamChainEnrich').checked) {
                 payload.create_enrichment_job = true;

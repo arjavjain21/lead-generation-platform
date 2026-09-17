@@ -313,3 +313,27 @@ async def tam_by_people(
         payload,
         timeout=60.0,
     )
+
+
+async def company_enrich(
+    client: httpx.AsyncClient, company_linkedin_url: str
+) -> dict[str, Any]:
+    """POST /v2/enrichment/company — full company profile from its LinkedIn
+    URL. Used by the lookalike flow to profile example companies.
+
+    Response (live-verified 2026-09-18): ``{found, company{...}, fair_usage}``
+    where company carries: name, domain (nullable), website, industry, type,
+    size (band label e.g. '5001-10000'), employees_on_linkedin (number),
+    followers (number), founded_year, specialties (string[] | null), hq{city,
+    state, country_code, country_name, region, continent}, about, linkedin_url.
+    Cost: ~1 FUP record per call.
+    """
+    # Late import: see module docstring (one-way import + patchability).
+    from enrichment import blitz_client
+
+    return await blitz_client._post_with_retry(
+        client,
+        f"{blitz_client.BLITZ_BASE_URL}/v2/enrichment/company",
+        {"company_linkedin_url": company_linkedin_url},
+        timeout=30.0,
+    )

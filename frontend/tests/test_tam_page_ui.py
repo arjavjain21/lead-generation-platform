@@ -123,3 +123,28 @@ def test_find_people_and_domain_flows_untouched(html):
     assert "/api/enrichment/flows/domain-enrich" in html
     assert "downloadLinkedinResults" in html
     assert "downloadDomainResults" in html
+
+
+def test_lookalike_mode_present(html):
+    assert 'id="tamModeExamples"' in html
+    assert 'id="tamModeFilters"' in html
+    assert 'id="tamExamplesCard"' in html
+    assert 'id="tamSeeds"' in html
+    assert 'id="tamAnalyzeSeeds"' in html
+    assert 'id="tamFindLookalikes"' in html
+    assert 'id="tamSeedPanel"' in html
+    # Analyze-only mode never creates a job from the UI without the user
+    # seeing the profile first.
+    assert 'analyze_seeds: true' in html
+
+
+def test_sources_selector_present(html):
+    assert 'id="tamSources"' in html
+    assert 'value="both"' in html
+
+
+def test_chip_panel_renders_shared_traits(html):
+    assert "What your examples have in common" in html
+    assert "_tamRenderSeedPanel" in html
+    # Conflicting-seeds warning copy exists.
+    assert "quite different from each other" in html

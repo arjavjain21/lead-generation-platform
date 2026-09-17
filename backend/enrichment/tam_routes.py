@@ -27,6 +27,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from enrichment import job_store
+from enrichment import lookalike
 from enrichment import list_builder
 from enrichment import tam_flow
 from enrichment.routes import _active_jobs, _cancelled_jobs, _job_signals
@@ -222,6 +223,14 @@ class TamRequest(BaseModel):
     company: TamCompanyFilters = Field(default_factory=TamCompanyFilters)
     people: TamPeopleFilters = Field(default_factory=TamPeopleFilters)
     max_companies: int = Field(1000, ge=1, le=10_000)
+    # Lookalike mode (2026-09-18): profile example companies and shape the
+    # search around their shared traits. analyze_seeds=true returns the
+    # profile WITHOUT creating a job (the UI chip panel); a run merges the
+    # synthesized filters under the explicitly-requested ones (explicit wins).
+    seed_companies: Optional[list[str]] = Field(None, min_length=1, max_length=lookalike.MAX_SEEDS)
+    analyze_seeds: bool = False
+    # Search source(s): blitz (default), getleads, or both.
+    sources: Optional[list[str]] = None
     create_enrichment_job: bool = False
     titles: Optional[list[str]] = Field(None, max_length=50)
     max_decision_makers: int = Field(5, ge=1, le=25)
@@ -250,6 +259,35 @@ def _tam_display_summary(req: "TamRequest") -> str:
     return summary[:100]
 
 
+def _getleads_filters(req: "TamRequest", profile: dict[str, Any]) -> dict[str, Any]:
+    """Build the GetLeads leg filters from the (already seed-merged) request.
+
+    Bands convert back to GetLeads's '11 to 50' form; industries ride the
+    LinkedIn taxonomy both sides share. Empty dict = unfiltered leg (the
+    runner still caps it at GETLEADS_LOOKALIKE_MAX_CREDITS)."""
+    from enrichment.lookalike import to_getleads_band
+
+    bands = [
+        b for b in (req.company.employee_range or [])
+        if (to_getleads_band(b))
+    ]
+    if not bands and profile.get("size_band"):
+        gl_band = to_getleads_band(profile["size_band"])
+        bands = [gl_band] if gl_band else []
+    filters: dict[str, Any] = {}
+    if bands:
+        filters["company_size"] = bands
+    industries = req.company.industry_include or profile.get("industries") or []
+    if industries:
+        filters["industries"] = list(industries)[:3]
+    countries = req.company.hq_country_code or profile.get("countries") or []
+    if countries:
+        filters["countries"] = list(countries)
+    if req.people.job_title_include:
+        filters["job_titles"] = list(req.people.job_title_include)
+    return filters
+
+
 @router.post("/flows/tam")
 async def start_tam_flow(
     req: TamRequest,
@@ -270,7 +308,55 @@ async def start_tam_flow(
     """
     company_filters = req.company.to_payload()
     people_filters = req.people.to_payload()
-    if not company_filters and not people_filters:
+
+    # --- Lookalike: resolve seeds, synthesize trait filters ---------------
+    seed_domains: set[str] = set()
+    seed_results: list[dict[str, Any]] = []
+    profile: dict[str, Any] = {}
+    if req.seed_companies:
+        parsed = [lookalike.parse_seed(raw) for raw in req.seed_companies]
+        parsed = [p for p in parsed if p["kind"] != "invalid"]
+        if not parsed:
+            raise HTTPException(
+                status_code=400,
+                detail="No usable example companies — paste domains "
+                       "(acme.com) or LinkedIn company URLs.",
+            )
+        import httpx as _httpx
+        async with _httpx.AsyncClient() as http:
+            seed_results = [
+                await lookalike.resolve_seed(http, p) for p in parsed
+            ]
+        profile = lookalike.synthesize_profile(seed_results)
+        for seed in seed_results:
+            if seed.get("resolved") and seed.get("domain"):
+                seed_domains.add(seed["domain"].strip().lower())
+        if not any(s.get("resolved") for s in seed_results):
+            raise HTTPException(
+                status_code=400,
+                detail="We couldn't profile any of your example companies. "
+                       "Try B2B companies with a working website or LinkedIn page.",
+            )
+        if req.analyze_seeds:
+            return {"ok": True, "seeds": seed_results, "profile": profile}
+        # Merge synthesized filters UNDER explicit ones (explicit wins).
+        if not company_filters.get("industry"):
+            if profile.get("industries"):
+                req.company.industry_include = list(profile["industries"])
+                company_filters = req.company.to_payload()
+        if profile.get("keywords"):
+            merged_kw = set(req.company.keywords_include or []) | set(profile["keywords"])
+            req.company.keywords_include = sorted(merged_kw)
+            company_filters = req.company.to_payload()
+        if not company_filters.get("employee_range") and profile.get("size_band"):
+            req.company.employee_range = [profile["size_band"]]
+            company_filters = req.company.to_payload()
+        if not company_filters.get("hq") and profile.get("countries"):
+            req.company.hq_country_code = list(profile["countries"])
+            company_filters = req.company.to_payload()
+
+    sources = [s for s in (req.sources or ["blitz"]) if s in ("blitz", "getleads")] or ["blitz"]
+    if not req.seed_companies and not company_filters and not people_filters:
         raise HTTPException(
             status_code=400,
             detail=(
@@ -302,13 +388,20 @@ async def start_tam_flow(
         # total is the budget ceiling — the real count is unknown until the
         # cursor runs dry; processed tracks pages fetched.
         total=req.max_companies,
-        filename=f"find_companies_{stamp}.csv",
+        filename=(f"lookalikes_{stamp}.csv" if req.seed_companies
+                  else f"find_companies_{stamp}.csv"),
         domain_col="domain",
-        original_filename=f"find_companies_{stamp}.csv",
+        original_filename=(f"lookalikes_{stamp}.csv" if req.seed_companies
+                           else f"find_companies_{stamp}.csv"),
         max_results=req.max_decision_makers,
         selected_providers=req.providers,
         source_type="tam_flow",
-        display_name=f"Find Companies — {_tam_display_summary(req)}",
+        display_name=(
+            (f"Lookalikes — {lookalike.seeds_display_list(req.seed_companies)}"
+             + (f" · {_tam_display_summary(req)}" if req.people.job_title_include else ""))
+            if req.seed_companies
+            else f"Find Companies — {_tam_display_summary(req)}"
+        ),
     )
 
     _job_signals[job_id] = asyncio.Event()
@@ -330,6 +423,9 @@ async def start_tam_flow(
         "providers": req.providers,
         "exact_titles": req.exact_titles,
         "display_name": _tam_display_summary(req),
+        "sources": sources,
+        "exclude_domains": sorted(seed_domains),
+        "getleads_filters": _getleads_filters(req, profile),
         "should_cancel": check_cancelled,
     }
 

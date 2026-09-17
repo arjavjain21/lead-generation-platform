@@ -33,6 +33,8 @@ import httpx
 
 from enrichment import blitz_client
 from enrichment import contacts_client
+from enrichment import getleads_client
+from enrichment.lookalike import normalize_band, to_getleads_band
 from enrichment import identifier_utils
 from enrichment import job_store
 
@@ -65,6 +67,7 @@ TAM_CSV_COLUMNS: tuple[str, ...] = (
     "slogan",
     "employee_growth_1y",
     "matched_people",
+    "source",
 )
 
 # tam-by-people page size. One request per page, 1 FUP record per result.
@@ -101,6 +104,11 @@ TAM_EMPTY_PAGE_LIMIT = 5
 
 # Marker stamped inside the job_state progress payload (see save_tam_progress).
 TAM_PROGRESS_KIND = "tam_progress"
+
+# GetLeads lookalike leg: hard credit cap per run (1 credit per contact
+# returned). Env-overridable; the pull stops the moment it is hit.
+GETLEADS_LOOKALIKE_MAX_CREDITS = _env_int("GETLEADS_LOOKALIKE_MAX_CREDITS", 500)
+_GETLEADS_MAX_PAGES = 40  # 40 x 100 contacts is ample for a 500-company cap
 
 # Fire-and-forget chain tasks keep a strong reference here so the event
 # loop's weak task refs cannot garbage-collect a live Flow-1 job mid-run.
@@ -143,6 +151,7 @@ def flatten_tam_company(entry: dict[str, Any]) -> dict[str, Any]:
         "slogan": company.get("slogan"),
         "employee_growth_1y": first_growth.get("percentage") if first_growth else None,
         "matched_people": entry.get("matched_people"),
+        "source": entry.get("source") or "blitz",
     }
 
 
@@ -427,6 +436,79 @@ def _tam_validation_error(exc: httpx.HTTPStatusError) -> RuntimeError:
 
 
 # ---------------------------------------------------------------------------
+# GetLeads lookalike leg
+# ---------------------------------------------------------------------------
+
+async def _getleads_company_pull(
+    http: httpx.AsyncClient,
+    *,
+    getleads_filters: dict[str, Any],
+    needed: int,
+    existing_domains: set[str],
+    exclude_domains: set[str],
+    credits_cap: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """Pull unique companies from GetLeads contact search (lookalike "getleads"/"both" sources).
+
+    Contacts arrive with company fields riding on each row (org_company_name,
+    org_domain — CAN be empty, org_industry_linkedin, employee_count_range,
+    org_revenue_range); rows are deduped up to companies by domain-or-name.
+    Stop conditions: enough unique companies, credits exhausted (1 credit per
+    contact returned, accumulated from query_credits_used), has_more false,
+    or the hard page cap. Returns (rows, credits_used). Never raises — a
+    failed leg returns ([], 0) and the Blitz rows stand alone.
+    """
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set(existing_domains) | set(exclude_domains)
+    contact_counts: dict[str, int] = {}
+    ordered: list[str] = []
+    credits_used = 0
+    offset = 0
+    for _page in range(_GETLEADS_MAX_PAGES):
+        if len(rows) >= needed or credits_used >= credits_cap:
+            break
+        page = await getleads_client.search_contacts_companies(
+            http, limit=100, offset=offset, **getleads_filters,
+        )
+        contacts = page.get("contacts") or []
+        credits_used += int(page.get("query_credits_used") or len(contacts))
+        for contact in contacts:
+            domain = (contact.get("org_domain") or "").strip().lower()
+            name = (contact.get("org_company_name") or "").strip().lower()
+            key = domain or f"name:{name}"
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            ordered.append(key)
+            contact_counts[key] = 1
+            rows.append({
+                "name": contact.get("org_company_name"),
+                "domain": domain or None,
+                "website": None,
+                "linkedin_url": None,
+                "industry": contact.get("org_industry_linkedin"),
+                "type": None,
+                "size": normalize_band(contact.get("employee_count_range")),
+                "employees_on_linkedin": None,
+                "followers": None,
+                "founded_year": None,
+                "hq_city": None, "hq_state": None,
+                "hq_country_code": None, "hq_region": None,
+                "revenue": contact.get("org_revenue_range"),
+                "slogan": None,
+                "employee_growth_1y": None,
+                "matched_people": 1,
+                "source": "getleads",
+            })
+        if not page.get("has_more") or not contacts:
+            break
+        offset = page.get("next_offset") or (offset + len(contacts))
+    for row, key in zip(rows, ordered):
+        row["matched_people"] = contact_counts.get(key, 1)
+    return rows, credits_used
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -471,6 +553,7 @@ async def run_tam_flow(
     )
     output_dir = Path(params.get("output_dir") or OUTPUT_DIR)
     should_cancel: Optional[Callable[[], bool]] = params.get("should_cancel")
+    sources = [s for s in (params.get("sources") or ["blitz"]) if s in ("blitz", "getleads")] or ["blitz"]
 
     output_path = output_dir / f"{job_id}.csv"
     rows: list[dict[str, Any]] = []
@@ -489,8 +572,9 @@ async def run_tam_flow(
         writer.writeheader()
         csv_file.flush()
 
+        getleads_credits_used = 0
         async with httpx.AsyncClient() as http:
-            while True:
+            while "blitz" in sources:
                 if should_cancel and should_cancel():
                     cancelled = True
                     logger.info(
@@ -559,9 +643,14 @@ async def run_tam_flow(
                 pages += 1
 
                 entries = page.get("results") or []
+                exclude = params.get("exclude_domains") or set()
                 remaining = max_companies - len(rows)
                 for entry in entries[:max(remaining, 0)]:
-                    rows.append(flatten_tam_company(entry))
+                    row = flatten_tam_company(entry)
+                    row_domain = (row.get("domain") or "").strip().lower()
+                    if row_domain and row_domain in exclude:
+                        continue  # a seed company — never a lookalike result
+                    rows.append(row)
                     writer.writerow(rows[-1])
                 # Per-page flush + fsync so a running job is live-downloadable
                 # and a crash/cancel never loses completed pages (mirrors the
@@ -624,6 +713,37 @@ async def run_tam_flow(
                     )
                     break
 
+            getleads_credits_used = 0
+            if "getleads" in sources and len(rows) < max_companies:
+                gl_rows, getleads_credits_used = await _getleads_company_pull(
+                    http,
+                    getleads_filters=params.get("getleads_filters") or {},
+                    needed=max_companies - len(rows),
+                    existing_domains={
+                        (r.get("domain") or "").strip().lower()
+                        for r in rows if r.get("domain")
+                    },
+                    exclude_domains=set(params.get("exclude_domains") or []),
+                    credits_cap=GETLEADS_LOOKALIKE_MAX_CREDITS,
+                )
+                for row in gl_rows:
+                    rows.append(row)
+                    writer.writerow(row)
+                csv_file.flush()
+                if on_progress and gl_rows:
+                    try:
+                        await _emit_progress(on_progress, {
+                            "stage": "tam_getleads",
+                            "message": (
+                                f"GetLeads leg: +{len(gl_rows)} companies "
+                                f"({getleads_credits_used} credits)"
+                            ),
+                            "getleads_companies": len(gl_rows),
+                            "getleads_credits_used": getleads_credits_used,
+                        })
+                    except Exception:
+                        pass
+
             # Backup every discovered company into the Contacts DB — same
             # system of record the enrichment waterfall writes to. Runs for
             # cancelled pulls too: the rows already flushed are real data.
@@ -655,6 +775,8 @@ async def run_tam_flow(
         "pages": pages,
         "csv_path": str(output_path),
         "capped": not cancelled and cursor is not None,
+        "sources": sources,
+        "getleads_credits_used": getleads_credits_used if "getleads" in sources else 0,
         **backup_stats,
     }
 

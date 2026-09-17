@@ -1131,3 +1131,93 @@ if __name__ == "__main__":  # pragma: no cover
             print("find_emails_batch:", _json.dumps(batch, indent=2))
 
     asyncio.run(_demo())
+
+
+# ---------------------------------------------------------------------------
+# Contact search (lookalike / company discovery)
+# ---------------------------------------------------------------------------
+
+_SEARCH_CONTACTS_PATH = "/api/v1/contacts/search"
+
+
+async def search_contacts_companies(
+    client: httpx.AsyncClient,
+    *,
+    domains: Optional[list[str]] = None,
+    company_size: Optional[list[str]] = None,
+    industries: Optional[list[str]] = None,
+    countries: Optional[list[str]] = None,
+    job_titles: Optional[list[str]] = None,
+    limit: int = 25,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """POST /api/v1/contacts/search — GetLeads people search with company
+    filters (live-verified 2026-09-18).
+
+    Used by the lookalike flow in two modes: (a) seed profiling via
+    ``domains=[seed]`` (1 record); (b) company discovery — pages of contacts
+    deduped up to company rows by the caller. Company fields ride on each
+    contact: org_company_name, org_domain (CAN be empty), org_industry_linkedin,
+    employee_count_range ('11 to 50' format), org_revenue_range, org_about_us.
+
+    Returns the raw JSON: {ok, contacts[], total_available, has_more,
+    next_offset, query_credits_used, ...}. Cost: 1 credit per contact
+    returned. Errors return {"ok": False, "contacts": [], "error": ...}
+    instead of raising — callers treat a failed leg as zero results.
+    """
+    if not await _getleads_circuit.can_proceed():
+        logger.warning("GetLeads API circuit breaker OPEN, failing fast")
+        return {"ok": False, "contacts": [], "error": "circuit_open"}
+
+    payload: dict[str, Any] = {"limit": max(1, min(int(limit or 25), 100)),
+                               "offset": max(0, int(offset or 0))}
+    if domains:
+        payload["domains"] = [d.strip().lower() for d in domains if d and d.strip()]
+    if company_size:
+        payload["company_size"] = company_size
+    if industries:
+        payload["industries"] = industries
+    if countries:
+        payload["countries"] = countries
+    if job_titles:
+        payload["job_titles"] = job_titles
+
+    url = f"{BASE_URL}{_SEARCH_CONTACTS_PATH}"
+    for attempt in range(_MAX_RETRIES + 1):
+        await _acquire_rate_limit()
+        try:
+            resp = await client.post(
+                url,
+                headers={"Content-Type": "application/json",
+                         "Authorization": f"Bearer {API_KEY}"},
+                json=payload,
+                timeout=_REQUEST_TIMEOUT,
+            )
+            if resp.status_code == 402:
+                await _getleads_circuit.record_failure()
+                logger.warning("GetLeads: Insufficient credits (402)")
+                return {"ok": False, "contacts": [], "error": "insufficient_credits"}
+            if resp.status_code == 429 and attempt < _MAX_RETRIES:
+                await _getleads_circuit.record_success()
+                await asyncio.sleep(2.0 * (attempt + 1))
+                continue
+            if resp.status_code >= 500 and attempt < _MAX_RETRIES:
+                await _getleads_circuit.record_failure()
+                await asyncio.sleep(2.0 * (attempt + 1))
+                continue
+            if resp.status_code >= 400:
+                logger.debug("GetLeads search 4xx: %s", resp.text[:200])
+                return {"ok": False, "contacts": [],
+                        "error": f"http_{resp.status_code}"}
+            await _getleads_circuit.record_success()
+            data = resp.json()
+            data.setdefault("ok", True)
+            return data
+        except Exception as exc:
+            await _getleads_circuit.record_failure()
+            if attempt < _MAX_RETRIES:
+                await asyncio.sleep(2.0 * (attempt + 1))
+                continue
+            logger.warning("GetLeads search failed: %s", exc)
+            return {"ok": False, "contacts": [], "error": str(exc)}
+    return {"ok": False, "contacts": [], "error": "retries_exhausted"}
