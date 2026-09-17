@@ -138,6 +138,42 @@ class TestResolveSeed(unittest.TestCase):
         self.assertEqual(result["source"], "getleads")
         self.assertEqual(result["size_band"], "11-50")
 
+    def test_getleads_domain_mismatch_treated_as_miss(self):
+        """Live-seen bug (2026-09-18): GetLeads returned a mismatched company
+        for notion.so. The org_domain trust guard must discard it and fall
+        through to Blitz."""
+        async def fake_gl(client, *, domains, limit=1, **kw):
+            return {"ok": True, "contacts": [{
+                "org_company_name": "Wrong Co", "org_domain": "other.com",
+                "org_industry_linkedin": "Pet Care",
+                "employee_count_range": "11 to 50",
+            }]}
+
+        async def fake_d2l(client, domain):
+            return {"found": True,
+                    "company_linkedin_url": "https://linkedin.com/company/acme"}
+
+        async def fake_enrich(client, url):
+            return {"company": {"name": "Acme", "domain": "acme.com",
+                                "industry": "Software Development",
+                                "size": "51-200", "specialties": ["saas"],
+                                "hq": {"country_code": "US"}}}
+
+        async def run():
+            async with httpx.AsyncClient() as c:
+                with patch.object(lookalike.getleads_client,
+                                  "search_contacts_companies", fake_gl), \
+                     patch.object(lookalike.blitz_client,
+                                  "domain_to_linkedin", fake_d2l), \
+                     patch.object(lookalike.blitz_search,
+                                  "company_enrich", fake_enrich):
+                    return await lookalike.resolve_seed(
+                        c, lookalike.parse_seed("acme.com"))
+
+        result = asyncio.run(run())
+        self.assertEqual(result["source"], "blitz")  # mismatch discarded
+        self.assertEqual(result["industry"], "Software Development")
+
     def test_blitz_fallback_on_getleads_miss(self):
         async def fake_gl(client, *, domains, limit=1, **kw):
             return {"ok": True, "contacts": []}

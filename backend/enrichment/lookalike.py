@@ -96,6 +96,12 @@ async def resolve_seed(
                 http, domains=[parsed["value"]], limit=1,
             )
             contact = (gl.get("contacts") or [None])[0]
+            # Trust guard: GetLeads' domain filter occasionally returns a
+            # fuzzy-mismatched company (live-seen: notion.so -> a Korean pet
+            # company). Only accept an exact org_domain match; anything else
+            # is a miss and falls through to the Blitz leg.
+            if contact and (contact.get("org_domain") or "").strip().lower() != parsed["value"]:
+                contact = None
             if contact:
                 result.update({
                     "resolved": True, "source": "getleads",
