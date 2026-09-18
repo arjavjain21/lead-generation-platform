@@ -411,5 +411,114 @@ class TestPerPersonRouteEnrichmentHonorsForceProvider(unittest.IsolatedAsyncioTe
         self.assertEqual(route_result["source"], "wizleads_email")
 
 
+# ---------------------------------------------------------------------------
+# Regression (2026-09-18): null full_name must not 500 the domain_only branch
+# ---------------------------------------------------------------------------
+
+
+class TestDomainOnlyNullFullNameNoCrash(unittest.IsolatedAsyncioTestCase):
+    """A contacts_db row carrying explicit nulls (full_name=None, not just a
+    missing key) crashed the per-DM GetLeads pre-pass key computation with
+    TypeError("argument of type 'NoneType' is not iterable") at the
+    `" " in person_name` lookup, turning GET /api/enrichment/enrich into a
+    deterministic HTTP 500 for ~46 production domains (Clay retried some 9x).
+
+    The candidate loop above the crash site already normalizes with
+    `contact.get("full_name", "") or ""`; the per-person loop must do the
+    same. Pre-pass must be ACTIVE for the crash path to be reachable, so
+    this test seeds 2+ splittable names + a mock find_emails_batch result."""
+
+    async def test_null_full_name_contact_does_not_raise(self):
+        contacts: list[dict[str, Any]] = [
+            {
+                "full_name": "Jane Doe",
+                "first_name": "Jane",
+                "last_name": "Doe",
+                "title": "CEO",
+                "linkedin_url": "",
+                "headline": "CEO at Acme",
+                "location_city": "NY",
+                "location_country": "US",
+                "icp_tier": 1,
+                "email_source": "contacts_db",
+            },
+            {
+                "full_name": "John Smith",
+                "first_name": "John",
+                "last_name": "Smith",
+                "title": "CTO",
+                "linkedin_url": "",
+                "headline": "CTO at Acme",
+                "location_city": "NY",
+                "location_country": "US",
+                "icp_tier": 1,
+                "email_source": "contacts_db",
+            },
+            # The crashing row: every identity field is an explicit null.
+            {
+                "full_name": None,
+                "first_name": None,
+                "last_name": None,
+                "title": "Owner",
+                "linkedin_url": None,
+                "headline": None,
+                "location_city": None,
+                "location_country": None,
+                "icp_tier": 0,
+                "email_source": "contacts_db",
+            },
+        ]
+
+        async def fake_company_contacts(http, dom, max_results):
+            return contacts
+
+        async def fake_find_emails_batch(http, payload):
+            # Any dict result (hit or miss-marker) populates the pre-pass
+            # map — that is what makes the per-DM key lookup execute.
+            return [{"email": ""} for _ in payload]
+
+        mocks = {
+            "cc.company_by_domain": _flex_async(None),
+            "cc.company_contacts_enriched": fake_company_contacts,
+            "cc.person_by_linkedin": _flex_async(None),
+            "cc.person_by_name_and_domain": _flex_async(None),
+            "bc.waterfall_icp_search": _flex_async({"results": []}),
+            "bc.domain_to_linkedin": _flex_async({"company_linkedin_url": ""}),
+            "bc.person_enrich": _flex_async({"found": False, "person": {}}),
+            "bc.person_enrich_by_linkedin": _flex_async({"found": False, "email": ""}),
+            "bc.find_work_email": _flex_async({"found": False, "email": ""}),
+            "wc.find_email": _flex_async({"email": "", "catchall": False}),
+            "bec.find_work_email_v3": _flex_async({"email": "", "email_status": ""}),
+            "bec.find_company_email": _flex_async({"email": ""}),
+            "mt.verify_email": _flex_async({"valid": True, "code": "valid", "message": "ok"}),
+            "contacts_writer_mod.write_enrichment_result": _flex_async(
+                contacts_writer_mod.WriteStatus.SKIPPED
+            ),
+        }
+
+        patches = _patch_all_providers(mocks)
+        patches.append(
+            patch.object(routes_mod.getleads_client, "find_emails_batch", fake_find_emails_batch)
+        )
+        for p in patches:
+            p.start()
+        try:
+            with patch.object(
+                cc, "extract_email_from_contacts_response", MagicMock(return_value=None)
+            ):
+                # Before the fix this raised TypeError (HTTP 500 in prod).
+                response = await routes_mod._unified_enrich_logic(
+                    _build_req(), _fake_user(), debug=True
+                )
+        finally:
+            for p in patches:
+                p.stop()
+
+        # All three contacts come back; the null-identity row resolves to a
+        # normal not-found contact instead of killing the whole request.
+        self.assertEqual(len(response["contacts"]), 3)
+        self.assertEqual(response["contacts"][2]["email"], "")
+
+
 if __name__ == "__main__":
     unittest.main()

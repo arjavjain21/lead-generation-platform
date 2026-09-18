@@ -3520,10 +3520,15 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
         # For each contact, try to find email
         enriched_contacts = []
         for contact in contacts_list[:req.max_results]:
-            person_name = contact.get("full_name", "")
-            person_linkedin = contact.get("linkedin_url", "")
-            person_first_name = contact.get("first_name", "")
-            person_last_name = contact.get("last_name", "")
+            # Null-safe identity fields: contacts_db rows can carry explicit
+            # nulls (full_name=None passes straight through .get()'s default),
+            # which crashed the GetLeads pre-pass key lookup below with
+            # TypeError until 2026-09-18. Mirrors the dm_batch_candidates
+            # loop's `or ""` normalization.
+            person_name = contact.get("full_name") or ""
+            person_linkedin = contact.get("linkedin_url") or ""
+            person_first_name = contact.get("first_name") or ""
+            person_last_name = contact.get("last_name") or ""
 
             # Per-DM GetLeads batch result (None → normal single-call cascade;
             # an empty-email dict → stored batch miss, single call skipped).
