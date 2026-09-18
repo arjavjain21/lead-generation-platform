@@ -115,9 +115,11 @@ class _TempDbTestCase(unittest.TestCase):
         # The runner backs companies up to the real contacts DB by default —
         # mock the upsert for EVERY test so no test ever writes to
         # leadsdatabase.cc. Individual backup tests override the mock.
+        # (The backup helper lives in tam_legs since Lookalike 2.0.)
+        from enrichment import tam_legs as _tam_legs
         self._backup_mock = AsyncMock(return_value={"success": True})
-        self._orig_upsert = tam_flow.contacts_client.upsert_business_record_async
-        tam_flow.contacts_client.upsert_business_record_async = self._backup_mock
+        self._orig_upsert = _tam_legs.contacts_client.upsert_business_record_async
+        _tam_legs.contacts_client.upsert_business_record_async = self._backup_mock
 
     @staticmethod
     def _ensure_restart_support_columns() -> None:
@@ -153,7 +155,8 @@ class _TempDbTestCase(unittest.TestCase):
         shared_auth.DB_PATH = self._orig_auth_db_path
         shared_db.DB_PATH = self._orig_db_path
         tam_flow.OUTPUT_DIR = self._orig_output_dir
-        tam_flow.contacts_client.upsert_business_record_async = self._orig_upsert
+        from enrichment import tam_legs as _tam_legs
+        _tam_legs.contacts_client.upsert_business_record_async = self._orig_upsert
         self._tmpdir.cleanup()
 
     def _create_tam_job(self, job_id: str = "tam-test-job") -> str:
@@ -242,6 +245,15 @@ class TestFlattenTamCompany(unittest.TestCase):
         # `source` is the one non-None default ("blitz"); everything else None.
         self.assertEqual(row["source"], "blitz")
         self.assertTrue(all(v is None for k, v in row.items() if k != "source"))
+
+    def test_ranking_columns_trail_the_contract(self):
+        # Lookalike 2.0: exactly two trailing columns, in this order.
+        self.assertEqual(
+            tam_flow.TAM_CSV_COLUMNS[-2:], ("match_score", "why_matched")
+        )
+        row = tam_flow.flatten_tam_company(_company_entry(0))
+        self.assertIsNone(row["match_score"])
+        self.assertIsNone(row["why_matched"])
 
 
 # ---------------------------------------------------------------------------
@@ -550,6 +562,263 @@ class TestRunTamFlow(_TempDbTestCase):
         store.save_job_state("tam-test-job", "cancelled")
         self.assertIsNone(tam_flow.read_tam_progress("tam-test-job"))
         self.assertIsNone(tam_flow.read_tam_progress("no-such-job"))
+
+
+# ---------------------------------------------------------------------------
+# Flow-1 chain
+# ---------------------------------------------------------------------------
+
+class TestRankedLookalikeRun(_TempDbTestCase):
+    """Lookalike 2.0 ranked mode: fan-out retrieval + scored, sorted export."""
+
+    RANK_SEEDS = [
+        {"name": "Kalshi", "industry": "Financial Services",
+         "size_band": "51-200", "domain": "kalshi.com",
+         "text": "prediction markets trading sports events"},
+        {"name": "Polymarket", "industry": "Gambling",
+         "size_band": "51-200", "domain": "polymarket.com",
+         "text": "prediction markets sports trading"},
+    ]
+    QUERY_PLAN = {
+        "industries": ["Financial Services", "Gambling"],
+        "keywords": ["prediction", "markets"],
+        "size_band": "51-200",
+    }
+
+    def _entry(self, name, domain, industry, slogan):
+        return {
+            "company": {
+                "name": name, "domain": domain,
+                "linkedin_url": f"https://linkedin.com/company/{domain.split('.')[0]}",
+                "industry": industry, "size": "51-200", "slogan": slogan,
+            },
+            "matched_people": 1,
+        }
+
+    def test_fanout_queries_per_industry_and_ranked_sorted_csv(self):
+        """Each plan industry gets its own Blitz query (budget split so no
+        variant starves another), duplicates across variants collapse, and
+        the CSV export is scored best-match-first with why_matched."""
+        self._create_tam_job()
+        calls: list[dict[str, Any]] = []
+        events: list[dict[str, Any]] = []
+
+        async def on_progress(event):
+            events.append(event)
+
+        def serve(filters: dict[str, Any]) -> dict[str, Any]:
+            if "industry" not in filters:
+                # The keywords-only fan-out variant.
+                return _page([
+                    self._entry("Odds Trading Platform", "odds.example",
+                                "Gambling", "prediction markets trading odds"),
+                ], cursor=None)
+            industry = (filters.get("industry") or {}).get("include", ["?"])[0]
+            names = {
+                "Financial Services": "Fintech Odds Board",
+                "Gambling": "Prediction Markets Sportsbook",
+            }
+            slogans = {
+                "Financial Services": "derivatives dashboards",
+                "Gambling": "prediction markets for sports",
+            }
+            return _page([
+                self._entry(names[industry], f"{industry.split()[0].lower()}.example",
+                            industry, slogans[industry]),
+                # Same company served by BOTH variants -> deduped to one.
+                self._entry("Prediction Markets Sportsbook", "gambling.example",
+                            industry, slogans[industry]),
+                # A seed echo — never a lookalike result.
+                self._entry("Kalshi Echo", "kalshi.com", industry, "seed"),
+            ], cursor=None)
+
+        async def fake_tam(_http, *, company_filters, people_filters,
+                           max_results, cursor):
+            calls.append(dict(company_filters))
+            return serve(company_filters)
+
+        with patch("enrichment.blitz_client.tam_by_people", new=fake_tam):
+            summary = asyncio.run(tam_flow.run_tam_flow(
+                "tam-test-job",
+                {
+                    "company_filters": {"employee_range": ["51-200"]},
+                    "people_filters": {},
+                    "max_companies": 10,
+                    "rank_seeds": self.RANK_SEEDS,
+                    "query_plan": self.QUERY_PLAN,
+                    "exclude_domains": ["kalshi.com", "polymarket.com"],
+                },
+                on_progress=on_progress,
+            ))
+
+        self.assertEqual(summary["status"], "done")
+        # Three fan-out queries: one per plan industry + one keywords-only.
+        industries_queried = [
+            c["industry"]["include"][0] for c in calls if "industry" in c
+        ]
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(sorted(industries_queried),
+                         ["Financial Services", "Gambling"])
+        keywords_calls = [c for c in calls if "keywords" in c]
+        self.assertEqual(len(keywords_calls), 1)
+        self.assertEqual(keywords_calls[0]["keywords"]["include"],
+                         ["prediction", "markets"])
+        # Shared size band rode along on every variant.
+        for c in calls:
+            self.assertEqual(c["employee_range"], ["51-200"])
+        # Fan-out events precede the page events of each variant.
+        fanout_events = [e for e in events if e["stage"] == "tam_fanout"]
+        self.assertEqual(len(fanout_events), 3)
+        self.assertEqual(fanout_events[0]["message"],
+                         "fan-out query 1/3: industry=Financial Services")
+
+        # Ranked CSV: 3 unique companies (cross-variant dupe + seed dropped),
+        # sorted by match_score desc, why_matched populated.
+        header, rows = self._read_csv()
+        self.assertEqual(header, list(tam_flow.TAM_CSV_COLUMNS))
+        self.assertEqual(len(rows), 3)
+        scores = [int(r["match_score"]) for r in rows]
+        self.assertEqual(scores, sorted(scores, reverse=True))
+        self.assertTrue(all(r["why_matched"] for r in rows))
+        top = rows[0]
+        self.assertEqual(top["name"], "Prediction Markets Sportsbook")
+        self.assertIn("industry match", top["why_matched"])
+        self.assertIn("prediction", top["why_matched"])
+        self.assertNotIn("Kalshi Echo", [r["name"] for r in rows])
+        # The ranked write surfaced as a job event.
+        self.assertTrue(any(e["stage"] == "tam_ranked" for e in events))
+
+    def test_ranked_budget_never_starves_later_variants(self):
+        """25 companies across 3 variants: the first variant must NOT eat the
+        whole budget — every variant gets a balanced share."""
+        self._create_tam_job()
+        served_counts: list[int] = []
+
+        async def fake_tam(_http, *, company_filters, people_filters,
+                           max_results, cursor):
+            industry = (company_filters.get("industry") or {}).get("include", ["?"])[0]
+            if cursor is not None:
+                return _page([], cursor=None)  # drain after page 1
+            count = tam_flow.TAM_PAGE_SIZE  # would overshoot any cap
+            served_counts.append(count)
+            entries = [
+                self._entry(f"{industry} Co {i}", f"{industry.split()[0].lower()}{i}.example",
+                            industry, "prediction markets")
+                for i in range(count)
+            ]
+            # A seed-domain echo PAST the budget window (last entry) proves
+            # exclusion applies per variant without eating a budget slot.
+            entries[-1] = self._entry("Seed", "kalshi.com", industry, "seed")
+            return _page(entries, cursor="more")
+
+        plan = {"industries": ["Financial Services", "Gambling", "Entertainment"],
+                "keywords": [], "size_band": "51-200"}
+        with patch("enrichment.blitz_client.tam_by_people", new=fake_tam):
+            summary = asyncio.run(tam_flow.run_tam_flow(
+                "tam-test-job",
+                {
+                    "company_filters": {},
+                    "people_filters": {},
+                    "max_companies": 25,
+                    "rank_seeds": self.RANK_SEEDS,
+                    "query_plan": plan,
+                    "exclude_domains": ["kalshi.com"],
+                },
+            ))
+
+        self.assertEqual(summary["status"], "done")
+        # 25 budget over 3 variants: 8 + 8 + 9 (last takes the rest).
+        self.assertEqual(summary["companies_found"], 25)
+        _header, rows = self._read_csv()
+        industries_seen = {r["industry"] for r in rows}
+        self.assertEqual(
+            industries_seen,
+            {"Financial Services", "Gambling", "Entertainment"},
+            "every variant contributed rows",
+        )
+
+    def test_ranked_cancel_midway_still_writes_scored_partial(self):
+        self._create_tam_job()
+        state = {"calls": 0}
+
+        async def fake_tam(_http, *, company_filters, people_filters,
+                           max_results, cursor):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                return _page([
+                    self._entry("Prediction Markets Co", "pmc.example",
+                                "Gambling", "prediction markets sports"),
+                ], cursor="c1")
+            raise AssertionError("cancel must stop the next page fetch")
+
+        with patch("enrichment.blitz_client.tam_by_people", new=fake_tam):
+            summary = asyncio.run(tam_flow.run_tam_flow(
+                "tam-test-job",
+                {
+                    "company_filters": {},
+                    "people_filters": {},
+                    "max_companies": 10,
+                    "rank_seeds": self.RANK_SEEDS,
+                    "query_plan": self.QUERY_PLAN,
+                    "exclude_domains": [],
+                    "should_cancel": lambda: state["calls"] >= 1,
+                },
+            ))
+
+        self.assertEqual(summary["status"], "cancelled")
+        self.assertEqual(summary["companies_found"], 1)
+        _header, rows = self._read_csv()
+        self.assertEqual(len(rows), 1)
+        self.assertNotEqual(rows[0]["match_score"], "")
+        self.assertTrue(rows[0]["why_matched"])
+
+    def test_query_plan_without_rank_seeds_fans_out_but_writes_incrementally(self):
+        """A plan alone (no seed profiles) still fans out retrieval; rows are
+        written per page (no scoring — nothing to score against)."""
+        self._create_tam_job()
+        observed: list[tuple[int, int]] = []
+        served_counts = {"n": 0}
+
+        async def fake_tam(_http, *, company_filters, people_filters,
+                           max_results, cursor):
+            if cursor is not None:
+                return _page([], cursor=None)
+            industry = (company_filters.get("industry") or {}).get("include", ["?"])[0]
+            # Before variant 2+'s first page is served, variant 1's rows must
+            # already be on disk (incremental write, unlike ranked mode).
+            if served_counts["n"] >= 1:
+                path = tam_flow.OUTPUT_DIR / "tam-test-job.csv"
+                with open(path, newline="", encoding="utf-8") as handle:
+                    content = list(csv.reader(handle))
+                observed.append((len(content[0]), len(content) - 1))
+            served_counts["n"] += 1
+            return _page([
+                self._entry(f"{industry} Co", f"{industry.split()[0].lower()}.example",
+                            industry, "slogan"),
+            ], cursor="more")
+
+        plan = {"industries": ["Gambling", "Entertainment"], "keywords": [],
+                "size_band": None}
+        with patch("enrichment.blitz_client.tam_by_people", new=fake_tam):
+            summary = asyncio.run(tam_flow.run_tam_flow(
+                "tam-test-job",
+                {
+                    "company_filters": {},
+                    "people_filters": {},
+                    "max_companies": 10,
+                    "query_plan": plan,
+                },
+            ))
+
+        self.assertEqual(summary["status"], "done")
+        self.assertEqual(summary["companies_found"], 2)
+        # Variant 2's fetch observed variant 1's row already flushed.
+        self.assertEqual(
+            observed, [(len(tam_flow.TAM_CSV_COLUMNS), 1)],
+            "non-ranked fan-out writes incrementally",
+        )
+        _header, rows = self._read_csv()
+        self.assertEqual(rows[0]["match_score"], "", "no ranking without seeds")
 
 
 # ---------------------------------------------------------------------------

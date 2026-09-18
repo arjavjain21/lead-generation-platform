@@ -6,6 +6,14 @@ persists a live cursor for crash-resume diagnostics, and (optionally) chains
 a Flow-1 domain-enrichment job over the discovered domains by reusing the
 exact ``/flows/domain-enrich`` creation + execution code path.
 
+Lookalike 2.0 (2026-09-18): when the request carries ``rank_seeds`` (seed
+profiles) + ``query_plan`` (from ``lookalike.build_query_plan``), retrieval
+FANS OUT — one Blitz query per seed industry plus one keywords-only query —
+and every candidate row is scored deterministically against the seeds
+(``tam_ranker.rank_rows``: trigram text similarity + industry + size +
+niche keywords), sorted best-match first, and exported with trailing
+``match_score`` / ``why_matched`` columns.
+
 Cost note: Blitz bills 1 FUP record per RESULT returned by tam-by-people
 (an empty page costs 0), so ``max_companies`` is a hard budget ceiling —
 the loop stops the moment the cap is reached, mid-page included, and never
@@ -24,19 +32,22 @@ import csv
 import json
 import logging
 import os
-import uuid
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 import httpx
 
 from enrichment import blitz_client
-from enrichment import contacts_client
-from enrichment import getleads_client
-from enrichment.lookalike import normalize_band, to_getleads_band
-from enrichment import identifier_utils
+from enrichment import tam_ranker
 from enrichment import job_store
+from enrichment.tam_chain import create_chained_enrichment_job  # noqa: F401  (re-export)
+from enrichment.tam_legs import (  # noqa: F401  (re-exported legs)
+    _backup_companies_to_contacts_db,
+    _getleads_company_pull,
+    _industry_to_keywords_on_422,
+    _tam_validation_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +58,9 @@ DATA_DIR = Path(__file__).parent.parent / "data"
 OUTPUT_DIR = DATA_DIR / "outputs"
 
 # CSV column contract for the TAM export (order is load-bearing: the
-# incremental DictWriter is created from this once, per job).
+# incremental DictWriter is created from this once, per job). The two
+# trailing columns are Lookalike 2.0 additions — ranked runs fill them,
+# plain runs export them empty (flatten defaults None).
 TAM_CSV_COLUMNS: tuple[str, ...] = (
     "name",
     "domain",
@@ -68,6 +81,8 @@ TAM_CSV_COLUMNS: tuple[str, ...] = (
     "employee_growth_1y",
     "matched_people",
     "source",
+    "match_score",
+    "why_matched",
 )
 
 # tam-by-people page size. One request per page, 1 FUP record per result.
@@ -108,11 +123,12 @@ TAM_PROGRESS_KIND = "tam_progress"
 # GetLeads lookalike leg: hard credit cap per run (1 credit per contact
 # returned). Env-overridable; the pull stops the moment it is hit.
 GETLEADS_LOOKALIKE_MAX_CREDITS = _env_int("GETLEADS_LOOKALIKE_MAX_CREDITS", 500)
-_GETLEADS_MAX_PAGES = 40  # 40 x 100 contacts is ample for a 500-company cap
 
-# Fire-and-forget chain tasks keep a strong reference here so the event
-# loop's weak task refs cannot garbage-collect a live Flow-1 job mid-run.
-_pending_chain_tasks: set[asyncio.Task] = set()
+# Lookalike 2.0 fan-out ceilings: total candidates a ranked run may collect
+# (scoring happens in memory, so this also bounds job memory) and the
+# per-query-variant row cap.
+LOOKALIKE_MAX_CANDIDATES = _env_int("LOOKALIKE_MAX_CANDIDATES", 2000)
+FANOUT_PER_QUERY_CAP = 300
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +168,10 @@ def flatten_tam_company(entry: dict[str, Any]) -> dict[str, Any]:
         "employee_growth_1y": first_growth.get("percentage") if first_growth else None,
         "matched_people": entry.get("matched_people"),
         "source": entry.get("source") or "blitz",
+        # Lookalike 2.0 ranking columns — filled by tam_ranker.rank_rows in
+        # ranked runs; None (empty CSV cell) everywhere else.
+        "match_score": None,
+        "why_matched": None,
     }
 
 
@@ -217,307 +237,243 @@ def read_tam_progress(job_id: str) -> Optional[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Flow-1 chain hand-off
+# Flow-1 chain hand-off: see enrichment/tam_chain.py (create_chained_enrichment_job
+# is re-exported above for callers/tests that still reference tam_flow.*).
 # ---------------------------------------------------------------------------
-
-def create_chained_enrichment_job(
-    tam_job_id: str,
-    user_id: str,
-    companies: list[dict[str, Any]],
-    *,
-    titles: Optional[list[str]],
-    max_decision_makers: int,
-    providers: Optional[list[str]],
-    exact_titles: bool = False,
-    tam_display_name: str = "",
-) -> dict[str, Any]:
-    """Create a Flow-1 domain-enrichment job over a TAM run's domains.
-
-    Reuses the exact code path ``/flows/domain-enrich`` uses for job creation
-    (``EnrichmentJobStore.create_enrichment_job``) and execution
-    (``routes._run_domain_enrich_job``) — no upload, no duplicated CSV
-    plumbing; rows are handed over in-memory the same way the scraper ->
-    enrichment chain endpoint does. Rows are deduped by domain with
-    normalization on (mirrors the Flow-1 pre-processing).
-
-    Title handling: the stored ``cascade_config`` keeps the titles
-    UNBRACKETED even when ``exact_titles`` is true — the chained job's local
-    title gate matches include-titles literally, so bracketed "[CEO]" tokens
-    would drop every person. Exact matching travels as the ``exact_titles``
-    kwarg on ``_run_domain_enrich_job``, whose callee bracket-wraps at
-    Blitz-call time (``blitz_find_people_prepass``).
-
-    Returns ``{"chained_job_id": ..., "chained_total": N,
-    "deduped_count": N}`` or ``{"chain_skipped": reason}``.
-    """
-    from enrichment import routes as enrichment_routes  # lazy: avoids import cycle
-
-    chain_rows = [
-        {"domain": row.get("domain") or "", "company_name": row.get("name") or ""}
-        for row in companies
-        if row.get("domain")
-    ]
-    if not chain_rows:
-        return {"chain_skipped": "no_companies_with_domain"}
-
-    deduped_rows, deduped_count, _skipped = identifier_utils.dedupe_rows_by_domain(
-        chain_rows, "domain", True
-    )
-
-    # Store the cascade UNBRACKETED and forward ``exact_titles`` to the
-    # Flow-1 runner instead (mirrors how /flows/domain-enrich persists plain
-    # cascades + forwards the flag). The chained job's LOCAL title gate
-    # (title_filter.person_matches_titles) matches include-titles literally,
-    # so a stored "[CEO]" cascade rejected every person (100% drop).
-    # ``run_domain_enrichment`` brackets the plain titles at Blitz-call time
-    # (blitz_find_people_prepass -> bracket_exact), keeping server-side exact
-    # matching intact.
-    cascade_json = None
-    if titles:
-        cascade = enrichment_routes._titles_to_cascade(",".join(list(titles)))
-        if cascade:
-            cascade_json = json.dumps(cascade)
-
-    chained_job_id = str(uuid.uuid4())
-    store = job_store.get_store()
-    # Friendlier identity than the old tam_<id>_<id> pattern: the download
-    # filename says what it is, display_name says where it came from.
-    chain_stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
-    store.create_enrichment_job(
-        job_id=chained_job_id,
-        user_id=user_id,
-        total=len(deduped_rows),
-        filename=f"find_companies_contacts_{chain_stamp}.csv",
-        domain_col="domain",
-        original_filename=f"find_companies_contacts_{chain_stamp}.csv",
-        parent_job_id=tam_job_id,
-        cascade_config=cascade_json,
-        max_results=max_decision_makers,
-        selected_providers=providers,
-        source_type="tam_chain",
-        display_name=(
-            f"Contacts for TAM companies{(' — ' + tam_display_name) if tam_display_name else ''}"
-        )[:120],
-    )
-
-    # Same in-memory plumbing the flow endpoints use so the generic SSE /
-    # cancel endpoints work for the chained job.
-    enrichment_routes._job_signals[chained_job_id] = asyncio.Event()
-    enrichment_routes._active_jobs.add(chained_job_id)
-
-    task = asyncio.create_task(
-        enrichment_routes._run_domain_enrich_job(
-            job_id=chained_job_id,
-            rows=deduped_rows,
-            domain_col="domain",
-            name_col="company_name",
-            first_name_col=None,
-            last_name_col=None,
-            max_results=max_decision_makers,
-            selected_providers=providers,
-            exact_titles=exact_titles,
-        )
-    )
-    _pending_chain_tasks.add(task)
-    task.add_done_callback(_pending_chain_tasks.discard)
-
-    logger.info(
-        "TAM job %s chained Flow-1 job %s over %d domains (%d deduped away)",
-        tam_job_id, chained_job_id, len(deduped_rows), deduped_count,
-    )
-    return {
-        "chained_job_id": chained_job_id,
-        "chained_total": len(deduped_rows),
-        "deduped_count": deduped_count,
-    }
 
 
 # ---------------------------------------------------------------------------
-# Contacts-DB backup
-# ---------------------------------------------------------------------------
-
-async def _backup_companies_to_contacts_db(
-    http: httpx.AsyncClient, rows: list[dict[str, Any]]
-) -> dict[str, int]:
-    """Upsert every domain-bearing TAM company into the Contacts DB.
-
-    Mirrors the write-back guarantee of the enrichment waterfall: new data
-    the platform produces lands in the contacts database (leadsdatabase.cc),
-    not only in a job CSV. The business upsert is domain-keyed, so
-    domain-less companies are counted and skipped; duplicate domains are
-    collapsed. Individual failures are logged and NEVER propagated — the
-    TAM job's own status must not depend on backup health.
-    """
-    backed_up = 0
-    skipped_no_domain = 0
-    failed = 0
-    seen_domains: set[str] = set()
-    for row in rows:
-        domain = (row.get("domain") or "").strip().lower()
-        if not domain:
-            skipped_no_domain += 1
-            continue
-        if domain in seen_domains:
-            continue
-        seen_domains.add(domain)
-        try:
-            await contacts_client.upsert_business_record_async(
-                http,
-                domain=domain,
-                company_name=row.get("name") or "",
-                company_website=row.get("website") or "",
-                city=row.get("hq_city") or "",
-                city_state=row.get("hq_state") or "",
-            )
-            backed_up += 1
-        except Exception as upsert_err:  # best-effort by contract
-            failed += 1
-            logger.warning(
-                "TAM company backup failed for %s: %s", domain, upsert_err
-            )
-    return {
-        "companies_backed_up": backed_up,
-        "companies_skipped_no_domain": skipped_no_domain,
-        "companies_backup_failed": failed,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Industry-enum fallback
-# ---------------------------------------------------------------------------
-
-def _industry_to_keywords_on_422(
-    company_filters: dict[str, Any], body: str, *, already_used: bool
-) -> Optional[dict[str, Any]]:
-    """Rebuild company filters with ``industry`` moved into ``keywords``.
-
-    Blitz's TAM ``industry`` filter is a STRICT ENUM (~700 exact taxonomy
-    values like "Advertising Services"). The web UI's industry dropdown
-    serves a different 43-value LinkedIn-style list, so any industry-picked
-    TAM run 422s at the enum check. Rather than maintaining a second
-    taxonomy copy, the failing industry selection is converted to the fuzzy
-    ``keywords`` include filter (searches description/specialties/categories
-    — semantically close for industry-style filtering).
-
-    Returns the rebuilt filters when the fallback applies, else None:
-    already attempted, industry not in the filters, or the 422 body does
-    not look like an enum rejection (a different validation problem).
-    """
-    if already_used:
-        return None
-    if "industry" not in company_filters:
-        return None
-    if "Invalid option" not in body:
-        return None
-    rebuilt = dict(company_filters)
-    industry = rebuilt.pop("industry") or {}
-    include = list(industry.get("include") or [])
-    exclude = list(industry.get("exclude") or [])
-    if not include and not exclude:
-        return None
-    keywords = dict(rebuilt.get("keywords") or {})
-    keywords["include"] = list(keywords.get("include") or []) + include
-    keywords["exclude"] = list(keywords.get("exclude") or []) + exclude
-    rebuilt["keywords"] = keywords
-    return rebuilt
-
-
-def _tam_validation_error(exc: httpx.HTTPStatusError) -> RuntimeError:
-    """Readable error for a filter-validation 422 (Blitz's body lists the
-    valid options — keep a snippet instead of the raw httpx text)."""
-    snippet = ""
-    try:
-        snippet = (exc.response.text or "")[:300]
-    except Exception:  # response already closed / streamed
-        pass
-    return RuntimeError(
-        f"Blitz rejected the TAM filters (422 validation): {snippet}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# GetLeads lookalike leg
-# ---------------------------------------------------------------------------
-
-async def _getleads_company_pull(
-    http: httpx.AsyncClient,
-    *,
-    getleads_filters: dict[str, Any],
-    needed: int,
-    existing_domains: set[str],
-    exclude_domains: set[str],
-    credits_cap: int,
-) -> tuple[list[dict[str, Any]], int]:
-    """Pull unique companies from GetLeads contact search (lookalike "getleads"/"both" sources).
-
-    Contacts arrive with company fields riding on each row (org_company_name,
-    org_domain — CAN be empty, org_industry_linkedin, employee_count_range,
-    org_revenue_range); rows are deduped up to companies by domain-or-name.
-    Stop conditions: enough unique companies, credits exhausted (1 credit per
-    contact returned, accumulated from query_credits_used), has_more false,
-    or the hard page cap. Returns (rows, credits_used). Never raises — a
-    failed leg returns ([], 0) and the Blitz rows stand alone.
-    """
-    rows: list[dict[str, Any]] = []
-    seen: set[str] = set(existing_domains) | set(exclude_domains)
-    contact_counts: dict[str, int] = {}
-    ordered: list[str] = []
-    credits_used = 0
-    offset = 0
-    for _page in range(_GETLEADS_MAX_PAGES):
-        if len(rows) >= needed or credits_used >= credits_cap:
-            break
-        page = await getleads_client.search_contacts_companies(
-            http, limit=100, offset=offset, **getleads_filters,
-        )
-        contacts = page.get("contacts") or []
-        credits_used += int(page.get("query_credits_used") or len(contacts))
-        for contact in contacts:
-            domain = (contact.get("org_domain") or "").strip().lower()
-            name = (contact.get("org_company_name") or "").strip().lower()
-            key = domain or f"name:{name}"
-            if not key or key in seen:
-                continue
-            seen.add(key)
-            ordered.append(key)
-            contact_counts[key] = 1
-            rows.append({
-                "name": contact.get("org_company_name"),
-                "domain": domain or None,
-                "website": None,
-                "linkedin_url": None,
-                "industry": contact.get("org_industry_linkedin"),
-                "type": None,
-                "size": normalize_band(contact.get("employee_count_range")),
-                "employees_on_linkedin": None,
-                "followers": None,
-                "founded_year": None,
-                "hq_city": None, "hq_state": None,
-                "hq_country_code": None, "hq_region": None,
-                "revenue": contact.get("org_revenue_range"),
-                "slogan": None,
-                "employee_growth_1y": None,
-                "matched_people": 1,
-                "source": "getleads",
-            })
-        if not page.get("has_more") or not contacts:
-            break
-        offset = page.get("next_offset") or (offset + len(contacts))
-    for row, key in zip(rows, ordered):
-        row["matched_people"] = contact_counts.get(key, 1)
-    return rows, credits_used
-
+# Auxiliary legs (GetLeads pull, contacts-DB backup, 422 fallback) live in
+# enrichment/tam_legs.py; re-exported under their original private names so
+# callers/tests that reference tam_flow.* are unchanged.
 
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
+
+@dataclass
+class _PullShared:
+    """State shared across every pull of one run (fan-out = several pulls).
+
+    ``rows``/``pages``/``cursor`` are the run-wide counters the original
+    single-loop owned; ``dedupe`` is only populated for fan-out runs — the
+    same company legitimately appears in several industry queries and would
+    otherwise be billed and exported twice per variant.
+    """
+    rows: list[dict[str, Any]] = field(default_factory=list)
+    dedupe: Optional[set[str]] = None
+    pages: int = 0
+    cursor: Optional[str] = None
+    cancelled: bool = False
+
+
+def _row_dedupe_key(row: dict[str, Any]) -> Optional[str]:
+    """Stable cross-variant identity: domain, else LinkedIn URL, else name."""
+    domain = (row.get("domain") or "").strip().lower()
+    if domain:
+        return domain
+    linkedin = (row.get("linkedin_url") or "").strip().lower()
+    if linkedin:
+        return linkedin
+    name = (row.get("name") or "").strip().lower()
+    return f"name:{name}" if name else None
+
+
+def _gl_seen_keys(rows: list[dict[str, Any]]) -> set[str]:
+    """Domain + name keys of already-collected rows, for GetLeads dedupe
+    (its pull dedupes on ``domain or name:<name>`` keys)."""
+    keys: set[str] = set()
+    for row in rows:
+        domain = (row.get("domain") or "").strip().lower()
+        name = (row.get("name") or "").strip().lower()
+        if domain:
+            keys.add(domain)
+        if name:
+            keys.add(f"name:{name}")
+    return keys
+
+
+async def _blitz_pull(
+    http: httpx.AsyncClient,
+    *,
+    job_id: str,
+    company_filters: dict[str, Any],
+    people_filters: dict[str, Any],
+    budget: int,
+    shared: _PullShared,
+    exclude_domains: set[str],
+    should_cancel: Optional[Callable[[], bool]],
+    on_progress: Optional[Callable[[dict[str, Any]], Any]],
+    write: bool,
+    writer: csv.DictWriter,
+    csv_file: Any,
+) -> None:
+    """One tam-by-people pagination loop — a single query variant.
+
+    Appends up to ``budget`` new rows to ``shared.rows`` (deduped across
+    variants when ``shared.dedupe`` is set), persists the cursor per page,
+    and writes rows incrementally unless ``write`` is False (ranked runs
+    buffer rows and write the scored, sorted export at the end). Every loop
+    guard of the original inline loop is preserved: cancel check, the
+    TAM_MAX_PAGES hard cap, the strict-enum 422 -> keywords fallback, and
+    the consecutive-empty-page break.
+    """
+    filters = dict(company_filters)
+    industry_fallback_used = False
+    cursor: Optional[str] = None
+    consecutive_empty_pages = 0
+    added = 0
+
+    while True:
+        if should_cancel and should_cancel():
+            shared.cancelled = True
+            logger.info(
+                "TAM job %s cancelled after %d pages (%d companies)",
+                job_id, shared.pages, len(shared.rows),
+            )
+            break
+
+        if shared.pages >= TAM_MAX_PAGES:
+            # Cursor-cycling server bug guard: without this the loop
+            # would fetch forever (heartbeat keeps the job alive,
+            # job_events grows unbounded). Keep everything written.
+            logger.warning(
+                "TAM job %s hit the %d-page hard cap (%d companies, "
+                "cursor still outstanding) — stopping the pull",
+                job_id, TAM_MAX_PAGES, len(shared.rows),
+            )
+            break
+
+        try:
+            page = await blitz_client.tam_by_people(
+                http,
+                company_filters=filters,
+                people_filters=people_filters,
+                max_results=TAM_PAGE_SIZE,
+                cursor=cursor,
+            )
+        except httpx.HTTPStatusError as http_err:
+            status = getattr(http_err.response, "status_code", None)
+            body = ""
+            try:
+                body = http_err.response.text or ""
+            except Exception:
+                pass
+            if status == 422:
+                rebuilt = _industry_to_keywords_on_422(
+                    filters, body,
+                    already_used=industry_fallback_used,
+                )
+                if rebuilt is not None:
+                    industry_fallback_used = True
+                    filters = rebuilt
+                    logger.warning(
+                        "TAM job %s: industry filter rejected by "
+                        "Blitz's strict taxonomy — retrying as "
+                        "keyword filter", job_id,
+                    )
+                    if on_progress:
+                        try:
+                            await _emit_progress(on_progress, {
+                                "stage": "tam_filter_adjust",
+                                "message": (
+                                    "Industry filter converted to a "
+                                    "keyword search (no exact match "
+                                    "in the data provider's industry "
+                                    "list) — continuing"
+                                ),
+                            })
+                        except Exception:
+                            pass
+                    # Retry the same cursor; the rejected request
+                    # did not count as a page (422 never bills).
+                    continue
+                raise _tam_validation_error(http_err) from http_err
+            raise
+        shared.pages += 1
+
+        entries = page.get("results") or []
+        remaining = budget - added
+        for entry in entries[:max(remaining, 0)]:
+            row = flatten_tam_company(entry)
+            row_domain = (row.get("domain") or "").strip().lower()
+            if row_domain and row_domain in exclude_domains:
+                continue  # a seed company — never a lookalike result
+            if shared.dedupe is not None:
+                key = _row_dedupe_key(row)
+                if key is None or key in shared.dedupe:
+                    continue  # already collected by an earlier variant
+                shared.dedupe.add(key)
+            shared.rows.append(row)
+            added += 1
+            if write:
+                writer.writerow(row)
+        # Per-page flush + fsync so a running job is live-downloadable
+        # and a crash/cancel never loses completed pages (mirrors the
+        # Flow-1 incremental writer). Skipped for buffered (ranked) writes.
+        if write:
+            csv_file.flush()
+            await asyncio.to_thread(os.fsync, csv_file.fileno())
+
+        consecutive_empty_pages = consecutive_empty_pages + 1 if not entries else 0
+
+        cursor = page.get("cursor") or None
+        shared.cursor = cursor
+        save_tam_progress(
+            job_id,
+            cursor=cursor,
+            rows_written=len(shared.rows),
+            pages=shared.pages,
+        )
+        # Live result-count on the job row so the Jobs page card
+        # counts up while the pull runs (best-effort: a transient
+        # SQLite hiccup must not kill a long pull).
+        try:
+            job_store.get_store().update_result_count(job_id, len(shared.rows))
+        except Exception as count_err:
+            logger.debug(
+                "TAM per-page result-count update failed for %s: %s",
+                job_id, count_err,
+            )
+        if on_progress:
+            try:
+                await _emit_progress(on_progress, {
+                    "stage": "tam_page",
+                    "page": shared.pages,
+                    "companies_found": len(shared.rows),
+                    "has_next_page": bool(cursor),
+                    "message": (
+                        f"TAM page {shared.pages}: {len(shared.rows)} companies so far"
+                    ),
+                })
+            except Exception as prog_err:
+                logger.error(
+                    "TAM progress callback failed for %s: %s",
+                    job_id, prog_err,
+                )
+
+        if cursor is None:
+            break
+        if consecutive_empty_pages >= TAM_EMPTY_PAGE_LIMIT:
+            # Server keeps returning a cursor with zero results —
+            # treat as exhaustion instead of an unbounded request
+            # loop. Everything written so far is kept.
+            logger.warning(
+                "TAM job %s saw %d consecutive empty pages "
+                "(%d companies kept) — stopping the pull",
+                job_id, TAM_EMPTY_PAGE_LIMIT, len(shared.rows),
+            )
+            break
+        if added >= budget:
+            break
+
 
 async def run_tam_flow(
     job_id: str,
     params: dict[str, Any],
     on_progress: Optional[Callable[[dict[str, Any]], Any]] = None,
 ) -> dict[str, Any]:
-    """Run the TAM-by-People pagination loop for ``job_id``.
+    """Run the TAM-by-People retrieval for ``job_id``.
 
     Args:
         job_id: enrichment job row this run belongs to (already created and
@@ -525,7 +481,15 @@ async def run_tam_flow(
         params: validated request params:
             - company_filters / people_filters: whitelisted Blitz filter
               payloads (built by the route models — never raw client dicts).
-            - max_companies: budget ceiling (clamped to TAM_MAX_COMPANIES).
+            - max_companies: budget ceiling (clamped to TAM_MAX_COMPANIES;
+              fanned-out runs are additionally capped at
+              LOOKALIKE_MAX_CANDIDATES).
+            - rank_seeds / query_plan (Lookalike 2.0): seed profile dicts +
+              the fan-out plan from ``lookalike.build_query_plan``. When
+              present, retrieval runs one query per plan industry plus a
+              keywords-only query, and the export is scored + sorted by
+              ``tam_ranker.rank_rows`` (rows buffer in memory; the CSV is
+              written once, best-match first).
             - create_enrichment_job: chain a Flow-1 job on completion.
             - user_id: job owner (used by the chain).
             - titles / max_decision_makers / providers / exact_titles: chain
@@ -539,7 +503,8 @@ async def run_tam_flow(
         "csv_path": str, "capped": bool, "chained_job_id"? , "chain_skipped"?}``
 
     Cancel semantics: checked between pages; a cancelled run keeps whatever
-        rows already flushed (partial CSV) and reports status 'cancelled'.
+        rows already flushed (partial CSV; ranked runs score + sort whatever
+        was collected before the cancel) and reports status 'cancelled'.
 
     Loop guards (safety): the pull hard-stops at ``TAM_MAX_PAGES`` pages
         (default 400, env ``TAM_MAX_PAGES``) and after ``TAM_EMPTY_PAGE_LIMIT``
@@ -554,14 +519,19 @@ async def run_tam_flow(
     output_dir = Path(params.get("output_dir") or OUTPUT_DIR)
     should_cancel: Optional[Callable[[], bool]] = params.get("should_cancel")
     sources = [s for s in (params.get("sources") or ["blitz"]) if s in ("blitz", "getleads")] or ["blitz"]
+    exclude_domains = set(params.get("exclude_domains") or [])
+
+    rank_seeds = [s for s in (params.get("rank_seeds") or []) if isinstance(s, dict)]
+    query_plan: dict[str, Any] = params.get("query_plan") or {}
+    ranked = bool(rank_seeds)
+    fanout = ranked or bool(query_plan)
+    overall_budget = min(max_companies, LOOKALIKE_MAX_CANDIDATES) if fanout else max_companies
 
     output_path = output_dir / f"{job_id}.csv"
     rows: list[dict[str, Any]] = []
     cursor: Optional[str] = None
     pages = 0
-    consecutive_empty_pages = 0
     cancelled = False
-    industry_fallback_used = False
 
     output_dir.mkdir(parents=True, exist_ok=True)
     csv_file = open(output_path, "w", newline="", encoding="utf-8")
@@ -573,173 +543,156 @@ async def run_tam_flow(
         csv_file.flush()
 
         getleads_credits_used = 0
+        backup_stats: dict[str, int] = {}
         async with httpx.AsyncClient() as http:
-            while "blitz" in sources:
-                if should_cancel and should_cancel():
-                    cancelled = True
-                    logger.info(
-                        "TAM job %s cancelled after %d pages (%d companies)",
-                        job_id, pages, len(rows),
-                    )
-                    break
-
-                if pages >= TAM_MAX_PAGES:
-                    # Cursor-cycling server bug guard: without this the loop
-                    # would fetch forever (heartbeat keeps the job alive,
-                    # job_events grows unbounded). Keep everything written.
-                    logger.warning(
-                        "TAM job %s hit the %d-page hard cap (%d companies, "
-                        "cursor still outstanding) — stopping the pull",
-                        job_id, TAM_MAX_PAGES, len(rows),
-                    )
-                    break
-
-                try:
-                    page = await blitz_client.tam_by_people(
+            shared = _PullShared(rows=rows, dedupe=set() if fanout else None)
+            if "blitz" in sources:
+                variants = (
+                    tam_ranker.build_blitz_variants(company_filters, query_plan)
+                    if fanout else []
+                )
+                if variants:
+                    total_variants = len(variants)
+                    for index, (label, variant_filters) in enumerate(variants, 1):
+                        if shared.cancelled:
+                            break
+                        remaining_budget = overall_budget - len(shared.rows)
+                        if remaining_budget <= 0:
+                            break
+                        budget = min(
+                            FANOUT_PER_QUERY_CAP,
+                            tam_ranker.split_fanout_budget(
+                                remaining_budget, total_variants - index + 1
+                            ),
+                        )
+                        if on_progress:
+                            try:
+                                await _emit_progress(on_progress, {
+                                    "stage": "tam_fanout",
+                                    "variant": index,
+                                    "variants": total_variants,
+                                    "message": (
+                                        f"fan-out query {index}/{total_variants}: "
+                                        f"{label}"
+                                    ),
+                                })
+                            except Exception:
+                                pass
+                        await _blitz_pull(
+                            http,
+                            job_id=job_id,
+                            company_filters=variant_filters,
+                            people_filters=people_filters,
+                            budget=budget,
+                            shared=shared,
+                            exclude_domains=exclude_domains,
+                            should_cancel=should_cancel,
+                            on_progress=on_progress,
+                            write=not ranked,
+                            writer=writer,
+                            csv_file=csv_file,
+                        )
+                else:
+                    await _blitz_pull(
                         http,
+                        job_id=job_id,
                         company_filters=company_filters,
                         people_filters=people_filters,
-                        max_results=TAM_PAGE_SIZE,
-                        cursor=cursor,
+                        budget=overall_budget,
+                        shared=shared,
+                        exclude_domains=exclude_domains,
+                        should_cancel=should_cancel,
+                        on_progress=on_progress,
+                        write=not ranked,
+                        writer=writer,
+                        csv_file=csv_file,
                     )
-                except httpx.HTTPStatusError as http_err:
-                    status = getattr(http_err.response, "status_code", None)
-                    body = ""
-                    try:
-                        body = http_err.response.text or ""
-                    except Exception:
-                        pass
-                    if status == 422:
-                        rebuilt = _industry_to_keywords_on_422(
-                            company_filters, body,
-                            already_used=industry_fallback_used,
-                        )
-                        if rebuilt is not None:
-                            industry_fallback_used = True
-                            company_filters = rebuilt
-                            logger.warning(
-                                "TAM job %s: industry filter rejected by "
-                                "Blitz's strict taxonomy — retrying as "
-                                "keyword filter", job_id,
-                            )
-                            if on_progress:
-                                try:
-                                    await _emit_progress(on_progress, {
-                                        "stage": "tam_filter_adjust",
-                                        "message": (
-                                            "Industry filter converted to a "
-                                            "keyword search (no exact match "
-                                            "in the data provider's industry "
-                                            "list) — continuing"
-                                        ),
-                                    })
-                                except Exception:
-                                    pass
-                            # Retry the same cursor; the rejected request
-                            # did not count as a page (422 never bills).
-                            continue
-                        raise _tam_validation_error(http_err) from http_err
-                    raise
-                pages += 1
+            cancelled = shared.cancelled
+            pages = shared.pages
+            cursor = shared.cursor
 
-                entries = page.get("results") or []
-                exclude = params.get("exclude_domains") or set()
-                remaining = max_companies - len(rows)
-                for entry in entries[:max(remaining, 0)]:
-                    row = flatten_tam_company(entry)
-                    row_domain = (row.get("domain") or "").strip().lower()
-                    if row_domain and row_domain in exclude:
-                        continue  # a seed company — never a lookalike result
-                    rows.append(row)
-                    writer.writerow(rows[-1])
-                # Per-page flush + fsync so a running job is live-downloadable
-                # and a crash/cancel never loses completed pages (mirrors the
-                # Flow-1 incremental writer).
+            getleads_credits_used = 0
+            if "getleads" in sources and len(shared.rows) < max_companies:
+                gl_variants = (
+                    tam_ranker.build_getleads_variants(
+                        params.get("getleads_filters") or {}, query_plan
+                    )
+                    if fanout
+                    else [("getleads", params.get("getleads_filters") or {})]
+                )
+                # An empty-filters variant is dropped: an untargeted GL pull
+                # is 1 credit per random contact — the exact "random mix"
+                # the lookalike guard exists to prevent.
+                gl_variants = [(lbl, f) for lbl, f in gl_variants if f]
+                remaining_credits = GETLEADS_LOOKALIKE_MAX_CREDITS
+                total_gl = len(gl_variants)
+                for index, (_label, gl_filters) in enumerate(gl_variants, 1):
+                    if len(shared.rows) >= max_companies or remaining_credits <= 0:
+                        break
+                    remaining_needed = overall_budget - len(shared.rows)
+                    needed = (
+                        tam_ranker.split_fanout_budget(
+                            remaining_needed, total_gl - index + 1
+                        )
+                        if fanout else remaining_needed
+                    )
+                    gl_rows, credits = await _getleads_company_pull(
+                        http,
+                        getleads_filters=gl_filters,
+                        needed=needed,
+                        existing_domains=_gl_seen_keys(shared.rows),
+                        exclude_domains=exclude_domains,
+                        credits_cap=remaining_credits,
+                    )
+                    for row in gl_rows:
+                        shared.rows.append(row)
+                        if not ranked:
+                            writer.writerow(row)
+                    remaining_credits -= credits
+                    getleads_credits_used += credits
+                    if on_progress and gl_rows:
+                        try:
+                            await _emit_progress(on_progress, {
+                                "stage": "tam_getleads",
+                                "message": (
+                                    f"GetLeads leg: +{len(gl_rows)} companies "
+                                    f"({getleads_credits_used} credits)"
+                                ),
+                                "getleads_companies": len(gl_rows),
+                                "getleads_credits_used": getleads_credits_used,
+                            })
+                        except Exception:
+                            pass
+                if not ranked:
+                    csv_file.flush()
+            rows = shared.rows
+
+            # Ranked export: score every buffered candidate against the
+            # seeds, sort best-match first, write once. Runs for cancelled
+            # pulls too — the buffered rows are real data and partial
+            # downloads stay interpretable (scored, sorted).
+            if ranked and rows:
+                rows = tam_ranker.rank_rows(rows, rank_seeds, query_plan)
+                for row in rows:
+                    writer.writerow(row)
                 csv_file.flush()
                 await asyncio.to_thread(os.fsync, csv_file.fileno())
-
-                consecutive_empty_pages = consecutive_empty_pages + 1 if not entries else 0
-
-                cursor = page.get("cursor") or None
-                save_tam_progress(
-                    job_id,
-                    cursor=cursor,
-                    rows_written=len(rows),
-                    pages=pages,
-                )
-                # Live result-count on the job row so the Jobs page card
-                # counts up while the pull runs (best-effort: a transient
-                # SQLite hiccup must not kill a long pull).
                 try:
                     job_store.get_store().update_result_count(job_id, len(rows))
                 except Exception as count_err:
                     logger.debug(
-                        "TAM per-page result-count update failed for %s: %s",
+                        "TAM ranked result-count update failed for %s: %s",
                         job_id, count_err,
                     )
                 if on_progress:
                     try:
                         await _emit_progress(on_progress, {
-                            "stage": "tam_page",
-                            "page": pages,
+                            "stage": "tam_ranked",
+                            "message": (
+                                f"Ranked {len(rows)} companies by similarity "
+                                f"to your examples"
+                            ),
                             "companies_found": len(rows),
-                            "has_next_page": bool(cursor),
-                            "message": (
-                                f"TAM page {pages}: {len(rows)} companies so far"
-                            ),
-                        })
-                    except Exception as prog_err:
-                        logger.error(
-                            "TAM progress callback failed for %s: %s",
-                            job_id, prog_err,
-                        )
-
-                if cursor is None:
-                    break
-                if consecutive_empty_pages >= TAM_EMPTY_PAGE_LIMIT:
-                    # Server keeps returning a cursor with zero results —
-                    # treat as exhaustion instead of an unbounded request
-                    # loop. Everything written so far is kept.
-                    logger.warning(
-                        "TAM job %s saw %d consecutive empty pages "
-                        "(%d companies kept) — stopping the pull",
-                        job_id, TAM_EMPTY_PAGE_LIMIT, len(rows),
-                    )
-                    break
-                if len(rows) >= max_companies:
-                    logger.info(
-                        "TAM job %s hit max_companies cap (%d) after %d pages",
-                        job_id, max_companies, pages,
-                    )
-                    break
-
-            getleads_credits_used = 0
-            if "getleads" in sources and len(rows) < max_companies:
-                gl_rows, getleads_credits_used = await _getleads_company_pull(
-                    http,
-                    getleads_filters=params.get("getleads_filters") or {},
-                    needed=max_companies - len(rows),
-                    existing_domains={
-                        (r.get("domain") or "").strip().lower()
-                        for r in rows if r.get("domain")
-                    },
-                    exclude_domains=set(params.get("exclude_domains") or []),
-                    credits_cap=GETLEADS_LOOKALIKE_MAX_CREDITS,
-                )
-                for row in gl_rows:
-                    rows.append(row)
-                    writer.writerow(row)
-                csv_file.flush()
-                if on_progress and gl_rows:
-                    try:
-                        await _emit_progress(on_progress, {
-                            "stage": "tam_getleads",
-                            "message": (
-                                f"GetLeads leg: +{len(gl_rows)} companies "
-                                f"({getleads_credits_used} credits)"
-                            ),
-                            "getleads_companies": len(gl_rows),
-                            "getleads_credits_used": getleads_credits_used,
                         })
                     except Exception:
                         pass

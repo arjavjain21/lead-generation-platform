@@ -312,7 +312,10 @@ async def start_tam_flow(
     # --- Lookalike: resolve seeds, synthesize trait filters ---------------
     seed_domains: set[str] = set()
     seed_results: list[dict[str, Any]] = []
+    seed_texts: list[str] = []
     profile: dict[str, Any] = {}
+    query_plan: dict[str, Any] = {}
+    rank_seeds: list[dict[str, Any]] = []
     if req.seed_companies:
         parsed = [lookalike.parse_seed(raw) for raw in req.seed_companies]
         parsed = [p for p in parsed if p["kind"] != "invalid"]
@@ -327,6 +330,10 @@ async def start_tam_flow(
             seed_results = [
                 await lookalike.resolve_seed(http, p) for p in parsed
             ]
+            # Lookalike 2.0: homepage text per resolved seed (parallel, never
+            # raises) — the source of niche keywords + ranked scoring text.
+            seed_texts = await lookalike.fetch_seed_homepage_texts(http, seed_results)
+        seed_results = lookalike.attach_seed_texts(seed_results, seed_texts)
         profile = lookalike.synthesize_profile(seed_results)
         for seed in seed_results:
             if seed.get("resolved") and seed.get("domain"):
@@ -338,6 +345,7 @@ async def start_tam_flow(
                        "Try B2B companies with a working website or LinkedIn page.",
             )
         if req.analyze_seeds:
+            profile = lookalike.merge_profile_keywords(profile, seed_texts)
             return {"ok": True, "seeds": seed_results, "profile": profile}
         # Merge synthesized filters UNDER explicit ones (explicit wins).
         if not company_filters.get("industry"):
@@ -354,11 +362,27 @@ async def start_tam_flow(
         if not company_filters.get("hq") and profile.get("countries"):
             req.company.hq_country_code = list(profile["countries"])
             company_filters = req.company.to_payload()
-        # Guard (2026-09-19): a lookalike run with NO industry and NO keyword
-        # targeting degrades to a size/geo-only search that returns a random
-        # industry mix (live-seen: prediction-app seeds -> construction +
-        # hospitals + law firms). Refuse and tell the user what to do.
-        if not company_filters.get("industry") and not company_filters.get("keywords"):
+        # Lookalike 2.0 query plan: fan out over ALL distinct seed industries
+        # (fixes the majority-industry collapse for mixed-industry seeds) +
+        # niche keywords from the homepage texts / niche box. The ranked
+        # runner scores and sorts every candidate against the seeds.
+        query_plan = lookalike.build_query_plan(
+            seed_results,
+            seed_texts,
+            extra_keywords=list(req.company.keywords_include or []),
+        )
+        # Guard (2026-09-19, now a backstop): a lookalike run with NO industry
+        # and NO keyword targeting — neither explicit, nor from the plan —
+        # degrades to a size/geo-only search that returns a random industry
+        # mix (live-seen: prediction-app seeds -> construction + hospitals +
+        # law firms). Resolvable seeds normally guarantee the plan carries
+        # industries or keywords; when truly nothing survives, refuse.
+        if (
+            not company_filters.get("industry")
+            and not company_filters.get("keywords")
+            and not query_plan.get("industries")
+            and not query_plan.get("keywords")
+        ):
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -369,6 +393,7 @@ async def start_tam_flow(
                     "and set the industry yourself."
                 ),
             )
+        rank_seeds = lookalike.rank_seed_payloads(seed_results)
 
     sources = [s for s in (req.sources or ["blitz"]) if s in ("blitz", "getleads")] or ["blitz"]
     if not req.seed_companies and not company_filters and not people_filters:
@@ -412,7 +437,8 @@ async def start_tam_flow(
         selected_providers=req.providers,
         source_type="tam_flow",
         display_name=(
-            (f"Lookalikes — {lookalike.seeds_display_list(req.seed_companies)}"
+            (f"Lookalikes{' · ranked' if rank_seeds else ''} — "
+             f"{lookalike.seeds_display_list(req.seed_companies)}"
              + (f" · {_tam_display_summary(req)}" if req.people.job_title_include else ""))
             if req.seed_companies
             else f"Find Companies — {_tam_display_summary(req)}"
@@ -441,6 +467,10 @@ async def start_tam_flow(
         "sources": sources,
         "exclude_domains": sorted(seed_domains),
         "getleads_filters": _getleads_filters(req, profile),
+        # Lookalike 2.0 ranked mode: fan-out retrieval plan + seed profiles
+        # the runner scores every candidate against (empty for plain runs).
+        "query_plan": query_plan,
+        "rank_seeds": rank_seeds,
         "should_cancel": check_cancelled,
     }
 

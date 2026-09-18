@@ -24,15 +24,17 @@ Band formats differ by source and are normalized HERE: GetLeads
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import Counter
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 import httpx
 
 from enrichment import blitz_client
 from enrichment import blitz_search
 from enrichment import getleads_client
+from enrichment import seed_text
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,10 @@ _SIZE_BANDS = [
     "1-10", "11-50", "51-200", "201-500", "501-1000",
     "1001-5000", "5001-10000", "10001+",
 ]
+
+# Public alias: the ranker + tests read the band scale without touching the
+# private module attr.
+SIZE_BANDS = _SIZE_BANDS
 
 
 def normalize_band(raw: Optional[str]) -> Optional[str]:
@@ -87,7 +93,7 @@ async def resolve_seed(
         "input": parsed["value"], "kind": parsed["kind"],
         "resolved": False, "source": None, "name": None, "domain": None,
         "linkedin_url": None, "industry": None, "size_band": None,
-        "specialties": [], "country": None,
+        "specialties": [], "country": None, "about": None,
     }
     try:
         # Blitz profiles FIRST (LinkedIn-keyed, trustworthy). GetLeads'
@@ -120,6 +126,7 @@ async def resolve_seed(
                     "size_band": normalize_band(company.get("size")),
                     "specialties": [x for x in (company.get("specialties") or []) if x][:12],
                     "country": ((company.get("hq") or {}).get("country_code")),
+                    "about": company.get("about"),
                 })
                 return result
 
@@ -134,6 +141,7 @@ async def resolve_seed(
                     "name": contact.get("org_company_name"),
                     "industry": contact.get("org_industry_linkedin"),
                     "size_band": normalize_band(contact.get("employee_count_range")),
+                    "about": contact.get("org_about_us"),
                 })
         result.update({
             "resolved": True, "source": "blitz",
@@ -144,6 +152,7 @@ async def resolve_seed(
             "size_band": normalize_band(company.get("size")),
             "specialties": [s for s in (company.get("specialties") or []) if s][:12],
             "country": ((company.get("hq") or {}).get("country_code")),
+            "about": company.get("about"),
         })
     except Exception as exc:
         logger.warning("Lookalike seed resolution failed for %s: %s",
@@ -227,3 +236,130 @@ def to_getleads_band(band: Optional[str]) -> Optional[str]:
     if band == "10001+":
         return band
     return band.replace("-", " to ") if "-" in band else band
+
+
+# ---------------------------------------------------------------------------
+# Lookalike 2.0 — homepage text, query plan, ranked-mode helpers
+# ---------------------------------------------------------------------------
+
+async def fetch_seed_homepage_texts(
+    http: httpx.AsyncClient, seed_results: list[dict[str, Any]]
+) -> list[str]:
+    """Fetch homepage text for every RESOLVED seed in parallel (gather).
+
+    Returns a list ALIGNED with ``seed_results``: the extracted text for
+    resolved seeds with a domain, ``""`` everywhere else. Never raises —
+    ``seed_text.fetch_homepage_text`` absorbs every failure.
+    """
+    resolved_flags = [
+        bool(s.get("resolved") and s.get("domain")) for s in seed_results
+    ]
+    texts = await asyncio.gather(*(
+        seed_text.fetch_homepage_text(http, s["domain"])
+        for s, ok in zip(seed_results, resolved_flags) if ok
+    ))
+    out: list[str] = []
+    pos = 0
+    for ok in resolved_flags:
+        if ok:
+            out.append(texts[pos])
+            pos += 1
+        else:
+            out.append("")
+    return out
+
+
+def attach_seed_texts(
+    seed_results: list[dict[str, Any]], seed_texts: list[str]
+) -> list[dict[str, Any]]:
+    """Return NEW seed dicts carrying ``website_text`` + ``website_keywords``
+    (immutably merged; inputs untouched). Unresolved seeds keep "" text."""
+    enriched: list[dict[str, Any]] = []
+    for idx, seed in enumerate(seed_results):
+        text = seed_texts[idx] if idx < len(seed_texts) else ""
+        enriched.append({
+            **seed,
+            "website_text": text,
+            "website_keywords": seed_text.top_tokens(text) if text else [],
+        })
+    return enriched
+
+
+def build_query_plan(
+    seed_results: list[dict[str, Any]],
+    seed_texts: list[str],
+    extra_keywords: Optional[Iterable[str]] = None,
+) -> dict[str, Any]:
+    """Deterministic fan-out plan for a ranked lookalike run.
+
+    Unlike ``synthesize_profile`` (majority-shared traits for the chip
+    panel), the plan fans out over ALL distinct seed industries — seeds with
+    three different LinkedIn industries still get three industry queries
+    instead of collapsing to nothing. Keywords come from the homepage texts
+    (tokens shared by >= 2 seeds) plus any explicit niche tokens the user
+    supplied. ``size_band`` is the median resolved band (shared filter).
+    """
+    resolved = [s for s in seed_results if s.get("resolved")]
+    industries: list[str] = []
+    for seed in resolved:
+        industry = seed.get("industry")
+        if industry and industry not in industries:
+            industries.append(industry)
+
+    keywords = seed_text.extract_niche_keywords(list(seed_texts or []))
+    seen = set(keywords)
+    for token in (extra_keywords or []):
+        cleaned = str(token or "").strip().lower()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            keywords.append(cleaned)
+
+    band_idxs = sorted(
+        i for i in (_band_index(s.get("size_band")) for s in resolved)
+        if i is not None
+    )
+    size_band = _SIZE_BANDS[band_idxs[len(band_idxs) // 2]] if band_idxs else None
+
+    return {
+        "industries": industries,
+        "keywords": keywords,
+        "size_band": size_band,
+    }
+
+
+def merge_profile_keywords(
+    profile: dict[str, Any], seed_texts: list[str]
+) -> dict[str, Any]:
+    """Enrich the analyze-mode profile with homepage-derived keywords (new
+    dict): chips improve beyond LinkedIn specialties alone, and
+    ``website_text_sha`` fingerprints the extracted texts for provenance."""
+    website_keywords = seed_text.extract_niche_keywords(list(seed_texts or []))
+    merged = list(profile.get("keywords") or [])
+    seen = set(merged)
+    for kw in website_keywords:
+        if kw not in seen:
+            seen.add(kw)
+            merged.append(kw)
+    return {
+        **profile,
+        "keywords": merged,
+        "website_text_sha": seed_text.combined_sha(seed_texts or []),
+    }
+
+
+def rank_seed_payloads(
+    seed_results: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """The ``rank_seeds`` job param: one compact profile dict per resolved
+    seed (name/industry/size_band/domain + website or about text)."""
+    return [
+        {
+            "name": s.get("name") or s.get("domain"),
+            "industry": s.get("industry"),
+            "size_band": s.get("size_band"),
+            "domain": (s.get("domain") or "").strip().lower() or None,
+            "text": s.get("website_text") or s.get("about") or "",
+        }
+        for s in seed_results
+        if s.get("resolved")
+    ]

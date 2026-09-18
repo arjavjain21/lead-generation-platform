@@ -23,6 +23,7 @@ if _BACKEND_DIR not in sys.path:
 
 from enrichment import lookalike
 from enrichment import tam_flow
+from enrichment import tam_legs
 
 
 def _seed(
@@ -240,6 +241,179 @@ class TestSeedsDisplayList(unittest.TestCase):
                          "a.com, b.com +1")
 
 
+class TestSeedTextHelpers(unittest.TestCase):
+    """Lookalike 2.0: homepage-text fetch/attach around resolve_seed."""
+
+    def test_fetch_seed_homepage_texts_aligned_and_parallel(self):
+        seeds = [
+            _seed("a.com", resolved=True),
+            _seed("b.com", resolved=False),  # unresolved -> "" without fetch
+            _seed("c.com", resolved=True),
+        ]
+
+        async def fake_fetch(client, domain):
+            return f"text for {domain}"
+
+        async def run():
+            async with httpx.AsyncClient() as c:
+                with patch.object(lookalike.seed_text, "fetch_homepage_text",
+                                  fake_fetch):
+                    texts = await lookalike.fetch_seed_homepage_texts(c, seeds)
+                    return texts, lookalike.attach_seed_texts(seeds, texts)
+
+        texts, enriched = asyncio.run(run())
+        self.assertEqual(texts, ["text for a.com", "", "text for c.com"])
+        self.assertEqual(enriched[0]["website_text"], "text for a.com")
+        # "for"/"a.com" drop out (<4 chars); "text" survives tokenization.
+        self.assertEqual(enriched[0]["website_keywords"], ["text"])
+        self.assertEqual(enriched[1]["website_text"], "")
+        # Inputs untouched (immutable merge).
+        self.assertNotIn("website_text", seeds[0])
+
+    def test_rank_seed_payloads_use_website_text_then_about(self):
+        seeds = [
+            {**_seed("a.com", industry="Gambling", band="51-200"),
+             "website_text": "prediction markets", "about": "about fallback"},
+            {"resolved": False},  # dropped
+            {**_seed("b.com", industry="Entertainment", band="51-200"),
+             "about": "about only"},
+        ]
+        payloads = lookalike.rank_seed_payloads(seeds)
+        self.assertEqual(len(payloads), 2)
+        self.assertEqual(payloads[0]["text"], "prediction markets")
+        self.assertEqual(payloads[1]["text"], "about only")
+        self.assertEqual(payloads[0]["domain"], "a.com")
+
+    def test_merge_profile_keywords_adds_website_keywords_and_sha(self):
+        profile = {"keywords": ["saas"], "industries": ["Software Development"]}
+        merged = lookalike.merge_profile_keywords(
+            profile,
+            ["prediction markets platform", "prediction markets app"],
+        )
+        self.assertIn("saas", merged["keywords"])
+        self.assertIn("prediction", merged["keywords"])
+        self.assertIn("markets", merged["keywords"])
+        self.assertNotIn("platform", merged["keywords"])  # stopword
+        self.assertEqual(len(merged["website_text_sha"]), 12)
+        # Original profile untouched.
+        self.assertNotIn("website_text_sha", profile)
+
+
+class TestBuildQueryPlan(unittest.TestCase):
+    """Lookalike 2.0 fan-out plan: ALL distinct industries (the fix for the
+    majority-industry collapse), niche keywords from homepage texts + the
+    niche box, median size band."""
+
+    def _kalshi_style_seeds(self):
+        # Three seeds, three DIFFERENT LinkedIn industries, no specialties —
+        # the exact shape that used to produce zero chips -> 400.
+        return [
+            _seed("kalshi.com", industry="Financial Services", band="51-200"),
+            _seed("polymarket.com", industry="Gambling", band="51-200"),
+            _seed("novig.com", industry="Entertainment", band="201-500"),
+        ]
+
+    def test_all_distinct_industries_fan_out(self):
+        plan = lookalike.build_query_plan(self._kalshi_style_seeds(), ["", "", ""])
+        self.assertEqual(
+            plan["industries"],
+            ["Financial Services", "Gambling", "Entertainment"],
+        )
+        self.assertEqual(plan["size_band"], "51-200")  # median of 51-200/51-200/201-500
+        self.assertEqual(plan["keywords"], [])
+
+    def test_keywords_from_shared_homepage_tokens_plus_niche_box(self):
+        texts = [
+            "prediction markets trading sports app",
+            "prediction markets sports trading exchange",
+            "prediction sports markets trading events",
+        ]
+        plan = lookalike.build_query_plan(
+            self._kalshi_style_seeds(), texts,
+            extra_keywords=["Fantasy Sports ", "prediction"],
+        )
+        for expected in ("prediction", "markets", "sports", "trading"):
+            self.assertIn(expected, plan["keywords"])
+        self.assertIn("fantasy sports", plan["keywords"])  # niche box, lowered
+        self.assertEqual(
+            len(plan["keywords"]), len(set(plan["keywords"])), "deduped"
+        )
+
+    def test_unresolved_seeds_contribute_nothing(self):
+        plan = lookalike.build_query_plan(
+            [_seed("a.com", resolved=False), _seed("b.com", resolved=False)],
+            ["", ""],
+        )
+        self.assertEqual(plan, {"industries": [], "keywords": [], "size_band": None})
+
+
+class TestRankedScoring(unittest.TestCase):
+    """tam_ranker.rank_rows: deterministic order + why_matched content."""
+
+    SEEDS = [
+        {"name": "Kalshi", "industry": "Gambling", "size_band": "51-200",
+         "domain": "kalshi.com", "text": "prediction markets trading sports events"},
+        {"name": "Polymarket", "industry": "Gambling", "size_band": "51-200",
+         "domain": "polymarket.com", "text": "prediction markets sports trading"},
+    ]
+    PLAN = {"industries": ["Gambling"], "size_band": "51-200",
+            "keywords": ["prediction", "markets", "sports"]}
+
+    @staticmethod
+    def _row(name, industry, size, domain, slogan=None):
+        return {"name": name, "industry": industry, "size": size,
+                "domain": domain, "slogan": slogan}
+
+    def test_perfect_match_outranks_partial_outranks_none(self):
+        rows = [
+            self._row("Dental Clinic", "Dental Care", "11-50", "dental.example"),
+            self._row("Prediction Sports Exchange", "Gambling", "51-200",
+                      "pse.example", "prediction markets for sports"),
+            self._row("Prediction Markets Co", "Gambling", "51-200",
+                      "pmc.example", "prediction markets sports trading"),
+        ]
+        ranked = tam_flow.tam_ranker.rank_rows(rows, self.SEEDS, self.PLAN)
+        self.assertEqual([r["name"] for r in ranked],
+                         ["Prediction Markets Co",
+                          "Prediction Sports Exchange",
+                          "Dental Clinic"])
+        scores = [r["match_score"] for r in ranked]
+        self.assertEqual(scores, sorted(scores, reverse=True))
+        self.assertGreater(scores[0], scores[-1])
+        self.assertTrue(all(0 <= s <= 100 for s in scores))
+
+    def test_why_matched_signals_present(self):
+        rows = [self._row("Prediction Markets Co", "Gambling", "51-200",
+                          "pmc.example", "prediction markets")]
+        ranked = tam_flow.tam_ranker.rank_rows(rows, self.SEEDS, self.PLAN)
+        why = ranked[0]["why_matched"]
+        self.assertIn("prediction", why)          # keyword hits named
+        self.assertIn("industry match", why)
+        self.assertIn("size 51-200", why)
+        self.assertIn(" · ", why)                 # signal separator
+
+    def test_no_signals_says_broad_match(self):
+        rows = [self._row("Generic Corp", "Construction", None, "generic.example")]
+        ranked = tam_flow.tam_ranker.rank_rows(rows, self.SEEDS, self.PLAN)
+        self.assertEqual(ranked[0]["why_matched"], "broad match")
+
+    def test_inputs_not_mutated_and_columns_appended(self):
+        rows = [self._row("Prediction Markets Co", "Gambling", "51-200",
+                          "pmc.example")]
+        ranked = tam_flow.tam_ranker.rank_rows(rows, self.SEEDS, self.PLAN)
+        self.assertIn("match_score", ranked[0])
+        self.assertIn("why_matched", ranked[0])
+        self.assertNotIn("match_score", rows[0], "input rows stay untouched")
+
+    def test_equal_scores_break_tie_by_name(self):
+        rows = [
+            self._row("Zeta Corp", "Construction", "11-50", "z.example"),
+            self._row("Alpha Corp", "Construction", "11-50", "a.example"),
+        ]
+        ranked = tam_flow.tam_ranker.rank_rows(rows, self.SEEDS, self.PLAN)
+        self.assertEqual([r["name"] for r in ranked], ["Alpha Corp", "Zeta Corp"])
+
+
 class TestGetleadsPullLeg(unittest.TestCase):
     @staticmethod
     def _page(contacts, *, credits, has_more, next_offset):
@@ -267,7 +441,7 @@ class TestGetleadsPullLeg(unittest.TestCase):
 
         async def run():
             async with httpx.AsyncClient() as c:
-                with patch.object(tam_flow.getleads_client,
+                with patch.object(tam_legs.getleads_client,
                                   "search_contacts_companies", fake_gl):
                     return await tam_flow._getleads_company_pull(
                         c, getleads_filters={}, needed=10,
@@ -296,7 +470,7 @@ class TestGetleadsPullLeg(unittest.TestCase):
 
         async def run():
             async with httpx.AsyncClient() as c:
-                with patch.object(tam_flow.getleads_client,
+                with patch.object(tam_legs.getleads_client,
                                   "search_contacts_companies", fake_gl):
                     return await tam_flow._getleads_company_pull(
                         c, getleads_filters={}, needed=100,
@@ -315,7 +489,7 @@ class TestGetleadsPullLeg(unittest.TestCase):
 
         async def run():
             async with httpx.AsyncClient() as c:
-                with patch.object(tam_flow.getleads_client,
+                with patch.object(tam_legs.getleads_client,
                                   "search_contacts_companies", fake_gl):
                     return await tam_flow._getleads_company_pull(
                         c, getleads_filters={}, needed=10,

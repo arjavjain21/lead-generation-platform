@@ -212,9 +212,14 @@ class TestTamRoute(_TamRouteTestCase):
         async def miss_d2l(client, domain):
             return {"found": False, "company_linkedin_url": None}
 
+        async def fake_texts(_http, seeds):
+            return ["" for _ in seeds]
+
         with patch("enrichment.getleads_client.search_contacts_companies",
                    new=fake_gl), \
-             patch("enrichment.blitz_client.domain_to_linkedin", new=miss_d2l):
+             patch("enrichment.blitz_client.domain_to_linkedin", new=miss_d2l), \
+             patch("enrichment.lookalike.fetch_seed_homepage_texts",
+                   new=fake_texts):
             resp = self._client.post("/api/enrichment/flows/tam", json={
                 "seed_companies": ["acme.com", "acme2.com"],
                 "analyze_seeds": True,
@@ -225,13 +230,16 @@ class TestTamRoute(_TamRouteTestCase):
         self.assertEqual(len(body["seeds"]), 2)
         self.assertEqual(body["profile"]["industries"], ["Software Development"])
         self.assertEqual(body["profile"]["size_band"], "11-50")
+        # Lookalike 2.0: the analyze profile carries the homepage-text
+        # fingerprint (""-only texts -> keywords stay empty).
+        self.assertIn("website_text_sha", body["profile"])
 
     def test_lookalike_run_merges_filters_and_excludes_seeds(self):
         captured = {}
 
         async def fake_tam(_http, *, company_filters, people_filters,
                            max_results, cursor):
-            captured["company"] = company_filters
+            captured.setdefault("companies", []).append(company_filters)
             return {"results": [
                 {"company": {"name": "Lookalike Co", "domain": "lookalike.com",
                              "linkedin_url": "https://linkedin.com/company/lk",
@@ -253,10 +261,15 @@ class TestTamRoute(_TamRouteTestCase):
         async def miss_d2l(client, domain):
             return {"found": False, "company_linkedin_url": None}
 
+        async def fake_texts(_http, seeds):
+            return ["" for _ in seeds]
+
         with patch("enrichment.blitz_client.tam_by_people", new=fake_tam), \
              patch("enrichment.getleads_client.search_contacts_companies",
                    new=fake_gl), \
-             patch("enrichment.blitz_client.domain_to_linkedin", new=miss_d2l):
+             patch("enrichment.blitz_client.domain_to_linkedin", new=miss_d2l), \
+             patch("enrichment.lookalike.fetch_seed_homepage_texts",
+                   new=fake_texts):
             resp = self._client.post("/api/enrichment/flows/tam", json={
                 "seed_companies": ["acme.com"],
                 "people": {"job_title_include": ["CEO"]},
@@ -266,13 +279,16 @@ class TestTamRoute(_TamRouteTestCase):
         job_id = resp.json()["job_id"]
         job = job_store.get_store().get_job(job_id)
         self.assertEqual(job["status"], "done")
-        self.assertEqual(captured["company"].get("industry"),
+        # Lookalike 2.0 fan-out: the plan carries the seed industry, so the
+        # single variant is the per-industry query (same filters as before).
+        self.assertEqual(len(captured["companies"]), 1)
+        self.assertEqual(captured["companies"][0].get("industry"),
                          {"include": ["Software Development"]})
-        self.assertEqual(captured["company"].get("employee_range"), ["11-50"])
+        self.assertEqual(captured["companies"][0].get("employee_range"), ["11-50"])
         csv_text = Path(job["output_path"]).read_text(encoding="utf-8")
         self.assertIn("Lookalike Co", csv_text)
         self.assertNotIn("Seed Echo", csv_text)
-        self.assertIn("Lookalikes", job["display_name"])
+        self.assertIn("Lookalikes · ranked", job["display_name"])
         self.assertIn("source", csv_text.splitlines()[0])
 
     def test_lookalike_getleads_only_source_runs_gl_leg(self):
@@ -294,9 +310,21 @@ class TestTamRoute(_TamRouteTestCase):
         async def fake_tam(*a, **kw):
             raise AssertionError("blitz leg must not run when getleads-only")
 
+        async def miss_d2l(client, domain):
+            return {"found": False, "company_linkedin_url": None}
+
+        async def fake_texts(_http, seeds):
+            return ["" for _ in seeds]
+
+        # d2l must be patched too: unpatched, a REAL network call runs (slow,
+        # and order-polluted suites leave the shared blitz breaker OPEN,
+        # which aborts seed resolution before the GetLeads fallback).
         with patch("enrichment.blitz_client.tam_by_people", new=fake_tam), \
+             patch("enrichment.blitz_client.domain_to_linkedin", new=miss_d2l), \
              patch("enrichment.getleads_client.search_contacts_companies",
-                   new=fake_gl):
+                   new=fake_gl), \
+             patch("enrichment.lookalike.fetch_seed_homepage_texts",
+                   new=fake_texts):
             resp = self._client.post("/api/enrichment/flows/tam", json={
                 "seed_companies": ["acme.com"],
                 "sources": ["getleads"],
@@ -310,30 +338,107 @@ class TestTamRoute(_TamRouteTestCase):
         self.assertIn("getleads", csv_text)
 
     def test_lookalike_run_without_targeting_is_rejected(self):
-        """No industry AND no keywords (from seeds or explicit) = random-mix
-        search; the route must refuse with actionable guidance."""
-        # Seeds RESOLVE but share nothing (different industries, no
-        # specialties) — synthesis yields no industry/keyword chips, so the
-        # run must be refused instead of searching size-only.
+        """True backstop: seeds resolve but carry NO industry anywhere and no
+        keywords survive (no specialties, no homepage text, no niche box) —
+        nothing to target, so the run must be refused with actionable
+        guidance instead of searching size-only."""
         async def miss_d2l(client, domain):
             return {"found": False, "company_linkedin_url": None}
 
-        async def gl_conflicting(client, *, domains=None, limit=1, **kw):
-            industry = "Financial Services" if domains and domains[0] == "a.com" else "Dental Care"
+        async def gl_no_industry(client, *, domains=None, limit=1, **kw):
             return {"ok": True, "contacts": [{
                 "org_company_name": "Co", "org_domain": (domains or ["x.com"])[0],
-                "org_industry_linkedin": industry,
+                "org_industry_linkedin": None,
                 "employee_count_range": "51 to 200",
             }]}
 
+        async def fake_texts(_http, seeds):
+            return ["" for _ in seeds]
+
         with patch("enrichment.blitz_client.domain_to_linkedin", new=miss_d2l), \
-             patch("enrichment.getleads_client.search_contacts_companies", new=gl_conflicting):
+             patch("enrichment.getleads_client.search_contacts_companies",
+                   new=gl_no_industry), \
+             patch("enrichment.lookalike.fetch_seed_homepage_texts",
+                   new=fake_texts):
             resp = self._client.post("/api/enrichment/flows/tam", json={
                 "seed_companies": ["a.com", "b.com"],
                 "max_companies": 10,
             })
         self.assertEqual(resp.status_code, 400)
         self.assertIn("random mix", resp.json()["detail"])
+
+    def test_mixed_industry_seeds_now_rank_instead_of_400(self):
+        """Lookalike 2.0 regression: kalshi.com/polymarket.com-style seeds
+        (every seed a DIFFERENT LinkedIn industry, no specialties, no niche
+        box) used to die at the 'random mix' guard. Now the query plan fans
+        out over ALL distinct industries and the run ranks the results."""
+        captured_variants: list[dict] = []
+
+        async def fake_tam(_http, *, company_filters, people_filters,
+                           max_results, cursor):
+            captured_variants.append(dict(company_filters))
+            industry = company_filters.get("industry", {}).get("include", ["?"])[0]
+            return {"results": [
+                {"company": {"name": f"{industry} Co", "domain": "co.example",
+                             "industry": industry, "size": "51-200"},
+                 "matched_people": 1},
+            ], "cursor": None}
+
+        async def miss_d2l(client, domain):
+            return {"found": False, "company_linkedin_url": None}
+
+        async def gl_by_domain(client, *, domains=None, limit=1, **kw):
+            industries = {"a.com": "Financial Services",
+                          "b.com": "Gambling", "c.com": "Entertainment"}
+            return {"ok": True, "contacts": [{
+                "org_company_name": "Co", "org_domain": (domains or ["x.com"])[0],
+                "org_industry_linkedin": industries.get((domains or [""])[0]),
+                "employee_count_range": "51 to 200",
+            }]}
+
+        async def fake_texts(_http, seeds):
+            # Homepage texts share prediction-market vocabulary — the plan
+            # gains a keywords variant beyond the three industries.
+            return [
+                "prediction markets trading app sports events odds",
+                "prediction markets platform sports trading events",
+                "sports prediction markets trading events app",
+            ][:len(seeds)] + [""] * max(0, len(seeds) - 3)
+
+        with patch("enrichment.blitz_client.tam_by_people", new=fake_tam), \
+             patch("enrichment.blitz_client.domain_to_linkedin", new=miss_d2l), \
+             patch("enrichment.getleads_client.search_contacts_companies",
+                   new=gl_by_domain), \
+             patch("enrichment.lookalike.fetch_seed_homepage_texts",
+                   new=fake_texts):
+            resp = self._client.post("/api/enrichment/flows/tam", json={
+                "seed_companies": ["a.com", "b.com", "c.com"],
+                "max_companies": 25,
+            })
+        self.assertEqual(resp.status_code, 200, resp.text)
+        job = job_store.get_store().get_job(resp.json()["job_id"])
+        self.assertEqual(job["status"], "done")
+        # Fan-out: one query per distinct seed industry + one keywords query.
+        industries_queried = [
+            v["industry"]["include"][0] for v in captured_variants
+            if "industry" in v
+        ]
+        self.assertEqual(
+            sorted(industries_queried),
+            ["Entertainment", "Financial Services", "Gambling"],
+        )
+        self.assertTrue(
+            any("keywords" in v for v in captured_variants),
+            "a keywords-only fan-out query must run",
+        )
+        # Ranked export: match_score desc + why_matched on every row.
+        csv_text = Path(job["output_path"]).read_text(encoding="utf-8")
+        header = csv_text.splitlines()[0]
+        self.assertTrue(header.endswith("match_score,why_matched"))
+        scores = [
+            int(line.rsplit(",", 2)[-2]) for line in csv_text.splitlines()[1:]
+        ]
+        self.assertEqual(scores, sorted(scores, reverse=True))
 
     def test_unknown_company_filter_key_is_422(self):
         resp = self._client.post("/api/enrichment/flows/tam", json={
