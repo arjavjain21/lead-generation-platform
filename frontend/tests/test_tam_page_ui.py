@@ -148,3 +148,11 @@ def test_chip_panel_renders_shared_traits(html):
     assert "_tamRenderSeedPanel" in html
     # Conflicting-seeds warning copy exists.
     assert "quite different from each other" in html
+
+
+def test_ranked_note_present(html):
+    # Lookalike 2.0: the examples card explains the ranked export.
+    assert 'id="tamRankedNote"' in html
+    assert "Results are ranked by similarity to your examples (match_score 0-100)" in html
+    # The page explainer mentions ranked results too.
+    assert "ranked by similarity" in html
