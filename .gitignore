@@ -19,6 +19,12 @@ env/
 # Environment
 .env
 .env.local
+# Secret-bearing env copies made by ops/tooling — never commit
+.env.bak*
+.env.backup*
+.env.backup
+backend/.env.bak*
+backend/.env.backup*
 
 # Data files (keep folder, exclude contents)
 backend/data/
