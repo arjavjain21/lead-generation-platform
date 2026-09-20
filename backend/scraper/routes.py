@@ -679,15 +679,81 @@ def _job_output_exists(job: dict) -> bool:
 
 @router.get("/jobs")
 async def list_scraper_jobs(current_user: dict = Depends(auth.get_current_user)):
-    """List scraper jobs for current user (or all for admin)."""
+    """List scraper jobs for current user (or all for admin).
+
+    Returns a SLIM projection: the jobs table has 60+ columns and full rows
+    made this endpoint ~1 MB per poll for the UI (2026-09-20 slowness RCA —
+    the frontend renders a card list and only touches the fields below).
+    The single-job GET /jobs/{job_id} still returns the full row.
+    """
     store = job_store.get_store()
     if current_user.get("is_admin"):
         jobs = store.list_jobs(job_type="scraper", limit=200)
     else:
         jobs = store.list_jobs(user_id=current_user["user_id"], job_type="scraper", limit=200)
-    for j in jobs:
-        j["output_exists"] = _job_output_exists(j)
-    return {"jobs": jobs}
+    slim_jobs = [
+        {k: j.get(k) for k in _SCRAPER_LIST_FIELDS} | {"output_exists": _job_output_exists(j)}
+        for j in jobs
+    ]
+    return {"jobs": slim_jobs}
+
+
+# Exactly the fields the scraper jobs UI renders (renderScraperJobs +
+# filters). Keep in sync with frontend/index.html when adding card fields.
+_SCRAPER_LIST_FIELDS = (
+    "job_id",
+    "parent_job_id",
+    "status",
+    "query",
+    "display_name",
+    "regions",
+    "created_at",
+    "done_tasks",
+    "total_tasks",
+    "result_count",
+    "error",
+    "checkpoint_count",
+    "is_resumable",
+)
+
+
+@router.get("/estimate")
+async def estimate_scraper_job(
+    mode: str = Query(default="all"),
+    country: str = Query(default="us"),
+    states: Optional[str] = Query(default=None),
+    cities: Optional[str] = Query(default=None),
+    zips: Optional[str] = Query(default=None),
+    current_user: dict = Depends(auth.get_current_user),
+):
+    """Lightweight task estimate for the search form — centers math only.
+
+    Deliberately does NOT run the cache/signature work that makes
+    POST /cache/check take 20s+ on US-wide scopes: this stays a cheap CSV
+    read so the UI can show scope ("≈ 88,638 tasks") live while the user is
+    still choosing a region. Comma-separated values for states/cities/zips.
+    """
+    def _split_csv_param(raw: Optional[str]) -> list[str]:
+        return [v.strip() for v in raw.split(",") if v.strip()] if raw else []
+
+    filtered_centers, errors = centers_module.get_centers_for_job(
+        mode=mode,
+        country=country,
+        states=_split_csv_param(states),
+        cities=_split_csv_param(cities),
+        zips=_split_csv_param(zips),
+        center_ids=[],
+    )
+    if not filtered_centers:
+        detail = "; ".join(errors) if errors else "No geographic centers found for the selected region."
+        raise HTTPException(status_code=422, detail=detail)
+
+    total_tasks = centers_module.estimate_task_count(filtered_centers)
+    return {
+        "center_count": len(filtered_centers),
+        "total_tasks": total_tasks,
+        "warnings": errors or [],
+    }
 
 
 @router.post("/jobs")
@@ -814,6 +880,31 @@ async def stream_scraper_job(
 
     async def event_generator():
         sent = 0
+        # Immediate snapshot so the client isn't blind before the first
+        # crawler event — especially for 'queued' jobs, which emit nothing
+        # until the dispatcher claims them (can be minutes behind a backlog).
+        initial = store.get_job(job_id)
+        if initial:
+            snapshot = {
+                "snapshot": True,
+                "status": initial.get("status"),
+                "done_tasks": initial.get("done_tasks", 0),
+                "total_tasks": initial.get("total_tasks", 0),
+                "result_count": initial.get("result_count", 0),
+            }
+            if snapshot["status"] == "queued":
+                try:
+                    row = db.get_db().execute(
+                        """SELECT COUNT(*) AS n FROM jobs
+                           WHERE job_type='scraper' AND status='queued'
+                           AND created_at < ?""",
+                        (initial.get("created_at"),),
+                    ).fetchone()
+                    snapshot["queue_position"] = (int(row["n"]) if row else 0) + 1
+                except Exception:
+                    pass
+            yield f"data: {json.dumps(snapshot)}\n\n"
+
         while True:
             new_events = store.get_events_from(job_id, sent)
             for event in new_events:
@@ -821,9 +912,15 @@ async def stream_scraper_job(
                 yield f"data: {json.dumps(event)}\n\n"
 
             current = store.get_job(job_id)
-            if current and current["status"] in ("done", "failed"):
+            # Terminal check must cover every end-state, not just done/failed:
+            # cancelled/abandoned/stopped jobs otherwise keep the SSE stream
+            # open forever with no further events ever arriving.
+            if current and current["status"] in (
+                "done", "failed", "cancelled", "abandoned", "stopped",
+            ):
                 final = {
                     "done": True,
+                    "status": current["status"],
                     "error": current.get("error"),
                     "total_tasks": current.get("total_tasks", 0),
                     "done_tasks": current.get("done_tasks", 0),

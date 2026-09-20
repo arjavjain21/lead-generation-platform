@@ -536,6 +536,19 @@
         #page-scraper #startScraperJob:active { background: #0f1d38; }
         #page-scraper #startScraperJob:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(26,49,93,0.30); }
         #page-scraper #startScraperJob:disabled { opacity: 0.5; cursor: not-allowed; }
+        /* Scope hint under the Start button: live task estimate from
+           GET /api/scraper/estimate so US-wide searches (88K+ tasks, hours)
+           are visible BEFORE submit. Amber = consider narrowing. */
+        .scraper-scope-hint {
+            margin-top: 0.6rem; padding: 0.55rem 0.8rem; border-radius: 8px;
+            font-size: 0.85rem; line-height: 1.45; display: flex; gap: 0.5rem;
+            align-items: flex-start; background: #f1f5f9; color: #475569;
+            border: 1px solid #e2e8f0;
+        }
+        .scraper-scope-hint.scope-large {
+            background: #fffbeb; color: #92400e; border-color: #fde68a;
+        }
+        .scraper-scope-hint .scope-icon { flex-shrink: 0; margin-top: 1px; }
 
         /* ── Jobs filter toolbar: compact rows ── */
         #page-scraper .scraper-status-row,
@@ -1331,6 +1344,7 @@
                 <div class="scraper-start-row">
                     <button class="btn btn-primary" id="startScraperJob">Start Scraper Job</button>
                 </div>
+                <div id="scraperScopeHint" class="scraper-scope-hint" style="display:none;" aria-live="polite"></div>
             </div>
 
             <div class="form-card" id="scraperProgress" style="display:none;">
@@ -3925,8 +3939,25 @@ example.org,Jane Doe</pre>
             // All validation passed, set submitting flag
             isSubmitting = true;
 
+            // The button must show a loading state for the ENTIRE submit flow.
+            // The cache check alone can take 20s+ on US-wide scopes — with no
+            // feedback the click looks dead and further clicks are swallowed
+            // by the isSubmitting guard (2026-09-20 "unresponsive UI" RCA).
+            const submitBtn = document.getElementById('startScraperJob');
+            setButtonLoading(submitBtn, true, 'Checking cache…');
+
             // Check cache first before starting new job
-            const cacheFound = await checkScraperCache(payload);
+            let cacheFound = false;
+            try {
+                cacheFound = await checkScraperCache(payload);
+            } finally {
+                if (cacheFound) {
+                    // Cache hit — the modal takes over; restore the button.
+                    setButtonLoading(submitBtn, false, 'Start Scraper Job');
+                } else {
+                    setButtonLoading(submitBtn, true, 'Starting…');
+                }
+            }
             if (cacheFound) {
                 isSubmitting = false; // Reset flag for cache found
                 return; // User will decide via modal
@@ -3936,13 +3967,19 @@ example.org,Jane Doe</pre>
             await startScraperJobInternal(payload);
         });
 
-        // Check cache before submitting job
+        // Check cache before submitting job. Hard 45s cap: signature math on
+        // US-wide scopes is slow, but an unbounded await would hold the
+        // submit button hostage. On timeout/failure we proceed to a normal
+        // job start (a fresh scrape is always correct, just not free).
         async function checkScraperCache(payload) {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 45000);
             try {
                 const res = await fetch('/api/scraper/cache/check', {
                     method: 'POST',
                     headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
+                    body: JSON.stringify(payload),
+                    signal: controller.signal
                 });
 
                 if (res.ok) {
@@ -3954,9 +3991,100 @@ example.org,Jane Doe</pre>
                 }
             } catch (e) {
                 console.error('Cache check failed:', e);
+            } finally {
+                clearTimeout(timeoutId);
             }
             return false; // No cache
         }
+
+        // ── Live scope hint (2026-09-20) ─────────────────────────────────────
+        // Shows "≈ N tasks · ~Xh" under the Start button BEFORE submit, via the
+        // cheap GET /api/scraper/estimate (centers math only — not the slow
+        // cache-signature path). US-wide searches are ~88K tasks / many hours;
+        // the user deserves to know that while still choosing a region.
+        let scraperScopeTimer = null;
+        let scraperScopeCacheKey = null;
+
+        function formatTaskDuration(totalTasks) {
+            // ~1.5 tasks/s observed per job on this platform → ~5,400 tasks/hour.
+            const hours = totalTasks / 5400;
+            if (hours < 1) return '~' + Math.max(1, Math.round(hours * 60)) + ' min';
+            if (hours < 24) return '~' + Math.round(hours) + ' h';
+            return '~' + Math.round(hours / 24) + ' days';
+        }
+
+        function buildEstimateParams() {
+            const mode = document.getElementById('scraperMode').value;
+            const country = document.getElementById('scraperCountry').value;
+            const params = { mode: mode, country: country };
+            if (mode === 'states') {
+                const selected = Array.from(document.getElementById('scraperStates').selectedOptions).map(o => o.value);
+                if (selected.length === 0) return null; // form incomplete — no hint yet
+                params.states = selected.join(',');
+            } else if (mode === 'cities') {
+                const container = document.getElementById('scraperSelectedCities');
+                const cities = container ? Array.from(container.querySelectorAll('span')).map(s => (s.getAttribute('data-city') || s.textContent.replace('×', '').trim())).filter(c => c) : [];
+                if (cities.length === 0) return null;
+                params.cities = cities.join(',');
+            } else if (mode === 'zips') {
+                const zipInput = document.getElementById('scraperZipsInput').value;
+                const { valid } = validateZipCodes(zipInput);
+                if (valid.length === 0) return null;
+                params.zips = valid.join(',');
+            }
+            return params;
+        }
+
+        async function updateScraperScopeHint() {
+            const hintEl = document.getElementById('scraperScopeHint');
+            if (!hintEl) return;
+            const params = buildEstimateParams();
+            if (!params) { hintEl.style.display = 'none'; return; }
+            const cacheKey = JSON.stringify(params);
+            if (cacheKey === scraperScopeCacheKey) return; // unchanged since last fetch
+
+            try {
+                const qs = new URLSearchParams(params).toString();
+                const res = await fetch('/api/scraper/estimate?' + qs, {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (!res.ok) { hintEl.style.display = 'none'; return; }
+                const data = await res.json();
+                scraperScopeCacheKey = cacheKey;
+                const tasks = data.total_tasks || 0;
+                const centers = data.center_count || 0;
+                const duration = formatTaskDuration(tasks);
+                const isLarge = tasks > 20000;
+                hintEl.className = 'scraper-scope-hint' + (isLarge ? ' scope-large' : '');
+                hintEl.innerHTML =
+                    '<span class="scope-icon">' + (isLarge ? '⚠️' : '📍') + '</span><span>'
+                    + '<strong>≈ ' + tasks.toLocaleString() + ' tasks</strong> (' + centers.toLocaleString() + ' areas × 3 zoom levels) · ' + duration + '. '
+                    + (isLarge
+                        ? 'This is a full-country scan and will take hours. Narrow to specific states or cities for much faster results.'
+                        : 'You can keep working — progress streams live and partial results download anytime.')
+                    + '</span>';
+                hintEl.style.display = 'flex';
+            } catch (e) {
+                hintEl.style.display = 'none'; // hint is advisory — never block the form
+            }
+        }
+
+        function scheduleScraperScopeHint() {
+            clearTimeout(scraperScopeTimer);
+            scraperScopeTimer = setTimeout(updateScraperScopeHint, 400);
+        }
+
+        document.getElementById('scraperMode').addEventListener('change', scheduleScraperScopeHint);
+        document.getElementById('scraperCountry').addEventListener('change', () => { scraperScopeCacheKey = null; scheduleScraperScopeHint(); });
+        document.getElementById('scraperStates').addEventListener('change', scheduleScraperScopeHint);
+        document.getElementById('scraperZipsInput').addEventListener('input', scheduleScraperScopeHint);
+        // City chips are added/removed by other handlers — observe the container
+        // instead of hooking each mutation point.
+        const scraperCitiesChipContainer = document.getElementById('scraperSelectedCities');
+        if (scraperCitiesChipContainer) {
+            new MutationObserver(scheduleScraperScopeHint).observe(scraperCitiesChipContainer, { childList: true });
+        }
+        scheduleScraperScopeHint(); // initial hint for the default US-wide form
 
         function showCacheModal(data) {
             document.getElementById('cacheResultCount').textContent = data.total_results.toLocaleString();
@@ -4135,9 +4263,22 @@ example.org,Jane Doe</pre>
                     };
                     document.getElementById('scraperTotal').textContent = data.total_tasks || data.total || 0;
                     document.getElementById('scraperProgress').style.display = 'block';
+                    // Instant queued feedback — don't wait for the SSE round-trip
+                    // to tell the user their click landed.
+                    const statusEl = document.getElementById('scraperStatus');
+                    const activityTextEl = document.getElementById('scraperActivityText');
+                    if (data.status === 'queued') {
+                        statusEl.textContent = 'Queued';
+                        if (activityTextEl) activityTextEl.textContent = 'In queue — starts automatically when a runner slot frees up…';
+                    } else {
+                        statusEl.textContent = 'Starting…';
+                    }
                     startScraperProgressStream(currentJobId);
                     // Auto-refresh jobs list to show new job
                     loadScraperJobs();
+                    // Make sure the progress panel is in view — the strongest
+                    // "it worked" signal is the live progress card itself.
+                    document.getElementById('scraperProgress').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
                     setButtonLoading(btn, false, 'Start Scraper Job');
                 } else {
                     const err = await res.json();
@@ -4166,10 +4307,20 @@ example.org,Jane Doe</pre>
                 const data = JSON.parse(e.data);
                 document.getElementById('scraperDone').textContent = data.done_tasks || data.done || 0;
                 document.getElementById('scraperResults').textContent = data.result_count || 0;
-                const total = parseInt(document.getElementById('scraperTotal').textContent) || 1;
+                const total = parseInt(document.getElementById('scraperTotal').textContent) || data.total_tasks || 1;
                 const pct = Math.round(((data.done_tasks || 0) / total) * 100);
                 document.getElementById('scraperProgressBar').style.width = pct + '%';
                 document.getElementById('scraperProgressText').textContent = pct + '%';
+                // Queued jobs emit a snapshot (no crawler events until the
+                // dispatcher claims them) — surface the queue position so the
+                // wait reads as "scheduled", not "frozen".
+                if (data.snapshot && data.status === 'queued') {
+                    document.getElementById('scraperStatus').textContent = 'Queued';
+                    const at = document.getElementById('scraperActivityText');
+                    if (at) at.textContent = 'Position ' + (data.queue_position || 1) + ' in queue — starts automatically when a runner slot frees up…';
+                    updateScraperStep('init', 'active');
+                    return;
+                }
                 document.getElementById('scraperStatus').textContent = data.status || 'Running...';
 
                 // Update activity display
@@ -4221,6 +4372,14 @@ example.org,Jane Doe</pre>
                     eventSource.close();
                     activityText.textContent = 'Scraping failed: ' + (data.error || 'Unknown error');
                     document.getElementById('scraperEta').textContent = '';
+                } else if (data.status === 'cancelled' || data.status === 'abandoned' || data.status === 'stopped') {
+                    // Terminal statuses now close the stream server-side too —
+                    // close the client side and say what happened.
+                    eventSource.close();
+                    activityText.textContent = 'Scraping ' + data.status + (data.error ? ': ' + data.error : '. Partial results (if any) can be downloaded from the job list.');
+                    document.getElementById('scraperEta').textContent = '';
+                    document.getElementById('scraperStatus').textContent = data.status.charAt(0).toUpperCase() + data.status.slice(1);
+                    loadScraperJobs();
                 }
             };
             eventSource.onerror = function() { eventSource.close(); };
@@ -6725,12 +6884,12 @@ example.org,Jane Doe</pre>
                 btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;"></span> Downloading...';
             }
             try {
-                // First get job details to build filename
-                const jobRes = await fetch('/api/scraper/jobs', { headers: { 'Authorization': 'Bearer ' + token } });
+                // Get THIS job's details to build the filename — fetching the
+                // whole jobs list here pulled ~1 MB per download click.
+                const jobRes = await fetch('/api/scraper/jobs/' + jobId, { headers: { 'Authorization': 'Bearer ' + token } });
                 let filename = 'scraper_job';
                 if (jobRes.ok) {
-                    const data = await jobRes.json();
-                    const job = data.jobs?.find(j => j.job_id === jobId);
+                    const job = await jobRes.json();
                     if (job) {
                         // Build filename from query, location, centers and results
                         const query = job.query ? job.query.replace(/[^a-z0-9]/gi, '_').substring(0, 30) : 'search';

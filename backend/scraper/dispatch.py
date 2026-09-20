@@ -36,6 +36,8 @@ Safety properties:
 from __future__ import annotations
 
 import asyncio
+import ctypes
+import gc
 import logging
 import os
 from typing import Any, Awaitable, Callable
@@ -144,6 +146,64 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _rss_bytes() -> int:
+    """Current RSS in bytes via /proc/self/statm (0 if unreadable)."""
+    try:
+        with open("/proc/self/statm") as f:
+            return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+    except Exception:
+        return 0
+
+
+def trim_process_memory() -> int:
+    """gc + glibc malloc_trim — returns the number of RSS bytes released.
+
+    The runner is a long-lived single process. A finished mega-job (100K+
+    tasks, 500K+ results) leaves Python objects and glibc arenas holding
+    hundreds of MB of freed-but-unreturned memory. Under host-wide memory
+    pressure the kernel swaps those dead pages out (2026-09-20 incident:
+    ~1 GB of the runner sat in swap on the busy /mnt/disk); the next job
+    claim then faulted them back in one page at a time and the event loop
+    froze for 15+ minutes with two jobs stuck in the queue. Trimming after
+    every job (and on each guard tick) keeps the idle runner small so there
+    is nothing left to swap.
+
+    Best-effort: never raises; returns 0 when nothing could be measured.
+    """
+    before = _rss_bytes()
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass  # non-glibc or restricted — gc.collect() above still ran
+    return max(0, before - _rss_bytes())
+
+
+async def _trim_logged(context: str) -> None:
+    """Run trim_process_memory off the event loop; log meaningful releases."""
+    freed = await asyncio.to_thread(trim_process_memory)
+    if freed > 10 * 1024 * 1024:
+        logger.info("Dispatch: %s — released %.0f MB RSS back to the OS", context, freed / 1048576)
+
+
+# Handle to the in-flight background trim, if any. The dispatch loop schedules
+# trims as detached tasks (NOT awaited inline): awaiting a real gc.collect()
+# inline delayed the next claim by hundreds of ms on a loaded interpreter —
+# and claim latency is exactly what the 2026-09-20 incident was about.
+_trim_task: "asyncio.Task[None] | None" = None
+
+
+def _schedule_trim(context: str) -> None:
+    """Start a background trim unless one is already running (best-effort)."""
+    global _trim_task
+    try:
+        if _trim_task is not None and not _trim_task.done():
+            return
+        _trim_task = asyncio.create_task(_trim_logged(context))
+    except RuntimeError:
+        pass  # no running loop (defensive — callers are always in one)
+
+
 async def dispatch_loop(
     launch: Callable[[str], Awaitable[None]],
     poll_seconds: float = DISPATCH_POLL_SECONDS,
@@ -159,7 +219,14 @@ async def dispatch_loop(
     in_flight: set[asyncio.Task] = set()
     while True:
         try:
+            alive_before = len(in_flight)
             in_flight = {t for t in in_flight if not t.done()}
+            if len(in_flight) < alive_before:
+                # A hosted job just finished — give its freed arenas back to
+                # the OS now, before the runner goes idle and host memory
+                # pressure swaps them out (2026-09-20 swap-freeze RCA).
+                # Detached: never delays the next claim (see _schedule_trim).
+                _schedule_trim("job finished")
             if len(in_flight) < per_worker_cap:
                 job_id = claim_next_queued_scraper_job()
                 if job_id:
@@ -202,4 +269,7 @@ async def runtime_guard_loop(interval_seconds: float = GUARD_POLL_SECONDS) -> No
             raise
         except Exception as exc:
             logger.warning("Scraper guard tick failed (non-fatal): %s", exc)
+        # Shrink idle bloat every tick so a post-job memory peak can't linger
+        # into swap during long idle stretches between jobs.
+        _schedule_trim("guard tick")
         await asyncio.sleep(interval_seconds)
