@@ -6802,7 +6802,7 @@ example.org,Jane Doe</pre>
                 filteredJobs = filteredJobs.filter(job => {
                     const query = (job.query || '').toLowerCase();
                     const displayName = (job.display_name || '').toLowerCase();
-                    const location = getLocationDisplay(job.regions).toLowerCase();
+                    const location = (job.location_display || getLocationDisplay(job.regions) || '').toLowerCase();
                     return query.includes(searchQuery) || displayName.includes(searchQuery) || location.includes(searchQuery);
                 });
             }
@@ -6855,7 +6855,7 @@ example.org,Jane Doe</pre>
                     (job.done_tasks||0) + '/' + (job.total_tasks||0) + ' tasks',
                     (job.result_count||0) + ' results',
                 ];
-                if (job.regions) metaParts.push(getLocationDisplay(job.regions));
+                if (job.location_display || job.regions) metaParts.push(job.location_display || getLocationDisplay(job.regions));
                 const metaHtml = metaParts.map(p => '<span class="meta-item">' + p + '</span>').join('<span class="meta-sep" aria-hidden="true">·</span>');
 
                 const _isTerminal = ['done','failed','abandoned','cancelled','stopped','partial'].includes(job.status);

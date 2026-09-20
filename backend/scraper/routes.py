@@ -692,10 +692,62 @@ async def list_scraper_jobs(current_user: dict = Depends(auth.get_current_user))
     else:
         jobs = store.list_jobs(user_id=current_user["user_id"], job_type="scraper", limit=200)
     slim_jobs = [
-        {k: j.get(k) for k in _SCRAPER_LIST_FIELDS} | {"output_exists": _job_output_exists(j)}
+        {k: j.get(k) for k in _SCRAPER_LIST_FIELDS}
+        | {
+            "regions": _compact_regions_for_list(j.get("regions")),
+            "location_display": _location_display_for_list(j.get("regions")),
+            "output_exists": _job_output_exists(j),
+        }
         for j in jobs
     ]
     return {"jobs": slim_jobs}
+
+
+def _compact_regions_for_list(regions_raw):
+    """Compact a regions blob for list rows: scalars kept, long arrays capped
+    at 2 entries with accurate `*_count` fields. Returns a JSON string (the
+    shape the UI's getLocationDisplay expects) or the input on any error.
+    Some jobs carry thousands of zip/city entries — one 295 KB blob alone
+    made the list payload 3.5 MB (2026-09-20)."""
+    try:
+        r = json.loads(regions_raw) if isinstance(regions_raw, str) else (regions_raw or {})
+    except (ValueError, TypeError):
+        return regions_raw
+    if not isinstance(r, dict):
+        return regions_raw
+    compact = {k: v for k, v in r.items() if not isinstance(v, list)}
+    for key in ("states", "cities", "zips", "center_ids"):
+        v = r.get(key)
+        if isinstance(v, list) and v:
+            compact[key] = v[:2]
+            compact[key + "_count"] = len(v)
+    return json.dumps(compact)
+
+
+def _location_display_for_list(regions_raw) -> str:
+    """Server-side twin of the UI's getLocationDisplay, computed from the
+    FULL blob so counts stay accurate for multi-thousand-entry jobs."""
+    try:
+        r = json.loads(regions_raw) if isinstance(regions_raw, str) else (regions_raw or {})
+    except (ValueError, TypeError):
+        return ""
+    if not isinstance(r, dict):
+        return ""
+    country = (r.get("country") or "").upper()
+    if r.get("mode") == "all":
+        return "All " + ("United States" if country == "US" else country)
+    states = r.get("states") or []
+    cities = r.get("cities") or []
+    zips_ = r.get("zips") or []
+    if r.get("mode") == "states" and states:
+        shown = ", ".join(states[:2])
+        return f"{shown} +{len(states) - 2} more ({country})" if len(states) > 2 else f"{shown} ({country})"
+    if r.get("mode") == "cities" and cities:
+        shown = ", ".join(cities[:2])
+        return f"{shown} +{len(cities) - 2} more ({country})" if len(cities) > 2 else f"{shown} ({country})"
+    if r.get("mode") == "zips" and zips_:
+        return f"{len(zips_)} zip/postal code{'s' if len(zips_) > 1 else ''} ({country})"
+    return country
 
 
 # Exactly the fields the scraper jobs UI renders (renderScraperJobs +

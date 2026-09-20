@@ -151,7 +151,7 @@ class TestSlimJobsList:
         # Card fields the UI renders must survive...
         for field in ("job_id", "status", "query", "display_name", "regions",
                       "created_at", "done_tasks", "total_tasks", "result_count",
-                      "output_exists"):
+                      "output_exists", "location_display"):
             assert field in job, f"missing UI field: {field}"
         # ...and fat columns must NOT ship.
         for field in ("filename", "cascade_config", "user_id", "output_path",
@@ -163,6 +163,27 @@ class TestSlimJobsList:
         body = client.get("/api/scraper/jobs").content
         # 5,000 filler chars in `filename` must not reach the wire.
         assert b"x" * 100 not in body
+
+    def test_huge_regions_blob_compacted_with_accurate_display(self, client, scraper_store):
+        iso = datetime.now(timezone.utc).isoformat()
+        fat_zips = [f"1{i:04d}" for i in range(5000)]  # 5,000 zips ≈ 30 KB blob
+        import json as _json
+        scraper_store.execute(
+            "INSERT INTO jobs (job_id, user_id, job_type, status, query, regions, "
+            "total_tasks, done_tasks, result_count, created_at, updated_at) "
+            "VALUES (?, ?, 'scraper', 'done', 'vaporizer store', ?, 15000, 15000, 5, ?, ?)",
+            ("ux-slim-3", OWNER_UID, _json.dumps(
+                {"mode": "zips", "country": "us", "states": [], "cities": [],
+                 "zips": fat_zips, "center_ids": [], "expected_types": []}
+            ), iso, iso),
+        )
+        scraper_store.commit()
+        r = client.get("/api/scraper/jobs")
+        mine = [j for j in r.json()["jobs"] if j["job_id"] == "ux-slim-3"][0]
+        # The blob itself is capped…
+        assert len(mine["regions"]) < 500
+        # …but the display keeps the ACCURATE count from the full blob.
+        assert mine["location_display"] == "5000 zip/postal codes (US)"
 
 
 # ---------------------------------------------------------------------------
