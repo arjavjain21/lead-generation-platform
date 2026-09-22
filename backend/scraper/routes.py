@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -1000,8 +1000,37 @@ async def stream_scraper_job(
     )
 
 
+async def _user_or_token_fallback(
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(default=None),
+) -> dict:
+    """Auth for file-download endpoints: API key, Bearer JWT, or ?token= JWT.
+
+    Mirrors auth.get_current_user_with_api_key (API key first, then Bearer)
+    and adds the query-param fallback: browser-native downloads (anchor
+    click → download manager) cannot set Authorization headers, and
+    mega-job CSVs run 100-200MB — in-memory fetch()+blob() left the UI
+    button silent for ~a minute and could fail the click outright
+    (2026-09-22 partial-download report). Same ?token= pattern the SSE
+    stream endpoint has always used.
+    """
+    if x_api_key:
+        user = auth.verify_api_key(x_api_key)
+        if user:
+            return user
+    if authorization and authorization.lower().startswith("bearer "):
+        return auth.decode_token(authorization[7:].strip())
+    if token:
+        return auth.decode_token(token)
+    raise HTTPException(status_code=401, detail="Authentication required.")
+
+
 @router.get("/jobs/{job_id}/download")
-async def download_scraper_result(job_id: str, current_user: dict = Depends(auth.get_current_user_with_api_key)):
+async def download_scraper_result(
+    job_id: str,
+    current_user: dict = Depends(_user_or_token_fallback),
+):
     """Download the full CSV output of a completed scraper job."""
     try:
         store = job_store.get_store()
@@ -1095,7 +1124,10 @@ def _count_csv_data_rows(path: Path) -> int:
 
 
 @router.get("/jobs/{job_id}/partial-download")
-async def partial_download_scraper(job_id: str, current_user: dict = Depends(auth.get_current_user_with_api_key)):
+async def partial_download_scraper(
+    job_id: str,
+    current_user: dict = Depends(_user_or_token_fallback),
+):
     """
     Download partial CSV results from a running scraper job (no status guard).
     Returns whatever data has been written so far. The frontend's 'Download

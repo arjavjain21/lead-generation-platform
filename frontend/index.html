@@ -4422,11 +4422,10 @@ example.org,Jane Doe</pre>
         // Download scraper results
         document.getElementById('downloadScraperResults').addEventListener('click', function() {
             if (currentJobId) {
-                // Build filename from query and location
-                const query = document.getElementById('scraperQuery').value.replace(/[^a-z0-9]/gi, '_').substring(0, 30) || 'search';
-                const location = getLocationDisplay(JSON.stringify(currentJobRegions)).replace(/[^a-z0-9]/gi, '_').substring(0, 30) || 'US';
-                const filename = query + '_' + location + '_results.csv';
-                downloadFile(currentJobId, filename);
+                // Native download via the SCRAPER endpoint — this previously
+                // called downloadFile(), which hits /api/enrichment/... with a
+                // scraper job id (404) and buffered the CSV in memory.
+                triggerNativeScraperDownload(currentJobId, 'download');
             }
         });
 
@@ -6877,40 +6876,34 @@ example.org,Jane Doe</pre>
             }).join('');
         }
 
-        // Download scraper job - use query + location as filename
+        // Download scraper job — native browser download via ?token= auth.
+        // Mega-job CSVs are 100-200MB; fetch()+blob() held the whole file in
+        // JS memory with no progress and could fail the programmatic click
+        // (2026-09-22 report). The browser's own download manager shows real
+        // progress, resumes, and never touches page memory. Filename comes
+        // from the server's Content-Disposition.
+        function triggerNativeScraperDownload(jobId, endpointPath) {
+            const a = document.createElement('a');
+            a.href = '/api/scraper/jobs/' + jobId + '/' + endpointPath + '?token=' + token;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+        }
+
         async function downloadScraperJob(jobId, btn) {
             if (btn) {
                 btn.disabled = true;
-                btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;"></span> Downloading...';
+                btn.textContent = 'Starting…';
             }
             try {
-                // Get THIS job's details to build the filename — fetching the
-                // whole jobs list here pulled ~1 MB per download click.
-                const jobRes = await fetch('/api/scraper/jobs/' + jobId, { headers: { 'Authorization': 'Bearer ' + token } });
-                let filename = 'scraper_job';
-                if (jobRes.ok) {
-                    const job = await jobRes.json();
-                    if (job) {
-                        // Build filename from query, location, centers and results
-                        const query = job.query ? job.query.replace(/[^a-z0-9]/gi, '_').substring(0, 30) : 'search';
-                        const location = getLocationDisplay(job.regions).replace(/[^a-z0-9]/gi, '_').substring(0, 30);
-                        const centers = job.total_tasks || 0;
-                        const results = job.result_count || 0;
-                        const status = job.status || 'done';
-                        filename = `${query}_${location}_${centers}_centers_${results}_results_${status}`;
-                    }
+                triggerNativeScraperDownload(jobId, 'download');
+            } finally {
+                // The browser download continues independently; restore the
+                // button shortly so the user can re-trigger if they cancelled.
+                if (btn) {
+                    setTimeout(() => { btn.disabled = false; btn.innerHTML = 'Download'; }, 4000);
                 }
-                const res = await fetch('/api/scraper/jobs/' + jobId + '/download', { headers: { 'Authorization': 'Bearer ' + token } });
-                if (!res.ok) { alert('Download failed'); if (btn) { btn.disabled = false; btn.innerHTML = 'Download'; } return; }
-                const blob = await res.blob();
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = filename + '_results.csv';
-                a.click();
-                URL.revokeObjectURL(url);
-            } catch (e) { alert('Error: ' + e.message); }
-            if (btn) { btn.disabled = false; btn.innerHTML = 'Download'; }
+            }
         }
 
         // --- Incremental / segmented partial downloads (running + abandoned jobs) ---
@@ -6921,30 +6914,16 @@ example.org,Jane Doe</pre>
         // falls back to the live output file, so it works even when output_path
         // is null (abandoned jobs).
         async function downloadScraperPartial(jobId, btn) {
-            if (btn) { btn.disabled = true; btn.textContent = 'Downloading...'; }
+            if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
             try {
-                const res = await fetch('/api/scraper/jobs/' + jobId + '/partial-download', {
-                    headers: { 'Authorization': 'Bearer ' + token }
-                });
-                if (!res.ok) {
-                    let msg = 'Download failed';
-                    try { const err = await res.json(); msg = 'Download failed: ' + (err.detail || 'No data available yet'); } catch (_) {}
-                    alert(msg);
-                    return;
-                }
-                const blob = await res.blob();
-                const cd = res.headers.get('content-disposition') || '';
-                const match = cd.match(/filename="?([^"]+)"?/);
-                const filename = match ? match[1] : `partial_${jobId.substr(0, 8)}.csv`;
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url; a.download = filename;
-                document.body.appendChild(a); a.click();
-                document.body.removeChild(a); URL.revokeObjectURL(url);
-            } catch (e) {
-                alert('Error: ' + e.message);
+                // Native browser download (see downloadScraperJob): a 95%-done
+                // mega-job's partial CSV is 170MB+ — fetch+blob froze this
+                // button with zero feedback for ~a minute.
+                triggerNativeScraperDownload(jobId, 'partial-download');
             } finally {
-                if (btn) { btn.disabled = false; btn.textContent = '↓ Download partial'; }
+                if (btn) {
+                    setTimeout(() => { btn.disabled = false; btn.textContent = '↓ Download partial'; }, 4000);
+                }
             }
         }
 

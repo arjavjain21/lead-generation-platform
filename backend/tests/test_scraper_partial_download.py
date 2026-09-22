@@ -47,7 +47,12 @@ def _make_user(user_id=OWNER_UID, is_admin=False):
 
 
 def _override_auth(user_id=OWNER_UID, is_admin=False):
-    return {_auth.get_current_user_with_api_key: lambda: _make_user(user_id, is_admin)}
+    return {
+        _auth.get_current_user_with_api_key: lambda: _make_user(user_id, is_admin),
+        # Download endpoints moved to the three-way fallback dependency
+        # (API key / Bearer / ?token= — 2026-09-22); override it too.
+        routes._user_or_token_fallback: lambda: _make_user(user_id, is_admin),
+    }
 
 
 def _make_test_user(conn, user_id):
@@ -298,7 +303,10 @@ class TestStatusGateAndAuth:
         job_id, csv_path, _ = running_job
         _write_rows(csv_path, 50)
         app.dependency_overrides.update(
-            {_auth.get_current_user_with_api_key: lambda: _make_user("someone-else")}
+            {
+                _auth.get_current_user_with_api_key: lambda: _make_user("someone-else"),
+                routes._user_or_token_fallback: lambda: _make_user("someone-else"),
+            }
         )
         try:
             with TestClient(app) as c:

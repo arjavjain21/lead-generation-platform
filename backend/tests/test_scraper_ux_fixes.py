@@ -267,7 +267,60 @@ class TestSseStreamFixes:
 
 
 # ---------------------------------------------------------------------------
-# 4. Dispatch memory trim (standalone — needs only a jobs table)
+# 4. ?token= query auth on download endpoints (browser-native downloads)
+# ---------------------------------------------------------------------------
+
+class TestDownloadTokenAuth:
+    """The download endpoints accept ?token= JWT so the browser's own download
+    manager can fetch mega-job CSVs (no Authorization header possible)."""
+
+    @pytest.fixture
+    def running_job_with_csv(self, scraper_store, tmp_path):
+        from unittest import mock as _mock
+
+        _insert_scraper_job(scraper_store, "ux-dl-1", status="running")
+        csv_path = tmp_path / "ux-dl-1.csv"
+        csv_path.write_text("name,phone\nAcme,555\n", encoding="utf-8")
+        with _mock.patch.object(routes, "OUTPUT_DIR", tmp_path):
+            yield "ux-dl-1"
+
+    def test_no_auth_is_401(self, client, running_job_with_csv):
+        r = client.get(f"/api/scraper/jobs/{running_job_with_csv}/partial-download")
+        assert r.status_code == 401
+
+    def test_api_key_branch(self, running_job_with_csv, monkeypatch):
+        monkeypatch.setattr(
+            routes.auth, "verify_api_key", lambda k: {"user_id": OWNER_UID, "is_admin": True}
+        )
+        user = asyncio.run(routes._user_or_token_fallback(
+            x_api_key="lgp_test", authorization=None, token=None))
+        assert user["user_id"] == OWNER_UID
+
+    def test_bearer_branch(self, running_job_with_csv, monkeypatch):
+        decoded = []
+        monkeypatch.setattr(
+            routes.auth, "decode_token",
+            lambda t: decoded.append(t) or {"user_id": OWNER_UID},
+        )
+        user = asyncio.run(routes._user_or_token_fallback(
+            x_api_key=None, authorization="Bearer abc.def", token=None))
+        assert user["user_id"] == OWNER_UID
+        assert decoded == ["abc.def"]  # "Bearer " prefix stripped
+
+    def test_token_branch(self, running_job_with_csv, monkeypatch):
+        decoded = []
+        monkeypatch.setattr(
+            routes.auth, "decode_token",
+            lambda t: decoded.append(t) or {"user_id": OWNER_UID},
+        )
+        user = asyncio.run(routes._user_or_token_fallback(
+            x_api_key=None, authorization=None, token="q.jwt.token"))
+        assert user["user_id"] == OWNER_UID
+        assert decoded == ["q.jwt.token"]
+
+
+# ---------------------------------------------------------------------------
+# 5. Dispatch memory trim (standalone — needs only a jobs table)
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
