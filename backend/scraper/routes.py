@@ -2186,19 +2186,30 @@ async def _run_job_with_tasks(
             bucket_key = tuple(sorted(zoom_set))
             buckets.setdefault(bucket_key, []).append(first_center_by_key[center_key])
 
+        # run_crawl returns TOTAL unique keys seen (dedupe keys loaded from the
+        # output file + new ones), not just the new ones — so across multiple
+        # zoom-set buckets the values must NOT be summed: each bucket's return
+        # already includes everything before it (2026-09-22 RCA: 7 buckets ×
+        # ~168K loaded keys reported 1,176,860 "results" for a 169K-row job).
+        # The CSV was always correct; only this counter inflated. Buckets run
+        # sequentially against the same file, so the running max IS the true
+        # cumulative unique count.
         result_count = 0
         for bucket_zooms, bucket_centers in buckets.items():
-            result_count += await crawler_module.run_crawl(
-                job_id=job_id,
-                query=query,
-                centers=bucket_centers,
-                api_key=api_key,
-                output_path=output_path,
-                on_progress=on_progress,
-                expected_types=expected_types,
-                cancelled_jobs=cancelled_jobs,
-                zooms=list(bucket_zooms),
-                check_cancelled=store.is_job_cancelled,
+            result_count = max(
+                result_count,
+                await crawler_module.run_crawl(
+                    job_id=job_id,
+                    query=query,
+                    centers=bucket_centers,
+                    api_key=api_key,
+                    output_path=output_path,
+                    on_progress=on_progress,
+                    expected_types=expected_types,
+                    cancelled_jobs=cancelled_jobs,
+                    zooms=list(bucket_zooms),
+                    check_cancelled=store.is_job_cancelled,
+                ),
             )
 
         # Record remaining requests

@@ -320,7 +320,61 @@ class TestDownloadTokenAuth:
 
 
 # ---------------------------------------------------------------------------
-# 5. Dispatch memory trim (standalone — needs only a jobs table)
+# 5. Resume-runner bucket aggregation (result_count must not sum buckets)
+# ---------------------------------------------------------------------------
+
+class TestResumeBucketCounting:
+    """2026-09-22 RCA: run_crawl returns TOTAL uniques (loaded keys + new),
+    so summing across zoom-set buckets inflated result_count ~7x (1,176,860
+    'results' on a 169K-row job). The final count must be the running max."""
+
+    def test_multi_bucket_result_count_is_max_not_sum(self, monkeypatch, tmp_path):
+        import asyncio as _aio
+
+        calls: list[int] = []
+
+        async def fake_run_crawl(**kwargs):
+            calls.append(len(calls))
+            # Escalating totals, as real buckets report (each loads the
+            # previous bucket's writes): 100, 180, 200.
+            return [100, 180, 200][len(calls) - 1]
+
+        final_counts: list[int] = []
+
+        class FakeStore:
+            def set_running(self, *a, **k): pass
+            def heartbeat(self, *a, **k): pass
+            def append_event(self, *a, **k): pass
+            def is_job_cancelled(self, *a, **k): return False
+            def update_result_count(self, job_id, n): final_counts.append(n)
+            def set_done(self, *a, **k): pass
+            def get_job(self, *a, **k): return None
+
+        monkeypatch.setattr(routes.crawler_module, "run_crawl", fake_run_crawl)
+        monkeypatch.setattr(routes.job_store, "get_store", lambda: FakeStore())
+
+        # Three centers with three DIFFERENT pending-zoom sets -> 3 buckets.
+        tasks = [
+            ({"name": "A", "state": "S", "lat": 1.0, "lng": 1.0}, 10),
+            ({"name": "A", "state": "S", "lat": 1.0, "lng": 1.0}, 12),
+            ({"name": "B", "state": "S", "lat": 2.0, "lng": 2.0}, 11),
+            ({"name": "C", "state": "S", "lat": 3.0, "lng": 3.0}, 10),
+            ({"name": "C", "state": "S", "lat": 3.0, "lng": 3.0}, 11),
+            ({"name": "C", "state": "S", "lat": 3.0, "lng": 3.0}, 12),
+        ]
+
+        _aio.run(routes._run_job_with_tasks(
+            job_id="ux-bucket-1", user_id="u1", is_admin=True,
+            query="q", tasks=tasks, api_key="k",
+            output_path=tmp_path / "out.csv",
+        ))
+
+        assert len(calls) == 3          # three zoom-set buckets ran
+        assert final_counts == [200]    # MAX (true cumulative), not 480
+
+
+# ---------------------------------------------------------------------------
+# 6. Dispatch memory trim (standalone — needs only a jobs table)
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
