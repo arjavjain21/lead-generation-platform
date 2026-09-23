@@ -59,6 +59,12 @@ class JobStoreBase:
             columns.append("display_name")
             values.append(display_name)
 
+        # Handle optional group_name (campaign bucket: multi-keyword search
+        # batches launched together, grouped in the UI, merged-downloadable)
+        if group_name := kwargs.get("group_name"):
+            columns.append("group_name")
+            values.append(group_name)
+
         # Scraper-specific fields
         if job_type == "scraper":
             columns.extend(["query", "regions", "total_tasks", "done_tasks", "result_count"])

@@ -92,6 +92,28 @@ class StartJobRequest(BaseModel):
     zips: list[str] = []       # US zip codes, UK postcodes, or Canada postal codes (for mode="zips")
     center_ids: list[str] = []  # For non-US: selected center names
     expected_types: list[str] = []
+    # Campaign bucket (2026-09-23): optional label grouping a batch of related
+    # keyword jobs (e.g. "Indonesia — Hospitality & Wellness"). Grouped jobs
+    # render as one collapsible bucket in the jobs list and support a single
+    # merged-CSV download across the whole group.
+    group: Optional[str] = None
+
+
+def _sanitize_group_name(raw: Optional[str]) -> Optional[str]:
+    """Normalize a campaign group label for storage + filenames.
+
+    Allowed: letters, digits, spaces, underscore, hyphen, ampersand (up to 80
+    chars after strip). Returns None when absent/invalid-length so the column
+    simply stays NULL.
+    """
+    if raw is None:
+        return None
+    cleaned = raw.strip()
+    if not cleaned or len(cleaned) > 80:
+        return None
+    if not all(ch.isalnum() or ch in " _-&" for ch in cleaned):
+        return None
+    return cleaned
 
 
 class ResumeJobRequest(BaseModel):
@@ -766,6 +788,7 @@ _SCRAPER_LIST_FIELDS = (
     "error",
     "checkpoint_count",
     "is_resumable",
+    "group_name",
 )
 
 
@@ -875,6 +898,7 @@ async def start_job(
         query=req.query.strip(),
         regions=regions_payload,
         total_tasks=total_tasks,
+        group_name=_sanitize_group_name(req.group),
     )
 
     # Queue the job — the dispatcher (scraper/dispatch.py) claims it into
@@ -1079,6 +1103,80 @@ async def download_scraper_result(
     filename = f"{query_slug}_{total_tasks}_centers_{result_count}_results_{status}.csv"
 
     return FileResponse(path=str(output_path), media_type="text/csv", filename=filename)
+
+
+@router.get("/jobs/group/{group_name}/download")
+async def download_scraper_group(
+    group_name: str,
+    current_user: dict = Depends(_user_or_token_fallback),
+):
+    """Merged CSV across every job in a campaign group (own jobs only).
+
+    Streams one header + all data rows from each group job's on-disk CSV in
+    creation order. Includes completed jobs and, for still-running ones, the
+    incrementally-written file (same on-disk fallback the per-job partial
+    download uses), so "download combined" works mid-campaign. Rows keep
+    their source ``query`` column, so the merged file stays attributable
+    per keyword.
+    """
+    try:
+        store = job_store.get_store()
+        # Mirror the jobs-list authorization model: admins see every user's
+        # jobs, non-admins only their own.
+        if current_user.get("is_admin"):
+            all_jobs = store.list_scraper_jobs(limit=1000)
+        else:
+            all_jobs = store.list_scraper_jobs(user_id=current_user["user_id"], limit=1000)
+    except sqlite3.OperationalError as e:
+        logger.warning("scraper group download: db lock: %s", e)
+        raise HTTPException(
+            status_code=503,
+            detail="The platform database is briefly busy. Please retry in a few seconds.",
+            headers={"Retry-After": "3"},
+        )
+
+    group_jobs = [j for j in all_jobs if j.get("group_name") == group_name]
+    group_jobs.sort(key=lambda j: j.get("created_at") or "")
+    if not group_jobs:
+        raise HTTPException(status_code=404, detail=f"No jobs found in group '{group_name}'.")
+
+    csv_paths: list[Path] = []
+    for j in group_jobs:
+        p = j.get("output_path") or OUTPUT_DIR / f"{j['job_id']}.csv"
+        p = Path(p)
+        try:
+            if p.exists() and p.stat().st_size > 0:
+                csv_paths.append(p)
+        except OSError:
+            continue
+    if not csv_paths:
+        raise HTTPException(status_code=404, detail="No result files ready for this group yet.")
+
+    def _merge_stream():
+        header_emitted = False
+        for path in csv_paths:
+            try:
+                with open(path, "r", encoding="utf-8", newline="") as f:
+                    first = True
+                    for line in f:
+                        if first:
+                            first = False
+                            if header_emitted:
+                                continue  # skip duplicate headers
+                            header_emitted = True
+                        if not line.strip():
+                            continue
+                        yield line if line.endswith("\n") else line + "\n"
+            except OSError as e:
+                logger.warning("group download: skipping unreadable %s: %s", path, e)
+
+    safe_slug = "".join(ch if (ch.isalnum() or ch in "_-") else "_" for ch in group_name)[:60] or "group"
+    filename = f"{safe_slug}_combined.csv"
+    return StreamingResponse(
+        _merge_stream(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # Size of each virtual download shard (rows). Tunable.
@@ -1531,7 +1629,9 @@ async def resume_scraper_job(
         query=original_job["query"],
         regions=original_regions,
         total_tasks=original_total_tasks,
-        parent_job_id=job_id
+        parent_job_id=job_id,
+        # Campaign bucket membership survives a pause/resume cycle
+        group_name=original_job.get("group_name"),
     )
 
     # Optionally copy original results

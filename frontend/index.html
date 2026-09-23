@@ -6803,8 +6803,9 @@ example.org,Jane Doe</pre>
                 filteredJobs = filteredJobs.filter(job => {
                     const query = (job.query || '').toLowerCase();
                     const displayName = (job.display_name || '').toLowerCase();
+                    const groupName = (job.group_name || '').toLowerCase();
                     const location = (job.location_display || getLocationDisplay(job.regions) || '').toLowerCase();
-                    return query.includes(searchQuery) || displayName.includes(searchQuery) || location.includes(searchQuery);
+                    return query.includes(searchQuery) || displayName.includes(searchQuery) || groupName.includes(searchQuery) || location.includes(searchQuery);
                 });
             }
 
@@ -6816,7 +6817,103 @@ example.org,Jane Doe</pre>
                 return;
             }
 
-            jobsList.innerHTML = filteredJobs.map(job => {
+            // Campaign buckets (2026-09-23): jobs carrying the same group_name
+            // collapse into one folder-style card with aggregate progress and a
+            // single combined-CSV download, so a 40-keyword batch reads as one
+            // campaign instead of 40 orphan rows.
+            const grouped = {};
+            const ungrouped = [];
+            filteredJobs.forEach(job => {
+                if (job.group_name) {
+                    (grouped[job.group_name] = grouped[job.group_name] || []).push(job);
+                } else {
+                    ungrouped.push(job);
+                }
+            });
+
+            const htmlParts = [];
+
+            Object.keys(grouped).sort().forEach(groupName => {
+                const members = grouped[groupName];
+                const totalMembers = allScraperJobs.filter(j => j.group_name === groupName).length;
+                const sumDone = members.reduce((a, j) => a + (j.done_tasks || 0), 0);
+                const sumTotal = members.reduce((a, j) => a + (j.total_tasks || 0), 0);
+                const sumResults = members.reduce((a, j) => a + (j.result_count || 0), 0);
+                const statusCounts = {};
+                members.forEach(j => { statusCounts[j.status] = (statusCounts[j.status] || 0) + 1; });
+                const chips = Object.entries(statusCounts)
+                    .map(([s, n]) => '<span class="job-status status-' + s + '">' + jobStatusLabel(s) + ' × ' + n + '</span>')
+                    .join(' ');
+                const filterNote = members.length < totalMembers
+                    ? '<span class="meta-item">showing ' + members.length + ' of ' + totalMembers + ' jobs (filters active)</span>'
+                    : '';
+                const collapsed = scraperGroupCollapsed[groupName] !== false; // default collapsed
+                const groupKey = 'sgroup-' + groupName.replace(/[^a-zA-Z0-9_-]/g, '_');
+
+                htmlParts.push('<div class="job-card scraper-job scraper-group-head">'
+                    + '<div class="job-info">'
+                    + '<h4 class="scraper-job-title">📁 ' + groupName + '</h4>'
+                    + '<div class="job-meta">'
+                    + '<span class="meta-item">' + totalMembers + ' jobs</span>'
+                    + '<span class="meta-sep" aria-hidden="true">·</span>'
+                    + '<span class="meta-item">' + sumDone.toLocaleString() + '/' + sumTotal.toLocaleString() + ' tasks</span>'
+                    + '<span class="meta-sep" aria-hidden="true">·</span>'
+                    + '<span class="meta-item">' + sumResults.toLocaleString() + ' results</span>'
+                    + '</div>'
+                    + '<div class="job-meta" style="margin-top:4px">' + chips + (filterNote ? ' ' + filterNote : '') + '</div>'
+                    + '</div>'
+                    + '<div class="actions">'
+                    + ' <button class="btn btn-success btn-sm" onclick="downloadScraperGroup(\'' + groupName.replace(/'/g, "\\'") + '\', this)">↓ Download combined CSV</button>'
+                    + ' <button class="btn btn-secondary btn-sm" onclick="toggleScraperGroup(\'' + groupName.replace(/'/g, "\\'") + '\')">' + (collapsed ? '▸ Show jobs' : '▾ Hide jobs') + '</button>'
+                    + '</div>'
+                    + '</div>'
+                    + '<div class="scraper-group-body" id="' + groupKey + '" style="' + (collapsed ? 'display:none' : '') + '">'
+                    + members.map(scraperJobCardHtml).join('')
+                    + '</div>');
+            });
+
+            ungrouped.forEach(job => htmlParts.push(scraperJobCardHtml(job)));
+
+            jobsList.innerHTML = htmlParts.join('');
+        }
+
+        // Collapsed-by-default state for campaign buckets; keyed by group name.
+        const scraperGroupCollapsed = {};
+
+        function toggleScraperGroup(groupName) {
+            const groupKey = 'sgroup-' + groupName.replace(/[^a-zA-Z0-9_-]/g, '_');
+            const body = document.getElementById(groupKey);
+            if (!body) return;
+            const willCollapse = body.style.display !== 'none';
+            body.style.display = willCollapse ? 'none' : 'block';
+            scraperGroupCollapsed[groupName] = willCollapse;
+            // Flip the toggle button label in place
+            const head = body.previousElementSibling;
+            if (head) {
+                const btn = head.querySelector('.actions .btn-secondary');
+                if (btn) btn.textContent = willCollapse ? '▸ Show jobs' : '▾ Hide jobs';
+            }
+        }
+
+        // Combined CSV for a whole campaign bucket — native browser download via
+        // ?token= auth (same pattern as per-job downloads; merged file can be
+        // large and must not be buffered in JS memory).
+        function downloadScraperGroup(groupName, btn) {
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = 'Starting…';
+                setTimeout(() => { btn.disabled = false; btn.textContent = '↓ Download combined CSV'; }, 4000);
+            }
+            const a = document.createElement('a');
+            a.href = '/api/scraper/jobs/group/' + encodeURIComponent(groupName) + '/download?token=' + token;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+        }
+
+        // One scraper job card (used both loose and inside campaign buckets).
+        function scraperJobCardHtml(job) {
+            {
                 // Status display via the shared label map.
                 let statusDisplay = jobStatusLabel(job.status);
 
@@ -6875,7 +6972,7 @@ example.org,Jane Doe</pre>
                     + '<div class="actions">' + actions + '</div>'
                     + '<div class="shard-list" id="shard-list-' + job.job_id + '"></div>'
                     + '</div>';
-            }).join('');
+            }
         }
 
         // Download scraper job — native browser download via ?token= auth.

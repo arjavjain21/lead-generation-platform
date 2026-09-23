@@ -38,6 +38,7 @@ class ScraperJobStore(JobStoreBase):
         total_tasks: int,
         parent_job_id: Optional[str] = None,
         display_name: Optional[str] = None,
+        group_name: Optional[str] = None,
     ) -> None:
         """Create a new scraper job."""
         self.create_job(
@@ -49,6 +50,7 @@ class ScraperJobStore(JobStoreBase):
             total_tasks=total_tasks,
             parent_job_id=parent_job_id,
             display_name=display_name,
+            group_name=group_name,
         )
 
     def list_scraper_jobs(
