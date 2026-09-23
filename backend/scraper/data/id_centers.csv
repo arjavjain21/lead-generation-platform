@@ -1,0 +1,289 @@
+name,state,lat,lng,tier,rank,population_basis,center_type,anchor_city,country
+Jakarta,Jakarta,-6.2146200,106.8451300,metro,1,geonames_id_2026_8540121,anchor_city,Jakarta,id
+Jakarta - East,Jakarta,-6.2146200,107.1351300,metro_offset,1,derived,offset_ring,Jakarta,id
+Jakarta - North,Jakarta,-6.0346200,106.8451300,metro_offset,1,derived,offset_ring,Jakarta,id
+Jakarta - South,Jakarta,-6.3946200,106.8451300,metro_offset,1,derived,offset_ring,Jakarta,id
+Jakarta - West,Jakarta,-6.2146200,106.5551300,metro_offset,1,derived,offset_ring,Jakarta,id
+Jakarta - Northeast,Jakarta,-6.0846200,107.0551300,metro_offset,1,derived,offset_ring,Jakarta,id
+Jakarta - Northwest,Jakarta,-6.0846200,106.6351300,metro_offset,1,derived,offset_ring,Jakarta,id
+Jakarta - Southeast,Jakarta,-6.3446200,107.0551300,metro_offset,1,derived,offset_ring,Jakarta,id
+Jakarta - Southwest,Jakarta,-6.3446200,106.6351300,metro_offset,1,derived,offset_ring,Jakarta,id
+Surabaya,East Java,-7.2491700,112.7508300,metro,2,geonames_id_2026_3018022,anchor_city,Surabaya,id
+Surabaya - East,East Java,-7.2491700,113.0408300,metro_offset,2,derived,offset_ring,Surabaya,id
+Surabaya - North,East Java,-7.0691700,112.7508300,metro_offset,2,derived,offset_ring,Surabaya,id
+Surabaya - South,East Java,-7.4291700,112.7508300,metro_offset,2,derived,offset_ring,Surabaya,id
+Surabaya - West,East Java,-7.2491700,112.4608300,metro_offset,2,derived,offset_ring,Surabaya,id
+Surabaya - Northeast,East Java,-7.1191700,112.9608300,metro_offset,2,derived,offset_ring,Surabaya,id
+Surabaya - Northwest,East Java,-7.1191700,112.5408300,metro_offset,2,derived,offset_ring,Surabaya,id
+Surabaya - Southeast,East Java,-7.3791700,112.9608300,metro_offset,2,derived,offset_ring,Surabaya,id
+Surabaya - Southwest,East Java,-7.3791700,112.5408300,metro_offset,2,derived,offset_ring,Surabaya,id
+Bandung,West Java,-6.9222200,107.6069400,metro,3,geonames_id_2026_2528163,anchor_city,Bandung,id
+Bandung - East,West Java,-6.9222200,107.8969400,metro_offset,3,derived,offset_ring,Bandung,id
+Bandung - North,West Java,-6.7422200,107.6069400,metro_offset,3,derived,offset_ring,Bandung,id
+Bandung - South,West Java,-7.1022200,107.6069400,metro_offset,3,derived,offset_ring,Bandung,id
+Bandung - West,West Java,-6.9222200,107.3169400,metro_offset,3,derived,offset_ring,Bandung,id
+Bandung - Northeast,West Java,-6.7922200,107.8169400,metro_offset,3,derived,offset_ring,Bandung,id
+Bandung - Northwest,West Java,-6.7922200,107.3969400,metro_offset,3,derived,offset_ring,Bandung,id
+Bandung - Southeast,West Java,-7.0522200,107.8169400,metro_offset,3,derived,offset_ring,Bandung,id
+Bandung - Southwest,West Java,-7.0522200,107.3969400,metro_offset,3,derived,offset_ring,Bandung,id
+Medan,North Sumatra,3.5833300,98.6666700,metro,4,geonames_id_2026_2486283,anchor_city,Medan,id
+Medan - East,North Sumatra,3.5833300,98.9566700,metro_offset,4,derived,offset_ring,Medan,id
+Medan - North,North Sumatra,3.7633300,98.6666700,metro_offset,4,derived,offset_ring,Medan,id
+Medan - South,North Sumatra,3.4033300,98.6666700,metro_offset,4,derived,offset_ring,Medan,id
+Medan - West,North Sumatra,3.5833300,98.3766700,metro_offset,4,derived,offset_ring,Medan,id
+Medan - Northeast,North Sumatra,3.7133300,98.8766700,metro_offset,4,derived,offset_ring,Medan,id
+Medan - Northwest,North Sumatra,3.7133300,98.4566700,metro_offset,4,derived,offset_ring,Medan,id
+Medan - Southeast,North Sumatra,3.4533300,98.8766700,metro_offset,4,derived,offset_ring,Medan,id
+Medan - Southwest,North Sumatra,3.4533300,98.4566700,metro_offset,4,derived,offset_ring,Medan,id
+Depok,West Java,-6.4000000,106.8186100,metro,5,geonames_id_2026_2163635,anchor_city,Depok,id
+Depok - East,West Java,-6.4000000,107.1086100,metro_offset,5,derived,offset_ring,Depok,id
+Depok - North,West Java,-6.2200000,106.8186100,metro_offset,5,derived,offset_ring,Depok,id
+Depok - South,West Java,-6.5800000,106.8186100,metro_offset,5,derived,offset_ring,Depok,id
+Depok - West,West Java,-6.4000000,106.5286100,metro_offset,5,derived,offset_ring,Depok,id
+Depok - Northeast,West Java,-6.2700000,107.0286100,metro_offset,5,derived,offset_ring,Depok,id
+Depok - Northwest,West Java,-6.2700000,106.6086100,metro_offset,5,derived,offset_ring,Depok,id
+Depok - Southeast,West Java,-6.5300000,107.0286100,metro_offset,5,derived,offset_ring,Depok,id
+Depok - Southwest,West Java,-6.5300000,106.6086100,metro_offset,5,derived,offset_ring,Depok,id
+Tangerang,Banten,-6.1780600,106.6300000,metro,6,geonames_id_2026_1927815,anchor_city,Tangerang,id
+Tangerang - East,Banten,-6.1780600,106.9200000,metro_offset,6,derived,offset_ring,Tangerang,id
+Tangerang - North,Banten,-5.9980600,106.6300000,metro_offset,6,derived,offset_ring,Tangerang,id
+Tangerang - South,Banten,-6.3580600,106.6300000,metro_offset,6,derived,offset_ring,Tangerang,id
+Tangerang - West,Banten,-6.1780600,106.3400000,metro_offset,6,derived,offset_ring,Tangerang,id
+Tangerang - Northeast,Banten,-6.0480600,106.8400000,metro_offset,6,derived,offset_ring,Tangerang,id
+Tangerang - Northwest,Banten,-6.0480600,106.4200000,metro_offset,6,derived,offset_ring,Tangerang,id
+Tangerang - Southeast,Banten,-6.3080600,106.8400000,metro_offset,6,derived,offset_ring,Tangerang,id
+Tangerang - Southwest,Banten,-6.3080600,106.4200000,metro_offset,6,derived,offset_ring,Tangerang,id
+Palembang,South Sumatra,-2.9167300,104.7458000,metro,7,geonames_id_2026_1801367,anchor_city,Palembang,id
+Palembang - East,South Sumatra,-2.9167300,105.0358000,metro_offset,7,derived,offset_ring,Palembang,id
+Palembang - North,South Sumatra,-2.7367300,104.7458000,metro_offset,7,derived,offset_ring,Palembang,id
+Palembang - South,South Sumatra,-3.0967300,104.7458000,metro_offset,7,derived,offset_ring,Palembang,id
+Palembang - West,South Sumatra,-2.9167300,104.4558000,metro_offset,7,derived,offset_ring,Palembang,id
+Palembang - Northeast,South Sumatra,-2.7867300,104.9558000,metro_offset,7,derived,offset_ring,Palembang,id
+Palembang - Northwest,South Sumatra,-2.7867300,104.5358000,metro_offset,7,derived,offset_ring,Palembang,id
+Palembang - Southeast,South Sumatra,-3.0467300,104.9558000,metro_offset,7,derived,offset_ring,Palembang,id
+Palembang - Southwest,South Sumatra,-3.0467300,104.5358000,metro_offset,7,derived,offset_ring,Palembang,id
+Semarang,Central Java,-6.9930600,110.4208300,metro,8,geonames_id_2026_1694740,anchor_city,Semarang,id
+Semarang - East,Central Java,-6.9930600,110.7108300,metro_offset,8,derived,offset_ring,Semarang,id
+Semarang - North,Central Java,-6.8130600,110.4208300,metro_offset,8,derived,offset_ring,Semarang,id
+Semarang - South,Central Java,-7.1730600,110.4208300,metro_offset,8,derived,offset_ring,Semarang,id
+Semarang - West,Central Java,-6.9930600,110.1308300,metro_offset,8,derived,offset_ring,Semarang,id
+Semarang - Northeast,Central Java,-6.8630600,110.6308300,metro_offset,8,derived,offset_ring,Semarang,id
+Semarang - Northwest,Central Java,-6.8630600,110.2108300,metro_offset,8,derived,offset_ring,Semarang,id
+Semarang - Southeast,Central Java,-7.1230600,110.6308300,metro_offset,8,derived,offset_ring,Semarang,id
+Semarang - Southwest,Central Java,-7.1230600,110.2108300,metro_offset,8,derived,offset_ring,Semarang,id
+Makassar,South Sulawesi,-5.1486100,119.4319400,metro,9,geonames_id_2026_1474393,anchor_city,Makassar,id
+Makassar - East,South Sulawesi,-5.1486100,119.7219400,metro_offset,9,derived,offset_ring,Makassar,id
+Makassar - North,South Sulawesi,-4.9686100,119.4319400,metro_offset,9,derived,offset_ring,Makassar,id
+Makassar - South,South Sulawesi,-5.3286100,119.4319400,metro_offset,9,derived,offset_ring,Makassar,id
+Makassar - West,South Sulawesi,-5.1486100,119.1419400,metro_offset,9,derived,offset_ring,Makassar,id
+Makassar - Northeast,South Sulawesi,-5.0186100,119.6419400,metro_offset,9,derived,offset_ring,Makassar,id
+Makassar - Northwest,South Sulawesi,-5.0186100,119.2219400,metro_offset,9,derived,offset_ring,Makassar,id
+Makassar - Southeast,South Sulawesi,-5.2786100,119.6419400,metro_offset,9,derived,offset_ring,Makassar,id
+Makassar - Southwest,South Sulawesi,-5.2786100,119.2219400,metro_offset,9,derived,offset_ring,Makassar,id
+Batam,Riau,1.1493700,104.0249100,metro,10,geonames_id_2026_1296960,anchor_city,Batam,id
+Batam - East,Riau,1.1493700,104.3149100,metro_offset,10,derived,offset_ring,Batam,id
+Batam - North,Riau,1.3293700,104.0249100,metro_offset,10,derived,offset_ring,Batam,id
+Batam - South,Riau,0.9693700,104.0249100,metro_offset,10,derived,offset_ring,Batam,id
+Batam - West,Riau,1.1493700,103.7349100,metro_offset,10,derived,offset_ring,Batam,id
+Batam - Northeast,Riau,1.2793700,104.2349100,metro_offset,10,derived,offset_ring,Batam,id
+Batam - Northwest,Riau,1.2793700,103.8149100,metro_offset,10,derived,offset_ring,Batam,id
+Batam - Southeast,Riau,1.0193700,104.2349100,metro_offset,10,derived,offset_ring,Batam,id
+Batam - Southwest,Riau,1.0193700,103.8149100,metro_offset,10,derived,offset_ring,Batam,id
+Jepara,Central Java,-6.5924000,110.6710000,metro,11,geonames_id_2026_1257912,anchor_city,Jepara,id
+Jepara - East,Central Java,-6.5924000,110.9610000,metro_offset,11,derived,offset_ring,Jepara,id
+Jepara - North,Central Java,-6.4124000,110.6710000,metro_offset,11,derived,offset_ring,Jepara,id
+Jepara - South,Central Java,-6.7724000,110.6710000,metro_offset,11,derived,offset_ring,Jepara,id
+Jepara - West,Central Java,-6.5924000,110.3810000,metro_offset,11,derived,offset_ring,Jepara,id
+Jepara - Northeast,Central Java,-6.4624000,110.8810000,metro_offset,11,derived,offset_ring,Jepara,id
+Jepara - Northwest,Central Java,-6.4624000,110.4610000,metro_offset,11,derived,offset_ring,Jepara,id
+Jepara - Southeast,Central Java,-6.7224000,110.8810000,metro_offset,11,derived,offset_ring,Jepara,id
+Jepara - Southwest,Central Java,-6.7224000,110.4610000,metro_offset,11,derived,offset_ring,Jepara,id
+Pekanbaru,Riau,0.5166700,101.4416700,metro,12,geonames_id_2026_1167599,anchor_city,Pekanbaru,id
+Pekanbaru - East,Riau,0.5166700,101.7316700,metro_offset,12,derived,offset_ring,Pekanbaru,id
+Pekanbaru - North,Riau,0.6966700,101.4416700,metro_offset,12,derived,offset_ring,Pekanbaru,id
+Pekanbaru - South,Riau,0.3366700,101.4416700,metro_offset,12,derived,offset_ring,Pekanbaru,id
+Pekanbaru - West,Riau,0.5166700,101.1516700,metro_offset,12,derived,offset_ring,Pekanbaru,id
+Pekanbaru - Northeast,Riau,0.6466700,101.6516700,metro_offset,12,derived,offset_ring,Pekanbaru,id
+Pekanbaru - Northwest,Riau,0.6466700,101.2316700,metro_offset,12,derived,offset_ring,Pekanbaru,id
+Pekanbaru - Southeast,Riau,0.3866700,101.6516700,metro_offset,12,derived,offset_ring,Pekanbaru,id
+Pekanbaru - Southwest,Riau,0.3866700,101.2316700,metro_offset,12,derived,offset_ring,Pekanbaru,id
+Bandar Lampung,Lampung,-5.4291700,105.2611100,metro,13,geonames_id_2026_1166066,anchor_city,Bandar Lampung,id
+Bandar Lampung - East,Lampung,-5.4291700,105.5511100,metro_offset,13,derived,offset_ring,Bandar Lampung,id
+Bandar Lampung - North,Lampung,-5.2491700,105.2611100,metro_offset,13,derived,offset_ring,Bandar Lampung,id
+Bandar Lampung - South,Lampung,-5.6091700,105.2611100,metro_offset,13,derived,offset_ring,Bandar Lampung,id
+Bandar Lampung - West,Lampung,-5.4291700,104.9711100,metro_offset,13,derived,offset_ring,Bandar Lampung,id
+Bandar Lampung - Northeast,Lampung,-5.2991700,105.4711100,metro_offset,13,derived,offset_ring,Bandar Lampung,id
+Bandar Lampung - Northwest,Lampung,-5.2991700,105.0511100,metro_offset,13,derived,offset_ring,Bandar Lampung,id
+Bandar Lampung - Southeast,Lampung,-5.5591700,105.4711100,metro_offset,13,derived,offset_ring,Bandar Lampung,id
+Bandar Lampung - Southwest,Lampung,-5.5591700,105.0511100,metro_offset,13,derived,offset_ring,Bandar Lampung,id
+Bogor,West Java,-6.5944400,106.7891700,metro,14,geonames_id_2026_1078351,anchor_city,Bogor,id
+Bogor - East,West Java,-6.5944400,107.0791700,metro_offset,14,derived,offset_ring,Bogor,id
+Bogor - North,West Java,-6.4144400,106.7891700,metro_offset,14,derived,offset_ring,Bogor,id
+Bogor - South,West Java,-6.7744400,106.7891700,metro_offset,14,derived,offset_ring,Bogor,id
+Bogor - West,West Java,-6.5944400,106.4991700,metro_offset,14,derived,offset_ring,Bogor,id
+Bogor - Northeast,West Java,-6.4644400,106.9991700,metro_offset,14,derived,offset_ring,Bogor,id
+Bogor - Northwest,West Java,-6.4644400,106.5791700,metro_offset,14,derived,offset_ring,Bogor,id
+Bogor - Southeast,West Java,-6.7244400,106.9991700,metro_offset,14,derived,offset_ring,Bogor,id
+Bogor - Southwest,West Java,-6.7244400,106.5791700,metro_offset,14,derived,offset_ring,Bogor,id
+Padang,West Sumatra,-0.9492400,100.3542700,metro,15,geonames_id_2026_942938,anchor_city,Padang,id
+Padang - East,West Sumatra,-0.9492400,100.6442700,metro_offset,15,derived,offset_ring,Padang,id
+Padang - North,West Sumatra,-0.7692400,100.3542700,metro_offset,15,derived,offset_ring,Padang,id
+Padang - South,West Sumatra,-1.1292400,100.3542700,metro_offset,15,derived,offset_ring,Padang,id
+Padang - West,West Sumatra,-0.9492400,100.0642700,metro_offset,15,derived,offset_ring,Padang,id
+Padang - Northeast,West Sumatra,-0.8192400,100.5642700,metro_offset,15,derived,offset_ring,Padang,id
+Padang - Northwest,West Sumatra,-0.8192400,100.1442700,metro_offset,15,derived,offset_ring,Padang,id
+Padang - Southeast,West Sumatra,-1.0792400,100.5642700,metro_offset,15,derived,offset_ring,Padang,id
+Padang - Southwest,West Sumatra,-1.0792400,100.1442700,metro_offset,15,derived,offset_ring,Padang,id
+Malang,East Java,-7.9797000,112.6304000,metro,16,geonames_id_2026_889359,anchor_city,Malang,id
+Malang - East,East Java,-7.9797000,112.9204000,metro_offset,16,derived,offset_ring,Malang,id
+Malang - North,East Java,-7.7997000,112.6304000,metro_offset,16,derived,offset_ring,Malang,id
+Malang - South,East Java,-8.1597000,112.6304000,metro_offset,16,derived,offset_ring,Malang,id
+Malang - West,East Java,-7.9797000,112.3404000,metro_offset,16,derived,offset_ring,Malang,id
+Malang - Northeast,East Java,-7.8497000,112.8404000,metro_offset,16,derived,offset_ring,Malang,id
+Malang - Northwest,East Java,-7.8497000,112.4204000,metro_offset,16,derived,offset_ring,Malang,id
+Malang - Southeast,East Java,-8.1097000,112.8404000,metro_offset,16,derived,offset_ring,Malang,id
+Malang - Southwest,East Java,-8.1097000,112.4204000,metro_offset,16,derived,offset_ring,Malang,id
+Samarinda,East Kalimantan,-0.4916700,117.1458300,metro,17,geonames_id_2026_865306,anchor_city,Samarinda,id
+Samarinda - East,East Kalimantan,-0.4916700,117.4358300,metro_offset,17,derived,offset_ring,Samarinda,id
+Samarinda - North,East Kalimantan,-0.3116700,117.1458300,metro_offset,17,derived,offset_ring,Samarinda,id
+Samarinda - South,East Kalimantan,-0.6716700,117.1458300,metro_offset,17,derived,offset_ring,Samarinda,id
+Samarinda - West,East Kalimantan,-0.4916700,116.8558300,metro_offset,17,derived,offset_ring,Samarinda,id
+Samarinda - Northeast,East Kalimantan,-0.3616700,117.3558300,metro_offset,17,derived,offset_ring,Samarinda,id
+Samarinda - Northwest,East Kalimantan,-0.3616700,116.9358300,metro_offset,17,derived,offset_ring,Samarinda,id
+Samarinda - Southeast,East Kalimantan,-0.6216700,117.3558300,metro_offset,17,derived,offset_ring,Samarinda,id
+Samarinda - Southwest,East Kalimantan,-0.6216700,116.9358300,metro_offset,17,derived,offset_ring,Samarinda,id
+Tasikmalaya,West Java,-7.3274000,108.2207000,metro,18,geonames_id_2026_770839,anchor_city,Tasikmalaya,id
+Tasikmalaya - East,West Java,-7.3274000,108.5107000,metro_offset,18,derived,offset_ring,Tasikmalaya,id
+Tasikmalaya - North,West Java,-7.1474000,108.2207000,metro_offset,18,derived,offset_ring,Tasikmalaya,id
+Tasikmalaya - South,West Java,-7.5074000,108.2207000,metro_offset,18,derived,offset_ring,Tasikmalaya,id
+Tasikmalaya - West,West Java,-7.3274000,107.9307000,metro_offset,18,derived,offset_ring,Tasikmalaya,id
+Tasikmalaya - Northeast,West Java,-7.1974000,108.4307000,metro_offset,18,derived,offset_ring,Tasikmalaya,id
+Tasikmalaya - Northwest,West Java,-7.1974000,108.0107000,metro_offset,18,derived,offset_ring,Tasikmalaya,id
+Tasikmalaya - Southeast,West Java,-7.4574000,108.4307000,metro_offset,18,derived,offset_ring,Tasikmalaya,id
+Tasikmalaya - Southwest,West Java,-7.4574000,108.0107000,metro_offset,18,derived,offset_ring,Tasikmalaya,id
+Serang,Banten,-6.1152800,106.1541700,metro,19,geonames_id_2026_735651,anchor_city,Serang,id
+Serang - East,Banten,-6.1152800,106.4441700,metro_offset,19,derived,offset_ring,Serang,id
+Serang - North,Banten,-5.9352800,106.1541700,metro_offset,19,derived,offset_ring,Serang,id
+Serang - South,Banten,-6.2952800,106.1541700,metro_offset,19,derived,offset_ring,Serang,id
+Serang - West,Banten,-6.1152800,105.8641700,metro_offset,19,derived,offset_ring,Serang,id
+Serang - Northeast,Banten,-5.9852800,106.3641700,metro_offset,19,derived,offset_ring,Serang,id
+Serang - Northwest,Banten,-5.9852800,105.9441700,metro_offset,19,derived,offset_ring,Serang,id
+Serang - Southeast,Banten,-6.2452800,106.3641700,metro_offset,19,derived,offset_ring,Serang,id
+Serang - Southwest,Banten,-6.2452800,105.9441700,metro_offset,19,derived,offset_ring,Serang,id
+Balikpapan,East Kalimantan,-1.2675300,116.8288700,metro,20,geonames_id_2026_695287,anchor_city,Balikpapan,id
+Balikpapan - East,East Kalimantan,-1.2675300,117.1188700,metro_offset,20,derived,offset_ring,Balikpapan,id
+Balikpapan - North,East Kalimantan,-1.0875300,116.8288700,metro_offset,20,derived,offset_ring,Balikpapan,id
+Balikpapan - South,East Kalimantan,-1.4475300,116.8288700,metro_offset,20,derived,offset_ring,Balikpapan,id
+Balikpapan - West,East Kalimantan,-1.2675300,116.5388700,metro_offset,20,derived,offset_ring,Balikpapan,id
+Balikpapan - Northeast,East Kalimantan,-1.1375300,117.0388700,metro_offset,20,derived,offset_ring,Balikpapan,id
+Balikpapan - Northwest,East Kalimantan,-1.1375300,116.6188700,metro_offset,20,derived,offset_ring,Balikpapan,id
+Balikpapan - Southeast,East Kalimantan,-1.3975300,117.0388700,metro_offset,20,derived,offset_ring,Balikpapan,id
+Balikpapan - Southwest,East Kalimantan,-1.3975300,116.6188700,metro_offset,20,derived,offset_ring,Balikpapan,id
+Pontianak,West Kalimantan,-0.0319400,109.3250000,metro,21,geonames_id_2026_686019,anchor_city,Pontianak,id
+Pontianak - East,West Kalimantan,-0.0319400,109.6150000,metro_offset,21,derived,offset_ring,Pontianak,id
+Pontianak - North,West Kalimantan,0.1480600,109.3250000,metro_offset,21,derived,offset_ring,Pontianak,id
+Pontianak - South,West Kalimantan,-0.2119400,109.3250000,metro_offset,21,derived,offset_ring,Pontianak,id
+Pontianak - West,West Kalimantan,-0.0319400,109.0350000,metro_offset,21,derived,offset_ring,Pontianak,id
+Pontianak - Northeast,West Kalimantan,0.0980600,109.5350000,metro_offset,21,derived,offset_ring,Pontianak,id
+Pontianak - Northwest,West Kalimantan,0.0980600,109.1150000,metro_offset,21,derived,offset_ring,Pontianak,id
+Pontianak - Southeast,West Kalimantan,-0.1619400,109.5350000,metro_offset,21,derived,offset_ring,Pontianak,id
+Pontianak - Southwest,West Kalimantan,-0.1619400,109.1150000,metro_offset,21,derived,offset_ring,Pontianak,id
+Situbondo,East Java,-7.7062300,114.0097600,metro,22,geonames_id_2026_685967,anchor_city,Situbondo,id
+Situbondo - East,East Java,-7.7062300,114.2997600,metro_offset,22,derived,offset_ring,Situbondo,id
+Situbondo - North,East Java,-7.5262300,114.0097600,metro_offset,22,derived,offset_ring,Situbondo,id
+Situbondo - South,East Java,-7.8862300,114.0097600,metro_offset,22,derived,offset_ring,Situbondo,id
+Situbondo - West,East Java,-7.7062300,113.7197600,metro_offset,22,derived,offset_ring,Situbondo,id
+Situbondo - Northeast,East Java,-7.5762300,114.2197600,metro_offset,22,derived,offset_ring,Situbondo,id
+Situbondo - Northwest,East Java,-7.5762300,113.7997600,metro_offset,22,derived,offset_ring,Situbondo,id
+Situbondo - Southeast,East Java,-7.8362300,114.2197600,metro_offset,22,derived,offset_ring,Situbondo,id
+Situbondo - Southwest,East Java,-7.8362300,113.7997600,metro_offset,22,derived,offset_ring,Situbondo,id
+Denpasar,Bali,-8.6500000,115.2166700,metro,23,geonames_id_2026_670210,anchor_city,Denpasar,id
+Denpasar - East,Bali,-8.6500000,115.5066700,metro_offset,23,derived,offset_ring,Denpasar,id
+Denpasar - North,Bali,-8.4700000,115.2166700,metro_offset,23,derived,offset_ring,Denpasar,id
+Denpasar - South,Bali,-8.8300000,115.2166700,metro_offset,23,derived,offset_ring,Denpasar,id
+Denpasar - West,Bali,-8.6500000,114.9266700,metro_offset,23,derived,offset_ring,Denpasar,id
+Denpasar - Northeast,Bali,-8.5200000,115.4266700,metro_offset,23,derived,offset_ring,Denpasar,id
+Denpasar - Northwest,Bali,-8.5200000,115.0066700,metro_offset,23,derived,offset_ring,Denpasar,id
+Denpasar - Southeast,Bali,-8.7800000,115.4266700,metro_offset,23,derived,offset_ring,Denpasar,id
+Denpasar - Southwest,Bali,-8.7800000,115.0066700,metro_offset,23,derived,offset_ring,Denpasar,id
+Banjarmasin,South Kalimantan,-3.3198700,114.5907500,metro,24,geonames_id_2026_657663,anchor_city,Banjarmasin,id
+Banjarmasin - East,South Kalimantan,-3.3198700,114.8807500,metro_offset,24,derived,offset_ring,Banjarmasin,id
+Banjarmasin - North,South Kalimantan,-3.1398700,114.5907500,metro_offset,24,derived,offset_ring,Banjarmasin,id
+Banjarmasin - South,South Kalimantan,-3.4998700,114.5907500,metro_offset,24,derived,offset_ring,Banjarmasin,id
+Banjarmasin - West,South Kalimantan,-3.3198700,114.3007500,metro_offset,24,derived,offset_ring,Banjarmasin,id
+Banjarmasin - Northeast,South Kalimantan,-3.1898700,114.8007500,metro_offset,24,derived,offset_ring,Banjarmasin,id
+Banjarmasin - Northwest,South Kalimantan,-3.1898700,114.3807500,metro_offset,24,derived,offset_ring,Banjarmasin,id
+Banjarmasin - Southeast,South Kalimantan,-3.4498700,114.8007500,metro_offset,24,derived,offset_ring,Banjarmasin,id
+Banjarmasin - Southwest,South Kalimantan,-3.4498700,114.3807500,metro_offset,24,derived,offset_ring,Banjarmasin,id
+Jambi City,Jambi,-1.6000000,103.6166700,metro,25,geonames_id_2026_635101,anchor_city,Jambi City,id
+Jambi City - East,Jambi,-1.6000000,103.9066700,metro_offset,25,derived,offset_ring,Jambi City,id
+Jambi City - North,Jambi,-1.4200000,103.6166700,metro_offset,25,derived,offset_ring,Jambi City,id
+Jambi City - South,Jambi,-1.7800000,103.6166700,metro_offset,25,derived,offset_ring,Jambi City,id
+Jambi City - West,Jambi,-1.6000000,103.3266700,metro_offset,25,derived,offset_ring,Jambi City,id
+Jambi City - Northeast,Jambi,-1.4700000,103.8266700,metro_offset,25,derived,offset_ring,Jambi City,id
+Jambi City - Northwest,Jambi,-1.4700000,103.4066700,metro_offset,25,derived,offset_ring,Jambi City,id
+Jambi City - Southeast,Jambi,-1.7300000,103.8266700,metro_offset,25,derived,offset_ring,Jambi City,id
+Jambi City - Southwest,Jambi,-1.7300000,103.4066700,metro_offset,25,derived,offset_ring,Jambi City,id
+Surakarta,Central Java,-7.5561100,110.8316700,metro,26,geonames_id_2026_526870,anchor_city,Surakarta,id
+Surakarta - East,Central Java,-7.5561100,111.1216700,metro_offset,26,derived,offset_ring,Surakarta,id
+Surakarta - North,Central Java,-7.3761100,110.8316700,metro_offset,26,derived,offset_ring,Surakarta,id
+Surakarta - South,Central Java,-7.7361100,110.8316700,metro_offset,26,derived,offset_ring,Surakarta,id
+Surakarta - West,Central Java,-7.5561100,110.5416700,metro_offset,26,derived,offset_ring,Surakarta,id
+Surakarta - Northeast,Central Java,-7.4261100,111.0416700,metro_offset,26,derived,offset_ring,Surakarta,id
+Surakarta - Northwest,Central Java,-7.4261100,110.6216700,metro_offset,26,derived,offset_ring,Surakarta,id
+Surakarta - Southeast,Central Java,-7.6861100,111.0416700,metro_offset,26,derived,offset_ring,Surakarta,id
+Surakarta - Southwest,Central Java,-7.6861100,110.6216700,metro_offset,26,derived,offset_ring,Surakarta,id
+Kupang,East Nusa Tenggara,-10.1708300,123.6069400,regional_large,27,geonames_id_2026_474801,anchor_city,Kupang,id
+Kupang - East,East Nusa Tenggara,-10.1708300,123.8969400,regional_large_offset,27,derived,offset_ring,Kupang,id
+Kupang - North,East Nusa Tenggara,-9.9908300,123.6069400,regional_large_offset,27,derived,offset_ring,Kupang,id
+Kupang - South,East Nusa Tenggara,-10.3508300,123.6069400,regional_large_offset,27,derived,offset_ring,Kupang,id
+Kupang - West,East Nusa Tenggara,-10.1708300,123.3169400,regional_large_offset,27,derived,offset_ring,Kupang,id
+Kupang - Northeast,East Nusa Tenggara,-10.0408300,123.8169400,regional_large_offset,27,derived,offset_ring,Kupang,id
+Kupang - Northwest,East Nusa Tenggara,-10.0408300,123.3969400,regional_large_offset,27,derived,offset_ring,Kupang,id
+Kupang - Southeast,East Nusa Tenggara,-10.3008300,123.8169400,regional_large_offset,27,derived,offset_ring,Kupang,id
+Kupang - Southwest,East Nusa Tenggara,-10.3008300,123.3969400,regional_large_offset,27,derived,offset_ring,Kupang,id
+Manado,North Sulawesi,1.4821800,124.8489200,regional_large,28,geonames_id_2026_458582,anchor_city,Manado,id
+Manado - East,North Sulawesi,1.4821800,125.1389200,regional_large_offset,28,derived,offset_ring,Manado,id
+Manado - North,North Sulawesi,1.6621800,124.8489200,regional_large_offset,28,derived,offset_ring,Manado,id
+Manado - South,North Sulawesi,1.3021800,124.8489200,regional_large_offset,28,derived,offset_ring,Manado,id
+Manado - West,North Sulawesi,1.4821800,124.5589200,regional_large_offset,28,derived,offset_ring,Manado,id
+Manado - Northeast,North Sulawesi,1.6121800,125.0589200,regional_large_offset,28,derived,offset_ring,Manado,id
+Manado - Northwest,North Sulawesi,1.6121800,124.6389200,regional_large_offset,28,derived,offset_ring,Manado,id
+Manado - Southeast,North Sulawesi,1.3521800,125.0589200,regional_large_offset,28,derived,offset_ring,Manado,id
+Manado - Southwest,North Sulawesi,1.3521800,124.6389200,regional_large_offset,28,derived,offset_ring,Manado,id
+Mataram,West Nusa Tenggara,-8.5833300,116.1166700,regional_large,29,geonames_id_2026_441147,anchor_city,Mataram,id
+Mataram - East,West Nusa Tenggara,-8.5833300,116.4066700,regional_large_offset,29,derived,offset_ring,Mataram,id
+Mataram - North,West Nusa Tenggara,-8.4033300,116.1166700,regional_large_offset,29,derived,offset_ring,Mataram,id
+Mataram - South,West Nusa Tenggara,-8.7633300,116.1166700,regional_large_offset,29,derived,offset_ring,Mataram,id
+Mataram - West,West Nusa Tenggara,-8.5833300,115.8266700,regional_large_offset,29,derived,offset_ring,Mataram,id
+Mataram - Northeast,West Nusa Tenggara,-8.4533300,116.3266700,regional_large_offset,29,derived,offset_ring,Mataram,id
+Mataram - Northwest,West Nusa Tenggara,-8.4533300,115.9066700,regional_large_offset,29,derived,offset_ring,Mataram,id
+Mataram - Southeast,West Nusa Tenggara,-8.7133300,116.3266700,regional_large_offset,29,derived,offset_ring,Mataram,id
+Mataram - Southwest,West Nusa Tenggara,-8.7133300,115.9066700,regional_large_offset,29,derived,offset_ring,Mataram,id
+Jayapura,Papua,-2.5337100,140.7181300,regional_large,30,geonames_id_2026_410852,anchor_city,Jayapura,id
+Jayapura - East,Papua,-2.5337100,141.0081300,regional_large_offset,30,derived,offset_ring,Jayapura,id
+Jayapura - North,Papua,-2.3537100,140.7181300,regional_large_offset,30,derived,offset_ring,Jayapura,id
+Jayapura - South,Papua,-2.7137100,140.7181300,regional_large_offset,30,derived,offset_ring,Jayapura,id
+Jayapura - West,Papua,-2.5337100,140.4281300,regional_large_offset,30,derived,offset_ring,Jayapura,id
+Jayapura - Northeast,Papua,-2.4037100,140.9281300,regional_large_offset,30,derived,offset_ring,Jayapura,id
+Jayapura - Northwest,Papua,-2.4037100,140.5081300,regional_large_offset,30,derived,offset_ring,Jayapura,id
+Jayapura - Southeast,Papua,-2.6637100,140.9281300,regional_large_offset,30,derived,offset_ring,Jayapura,id
+Jayapura - Southwest,Papua,-2.6637100,140.5081300,regional_large_offset,30,derived,offset_ring,Jayapura,id
+Bengkulu,Bengkulu,-3.8004400,102.2655400,regional_large,31,geonames_id_2026_397321,anchor_city,Bengkulu,id
+Bengkulu - East,Bengkulu,-3.8004400,102.5555400,regional_large_offset,31,derived,offset_ring,Bengkulu,id
+Bengkulu - North,Bengkulu,-3.6204400,102.2655400,regional_large_offset,31,derived,offset_ring,Bengkulu,id
+Bengkulu - South,Bengkulu,-3.9804400,102.2655400,regional_large_offset,31,derived,offset_ring,Bengkulu,id
+Bengkulu - West,Bengkulu,-3.8004400,101.9755400,regional_large_offset,31,derived,offset_ring,Bengkulu,id
+Bengkulu - Northeast,Bengkulu,-3.6704400,102.4755400,regional_large_offset,31,derived,offset_ring,Bengkulu,id
+Bengkulu - Northwest,Bengkulu,-3.6704400,102.0555400,regional_large_offset,31,derived,offset_ring,Bengkulu,id
+Bengkulu - Southeast,Bengkulu,-3.9304400,102.4755400,regional_large_offset,31,derived,offset_ring,Bengkulu,id
+Bengkulu - Southwest,Bengkulu,-3.9304400,102.0555400,regional_large_offset,31,derived,offset_ring,Bengkulu,id
+Yogyakarta,Yogyakarta,-7.8013900,110.3647200,regional_large,32,geonames_id_2026_375699,anchor_city,Yogyakarta,id
+Yogyakarta - East,Yogyakarta,-7.8013900,110.6547200,regional_large_offset,32,derived,offset_ring,Yogyakarta,id
+Yogyakarta - North,Yogyakarta,-7.6213900,110.3647200,regional_large_offset,32,derived,offset_ring,Yogyakarta,id
+Yogyakarta - South,Yogyakarta,-7.9813900,110.3647200,regional_large_offset,32,derived,offset_ring,Yogyakarta,id
+Yogyakarta - West,Yogyakarta,-7.8013900,110.0747200,regional_large_offset,32,derived,offset_ring,Yogyakarta,id
+Yogyakarta - Northeast,Yogyakarta,-7.6713900,110.5747200,regional_large_offset,32,derived,offset_ring,Yogyakarta,id
+Yogyakarta - Northwest,Yogyakarta,-7.6713900,110.1547200,regional_large_offset,32,derived,offset_ring,Yogyakarta,id
+Yogyakarta - Southeast,Yogyakarta,-7.9313900,110.5747200,regional_large_offset,32,derived,offset_ring,Yogyakarta,id
+Yogyakarta - Southwest,Yogyakarta,-7.9313900,110.1547200,regional_large_offset,32,derived,offset_ring,Yogyakarta,id

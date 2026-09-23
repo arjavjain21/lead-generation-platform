@@ -109,6 +109,12 @@ COUNTRY_CONFIGS: dict[str, CountryConfig] = {
     "bo": CountryConfig("bo", "Bolivia", 12, False, bbox=(-22.87, -9.76, -69.65, -57.45)),
     "py": CountryConfig("py", "Paraguay", 10, False, bbox=(-27.55, -19.34, -62.69, -54.29)),
     "uy": CountryConfig("uy", "Uruguay", 13, False, bbox=(-34.95, -30.11, -58.43, -53.21)),
+    # Asia-Pacific (2026-09-23) — tourism/hospitality focus: Denpasar (Bali),
+    # Mataram (Lombok), and Yogyakarta force-included so tourism hubs always anchor
+    # (dense-Java regencies like Jepara otherwise outrank them on raw population).
+    "id": CountryConfig("id", "Indonesia", 32, True, 30000,
+                        force_include={"Denpasar", "Mataram", "Yogyakarta"},
+                        bbox=(-11.05, 6.18, 94.97, 141.02)),
 }
 
 
