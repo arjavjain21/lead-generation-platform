@@ -348,6 +348,7 @@ The Google Maps scraper supports multiple countries with geographic center data:
 | bo | Bolivia | 12 | Major cities only |
 | py | Paraguay | 6 | Major cities only |
 | uy | Uruguay | 13 | Major cities only |
+| id | Indonesia | 32 anchors / 288 centers | Anchor + offset rings; tourism hubs (Denpasar/Mataram/Yogyakarta) force-included |
 
 ### Adding New Countries
 
@@ -434,6 +435,10 @@ This project changes often; do not rely on a frozen snapshot here. For current s
   `~/.claude/projects/-var-www-lead-generation-platform/memory/`.
 - **Live health:** `curl -s http://localhost:8765/api/health` and `./monitor.sh`.
 - **Canonical API contract:** `docs/ListBuilding_Platform_Full_API_Reference_2026-07-16.md`.
+- **2026-09-23 shipped:** Indonesia scraper country (288 centers) + campaign buckets — `POST /api/scraper/jobs`
+  accepts `group` (sanitized label → `jobs.group_name`); grouped jobs render as one collapsed folder card
+  in the UI with a merged-CSV download (`GET /api/scraper/jobs/group/{name}/download`, streams all group
+  CSVs single-header, works mid-campaign). Resume propagates group membership.
 - **2026-09-17 shipped:** TAM UI page ("Find Companies (TAM)" — replaces the old sync Company Search page) + every TAM company auto-saved to the contacts DB.
 - **2026-09-16 shipped:** TAM-by-People flow (`/flows/tam`), `exact_titles`/`include_phone`/`phone_for_all`
   request fields, `dm_previous_companies`/`dm_previous_titles` CSV columns, Blitz find-people prepass +
