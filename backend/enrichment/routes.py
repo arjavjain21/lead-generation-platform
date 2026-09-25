@@ -29,7 +29,7 @@ from typing import Any, Optional
 
 import pandas as pd
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, field_validator
 
@@ -4105,10 +4105,36 @@ async def stream_enrichment_job_progress(
     )
 
 
+async def _user_or_token_fallback(
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(default=None),
+) -> dict:
+    """Auth for file-download endpoints: API key, Bearer JWT, or ?token= JWT.
+
+    Mirrors auth.get_current_user_with_api_key (API key first, then Bearer)
+    and adds the query-param fallback: browser-native downloads (anchor
+    click → download manager) cannot set Authorization headers, and done-job
+    / partial CSVs run 50-200MB — the old fetch()+blob() path truncated
+    mid-stream in the browser (2026-09-25 "Failed to fetch" reports; nginx
+    logged 200s cut at 1.4-4.2MB). Same ?token= pattern as the SSE stream
+    endpoint and scraper/routes.py:_user_or_token_fallback (c1adcde).
+    """
+    if x_api_key:
+        user = auth.verify_api_key(x_api_key)
+        if user:
+            return user
+    if authorization and authorization.lower().startswith("bearer "):
+        return auth.decode_token(authorization[7:].strip())
+    if token:
+        return auth.decode_token(token)
+    raise HTTPException(status_code=401, detail="Authentication required.")
+
+
 @router.get("/jobs/{job_id}/download")
 async def download_enrichment_result(
     job_id: str,
-    current_user: dict = Depends(auth.get_current_user_with_api_key),
+    current_user: dict = Depends(_user_or_token_fallback),
 ):
     """Download the full CSV output of a completed enrichment job."""
     try:
@@ -4309,10 +4335,14 @@ async def enrichment_resume_info(
     }
 
 
-@router.get("/jobs/{job_id}/recover-partial")
+# methods=["GET","HEAD"]: the frontend's partial-download button sends a HEAD
+# preflight so a just-started job (first batch not yet flushed) still gets the
+# friendly "No partial file available yet." alert instead of a dead download.
+# Starlette's FileResponse answers HEAD with headers only — no body, no file read.
+@router.api_route("/jobs/{job_id}/recover-partial", methods=["GET", "HEAD"])
 async def enrichment_recover_partial(
     job_id: str,
-    current_user: dict = Depends(auth.get_current_user_with_api_key),
+    current_user: dict = Depends(_user_or_token_fallback),
 ):
     """Serve whatever partial CSV exists for a job — works for running/partial/
     failed/cancelled/abandoned (no status guard). The frontend's 'Download Partial'
@@ -4368,7 +4398,14 @@ async def enrichment_shards(
     csv_path = OUTPUT_DIR / f"{job_id}.csv"
     rows_on_disk = _count_csv_data_rows(csv_path) if (csv_path.exists() and csv_path.stat().st_size > 0) else 0
     total = int(job_data.get("total", 0) or 0)
-    basis = total if total else rows_on_disk
+    # Shard basis must COVER the CSV: enrichment `total` counts INPUT rows
+    # (domains / LinkedIn URLs), but the CSV holds OUTPUT contact rows — often
+    # several per domain. A 14,200-domain job with 41K contact rows on disk
+    # listed only 2 shards under the old `total`-only basis, hiding the other
+    # 27K rows from the chunk UI (2026-09-25). max() keeps the forward-looking
+    # shards early on (total > rows) and switches to the live row count once
+    # multi-contact rows overtake the input count.
+    basis = max(total, rows_on_disk)
     num_shards = max(1, (basis + SHARD_SIZE - 1) // SHARD_SIZE) if basis else 0
     shards = []
     for i in range(num_shards):
@@ -4395,7 +4432,7 @@ async def enrichment_shards(
 async def enrichment_shard_download(
     job_id: str,
     shard: int,
-    current_user: dict = Depends(auth.get_current_user_with_api_key),
+    current_user: dict = Depends(_user_or_token_fallback),
 ):
     """Stream one 10K-row shard of the live CSV (no status guard — works while
     the job is still running). Reads the file sequentially so a 100K-row job is

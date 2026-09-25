@@ -5598,21 +5598,27 @@ example.org,Jane Doe</pre>
             sessionStorage.setItem('jobErrors_' + jobId, JSON.stringify(errors));
         }
         
-        // Download Helper
+        // Download Helper — native browser download via ?token= auth.
+        // Done-job enrichment CSVs run 50-200MB; the old fetch()+blob() path
+        // buffered the whole file in JS memory and truncated mid-stream on
+        // slow links ("Failed to fetch", 2026-09-25). The download manager
+        // shows real progress, resumes broken transfers, and never touches
+        // page memory. Filename comes from the server's Content-Disposition
+        // (the old client-side filename arg is ignored).
         async function downloadFile(jobId, filename, btn) {
             if (btn) {
                 btn.disabled = true;
-                btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;"></span> Downloading...';
+                btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;"></span> Starting…';
             }
             try {
-                const res = await fetch('/api/enrichment/jobs/' + jobId + '/download', { headers: { 'Authorization': 'Bearer ' + token } });
-                if (!res.ok) { const err = await res.json(); alert('Download failed: ' + (err.detail || 'Unknown')); if (btn) { btn.disabled = false; btn.innerHTML = 'Download'; } return; }
-                const blob = await res.blob();
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement('a'); a.href = url; a.download = filename || 'data.csv';
-                document.body.appendChild(a); a.click(); window.URL.revokeObjectURL(url); a.remove();
-            } catch (e) { alert('Download error: ' + e.message); }
-            if (btn) { btn.disabled = false; btn.innerHTML = 'Download'; }
+                triggerNativeDownload('/api/enrichment/jobs/' + jobId + '/download?token=' + token);
+            } finally {
+                // The browser download continues independently; restore the
+                // button shortly so the user can re-trigger if they cancelled.
+                if (btn) {
+                    setTimeout(() => { btn.disabled = false; btn.innerHTML = 'Download'; }, 4000);
+                }
+            }
         }
         
         document.getElementById('downloadDomainResults').addEventListener('click', () => { downloadFile(currentJobId, 'domain_enrichment.csv'); });
@@ -5722,65 +5728,50 @@ example.org,Jane Doe</pre>
         }
 
         // Download the partial CSV that was saved when a job was
-        // abandoned or cancelled. The server picks a sensible filename
-        // (e.g. partial_<safe_name>_<jobid8>.csv) based on the original
-        // upload. This is the user's best shot at recovering rows that
-        // completed before the server died.
+        // abandoned or cancelled — or is still running. The server picks a
+        // sensible filename (e.g. partial_<safe_name>_<jobid8>.csv) based on
+        // the original upload. This is the user's best shot at recovering
+        // rows that completed before the server died.
+        // Native download via ?token= (2026-09-25): partial CSVs of big jobs
+        // run 50-100MB and fetch()+blob() truncated mid-stream on slow links
+        // ("Failed to fetch"). A HEAD preflight keeps the friendly "no file
+        // yet" alert for jobs whose first batch hasn't flushed to disk.
         async function downloadEnrichmentPartial(jobId, btn) {
-            if (btn) { btn.disabled = true; btn.textContent = 'Downloading...'; }
+            if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
             try {
-                const res = await fetch('/api/enrichment/jobs/' + jobId + '/recover-partial', {
-                    headers: { 'Authorization': 'Bearer ' + token }
-                });
-                if (!res.ok) {
-                    const err = await res.json();
-                    alert('Download failed: ' + (err.detail || 'No partial file'));
-                    if (btn) { btn.disabled = false; btn.textContent = '↓ Download partial'; }
+                const url = '/api/enrichment/jobs/' + jobId + '/recover-partial?token=' + token;
+                const check = await fetch(url, { method: 'HEAD' });
+                if (!check.ok) {
+                    const res = await fetch(url);  // small JSON error body
+                    let msg = 'No partial file';
+                    try { const err = await res.json(); msg = err.detail || msg; } catch (_) {}
+                    alert('Download failed: ' + msg);
                     return;
                 }
-                const blob = await res.blob();
-                const cd = res.headers.get('content-disposition') || '';
-                const match = cd.match(/filename="?([^"]+)"?/);
-                const filename = match ? match[1] : `partial_${jobId.substr(0, 8)}.csv`;
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url; a.download = filename;
-                document.body.appendChild(a); a.click();
-                document.body.removeChild(a); URL.revokeObjectURL(url);
-            } catch (e) {
-                alert('Error: ' + e.message);
-                if (btn) { btn.disabled = false; btn.textContent = '↓ Download partial'; }
-            }
-        }
-
-        // Download a single 10K-row shard. Mirrors downloadEnrichmentPartial's
-        // blob logic but hits the per-shard endpoint. The server streams the
-        // shard's CSV slice (404 when the shard has no rows on disk yet).
-        async function downloadEnrichmentShard(jobId, shardIdx, btn) {
-            if (btn) { btn.disabled = true; btn.textContent = 'Downloading...'; }
-            try {
-                const res = await fetch('/api/enrichment/jobs/' + jobId + '/shard/' + shardIdx, {
-                    headers: { 'Authorization': 'Bearer ' + token }
-                });
-                if (!res.ok) {
-                    let msg = 'Download failed';
-                    try { const err = await res.json(); msg = 'Download failed: ' + (err.detail || 'No shard file'); } catch (_) {}
-                    alert(msg);
-                    return;
-                }
-                const blob = await res.blob();
-                const cd = res.headers.get('content-disposition') || '';
-                const match = cd.match(/filename="?([^"]+)"?/);
-                const filename = match ? match[1] : `shard_${shardIdx}_${jobId.substr(0, 8)}.csv`;
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url; a.download = filename;
-                document.body.appendChild(a); a.click();
-                document.body.removeChild(a); URL.revokeObjectURL(url);
+                triggerNativeDownload(url);
             } catch (e) {
                 alert('Error: ' + e.message);
             } finally {
-                if (btn) { btn.disabled = false; btn.textContent = 'Download'; }
+                if (btn) {
+                    setTimeout(() => { btn.disabled = false; btn.textContent = '↓ Download partial'; }, 4000);
+                }
+            }
+        }
+
+        // Download a single 10K-row shard. Native download via ?token=
+        // (2026-09-25): a 10K-row enrichment shard is 6-16MB and shared the
+        // fetch()+blob() truncation failure ("Failed to fetch") of the full
+        // partial CSVs. The shard endpoint streams the CSV slice; the
+        // disabled-button gating in the shard list already prevents 404s
+        // (404 only when the shard has no rows on disk yet).
+        async function downloadEnrichmentShard(jobId, shardIdx, btn) {
+            if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
+            try {
+                triggerNativeDownload('/api/enrichment/jobs/' + jobId + '/shard/' + shardIdx + '?token=' + token);
+            } finally {
+                if (btn) {
+                    setTimeout(() => { btn.disabled = false; btn.textContent = 'Download'; }, 4000);
+                }
             }
         }
 
@@ -6982,8 +6973,15 @@ example.org,Jane Doe</pre>
         // progress, resumes, and never touches page memory. Filename comes
         // from the server's Content-Disposition.
         function triggerNativeScraperDownload(jobId, endpointPath) {
+            triggerNativeDownload('/api/scraper/jobs/' + jobId + '/' + endpointPath + '?token=' + token);
+        }
+
+        // Generic native-download trigger used by every CSV download path
+        // (enrichment full/partial/shard + scraper). The endpoints all accept
+        // ?token= JWT auth because the download manager cannot send headers.
+        function triggerNativeDownload(url) {
             const a = document.createElement('a');
-            a.href = '/api/scraper/jobs/' + jobId + '/' + endpointPath + '?token=' + token;
+            a.href = url;
             document.body.appendChild(a);
             a.click();
             a.remove();
@@ -7027,30 +7025,16 @@ example.org,Jane Doe</pre>
         }
 
         async function downloadScraperShard(jobId, shardIdx, btn) {
-            if (btn) { btn.disabled = true; btn.textContent = 'Downloading...'; }
+            if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
             try {
-                const res = await fetch('/api/scraper/jobs/' + jobId + '/shard/' + shardIdx, {
-                    headers: { 'Authorization': 'Bearer ' + token }
-                });
-                if (!res.ok) {
-                    let msg = 'Download failed';
-                    try { const err = await res.json(); msg = 'Download failed: ' + (err.detail || 'No data written yet'); } catch (_) {}
-                    alert(msg);
-                    return;
-                }
-                const blob = await res.blob();
-                const cd = res.headers.get('content-disposition') || '';
-                const match = cd.match(/filename="?([^"]+)"?/);
-                const filename = match ? match[1] : `shard_${shardIdx}_${jobId.substr(0, 8)}.csv`;
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url; a.download = filename;
-                document.body.appendChild(a); a.click();
-                document.body.removeChild(a); URL.revokeObjectURL(url);
-            } catch (e) {
-                alert('Error: ' + e.message);
+                // Native download via ?token= (2026-09-25) — same fetch()+blob()
+                // truncation failure class as the other CSV paths. Shard-list
+                // gating (disabled at 0 rows ready) prevents the 404 case.
+                triggerNativeDownload('/api/scraper/jobs/' + jobId + '/shard/' + shardIdx + '?token=' + token);
             } finally {
-                if (btn) { btn.disabled = false; btn.textContent = 'Download'; }
+                if (btn) {
+                    setTimeout(() => { btn.disabled = false; btn.textContent = 'Download'; }, 4000);
+                }
             }
         }
 

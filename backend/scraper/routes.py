@@ -1358,7 +1358,7 @@ async def scraper_shards(
 async def scraper_shard_download(
     job_id: str,
     shard: int,
-    current_user: dict = Depends(auth.get_current_user_with_api_key),
+    current_user: dict = Depends(_user_or_token_fallback),
 ):
     """Stream one 10K-row shard of the live CSV (no status guard — works while
     the job is still running). Reads the file sequentially so a multi-hundred-MB
