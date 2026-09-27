@@ -7467,6 +7467,10 @@ example.org,Jane Doe</pre>
         window.downloadScraperPartial = downloadScraperPartial;
         window.downloadScraperShard = downloadScraperShard;
         window.toggleScraperShards = toggleScraperShards;
+        // Campaign bucket folder card (2026-09-27 fix): both buttons were dead
+        // on click — inline onclick resolves via window, not this closure.
+        window.downloadScraperGroup = downloadScraperGroup;
+        window.toggleScraperGroup = toggleScraperGroup;
         window.chainScraperToEnrichment = chainScraperToEnrichment;
         window.resumeScraperJob = resumeScraperJob;
         window.copyApiKeyByValue = copyApiKeyByValue;
