@@ -1568,6 +1568,9 @@ class StartJobRequest(BaseModel):
     phone_col: Optional[str] = None
     company_name_col: Optional[str] = None
     existing_email_col: Optional[str] = None
+    # Optional human-readable name shown on the Jobs page (jobs.display_name).
+    # Sanitized server-side; empty = fall back to filename display.
+    job_name: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -3905,6 +3908,15 @@ async def list_enrichment_jobs(
         for job in jobs:
             job.setdefault("checkpoint_count", 0)
 
+    # Title-gate mode per job (2026-09-28): 'on' | 'off' | 'default' so the
+    # UI can badge the strict-titles setting at a glance. Derived from the
+    # persisted cascade (marker + include titles) — no extra queries.
+    for job in jobs:
+        try:
+            job["title_gate"] = _title_gate_state(job.get("cascade_config"))
+        except Exception:
+            job["title_gate"] = "default"
+
     # File-availability flag for the UI (cheap stat per job).
     for job in jobs:
         job["output_exists"] = _job_output_exists(job)
@@ -3981,6 +3993,7 @@ async def start_enrichment_job(
         cascade_config=cascade_json,
         max_results=req.max_results,
         source_type="csv_upload",
+        display_name=_sanitize_job_name(getattr(req, "job_name", None)),
     )
 
     _job_signals[job_id] = asyncio.Event()
@@ -4852,6 +4865,7 @@ async def _wait_event(event: asyncio.Event):
 async def restart_enrichment_job(
     job_id: str,
     background_tasks: BackgroundTasks,
+    force: bool = Query(False, description="Override the duplicate-completed-run guard"),
     current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """
@@ -4859,8 +4873,83 @@ async def restart_enrichment_job(
 
     Creates a new job using the same CSV file and configuration as the original.
     The original job_id is preserved in the parent_job_id field for tracking.
+    Returns 409 when the same original file already has a DONE run under a
+    different chain (superseded duplicate) unless ?force=true is passed.
     """
-    return await _restart_job_core(job_id, current_user, background_tasks=background_tasks)
+    return await _restart_job_core(
+        job_id, current_user, background_tasks=background_tasks, force=force
+    )
+
+
+def _sanitize_job_name(name: Optional[str]) -> str:
+    """Clean a user-supplied job name for ``jobs.display_name``.
+
+    Collapse whitespace, drop non-printable characters, cap at 120 chars.
+    Returns '' for empty/None (column stays unset for display fallbacks).
+    """
+    if not name:
+        return ""
+    cleaned = " ".join(str(name).split())
+    cleaned = "".join(ch for ch in cleaned if ch.isprintable())
+    return cleaned[:120]
+
+
+def _title_gate_state(cascade_config) -> str:
+    """Derive the job's local title-gate mode for the UI badge.
+
+    'off'      — request opted out (strict_titles:false marker in the cascade)
+    'on'       — custom titles present and the gate active
+    'default'  — no custom titles (built-in tier list; gate not applicable)
+    """
+    if not cascade_config:
+        return "default"
+    try:
+        if title_filter.cascade_config_allows_strict_off(cascade_config):
+            return "off"
+        include_titles, _exclude = title_filter.parse_cascade_titles(cascade_config)
+        return "on" if include_titles else "default"
+    except Exception:
+        return "default"
+
+
+def _find_completed_run_for_file(store, job: dict) -> Optional[dict]:
+    """A DONE enrichment job for the SAME original file under a DIFFERENT
+    restart chain (same user).
+
+    The 2026-09-23 museums incident: a superseded first upload was mass-resumed
+    alongside the user's corrected re-upload and double-spent providers for
+    days on domains the re-upload had already completed. This lookup powers the
+    restart guard that refuses to revive such zombie chains.
+
+    Returns the most recent foreign done job, or None. Same-chain done runs
+    (resuming within one chain) are excluded via chain-root equality — those
+    are legitimate and handled by the all-rows-done path further down.
+    """
+    orig_name = (job.get("original_filename") or "").strip()
+    if not orig_name:
+        return None
+    conn = getattr(store, "conn", None) or db.get_db()
+    try:
+        rows = conn.execute(
+            """SELECT job_id, updated_at FROM jobs
+               WHERE job_type='enrichment' AND user_id=? AND original_filename=?
+                 AND status='done' AND job_id<>?
+               ORDER BY updated_at DESC LIMIT 10""",
+            (job.get("user_id"), orig_name, job["job_id"]),
+        ).fetchall()
+    except Exception as q_err:
+        logger.warning("Duplicate-run guard query failed for %s: %s", job["job_id"], q_err)
+        return None
+    if not rows:
+        return None
+    my_root = _restart_chain_ids(store, job["job_id"])[-1]
+    for r in rows:
+        try:
+            if _restart_chain_ids(store, r["job_id"])[-1] != my_root:
+                return dict(r)
+        except Exception:
+            continue
+    return None
 
 
 def _find_active_descendant(job_id: str) -> Optional[dict]:
@@ -5110,6 +5199,7 @@ async def _restart_job_core(
     background_tasks: Optional[BackgroundTasks] = None,
     auto: bool = False,
     claim_already_won: bool = False,
+    force: bool = False,
 ):
     """Shared restart logic for the user-facing endpoint and auto-resume.
 
@@ -5119,6 +5209,9 @@ async def _restart_job_core(
     calls this with ``auto=True``, ``claim_already_won=True`` (it won the
     atomic claim marker first) and no BackgroundTasks (it runs the runner
     as a bare asyncio task instead).
+
+    ``force`` overrides the superseded-duplicate guard below (manual ?force=true
+    only; the auto-resume path never passes it, so zombie chains stay dead).
     """
     store = job_store.get_store()
     original_job = store.get_job(job_id)
@@ -5147,6 +5240,26 @@ async def _restart_job_core(
             status_code=409,
             detail=f"A restart of this file is already in progress (job_id: {existing_restart['job_id']}, status: {existing_restart['status']}). Please wait for it to complete or cancel it first."
         )
+
+    # Superseded-duplicate guard (2026-09-28): refuse to resume a chain whose
+    # original file already has a DONE run under a DIFFERENT chain (the Sep-23
+    # museums incident — a zombie first upload was mass-resumed and double-spent
+    # providers for days after the corrected re-upload completed). The
+    # auto-resume path calls with force=False, so abandoned zombies stay dead;
+    # a human can still override with ?force=true when the re-run is intended.
+    if not force:
+        completed_dup = _find_completed_run_for_file(store, original_job)
+        if completed_dup:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"This file already has a completed run (job {str(completed_dup['job_id'])[:8]}, "
+                    f"finished {str(completed_dup.get('updated_at') or '')[:19]}). "
+                    "This chain is a different upload of the same file — resuming it would "
+                    "re-spend providers on domains that run already covered. "
+                    "Pass ?force=true to resume anyway."
+                ),
+            )
 
     # Read the original CSV file
     # For chained jobs (from scraper), the file is in outputs/ from the parent scraper job
@@ -5325,6 +5438,7 @@ async def _restart_job_core(
             parent_job_id=job_id, name_col=original_job.get('name_col'),
             first_name_col=original_job.get('first_name_col'), last_name_col=original_job.get('last_name_col'),
             cascade_config=cascade_json, max_results=original_job.get('max_results', 5),
+            display_name=original_job.get('display_name') or "",
             selected_providers=selected_providers, linkedin_url_col=original_job.get('linkedin_url_col'),
             phone_col=original_job.get('phone_col'), company_name_col=original_job.get('company_name_col'),
             existing_email_col=original_job.get('existing_email_col'),
@@ -5387,6 +5501,7 @@ async def _restart_job_core(
         last_name_col=original_job.get('last_name_col'),
         cascade_config=cascade_json,
         max_results=original_job.get('max_results', 5),
+        display_name=original_job.get('display_name') or "",
         selected_providers=selected_providers,
         linkedin_url_col=original_job.get('linkedin_url_col'),
         phone_col=original_job.get('phone_col'),
@@ -5803,6 +5918,8 @@ class ProviderToggleRequest(BaseModel):
     # Exact-title mode (2026-09): bracket-wrapped ([CEO]) provider title
     # matching instead of fuzzy substrings. Default False = fuzzy (unchanged).
     exact_titles: bool = False
+    # Optional human-readable name shown on the Jobs page (jobs.display_name).
+    job_name: Optional[str] = None
     # Phone bundle (2026-09): attach provider-returned phones to output rows.
     # Default False keeps output phone-free (unchanged).
     include_phone: bool = False
@@ -5929,6 +6046,7 @@ async def domain_enrich_with_providers(
         deduped_rows=deduped_count,
         dedupe_skipped_domains=json.dumps(skipped_domains),
         website_only=req.website_only,
+        display_name=_sanitize_job_name(req.job_name),
     )
 
     _job_signals[job_id] = asyncio.Event()

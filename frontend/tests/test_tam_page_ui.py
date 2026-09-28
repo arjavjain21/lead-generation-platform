@@ -97,8 +97,9 @@ def test_jobs_card_renders_tam_vocabulary(html):
     assert "No companies matched" in html
     # Providers block swaps to a single Source line for TAM jobs.
     assert "Blitz company search (TAM by People)" in html
-    # Job titles may come from display_name (what was submitted).
-    assert "job.display_name || job.display_filename" in html
+    # Job titles may come from display_name (what was submitted) — it must
+    # stay FIRST in the fallback chain (2026-09-28 naming feature).
+    assert "job.display_name || ctx.title || job.display_filename" in html
 
 
 def test_tam_page_lists_own_runs(html):

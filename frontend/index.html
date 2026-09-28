@@ -1549,6 +1549,19 @@
             <div class="form-card" id="domainOptions" style="display:none;">
                 <h3><i data-lucide="settings" class="icon" style="vertical-align:text-bottom"></i> Options</h3>
 
+                <!-- Job Name (2026-09-28: jobs.display_name — tells duplicate/superseded runs apart) -->
+                <div style="margin-bottom: 1.5rem;">
+                    <div class="filter-group" style="max-width: 420px;">
+                        <label>Job Name (optional)</label>
+                        <input type="text" id="jobNameInput" maxlength="120"
+                               placeholder="e.g. Museums Q4 — strict titles"
+                               style="width: 100%; padding: 8px; border: 1px solid var(--gray-300); border-radius: 4px; font-size: 0.85rem;">
+                        <p class="field-helper" style="margin: 4px 0 0 0; font-size: 0.75rem; color: var(--gray-500);">
+                            Shown on the Jobs page so teammates can tell runs apart (survives resume).
+                        </p>
+                    </div>
+                </div>
+
                 <!-- Decision Maker Settings -->
                 <div style="margin-bottom: 1.5rem;">
                     <h4 style="margin: 0 0 0.75rem 0; font-size: 0.85rem; font-weight: 600; color: #1a315d; display: flex; align-items: center; gap: 0.5rem;">
@@ -3361,6 +3374,7 @@ example.org,Jane Doe</pre>
                         dedupe_by_domain: dedupeByDomain,
                         titles: customTitles,
                         strict_titles: strictTitles,
+                        job_name: (document.getElementById('jobNameInput')?.value || '').trim() || null,
                         source: outscraperSource,
                         website_only: websiteOnly
                     })
@@ -6523,6 +6537,18 @@ example.org,Jane Doe</pre>
                         const _src = _srcKey ? _srcMap[_srcKey] : null;
                         const sourceChip = _src ? '<span class="file-chip" style="color:' + _src.c + ';background:' + _src.b + ';" title="Origin: ' + _srcKey + '">' + _src.t + '</span>' : '';
 
+                        // Title-gate badge (2026-09-28): surface the strict-titles
+                        // setting at a glance. The Sep-23 museums confusion was
+                        // two uploads of one file — one strict, one not — and
+                        // nothing on the card said which was which.
+                        // job.title_gate: 'on' | 'off' | 'default' (no custom titles → no chip).
+                        const _tgState = job.title_gate;
+                        const titleGateChip = _tgState === 'on'
+                            ? '<span class="file-chip" style="color:#065f46;background:#d1fae5;" title="Local ICP gate active: contacts must match your titles (synonym-aware) after every provider, or they are dropped.">Strict titles ON</span>'
+                            : _tgState === 'off'
+                            ? '<span class="file-chip" style="color:#92400e;background:#fef3c7;" title="Title gate OFF: provider-fuzzy matches pass through unfiltered — higher volume, looser titles.">Strict titles OFF</span>'
+                            : '';
+
                         // A terminal singleton whose restart children are all
                         // off-page has been superseded by a newer attempt —
                         // its actions would operate on stale state, so replace
@@ -6557,10 +6583,11 @@ example.org,Jane Doe</pre>
 
                         return '<div class="job-card' + zeroEmailCardClass + '">'
                             + '<div class="job-info">'
-                            + '<h4>' + esc(ctx.title || job.display_name || job.display_filename || job.filename || 'Job') + '</h4>'
+                            + '<h4>' + esc(job.display_name || ctx.title || job.display_filename || job.filename || 'Job') + '</h4>'
                             + '<div class="job-meta">' + metaHtml + '</div>'
                             + fileChip
                             + sourceChip
+                            + titleGateChip
                             + (ctx.chainBadge || '')
                             + supersededBadge
                             + (ctx.chainProgressHtml || '')
