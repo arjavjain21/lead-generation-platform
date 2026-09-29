@@ -1442,8 +1442,12 @@ the followup is fully asynchronous and never slows a job.
 - Their API caches results 180 days — already-scraped domains return instantly
   (`already_done`), so repeat submissions are effectively free.
 - Kill-switch `WEBCSCRAPE_FOLLOWUP_ENABLED=false` disables auto-submit, the poller, and the
-  webhook; manual endpoints return 503. Webhook push (`WEBSCRAPER_WEBHOOK_SECRET`) is a
-  dormant fast path — the poller is the always-on path.
+  webhook; manual endpoints return 503. **The HMAC webhook is intentionally never activated**
+  (owner decision 2026-09-29: no inbound webhook secrets) — the 30s poller is the only
+  completion path; the endpoint stays dormant in code and needs no secret.
+- Notifications: direct Slack post (workspace bot, `SLACK_BOT_TOKEN`/`SLACK_CHANNEL`) + email
+  (inbox + Slack relay + job owner). Slack is the reliable channel while SMTP credentials
+  are rotated out (2026-09-29 account-security event); email returns when creds are restored.
 
 ### J.2 Endpoints (all under `/api/enrichment`)
 
@@ -1523,6 +1527,7 @@ Plain-text message about daily quota. No `Retry-After` header.
 
 | Date | Change |
 | --- | --- |
+| 2026-09-29 | **Slack notifications added** (independent of SMTP): job completions and website-email followups now also post directly to Slack via the workspace bot (`enrichment/slack_notifier.py`, `SLACK_BOT_TOKEN`/`SLACK_CHANNEL`, kill-switch `SLACK_NOTIFY_ENABLED`). Followup webhook path declared permanently dormant (no inbound webhook secrets by owner decision) — the 30s poller is the only completion path. |
 | 2026-09-29 | **Section J added — Website-Email Followup.** Domain-job no-email misses auto-submit to the webscrapedash scrape-emails API; job cards gain a progress chip and, on completion, a second CSV download button + email/Slack/owner notification. Manual backfill button (with free estimate) on historical jobs. New followup endpoints under `/jobs/{id}/webscrape-followup` (+`/estimate`, `/download`, `/cancel`) and an HMAC-verified `/webscrape-followup/webhook`. Nightly website-scrape sync gained a 48h trailing-window re-scan (`WEBSITE_SCRAPE_LOOKBACK_HOURS`) because remote `completed_at` is stamped mid-pipeline. |
 | 2026-09-16 | **Section I fixes — TAM chain + loop guards + rollout honesty.** (1) TAM→Flow-1 chaining with `exact_titles: true` now stores the chained job's cascade **unbracketed** (a stored `[CEO]` cascade made the chained job's local title gate reject 100% of persons) and forwards `exact_titles` to the Flow-1 runner, which bracket-wraps at Blitz-call time — same mechanics as `/flows/domain-enrich` (I.1 Chaining). (2) TAM pagination hard-stops at `TAM_MAX_PAGES` pages (default 400, env-overridable) and after 5 consecutive empty pages — cursor-cycling server bugs can no longer loop forever; everything written is kept and `capped: true` reflects an outstanding cursor (I.1 Job lifecycle). (3) I.2 matrix honesty: `/enrich` and `/by-linkedin-v2` cells relabeled "accepted, currently no-op" — the forward-compat shim drops the flags at the callee until the callee signature wave lands; behavior is byte-identical to omitting them. |
 | 2026-09-18 | **Lookalike mode on /flows/tam + the Find Companies page:** `seed_companies` (≤5 domains/LinkedIn URLs; GetLeads-profiled 1cr each, Blitz fallback) + `analyze_seeds=true` returns the shared-trait profile without creating a job; runs merge synthesized filters under explicit ones and exclude the seeds. New `sources` field (blitz default / getleads / both — GetLeads leg dedupes contacts to companies, capped at `GETLEADS_LOOKALIKE_MAX_CREDITS`=500 credits/run). CSV gains trailing `source` column. UI: mode toggle, examples box, "What we learned" chip panel. |

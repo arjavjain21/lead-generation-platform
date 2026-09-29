@@ -5651,6 +5651,7 @@ example.org,Jane Doe</pre>
         }
 
         async function startWebsiteEmailFollowup(jobId, btn) {
+            const origLabel = btn ? btn.innerHTML : '';
             if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Checking…'; }
             try {
                 const estRes = await fetch('/api/enrichment/jobs/' + jobId + '/webscrape-followup/estimate', { headers: { 'Authorization': 'Bearer ' + token } });
@@ -5661,13 +5662,16 @@ example.org,Jane Doe</pre>
                 }
                 const est = await estRes.json();
                 if (!est.misses) { alert('No without-email domains found for this job — nothing to scrape.'); return; }
-                if (est.existing_followup) { await loadJobs(); return; }
                 const cached = est.already_done || 0;
                 const fresh = (est.new || 0) + (est.requeued || 0);
                 const eta = (est.eta_min != null) ? est.eta_min : '?';
+                // Always POST on confirm: the backend create is idempotent and
+                // also REVIVES failed/cancelled followups (the Retry button
+                // reuses this function — an early return on existing_followup
+                // would make Retry a silent no-op).
                 const ok = confirm('Submit ' + est.misses + ' without-email domains to website scraping?\n\n' +
                     cached + ' already scraped (instant) · ' + fresh + ' to scrape fresh.\n' +
-                    'Estimated time: ~' + eta + ' min.\n\nYou will get an email + Slack, and a second download button on this job when ready.');
+                    'Estimated time: ~' + eta + ' min.\n\nYou will get a Slack + email notification, and a second download button on this job when ready.');
                 if (!ok) return;
                 const res = await fetch('/api/enrichment/jobs/' + jobId + '/webscrape-followup', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token } });
                 if (!res.ok) {
@@ -5679,7 +5683,7 @@ example.org,Jane Doe</pre>
             } catch (e) {
                 alert('Website email lookup failed: ' + e.message);
             } finally {
-                if (btn) { setTimeout(() => { btn.disabled = false; btn.innerHTML = '✉ Find website emails'; }, 1500); }
+                if (btn) { setTimeout(() => { btn.disabled = false; btn.innerHTML = origLabel; }, 1500); }
             }
         }
 

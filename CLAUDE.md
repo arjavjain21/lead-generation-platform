@@ -250,7 +250,16 @@ WEBSCRAPER_API_KEY=                    # sk_live_... (key 'leadgen-prod' on the 
 WEBSCRAPER_API_BASE=https://webscrapedash.eagleinfoservice.com
 WEBCSCRAPE_FOLLOWUP_ENABLED=true       # master kill-switch (auto-submit + poller + webhook)
 WEBCSCRAPE_CALLBACK_BASE=https://listbuilding.eagleinfoservice.com
-WEBSCRAPER_WEBHOOK_SECRET=             # batch.completed push fast path; empty = poller-only (30s)
+# NOTE: WEBSCRAPER_WEBHOOK_SECRET is INTENTIONALLY NEVER SET (owner decision
+# 2026-09-29: no inbound webhook secrets). The poller (30s) is the only
+# completion path; the HMAC webhook endpoint stays dormant in code.
+
+# Slack notifications (2026-09-29) — direct chat.postMessage via the workspace
+# bot (same one the contacts-api DM-stats alert uses). Second channel independent
+# of SMTP; also the ONLY channel while SMTP credentials are rotated out.
+SLACK_BOT_TOKEN=
+SLACK_CHANNEL=C0AHJCP4V99
+SLACK_NOTIFY_ENABLED=true
 
 # External scraper API (/api/external/scraper/*) + MCP action tools — API-key surface
 ENABLE_EXTERNAL_SCRAPER_API=true

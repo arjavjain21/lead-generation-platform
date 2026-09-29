@@ -1442,6 +1442,26 @@ async def send_job_notification(
     except Exception as e:
         logger.error("Failed to send job notification email: %s", e)
 
+    # Direct Slack post (2026-09-29): second channel independent of SMTP —
+    # credentials for email were rotated out after a suspected account
+    # compromise, so Slack carries notifications until they are restored
+    # (and stays as a durable channel after). Never blocks or raises.
+    from . import slack_notifier
+
+    try:
+        await slack_notifier.send_slack_message(
+            slack_notifier.job_message(
+                job_type=job_type,
+                status=status,
+                filename=filename,
+                total=total,
+                processed=processed,
+                emails_found=emails_found,
+            )
+        )
+    except Exception as slack_err:  # noqa: BLE001 — belt over the module's own guard
+        logger.warning("Slack notification failed: %s", slack_err)
+
 
 # ---------------------------------------------------------------------------
 # Cleanup functions for old uploads and outputs
