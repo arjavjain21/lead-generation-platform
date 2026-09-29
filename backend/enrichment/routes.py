@@ -4089,6 +4089,15 @@ async def get_enrichment_job(
             job_data["filename"] = "Unknown.csv"
             job_data["display_filename"] = "Unknown.csv"
 
+    # Website-email followup summary — parity with GET /jobs (the job cards'
+    # data source) so single-job consumers see the same chip/button state.
+    try:
+        followup = webscrape_followup.get_followup(job_id)
+        if followup:
+            job_data["webscrape_followup"] = webscrape_followup._public_summary(followup)
+    except Exception as wfe:
+        logger.warning("webscrape followup detail augmentation failed: %s", wfe)
+
     return job_data
 
 
@@ -4920,6 +4929,13 @@ async def _run_job(
         # Run auto-sync in the background without blocking the API
         # This prevents the refresh button from getting stuck
         asyncio.create_task(_run_background_sync(job_id, output_path, collector=collector))
+
+        # Website-email followup (2026-09-29): auto-submit the job's no-email
+        # misses to the webscrapedash scrape-emails API. This is the PRIMARY
+        # job-creation path (POST /jobs → _run_job); the twin hook in
+        # _run_domain_enrich_job covers restart/resume/chain paths.
+        # Fire-and-forget with a blanket guard inside.
+        asyncio.create_task(webscrape_followup.auto_submit_for_job(job_id, output_path))
 
         # Get job details for email notification
         job = store.get_enrichment_job(job_id)
