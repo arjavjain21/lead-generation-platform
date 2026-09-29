@@ -17,7 +17,7 @@ ENABLED_PROVIDERS: Final[dict[str, bool]] = {
     "blitz": True,
     "smartprospect": True,   # SmartLead Find Emails API (prospect-api.smartlead.ai), 30 RPS, batch up to 10
     "wizleads": True,
-    "better_enrich": True,
+    "better_enrich": False,   # ← disabled 2026-09-29: $240/10K-credit packs burning ~1/day (100K+ calls/day); key re-exhausted (403 storm). No budget to renew — see BETTERENRICH_BILLING_REVIEW_2026-09-27.md
     "getleads": True,   # GetLeads (app.getleads.io), email + decision-makers enrichment
     "prospeo": False,   # ← disable Prospeo (was paid, temporarily disabled)
 }
