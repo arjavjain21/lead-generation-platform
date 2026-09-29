@@ -27,6 +27,8 @@ Env vars (all optional; sane defaults):
 * WEBSITE_SCRAPE_SYNC_RPS      — push throttle rows/sec (default 40)
 * WEBSITE_SCRAPE_SHARED_ND_CAP — curation cap (default 20)
 * WEBSITE_SCRAPE_TIMEOUT_S     — per-pull SSH timeout seconds (default 300)
+* WEBSITE_SCRAPE_LOOKBACK_HOURS — trailing-window re-scan hours (default 48;
+  0 disables; skipped when --limit is passed — that flag means test run)
 """
 
 from __future__ import annotations
@@ -59,6 +61,13 @@ DEFAULT_BATCH_SIZE = 500
 DEFAULT_RPS = 40.0
 DEFAULT_SHARED_ND_CAP = 20
 DEFAULT_TIMEOUT_S = 300
+#: Trailing-window re-scan (2026-09-29): their pipeline stamps completed_at
+#: on browser_queued handoffs, so a row can carry an early completed_at while
+#: its email lands later — after our watermark has passed that timestamp the
+#: row would be skipped forever. Each run re-scans the last N hours (in
+#: addition to the forward watermark); pushes are idempotent email-keyed
+#: upserts, so re-pulling is harmless. 0 disables.
+DEFAULT_LOOKBACK_HOURS = 48
 STATE_TABLE = "website_scrape_sync_state"
 
 _REMOTE_DB = "email_enrichment"
@@ -211,6 +220,30 @@ LIMIT {int(limit)}
 """.strip()
 
 
+def build_lookback_query(hours: int, limit: int) -> str:
+    """Trailing-window safety re-scan — same row shape as build_pull_query,
+    but anchored on now()-interval instead of the forward watermark. Catches
+    rows whose completed_at was stamped mid-pipeline (browser_queued handoff)
+    and whose email only appeared after the watermark passed them. The
+    int() casts double as injection guards — garbage input falls back to the
+    default instead of raising (belt-and-suspenders; callers pass ints)."""
+    try:
+        interval = int(hours)
+    except (TypeError, ValueError):
+        interval = DEFAULT_LOOKBACK_HOURS
+    return f"""
+SELECT id, domain, email, email_class, email_type, email_confidence,
+       email_shared_nd, status, business_name, page_title, industry,
+       completed_at, metadata::text
+FROM email_enrichment
+WHERE status = 'completed'
+  AND email IS NOT NULL
+  AND completed_at > now() - interval '{interval} hours'
+ORDER BY completed_at, id
+LIMIT {int(limit)}
+""".strip()
+
+
 def build_gmaps_query(domains: list[str]) -> str:
     """Fetch gmaps_places rows for an already-pulled batch, keyed by website.
     Deduplicates per domain locally (one place per domain — franchise branches
@@ -342,6 +375,32 @@ async def _run_remote_psql(sql: str, timeout_s: int) -> str:
     return stdout.decode()
 
 
+async def _attach_gmaps(
+    rows: list[dict[str, Any]], timeout_s: int
+) -> list[dict[str, Any]]:
+    """Phase-2 enrichment of an already-pulled batch: gmaps data via a
+    website-keyed IN-list query, chunked (500/batch — larger IN-lists seq-scan
+    the remote). First match wins per domain (franchise branches share sites)."""
+    domains = sorted({row["domain"] for row in rows if row.get("domain")})
+    if not domains:
+        return rows
+    gmaps_by_domain: dict[str, dict[str, Any]] = {}
+    chunk_size = 500
+    for start in range(0, len(domains), chunk_size):
+        chunk = domains[start : start + chunk_size]
+        gmaps_out = await _run_remote_psql(build_gmaps_query(chunk), timeout_s)
+        for fields in parse_csv_output(gmaps_out):
+            website, payload = parse_gmaps_row(fields)
+            key = _strip_www(website)
+            if key and key not in gmaps_by_domain:
+                gmaps_by_domain[key] = payload
+    for row in rows:
+        key = _strip_www((row.get("domain") or "").lower())
+        if key in gmaps_by_domain:
+            row["gmaps"] = gmaps_by_domain[key]
+    return rows
+
+
 def make_ssh_pull(
     host_alias: str = DEFAULT_HOST_ALIAS, timeout_s: int = DEFAULT_TIMEOUT_S
 ) -> Callable[[Optional[tuple[str, int]], int], Any]:
@@ -356,32 +415,24 @@ def make_ssh_pull(
         main_sql = build_pull_query(watermark, limit)
         stdout = await _run_remote_psql(main_sql, timeout_s)
         rows = [parse_pull_row(fields) for fields in parse_csv_output(stdout)]
-
-        domains = sorted({row["domain"] for row in rows if row.get("domain")})
-        if not domains:
-            return rows
-
-        # Chunk to keep the IN-list sane for large batches.
-        gmaps_by_domain: dict[str, dict[str, Any]] = {}
-        chunk_size = 500
-        for start in range(0, len(domains), chunk_size):
-            chunk = domains[start : start + chunk_size]
-            gmaps_sql = build_gmaps_query(chunk)
-            gmaps_out = await _run_remote_psql(gmaps_sql, timeout_s)
-            for fields in parse_csv_output(gmaps_out):
-                website, payload = parse_gmaps_row(fields)
-                key = _strip_www(website)
-                # First match wins (franchise branches share websites).
-                if key and key not in gmaps_by_domain:
-                    gmaps_by_domain[key] = payload
-
-        for row in rows:
-            key = _strip_www((row.get("domain") or "").lower())
-            if key in gmaps_by_domain:
-                row["gmaps"] = gmaps_by_domain[key]
-        return rows
+        return await _attach_gmaps(rows, timeout_s)
 
     return _pull
+
+
+def make_ssh_lookback_pull(
+    host_alias: str = DEFAULT_HOST_ALIAS, timeout_s: int = DEFAULT_TIMEOUT_S
+) -> Callable[[int, int], Any]:
+    """Trailing-window pull (see build_lookback_query) with the same phase-2
+    gmaps enrichment. Signature: (hours, limit) -> rows."""
+
+    async def _pull_lookback(hours: int, limit: int) -> list[dict[str, Any]]:
+        main_sql = build_lookback_query(hours, limit)
+        stdout = await _run_remote_psql(main_sql, timeout_s)
+        rows = [parse_pull_row(fields) for fields in parse_csv_output(stdout)]
+        return await _attach_gmaps(rows, timeout_s)
+
+    return _pull_lookback
 
 
 # ---------------------------------------------------------------------------
@@ -426,6 +477,8 @@ async def run_sync(
     store: SyncStateStore,
     _pull: Optional[Callable] = None,
     _push: Optional[Callable] = None,
+    _pull_lookback: Optional[Callable] = None,
+    lookback_hours: Optional[int] = None,
     batch_size: Optional[int] = None,
     throttle_rps: Optional[float] = None,
     shared_nd_cap: Optional[int] = None,
@@ -516,6 +569,61 @@ async def run_sync(
         if len(rows) < fetch:
             break
 
+    # Trailing-window re-scan (2026-09-29): re-push recent terminal rows
+    # regardless of watermark position — their completed_at may have been
+    # stamped at a browser_queued handoff BEFORE the email landed, letting
+    # the forward watermark skip past them permanently. Never advances the
+    # watermark; pushes are idempotent email-keyed upserts, so re-pulls are
+    # harmless. Separate counters — the state row stays watermark-based.
+    lookback_hours = (
+        lookback_hours
+        if lookback_hours is not None
+        else int(os.environ.get("WEBSITE_SCRAPE_LOOKBACK_HOURS", DEFAULT_LOOKBACK_HOURS))
+    )
+    lookback_pulled = 0
+    lookback_pushed = 0
+    if lookback_hours > 0 and _pull_lookback is not None and limit is None:
+        if dry_run:
+            lookback_rows = await _pull_lookback(lookback_hours, batch_size)
+            lookback_pulled = len(lookback_rows)
+        else:
+            while True:
+                lookback_rows = await _pull_lookback(lookback_hours, batch_size)
+                if not lookback_rows:
+                    break
+                payloads: list[dict[str, Any]] = []
+                for row in lookback_rows:
+                    curated = curate_row(row, policy)
+                    if curated is None:
+                        continue
+                    payloads.append(build_company_payload(curated, job_id=job_id))
+                    payloads.extend(build_named_contact_payloads(curated, job_id=job_id))
+                lookback_pulled += len(lookback_rows)
+                if payloads:
+                    batch_start = time.monotonic()
+                    result = await push(payloads, job_id=job_id)
+                    summary = result.to_dict() if hasattr(result, "to_dict") else {}
+                    lookback_pushed += (
+                        summary.get("inserted", 0)
+                        + summary.get("updated", 0)
+                        + summary.get("skipped", 0)
+                    )
+                    rows_failed += summary.get("failed", 0)
+                    rows_queued += summary.get("queued_for_retry", 0) + summary.get("queued", 0)
+                    target = len(payloads) / throttle_rps if throttle_rps > 0 else 0.0
+                    remaining = target - (time.monotonic() - batch_start)
+                    if remaining > 0:
+                        await asyncio.sleep(remaining)
+                if len(lookback_rows) < batch_size:
+                    break
+    if lookback_pulled:
+        logger.info(
+            "lookback re-scan (%dh): %d pulled, %d re-pushed",
+            lookback_hours,
+            lookback_pulled,
+            lookback_pushed,
+        )
+
     status = "success" if rows_failed == 0 and rows_queued == 0 else "partial"
     if not dry_run:
         store.record_run(
@@ -536,6 +644,9 @@ async def run_sync(
         "skipped_junk": skipped_junk,
         "batches": batches,
         "watermark": (watermark if dry_run else store.get_watermark()),
+        "lookback_hours": lookback_hours,
+        "lookback_pulled": lookback_pulled,
+        "lookback_pushed": lookback_pushed,
     }
 
 
@@ -582,6 +693,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 limit=args.limit,
                 batch_size=args.batch_size,
                 store=store,
+                _pull_lookback=make_ssh_lookback_pull(),
             )
         )
     except Exception as exc:  # noqa: BLE001 — record the crash, then re-raise

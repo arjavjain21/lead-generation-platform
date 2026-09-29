@@ -292,6 +292,22 @@ check_website_scrape_sync() {
   return 0
 }
 
+
+check_webscrapedash_health() {
+  log_info "Checking webscrapedash scrape-emails API (followup dependency)..."
+
+  # The website-email followup submits waterfall misses to this API. It is
+  # optional for the core platform (followup degrades gracefully), so a hard
+  # outage is a WARNING, not an ERROR — but it should be visible.
+  local body=$(curl -s -m 10 https://webscrapedash.eagleinfoservice.com/healthz 2>/dev/null || echo "")
+  if echo "$body" | grep -q '"ok": *true'; then
+    log_info "  webscrapedash /healthz OK"
+    return 0
+  fi
+  log_warn "  webscrapedash /healthz unreachable/unhealthy (followup submits will retry)"
+  return 0
+}
+
 check_api_errors() {
   log_info "Checking for API errors in logs..."
 
@@ -409,6 +425,11 @@ main() {
   # Check website-scrape sync freshness
   if [ "$CHECK_DISK_ONLY" = false ]; then
     check_website_scrape_sync || exit_code=$?
+  fi
+
+  # Check webscrapedash API health (website-email followup dependency)
+  if [ "$CHECK_DISK_ONLY" = false ]; then
+    check_webscrapedash_health || exit_code=$?
   fi
 
   log_info "=========================================="

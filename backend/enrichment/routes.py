@@ -29,7 +29,7 @@ from typing import Any, Optional
 
 import pandas as pd
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, field_validator
 
@@ -48,6 +48,8 @@ from . import providers
 from . import identifier_utils
 from . import contacts_writer
 from . import seg
+from . import webscrape_dash_client
+from . import webscrape_followup
 from .raw_contact_collector import RawContactCollector
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -3938,6 +3940,21 @@ async def list_enrichment_jobs(
     except Exception as cie:
         logger.warning("chain_info augmentation failed: %s", cie)
 
+    # Website-email followup summary (2026-09-29): one batched SELECT so job
+    # cards can render the followup chip / second download button / backfill
+    # button without extra roundtrips. Absent key = no followup.
+    try:
+        if jobs:
+            followups = webscrape_followup.summaries_for_jobs(
+                [j.get("job_id") for j in jobs if j.get("job_id")]
+            )
+            for job in jobs:
+                summary = followups.get(job.get("job_id"))
+                if summary:
+                    job["webscrape_followup"] = summary
+    except Exception as wfe:
+        logger.warning("webscrape followup augmentation failed: %s", wfe)
+
     return {"jobs": jobs, "total": total, "limit": limit, "offset": offset}
 
 
@@ -4503,6 +4520,176 @@ async def enrichment_shard_download(
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="shard_{shard}_{safe_name}_{job_id[:8]}.csv"'},
     )
+
+
+# ---------------------------------------------------------------------------
+# Website-email followup (2026-09-29) — webscrapedash scrape-emails integration
+#
+# After a domain job finishes, its no-email domains can be submitted to the
+# scraper VPS (webscrapedash.eagleinfoservice.com /api/scrape-emails) which
+# visits each site for generic business emails (info@, contact@, …). When the
+# batch completes, a second CSV is downloadable from the job card and email +
+# Slack (+ owner) notifications fire. Auto-submitted for eligible jobs; the
+# create endpoint doubles as the manual backfill button for historical jobs.
+# ---------------------------------------------------------------------------
+
+
+def _followup_job_csv(job_data: dict[str, Any]) -> Optional[Path]:
+    """Results CSV of a finished/failed/partial enrichment job, if on disk."""
+    candidate = job_data.get("output_path") or str(OUTPUT_DIR / f"{job_data.get('job_id')}.csv")
+    path = Path(candidate)
+    return path if path.exists() and path.stat().st_size > 0 else None
+
+
+def _get_followable_job(job_id: str, current_user: dict[str, Any]) -> tuple[dict[str, Any], Path]:
+    """Shared guard: enrichment job, owned, finished-ish, CSV present."""
+    try:
+        store = job_store.get_store()
+        job_data = store.get_job(job_id)
+    except sqlite3.OperationalError:
+        raise _db_busy()
+    if not job_data or job_data.get("job_type") != "enrichment":
+        raise HTTPException(status_code=404, detail="Enrichment job not found.")
+    if not _owns_job(job_data, current_user):
+        raise HTTPException(status_code=403, detail="Access denied.")
+    if job_data.get("status") in ("queued", "running"):
+        raise HTTPException(status_code=409, detail="Job is still running.")
+    csv_path = _followup_job_csv(job_data)
+    if not csv_path:
+        raise HTTPException(status_code=404, detail="Job results CSV not found.")
+    return job_data, csv_path
+
+
+def _followup_service_disabled() -> Optional[HTTPException]:
+    if not webscrape_followup.followup_enabled() or not webscrape_dash_client.is_configured():
+        return HTTPException(
+            status_code=503,
+            detail="Website-email followup is disabled (WEBCSCRAPE_FOLLOWUP_ENABLED / WEBSCRAPER_API_KEY).",
+        )
+    return None
+
+
+@router.get("/jobs/{job_id}/webscrape-followup/estimate")
+async def estimate_webscrape_followup(
+    job_id: str,
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """Dry-run quote for the backfill dialog: misses, new vs cached, ETA.
+    Free — queues nothing on the scraper VPS."""
+    disabled = _followup_service_disabled()
+    if disabled:
+        raise disabled
+    _, csv_path = _get_followable_job(job_id, current_user)
+    try:
+        estimate = await webscrape_followup.estimate_for_job(csv_path)
+    except webscrape_dash_client.WebscrapeDashError as exc:
+        raise HTTPException(status_code=502, detail=f"Estimate failed: {exc}")
+    estimate["existing_followup"] = webscrape_followup.get_followup(job_id) is not None
+    return estimate
+
+
+@router.post("/jobs/{job_id}/webscrape-followup")
+async def create_webscrape_followup(
+    job_id: str,
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """Create (and submit) the website-email followup for a job. Manual
+    backfill path — new eligible jobs are auto-submitted at completion."""
+    disabled = _followup_service_disabled()
+    if disabled:
+        raise disabled
+    _, csv_path = _get_followable_job(job_id, current_user)
+    created_by = current_user.get("email") or current_user.get("user_id") or ""
+    result = await webscrape_followup.create_followup(
+        job_id, csv_path, origin="manual_backfill", created_by=created_by
+    )
+    return result
+
+
+@router.get("/jobs/{job_id}/webscrape-followup")
+async def get_webscrape_followup(
+    job_id: str,
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """Followup status for the job card (chip / second button)."""
+    try:
+        store = job_store.get_store()
+        job_data = store.get_job(job_id)
+    except sqlite3.OperationalError:
+        raise _db_busy()
+    if not job_data or not _owns_job(job_data, current_user):
+        raise HTTPException(status_code=404, detail="Job not found.")
+    followup = webscrape_followup.get_followup(job_id)
+    if not followup:
+        raise HTTPException(status_code=404, detail="No website-email followup for this job.")
+    return {"followup": webscrape_followup._public_summary(followup)}
+
+
+@router.get("/jobs/{job_id}/webscrape-followup/download")
+async def download_webscrape_followup(
+    job_id: str,
+    current_user: dict = Depends(_user_or_token_fallback),
+):
+    """Second download button: the website-email CSV (?token= native download)."""
+    try:
+        store = job_store.get_store()
+        job_data = store.get_job(job_id)
+    except sqlite3.OperationalError:
+        raise _db_busy()
+    if not job_data or not _owns_job(job_data, current_user):
+        raise HTTPException(status_code=404, detail="Job not found.")
+    followup = webscrape_followup.get_followup(job_id)
+    if not followup:
+        raise HTTPException(status_code=404, detail="No website-email followup for this job.")
+    if followup.get("status") != webscrape_followup.STATUS_DONE:
+        raise HTTPException(status_code=409, detail=f"Followup not finished ({followup.get('status')}).")
+    csv_path = Path(followup.get("csv_path") or "")
+    if not followup.get("csv_path") or not csv_path.exists():
+        raise HTTPException(status_code=404, detail="Followup CSV not found on disk.")
+    return FileResponse(
+        path=str(csv_path),
+        media_type="text/csv",
+        filename=f"website_emails_{job_id[:8]}.csv",
+    )
+
+
+@router.post("/jobs/{job_id}/webscrape-followup/cancel")
+async def cancel_webscrape_followup(
+    job_id: str,
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """Cancel the followup: un-started rows are removed from the remote queue."""
+    try:
+        store = job_store.get_store()
+        job_data = store.get_job(job_id)
+    except sqlite3.OperationalError:
+        raise _db_busy()
+    if not job_data or not _owns_job(job_data, current_user):
+        raise HTTPException(status_code=404, detail="Job not found.")
+    result = await webscrape_followup.cancel_followup(job_id)
+    if result.get("reason") == "not_found":
+        raise HTTPException(status_code=404, detail="No website-email followup for this job.")
+    return result
+
+
+@router.post("/webscrape-followup/webhook")
+async def webscrape_followup_webhook(request: Request):
+    """batch.completed push from the scraper VPS — HMAC-SHA256 verified
+    (X-Webhook-Signature), no user auth (machine-to-machine). The poller is
+    the backstop when the signing secret is not configured here."""
+    raw_body = await request.body()
+    signature = request.headers.get("X-Webhook-Signature", "")
+    result = await webscrape_followup.handle_batch_webhook(raw_body, signature)
+    if result.get("ok"):
+        return result
+    reason = result.get("reason")
+    # Unknown batch ids answer 200 so their retry ladder stops — the poller
+    # owns those rows anyway. Auth/config problems answer properly.
+    if reason == "bad signature":
+        raise HTTPException(status_code=401, detail="Bad webhook signature.")
+    if reason in ("disabled", "webhook secret not configured"):
+        raise HTTPException(status_code=503, detail=reason)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -6272,6 +6459,11 @@ async def _run_domain_enrich_job(
 
         # Sync results back to Contacts DB (async, non-blocking)
         asyncio.create_task(_run_background_sync(job_id, output_path, collector=collector))
+
+        # Website-email followup (2026-09-29): auto-submit the job's no-email
+        # misses to the webscrapedash scrape-emails API. Fire-and-forget with a
+        # blanket guard inside — a followup outage must never touch this job.
+        asyncio.create_task(webscrape_followup.auto_submit_for_job(job_id, output_path))
 
         # Send notification
         job = store.get_enrichment_job(job_id)

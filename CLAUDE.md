@@ -234,7 +234,7 @@ ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
 # Optional (email notifications)
 SMTP_SERVER, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SENDER_EMAIL, DEFAULT_RECIPIENT
 
-# Website-scrape nightly sync (webscraper.eagleinfoservice.com → Contacts DB, tag 'website_scrape')
+# Website-scrape nightly sync (webscrapedash.eagleinfoservice.com → Contacts DB, tag 'website_scrape')
 # Standalone systemd service lead-gen-website-scrape-sync.{service,timer} (installed, enable to activate).
 # SSH alias 'webscraper-vps' (key auth) + SELECT-only role 'leadgen_sync' on the remote — no DB secrets here.
 WEBSITE_SCRAPE_SYNC_ENABLED=false
@@ -242,6 +242,15 @@ WEBSITE_SCRAPE_BATCH_SIZE=500
 WEBSITE_SCRAPE_SYNC_RPS=40
 WEBSITE_SCRAPE_SHARED_ND_CAP=20
 WEBSITE_SCRAPE_TIMEOUT_S=300
+WEBSITE_SCRAPE_LOOKBACK_HOURS=48        # trailing-window re-scan (completed_at is stamped mid-pipeline remotely)
+
+# Website-email followup (2026-09-29) — waterfall misses → webscrapedash scrape-emails API
+# (auto-submit for eligible domain jobs; second CSV download + email/Slack/owner notify when done)
+WEBSCRAPER_API_KEY=                    # sk_live_... (key 'leadgen-prod' on the scraper VPS)
+WEBSCRAPER_API_BASE=https://webscrapedash.eagleinfoservice.com
+WEBCSCRAPE_FOLLOWUP_ENABLED=true       # master kill-switch (auto-submit + poller + webhook)
+WEBCSCRAPE_CALLBACK_BASE=https://listbuilding.eagleinfoservice.com
+WEBSCRAPER_WEBHOOK_SECRET=             # batch.completed push fast path; empty = poller-only (30s)
 
 # External scraper API (/api/external/scraper/*) + MCP action tools — API-key surface
 ENABLE_EXTERNAL_SCRAPER_API=true
@@ -435,6 +444,14 @@ This project changes often; do not rely on a frozen snapshot here. For current s
   `~/.claude/projects/-var-www-lead-generation-platform/memory/`.
 - **Live health:** `curl -s http://localhost:8765/api/health` and `./monitor.sh`.
 - **Canonical API contract:** `docs/ListBuilding_Platform_Full_API_Reference_2026-07-16.md`.
+- **2026-09-29 shipped:** Website-email followup — when a domain job (Flow 1 / google_maps_chain /
+  TAM-chained) finishes, its no-email domains auto-submit to the webscrapedash scrape-emails API
+  (`enrichment/webscrape_followup.py`, lease-guarded poller in lifespan, `webscrape_followups` table
+  in jobs.db; manual backfill button on historical cards). Second CSV download button + email/Slack/
+  owner notify on completion (`GET /api/enrichment/jobs/{id}/webscrape-followup/download?token=`).
+  Excluded: Flow 3, `website_only`, restricted-provider jobs. Webhook fast path dormant until
+  `WEBSCRAPER_WEBHOOK_SECRET` set (poller-only meanwhile). Nightly sync gained a 48h trailing-window
+  re-scan (`WEBSITE_SCRAPE_LOOKBACK_HOURS`) — remote `completed_at` is stamped mid-pipeline.
 - **2026-09-23 shipped:** Indonesia scraper country (288 centers) + campaign buckets — `POST /api/scraper/jobs`
   accepts `group` (sanitized label → `jobs.group_name`); grouped jobs render as one collapsed folder card
   in the UI with a merged-CSV download (`GET /api/scraper/jobs/group/{name}/download`, streams all group

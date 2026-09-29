@@ -294,6 +294,22 @@ async def _run_parent_startup():
         except Exception as e:
             logger.warning("Failed to start outbox retry loop: %s", e)
 
+        # Website-email followup poller (2026-09-29): advances waterfall-miss
+        # followups submitted to the webscrapedash scrape-emails API
+        # (estimate/submit/poll/cancel; lease-guarded so exactly one of the 4
+        # web workers polls — DB is the cross-worker source of truth). The
+        # batch.completed webhook is the fast path once its signing secret is
+        # configured; this loop is both backstop and the only path until then.
+        try:
+            from enrichment import webscrape_dash_client, webscrape_followup
+            if webscrape_followup.followup_enabled() and webscrape_dash_client.is_configured():
+                asyncio.create_task(webscrape_followup.followup_poller_loop())
+                logger.info("Started website-email followup poller")
+            else:
+                logger.info("Website-email followup poller skipped (disabled or no API key)")
+        except Exception as e:
+            logger.warning("Failed to start website-email followup poller: %s", e)
+
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):

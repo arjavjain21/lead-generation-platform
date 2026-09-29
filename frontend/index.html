@@ -5636,6 +5636,61 @@ example.org,Jane Doe</pre>
         }
         
         document.getElementById('downloadDomainResults').addEventListener('click', () => { downloadFile(currentJobId, 'domain_enrichment.csv'); });
+
+        // ---- Website-email followup (2026-09-29) — second CSV for the job's
+        // without-email domains, scraped on the webscrapedash VPS. ----
+        function downloadWebsiteEmails(jobId, btn) {
+            if (btn) { btn.disabled = true; }
+            try {
+                // Native ?token= download (anchor click → browser download
+                // manager) — the fetch+blob path truncates large CSVs.
+                triggerNativeDownload('/api/enrichment/jobs/' + jobId + '/webscrape-followup/download?token=' + token);
+            } finally {
+                if (btn) { setTimeout(() => { btn.disabled = false; }, 4000); }
+            }
+        }
+
+        async function startWebsiteEmailFollowup(jobId, btn) {
+            if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Checking…'; }
+            try {
+                const estRes = await fetch('/api/enrichment/jobs/' + jobId + '/webscrape-followup/estimate', { headers: { 'Authorization': 'Bearer ' + token } });
+                if (!estRes.ok) {
+                    const body = await estRes.json().catch(() => ({}));
+                    alert('Website email lookup unavailable: ' + (body.detail || ('HTTP ' + estRes.status)));
+                    return;
+                }
+                const est = await estRes.json();
+                if (!est.misses) { alert('No without-email domains found for this job — nothing to scrape.'); return; }
+                if (est.existing_followup) { await loadJobs(); return; }
+                const cached = est.already_done || 0;
+                const fresh = (est.new || 0) + (est.requeued || 0);
+                const eta = (est.eta_min != null) ? est.eta_min : '?';
+                const ok = confirm('Submit ' + est.misses + ' without-email domains to website scraping?\n\n' +
+                    cached + ' already scraped (instant) · ' + fresh + ' to scrape fresh.\n' +
+                    'Estimated time: ~' + eta + ' min.\n\nYou will get an email + Slack, and a second download button on this job when ready.');
+                if (!ok) return;
+                const res = await fetch('/api/enrichment/jobs/' + jobId + '/webscrape-followup', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token } });
+                if (!res.ok) {
+                    const body = await res.json().catch(() => ({}));
+                    alert('Failed to start website email lookup: ' + (body.detail || ('HTTP ' + res.status)));
+                    return;
+                }
+                await loadJobs();
+            } catch (e) {
+                alert('Website email lookup failed: ' + e.message);
+            } finally {
+                if (btn) { setTimeout(() => { btn.disabled = false; btn.innerHTML = '✉ Find website emails'; }, 1500); }
+            }
+        }
+
+        async function cancelWebsiteEmailFollowup(jobId) {
+            if (!confirm('Cancel the website email scrape for this job? Un-started sites are removed from the queue.')) return;
+            try {
+                await fetch('/api/enrichment/jobs/' + jobId + '/webscrape-followup/cancel', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token } });
+            } catch (e) { /* DB state is truth; refresh regardless */ }
+            await loadJobs();
+        }
+
         document.getElementById('downloadLinkedinResults').addEventListener('click', () => { downloadFile(currentJobId, 'linkedin_enrichment.csv'); });
         
         // Jobs - refresh with user feedback
@@ -6429,6 +6484,32 @@ example.org,Jane Doe</pre>
                         // (or will have) rows on disk: done/partial/running.
                         if (job.status === 'done' || job.status === 'partial' || job.status === 'running') {
                             actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleEnrichmentShards(\''+job.job_id+'\', this)">▦ Download in chunks</button>';
+                        }
+                        // Website-email followup (2026-09-29): second phase for
+                        // domain jobs — the waterfall's without-email domains
+                        // get scraped for generic site emails (info@, contact@…)
+                        // on the scraper VPS. Eligible jobs auto-submit at
+                        // completion; historical/other finished jobs get this
+                        // manual button. Chip while processing; when done, a
+                        // second download button (email + Slack also notify).
+                        const wf = job.webscrape_followup;
+                        if (wf) {
+                            if (wf.status === 'done') {
+                                actions += ' <button class="btn btn-success btn-sm" onclick="downloadWebsiteEmails(\''+job.job_id+'\', this)">✉ Website Emails ('+(wf.emails_found || 0)+' found)</button>';
+                            } else if (wf.status === 'failed') {
+                                actions += ' <span class="text-muted small" title="'+esc(wf.error || 'submit failed')+'">✉ website emails failed</span>';
+                                actions += ' <button class="btn btn-secondary btn-sm" onclick="startWebsiteEmailFollowup(\''+job.job_id+'\', this)">Retry</button>';
+                            } else if (wf.status !== 'cancelled') {
+                                let wfLabel = 'queued';
+                                if (wf.status === 'processing') {
+                                    wfLabel = (wf.processed || 0) + '/' + (wf.domains_total || 0) + ((wf.eta_min != null && wf.eta_min > 0) ? ' · ETA ' + wf.eta_min + 'm' : '');
+                                } else if (wf.status === 'finalizing') { wfLabel = 'collecting…'; }
+                                else if (wf.status === 'pending_submit') { wfLabel = 'submitting…'; }
+                                actions += ' <span class="badge badge-info">✉ Website emails: '+wfLabel+'</span>';
+                                actions += ' <button class="btn btn-secondary btn-sm" title="Cancel website email scrape" onclick="cancelWebsiteEmailFollowup(\''+job.job_id+'\', this)">✕</button>';
+                            }
+                        } else if (job.status === 'done' && job.output_exists && !job.website_only) {
+                            actions += ' <button class="btn btn-secondary btn-sm" onclick="startWebsiteEmailFollowup(\''+job.job_id+'\', this)">✉ Find website emails</button>';
                         }
                         // Show error message for failed/abandoned/cancelled jobs with hover tooltip.
                         // Both the visible text and the title attribute are
@@ -7514,6 +7595,11 @@ example.org,Jane Doe</pre>
         window.downloadEnrichmentPartial = downloadEnrichmentPartial;
         window.downloadEnrichmentShard = downloadEnrichmentShard;
         window.toggleEnrichmentShards = toggleEnrichmentShards;
+        // Website-email followup UI (auto-submitted chip, second download
+        // button, backfill dialog) — same window-export rule as above:
+        window.downloadWebsiteEmails = downloadWebsiteEmails;
+        window.startWebsiteEmailFollowup = startWebsiteEmailFollowup;
+        window.cancelWebsiteEmailFollowup = cancelWebsiteEmailFollowup;
         window.resumeEnrichmentJob = resumeEnrichmentJob;
         // Chain-grouped job list ("one card per upload"):
         window.toggleEnrichmentChainHistory = toggleEnrichmentChainHistory;

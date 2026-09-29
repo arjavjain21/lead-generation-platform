@@ -515,3 +515,129 @@ def _fake_write_result(inserted=0, failed=0, queued=0):
     from enrichment.contacts_writer import WriteResult
 
     return WriteResult(inserted=inserted, updated=0, skipped=0, failed=failed, queued=queued, no_data=0)
+
+
+# ---------------------------------------------------------------------------
+# Trailing-window lookback (2026-09-29): completed_at is stamped on
+# browser_queued handoffs on the remote, so the forward watermark can skip
+# rows whose email landed after their completed_at was set. Each run re-scans
+# the last N hours; re-pushes are idempotent; the watermark never regresses.
+# ---------------------------------------------------------------------------
+
+
+class TestLookbackSweep:
+    def test_lookback_pushes_without_advancing_watermark(self, tmp_path):
+        store = wss.open_state_store(db_path=tmp_path / "st.db")
+        store.set_watermark("2026-08-26 10:00:05+00", 6, rows_pulled=1, rows_pushed=1)
+        pushed: list[list] = []
+
+        async def fake_push(payloads, job_id=None):
+            pushed.append(payloads)
+            return {"inserted": len(payloads), "updated": 0, "skipped": 0}
+
+        async def fake_lookback(hours, limit):
+            assert hours == 48
+            return [_remote_row(9), _remote_row(10)]
+
+        out = asyncio.run(
+            wss.run_sync(
+                enabled=True, store=store,
+                _pull=make_fake_pull([]),  # forward pass finds nothing new
+                _pull_lookback=fake_lookback,
+                _push=fake_push, throttle_rps=10_000,
+            )
+        )
+        assert out["lookback_hours"] == 48
+        assert out["lookback_pulled"] == 2
+        # fake_push returns a plain dict (no .to_dict()), so lookback_pushed
+        # stays 0 — assert the re-push itself happened via the captured list.
+        assert len(pushed) == 1 and len(pushed[0]) >= 1
+        # Watermark untouched by the lookback pass.
+        assert store.get_watermark() == ("2026-08-26 10:00:05+00", 6)
+
+    def test_lookback_pages_until_short_batch(self, tmp_path):
+        store = wss.open_state_store(db_path=tmp_path / "st.db")
+        calls: list[int] = []
+
+        async def fake_push(payloads, job_id=None):
+            return {"inserted": len(payloads), "updated": 0, "skipped": 0}
+
+        async def fake_lookback(hours, limit):
+            calls.append(limit)
+            # First call full batch, second call short -> loop stops.
+            return [_remote_row(i) for i in range(limit)] if len(calls) == 1 else [_remote_row(99)]
+
+        out = asyncio.run(
+            wss.run_sync(
+                enabled=True, store=store, batch_size=4,
+                _pull=make_fake_pull([]), _pull_lookback=fake_lookback,
+                _push=fake_push, throttle_rps=10_000,
+            )
+        )
+        assert len(calls) == 2
+        assert out["lookback_pulled"] == 5
+
+    def test_lookback_disabled_by_env_zero(self, tmp_path, monkeypatch):
+        import os as _os
+
+        monkeypatch.setenv("WEBSITE_SCRAPE_LOOKBACK_HOURS", "0")
+        store = wss.open_state_store(db_path=tmp_path / "st.db")
+
+        async def fail_lookback(hours, limit):
+            raise AssertionError("lookback must not run when disabled")
+
+        async def fake_push(payloads, job_id=None):
+            return {"inserted": 0, "updated": 0, "skipped": 0}
+
+        out = asyncio.run(
+            wss.run_sync(
+                enabled=True, store=store,
+                _pull=make_fake_pull([]), _pull_lookback=fail_lookback,
+                _push=fake_push, throttle_rps=10_000,
+            )
+        )
+        assert out["lookback_hours"] == 0 and out["lookback_pulled"] == 0
+
+    def test_lookback_skipped_with_limit_flag(self, tmp_path):
+        store = wss.open_state_store(db_path=tmp_path / "st.db")
+
+        async def fail_lookback(hours, limit):
+            raise AssertionError("lookback must not run with --limit (test mode)")
+
+        async def fake_push(payloads, job_id=None):
+            return {"inserted": 0, "updated": 0, "skipped": 0}
+
+        asyncio.run(
+            wss.run_sync(
+                enabled=True, store=store, limit=1,
+                _pull=make_fake_pull([_remote_row(0)]), _pull_lookback=fail_lookback,
+                _push=fake_push, throttle_rps=10_000,
+            )
+        )
+
+    def test_lookback_dry_run_counts_without_push(self, tmp_path):
+        store = wss.open_state_store(db_path=tmp_path / "st.db")
+
+        async def fail_push(payloads, job_id=None):
+            raise AssertionError("dry-run must not push")
+
+        async def fake_lookback(hours, limit):
+            return [_remote_row(3)]
+
+        out = asyncio.run(
+            wss.run_sync(
+                enabled=True, dry_run=True, store=store,
+                _pull=make_fake_pull([]), _pull_lookback=fake_lookback,
+                _push=fail_push, throttle_rps=10_000,
+            )
+        )
+        assert out["lookback_pulled"] == 1 and out["lookback_pushed"] == 0
+
+
+def test_build_lookback_query_shape_and_injection_guard():
+    sql = wss.build_lookback_query(48, 500)
+    assert "interval '48 hours'" in sql
+    assert "completed_at > now()" in sql
+    assert "LIMIT 500" in sql
+    # Non-integer hours are coerced (injection guard), not interpolated.
+    assert wss.build_lookback_query("6; DROP TABLE x", 10).count("DROP") == 0

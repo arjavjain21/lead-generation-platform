@@ -1413,6 +1413,63 @@ Both fields also ride into the Contacts DB write-back as contact custom fields.
 
 ---
 
+## Section J — Website-Email Followup (2026-09-29)
+
+Second phase for domain-based enrichment jobs: the waterfall's **without-email domains** are
+submitted to the webscrapedash scrape-emails API (`https://webscrapedash.eagleinfoservice.com`,
+the scraper VPS reached as ssh alias `webscraper-vps`), which visits each site and extracts
+generic business emails (`info@`, `contact@`, `hello@`…). The waterfall itself is untouched —
+the followup is fully asynchronous and never slows a job.
+
+### J.1 Behavior
+
+- **Auto-submit** when an eligible domain job finishes (`status=done`): Flow-1 uploads,
+  `google_maps_chain` jobs, TAM-chained jobs. A job is ineligible when `website_only=true`
+  (locked UX: zero fresh scraping) or `selected_providers` restricted the cascade (misses
+  would be misleading). Flow 3 (LinkedIn) jobs never auto-submit.
+- **Manual backfill** for any other finished job: "✉ Find website emails" button on the job
+  card → free estimate dialog (cached vs fresh split + ETA) → confirm → submit.
+- **Progress**: job card chip `✉ Website emails: processed/total · ETA Nm` (poller, 30s).
+  Remote batch runs at the API's highest priority lane; plan ETAs against ~45 domains/min
+  (500 ≈ 10–15 min, 5,000 ≈ 1.5–2 h). Expect a high `no_email` rate — these are domains the
+  waterfall already missed.
+- **Completion**: second download button `✉ Website Emails (N found)` on the job card +
+  email to the global inbox, the Slack relay, and the job owner's account email.
+- Found emails also flow into the contacts DB via the existing nightly sync (tag
+  `website_scrape`) — future waterfall runs then find them free at cascade step 1.
+- **Cancel**: un-started sites are removed from the remote queue (real cost avoid);
+  cancelled/failed followups can be revived from the UI Retry button.
+- Their API caches results 180 days — already-scraped domains return instantly
+  (`already_done`), so repeat submissions are effectively free.
+- Kill-switch `WEBCSCRAPE_FOLLOWUP_ENABLED=false` disables auto-submit, the poller, and the
+  webhook; manual endpoints return 503. Webhook push (`WEBSCRAPER_WEBHOOK_SECRET`) is a
+  dormant fast path — the poller is the always-on path.
+
+### J.2 Endpoints (all under `/api/enrichment`)
+
+| Endpoint | Method | Auth | Description |
+| --- | --- | --- | --- |
+| `/jobs/{job_id}/webscrape-followup/estimate` | GET | JWT / API key | Dry-run quote: `{misses, new, requeued, already_done, invalid, billable, eta_min, existing_followup}`. Free — queues nothing. |
+| `/jobs/{job_id}/webscrape-followup` | POST | JWT / API key | Create (and submit) the followup. Returns `{created, revived?, followup}`; idempotent per job; revives cancelled/failed rows. |
+| `/jobs/{job_id}/webscrape-followup` | GET | JWT / API key | `{followup: {status, processed, emails_found, eta_min, …}}` (also embedded as `webscrape_followup` on every `GET /jobs` row). |
+| `/jobs/{job_id}/webscrape-followup/download` | GET | JWT / API key / `?token=` | The website-email CSV (second button; `status=done` only). Columns: `domain,email,found,email_type,email_source,business_name,email_confidence,result_status`. |
+| `/jobs/{job_id}/webscrape-followup/cancel` | POST | JWT / API key | Cancel: un-started rows deleted remotely, row → `cancelled`. |
+| `/webscrape-followup/webhook` | POST | HMAC-SHA256 (`X-Webhook-Signature`) | `batch.completed` push from the scraper VPS. 401 bad signature; 503 when disabled/secret unset; 200 for unknown batches (stops their retry ladder). |
+
+Followup statuses: `pending_submit → submitted → processing → finalizing → done` (plus
+`failed` / `cancelled`). One followup per job (`UNIQUE(parent_job_id)`); the miss list is
+snapshotted at creation, so it survives the parent CSV's 30-day cleanup.
+
+### J.3 Storage & runtime
+
+- `webscrape_followups` + `webscrape_followup_poller` tables in `jobs.db` (lazy-created,
+  blitz_miss_store pattern). Poller lease-guarded across the 4 gunicorn workers.
+- Client: `enrichment/webscrape_dash_client.py` (estimate/submit/poll/paged-results/cancel,
+  Idempotency-Keys per job, 429/503 `Retry-After` honored, ≤10K domains/batch).
+- Orchestrator: `enrichment/webscrape_followup.py`.
+
+---
+
 ## Error Code Reference
 
 ### HTTP 400 — Bad Request
@@ -1466,6 +1523,7 @@ Plain-text message about daily quota. No `Retry-After` header.
 
 | Date | Change |
 | --- | --- |
+| 2026-09-29 | **Section J added — Website-Email Followup.** Domain-job no-email misses auto-submit to the webscrapedash scrape-emails API; job cards gain a progress chip and, on completion, a second CSV download button + email/Slack/owner notification. Manual backfill button (with free estimate) on historical jobs. New followup endpoints under `/jobs/{id}/webscrape-followup` (+`/estimate`, `/download`, `/cancel`) and an HMAC-verified `/webscrape-followup/webhook`. Nightly website-scrape sync gained a 48h trailing-window re-scan (`WEBSITE_SCRAPE_LOOKBACK_HOURS`) because remote `completed_at` is stamped mid-pipeline. |
 | 2026-09-16 | **Section I fixes — TAM chain + loop guards + rollout honesty.** (1) TAM→Flow-1 chaining with `exact_titles: true` now stores the chained job's cascade **unbracketed** (a stored `[CEO]` cascade made the chained job's local title gate reject 100% of persons) and forwards `exact_titles` to the Flow-1 runner, which bracket-wraps at Blitz-call time — same mechanics as `/flows/domain-enrich` (I.1 Chaining). (2) TAM pagination hard-stops at `TAM_MAX_PAGES` pages (default 400, env-overridable) and after 5 consecutive empty pages — cursor-cycling server bugs can no longer loop forever; everything written is kept and `capped: true` reflects an outstanding cursor (I.1 Job lifecycle). (3) I.2 matrix honesty: `/enrich` and `/by-linkedin-v2` cells relabeled "accepted, currently no-op" — the forward-compat shim drops the flags at the callee until the callee signature wave lands; behavior is byte-identical to omitting them. |
 | 2026-09-18 | **Lookalike mode on /flows/tam + the Find Companies page:** `seed_companies` (≤5 domains/LinkedIn URLs; GetLeads-profiled 1cr each, Blitz fallback) + `analyze_seeds=true` returns the shared-trait profile without creating a job; runs merge synthesized filters under explicit ones and exclude the seeds. New `sources` field (blitz default / getleads / both — GetLeads leg dedupes contacts to companies, capped at `GETLEADS_LOOKALIKE_MAX_CREDITS`=500 credits/run). CSV gains trailing `source` column. UI: mode toggle, examples box, "What we learned" chip panel. |
 | 2026-09-17 | **TAM goes UI-first:** new "Find Companies (TAM)" page replaces the old sync Company Search page (same nav slot; job-based, monitored on the Jobs page); every TAM company is now auto-saved to the contacts DB (`companies_backed_up` counters in the job summary); live result counts on the job row. |
