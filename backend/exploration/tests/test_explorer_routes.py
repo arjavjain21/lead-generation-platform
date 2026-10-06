@@ -308,3 +308,50 @@ class TestUpstreamFailures:
         r = client.post("/api/explorer/people/count", json={"x": 1})
         assert r.status_code == 502
         assert r.json() == {"detail": "contacts api error"}
+
+
+# ---------------------------------------------------------------------------
+# Canary allowlist (Gate 2A remediation D) — default-deny when the list is set
+# ---------------------------------------------------------------------------
+
+def _canary_env(monkeypatch, canary="ops@example.com"):
+    monkeypatch.setenv("DATA_EXPLORER_ENABLED", "true")
+    monkeypatch.setenv("CONTACTS_API_EXPLORER_TOKEN", "test-token")
+    monkeypatch.setenv("DATA_EXPLORER_CANARY_USERS", canary)
+
+
+def test_canary_user_allowed(monkeypatch):
+    _canary_env(monkeypatch)
+    from exploration.explorer_routes import _require_upstream_token
+    assert _require_upstream_token(user={"email": "ops@example.com"}) == "test-token"
+
+
+def test_non_canary_user_denied_as_disabled(monkeypatch):
+    _canary_env(monkeypatch)
+    from exploration.explorer_routes import _require_upstream_token, HTTPException
+    with pytest.raises(HTTPException) as ei:
+        _require_upstream_token(user={"email": "someone-else@example.com"})
+    assert ei.value.status_code == 503
+    assert ei.value.detail == "Data Explorer is disabled"
+
+
+def test_no_canary_list_means_flag_applies_to_all(monkeypatch):
+    _canary_env(monkeypatch, canary="")
+    from exploration.explorer_routes import _require_upstream_token
+    assert _require_upstream_token(user={"email": "anyone@example.com"}) == "test-token"
+
+
+def test_status_reports_disabled_for_non_canary(monkeypatch):
+    _canary_env(monkeypatch)
+    import asyncio
+    from exploration.explorer_routes import explorer_status
+    resp = asyncio.run(explorer_status(current_user={"email": "someone-else@example.com"}))
+    assert resp == {"enabled": False, "contacts_api_ok": False}
+
+
+def test_status_reports_enabled_for_canary(monkeypatch):
+    _canary_env(monkeypatch)
+    import asyncio
+    from exploration.explorer_routes import explorer_status
+    resp = asyncio.run(explorer_status(current_user={"email": "ops@example.com"}))
+    assert resp["enabled"] is True

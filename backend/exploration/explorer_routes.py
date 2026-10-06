@@ -70,14 +70,37 @@ def _base_url() -> str:
     return os.getenv("CONTACTS_API_BASE_URL", "https://leadsdatabase.cc").rstrip("/")
 
 
-def _require_upstream_token() -> str:
+def _canary_users() -> set[str]:
+    """DATA_EXPLORER_CANARY_USERS: comma-separated emails allowed to see the
+    Explorer while it is in canary. Empty/unset = flag applies to everyone
+    (used only once GA is explicitly approved). Default-deny by convention:
+    during canary this list is set to exactly one internal operator."""
+    raw = os.getenv("DATA_EXPLORER_CANARY_USERS", "").strip().lower()
+    return {u.strip() for u in raw.split(",") if u.strip()}
+
+
+def _user_email(user) -> str:
+    email = user.get("email") if isinstance(user, dict) else getattr(user, "email", None)
+    return (email or "").strip().lower()
+
+
+def _canary_allowed(user) -> bool:
+    allowed = _canary_users()
+    return True if not allowed else _user_email(user) in allowed
+
+
+def _require_upstream_token(user=None) -> str:
     """Return the token, or 503 when the Explorer is disabled.
 
-    Enabled = flag on AND token configured. The token value itself is never
-    logged or returned — only this pass/fail decision.
+    Enabled = flag on AND token configured AND (during canary) the caller is
+    in DATA_EXPLORER_CANARY_USERS. The token value itself is never logged or
+    returned — only this pass/fail decision.
     """
     token = _token()
     if not _explorer_enabled() or not token:
+        raise HTTPException(status_code=503, detail="Data Explorer is disabled")
+    if user is not None and not _canary_allowed(user):
+        # Non-canary users are indistinguishable from "disabled" by design.
         raise HTTPException(status_code=503, detail="Data Explorer is disabled")
     return token
 
@@ -131,13 +154,14 @@ async def _proxy_json(
     *,
     payload: Optional[dict[str, Any]] = None,
     params: Optional[list[tuple[str, str]]] = None,
+    user=None,
 ) -> Response:
     """Forward one JSON request to the Contacts API data-explorer surface.
 
     Transport failures become 502 {"detail": "contacts api error"}; anything
     the upstream answers (status + JSON body) is relayed by ``_relay``.
     """
-    token = _require_upstream_token()
+    token = _require_upstream_token(user=user)
     try:
         async with _open_client(token, _JSON_TIMEOUT) as client:
             upstream = await client.request(method, path, json=payload, params=params)
@@ -158,7 +182,7 @@ def _query_params(request: Request) -> list[tuple[str, str]]:
 
 @router.get("/status")
 async def explorer_status(
-    _current_user: dict[str, Any] = Depends(auth.get_current_user),
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
 ) -> dict[str, Any]:
     """Feature + upstream health snapshot for the Explorer UI.
 
@@ -167,7 +191,7 @@ async def explorer_status(
     in that state). ``contacts_api_ok`` is a GET {base}/health 200 check
     with a short timeout; any failure reports false, never an error.
     """
-    enabled = _explorer_enabled() and bool(_token())
+    enabled = _explorer_enabled() and bool(_token()) and _canary_allowed(current_user)
     contacts_api_ok = False
     if enabled:
         try:
@@ -187,39 +211,40 @@ async def explorer_status(
 @router.post("/people/search")
 async def people_search(
     payload: dict[str, Any],
-    _current_user: dict[str, Any] = Depends(auth.get_current_user),
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
 ) -> Response:
     """Proxy POST /v1/data/people/search — request body passthrough."""
-    return await _proxy_json("POST", "/v1/data/people/search", payload=payload)
+    return await _proxy_json("POST", "/v1/data/people/search", payload=payload, user=current_user)
 
 
 @router.post("/people/count")
 async def people_count(
     payload: dict[str, Any],
-    _current_user: dict[str, Any] = Depends(auth.get_current_user),
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
 ) -> Response:
     """Proxy POST /v1/data/people/count — request body passthrough."""
-    return await _proxy_json("POST", "/v1/data/people/count", payload=payload)
+    return await _proxy_json("POST", "/v1/data/people/count", payload=payload, user=current_user)
 
 
 @router.post("/people/facets")
 async def people_facets(
     payload: dict[str, Any],
-    _current_user: dict[str, Any] = Depends(auth.get_current_user),
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
 ) -> Response:
     """Proxy POST /v1/data/people/facets — request body passthrough."""
-    return await _proxy_json("POST", "/v1/data/people/facets", payload=payload)
+    return await _proxy_json("POST", "/v1/data/people/facets", payload=payload, user=current_user)
 
 
 @router.get("/people/{person_id}")
 async def person_detail(
     person_id: str,
     request: Request,
-    _current_user: dict[str, Any] = Depends(auth.get_current_user),
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
 ) -> Response:
     """Proxy GET /v1/data/people/{person_id} (query params forwarded)."""
     return await _proxy_json(
-        "GET", f"/v1/data/people/{person_id}", params=_query_params(request)
+        "GET", f"/v1/data/people/{person_id}", params=_query_params(request),
+        user=current_user,
     )
 
 
@@ -230,47 +255,47 @@ async def person_detail(
 @router.get("/views")
 async def list_views(
     request: Request,
-    _current_user: dict[str, Any] = Depends(auth.get_current_user),
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
 ) -> Response:
     """Proxy GET /v1/data/views (query params forwarded)."""
-    return await _proxy_json("GET", "/v1/data/views", params=_query_params(request))
+    return await _proxy_json("GET", "/v1/data/views", params=_query_params(request), user=current_user)
 
 
 @router.post("/views")
 async def create_view(
     payload: dict[str, Any],
-    _current_user: dict[str, Any] = Depends(auth.get_current_user),
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
 ) -> Response:
     """Proxy POST /v1/data/views — body ``{name, filters}`` passthrough."""
-    return await _proxy_json("POST", "/v1/data/views", payload=payload)
+    return await _proxy_json("POST", "/v1/data/views", payload=payload, user=current_user)
 
 
 @router.get("/views/{view_id}")
 async def get_view(
     view_id: str,
-    _current_user: dict[str, Any] = Depends(auth.get_current_user),
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
 ) -> Response:
     """Proxy GET /v1/data/views/{view_id}."""
-    return await _proxy_json("GET", f"/v1/data/views/{view_id}")
+    return await _proxy_json("GET", f"/v1/data/views/{view_id}", user=current_user)
 
 
 @router.put("/views/{view_id}")
 async def update_view(
     view_id: str,
     payload: dict[str, Any],
-    _current_user: dict[str, Any] = Depends(auth.get_current_user),
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
 ) -> Response:
     """Proxy PUT /v1/data/views/{view_id} — body passthrough."""
-    return await _proxy_json("PUT", f"/v1/data/views/{view_id}", payload=payload)
+    return await _proxy_json("PUT", f"/v1/data/views/{view_id}", payload=payload, user=current_user)
 
 
 @router.delete("/views/{view_id}")
 async def delete_view(
     view_id: str,
-    _current_user: dict[str, Any] = Depends(auth.get_current_user),
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
 ) -> Response:
     """Proxy DELETE /v1/data/views/{view_id} — upstream 204 relays as 204."""
-    return await _proxy_json("DELETE", f"/v1/data/views/{view_id}")
+    return await _proxy_json("DELETE", f"/v1/data/views/{view_id}", user=current_user)
 
 
 # ---------------------------------------------------------------------------
@@ -280,35 +305,35 @@ async def delete_view(
 @router.post("/exports")
 async def create_export(
     payload: dict[str, Any],
-    _current_user: dict[str, Any] = Depends(auth.get_current_user),
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
 ) -> Response:
     """Proxy POST /v1/exports — body ``{source_type, view_id?, filters?,
     format, gzip?}`` passthrough; upstream 201/200 body + status relayed."""
-    return await _proxy_json("POST", "/v1/exports", payload=payload)
+    return await _proxy_json("POST", "/v1/exports", payload=payload, user=current_user)
 
 
 @router.get("/exports")
 async def list_exports(
     request: Request,
-    _current_user: dict[str, Any] = Depends(auth.get_current_user),
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
 ) -> Response:
     """Proxy GET /v1/exports (query params forwarded)."""
-    return await _proxy_json("GET", "/v1/exports", params=_query_params(request))
+    return await _proxy_json("GET", "/v1/exports", params=_query_params(request), user=current_user)
 
 
 @router.get("/exports/{export_id}")
 async def get_export(
     export_id: str,
-    _current_user: dict[str, Any] = Depends(auth.get_current_user),
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
 ) -> Response:
     """Proxy GET /v1/exports/{export_id}."""
-    return await _proxy_json("GET", f"/v1/exports/{export_id}")
+    return await _proxy_json("GET", f"/v1/exports/{export_id}", user=current_user)
 
 
 @router.get("/exports/{export_id}/download")
 async def download_export(
     export_id: str,
-    _current_user: dict[str, Any] = Depends(auth.get_current_user),
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
 ) -> Response:
     """Stream the export file through from the Contacts API.
 
@@ -319,7 +344,7 @@ async def download_export(
     the download byte-identical. Error statuses are relayed like every
     other route.
     """
-    token = _require_upstream_token()
+    token = _require_upstream_token(user=current_user)
     path = f"/v1/exports/{export_id}/download"
     client = _open_client(token, _DOWNLOAD_TIMEOUT)
     try:
