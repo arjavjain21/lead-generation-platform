@@ -254,6 +254,16 @@ class JobStoreBase:
                         updates.append(f"{col} = {col} + ?")
                         values.append(count)
 
+            # Strict-title gate drops (2026-10-06): per-domain progress
+            # events carry title_gate_dropped; accumulate into the jobs
+            # column for the UI badge. Runs even when source_counts is
+            # empty — a domain whose contacts were ALL dropped has no
+            # email sources, and those drops are the whole point.
+            title_gate_delta = event.get("title_gate_dropped", 0)
+            if title_gate_delta:
+                updates.append("title_gate_dropped = title_gate_dropped + ?")
+                values.append(title_gate_delta)
+
             values.append(job_id)
 
             # Record to enrichment_stats table for detailed tracking

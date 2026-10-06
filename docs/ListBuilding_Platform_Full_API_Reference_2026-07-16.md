@@ -318,6 +318,25 @@ Gate semantics:
 - Junior excludes (`assistant`, `intern`, `junior`, `associate`) are overridden by
   senior signals — "Associate Director" is kept, "Sales Associate" is dropped.
 - Structured signals from the Internal DB (seniority, function) count as matches.
+
+Precision rules (2026-10-06):
+- Matching runs against the **role segment** of a person's title + headline —
+  the company tail of a LinkedIn headline (`… | @Acme Consulting Group`) never
+  satisfies a title token.
+- The FUNCTION words of a title token must appear **contiguously as a phrase**;
+  only seniority words (`VP`, `Director`, `Head`…) may match anywhere. So
+  "VP Consulting" no longer matches "VP of Sales | @Admiral Consulting Group".
+- Words match on word boundaries (plural-tolerant) — "head" ≠ "Headquarters".
+
+Enforcement coverage (2026-10-06): the gate now applies on **every** discovery
+path — Internal DB, Blitz waterfall + find-people prepass, **rows routed via a
+Company LinkedIn column** (`company_linkedin_url` / `company_linkedin_col` /
+auto-detected `/company/` URLs — previously searched with the default cascade
+and never gated; the waterfall there now searches YOUR titles), and the
+GetLeads decision-makers domain fallback (previously returned generic
+C-Team/VP/Director people unfiltered). Enrichment jobs also expose
+`title_gate_dropped` (jobs list API) — the running count of off-ICP contacts
+the gate filtered, shown on the job card badge.
 - The gate is **inert when no titles are supplied** (default cascade requests are
   never filtered by it).
 

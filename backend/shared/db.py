@@ -409,6 +409,13 @@ def init_db() -> None:
     # build the resume child. NULL = never claimed.
     if "resume_claimed_at" not in existing_columns:
         c.execute("ALTER TABLE jobs ADD COLUMN resume_claimed_at TEXT")
+    # Strict-title gate drop counter (2026-10-06): how many off-ICP people
+    # the local title gate filtered out of this job. Bumped atomically by
+    # append_event from the per-domain progress events; surfaced on the job
+    # card badge ("Strict titles ON · N off-ICP filtered") so users can see
+    # the gate working instead of inferring it from the CSV.
+    if "title_gate_dropped" not in existing_columns:
+        c.execute("ALTER TABLE jobs ADD COLUMN title_gate_dropped INTEGER DEFAULT 0")
 
     c.commit()
 

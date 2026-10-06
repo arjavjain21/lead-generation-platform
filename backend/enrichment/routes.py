@@ -3939,6 +3939,14 @@ async def list_enrichment_jobs(
         except Exception:
             job["title_gate"] = "default"
 
+    # Strict-title drop counter (2026-10-06): off-ICP people the local gate
+    # filtered out of this job. Column is absent on pre-2026-10 rows → 0.
+    for job in jobs:
+        try:
+            job["title_gate_dropped"] = int(job.get("title_gate_dropped") or 0)
+        except (TypeError, ValueError):
+            job["title_gate_dropped"] = 0
+
     # File-availability flag for the UI (cheap stat per job).
     for job in jobs:
         job["output_exists"] = _job_output_exists(job)

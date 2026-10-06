@@ -71,6 +71,14 @@ _person_matches_titles = title_filter.person_matches_titles
 _parse_cascade_titles = title_filter.parse_cascade_titles
 
 
+def _record_gate_drops(gate_stats: Optional[dict], dropped: int) -> None:
+    """Accumulate strict-title gate drops into the per-domain stats bag the
+    runner reads (flows into the job's ``title_gate_dropped`` counter via the
+    progress event → append_event). No-op when the caller passed no bag."""
+    if gate_stats is not None and dropped:
+        gate_stats["dropped"] = gate_stats.get("dropped", 0) + dropped
+
+
 def _is_personal_linkedin_url(url: str) -> bool:
     """Check if LinkedIn URL is a personal profile."""
     if not url or "linkedin.com" not in url:
@@ -839,6 +847,7 @@ async def _enrich_single_domain(
     collector: Optional[Any] = None,  # RawContactCollector; Phase 1 capture
     blitz_prepass: Optional[dict[str, Any]] = None,  # find-people batch prepass result (2026-09)
     blitz_miss_skip: bool = False,  # arm the miss-marker store wiring (2026-09)
+    gate_stats: Optional[dict[str, int]] = None,  # strict-title drop counter bag (2026-10-06)
 ) -> list[OutputRow]:
     """
     Enrich a single domain: get company info, generic emails, and decision makers.
@@ -1148,6 +1157,7 @@ async def _enrich_single_domain(
                             "Title gate (blitz prepass) %s: dropped %d/%d off-ICP",
                             domain, _dropped, _persons_before,
                         )
+                        _record_gate_drops(gate_stats, _dropped)
                 logger.debug("Using blitz prepass for %d decision makers", len(persons))
             elif _blitz_waterfall_skip:
                 # Stored 'contacts' miss whose company URL Step 1 injected:
@@ -1213,6 +1223,7 @@ async def _enrich_single_domain(
                                 "Title gate (blitz waterfall) %s: dropped %d/%d off-ICP",
                                 domain, _dropped, _persons_before,
                             )
+                            _record_gate_drops(gate_stats, _dropped)
                     logger.debug("Using Blitz for %d decision makers", len(persons))
                 except Exception as e:
                     logger.debug("Blitz waterfall search failed: %s", e)
@@ -1241,6 +1252,27 @@ async def _enrich_single_domain(
         except Exception as dm_exc:
             logger.debug("GetLeads decision-makers fallback failed for %s: %s", domain, dm_exc)
             dm_contacts = []
+        # LOCAL TITLE GATE (2026-10-06): the decision-makers layer returns
+        # generic C-Team/VP/Director/Head people by design — under a strict
+        # title request they must pass the same gate as every other
+        # discovery path or the CSV fills with CTO/Finance/Sales rows the
+        # user never asked for (RCA 2026-10-06).
+        if dm_contacts and title_filter_active:
+            _dm_before = len(dm_contacts)
+            dm_contacts = [
+                c for c in dm_contacts
+                if isinstance(c, dict)
+                and _person_matches_titles(
+                    str(c.get("job_title", "")), "", include_titles, exclude_titles,
+                )
+            ]
+            _dm_dropped = _dm_before - len(dm_contacts)
+            if _dm_dropped:
+                logger.info(
+                    "Title gate (getleads dm fallback) %s: dropped %d/%d off-ICP",
+                    domain, _dm_dropped, _dm_before,
+                )
+                _record_gate_drops(gate_stats, _dm_dropped)
         if dm_contacts:
             persons = [
                 {
@@ -1937,6 +1969,10 @@ async def run_domain_enrichment(
             if _is_company_linkedin_url(_li_val):
                 company_linkedin_url_raw = _li_val
 
+        # Strict-title gate drop counter for this row (flows into the
+        # progress event → job's title_gate_dropped column → UI badge).
+        gate_stats: dict[str, int] = {}
+
         if website_only:
             # Website-scrape-only mode (2026-08-27): read existing DB data
             # exclusively — by-company lookup filtered to the website_scrape
@@ -1951,13 +1987,17 @@ async def run_domain_enrichment(
             )
         elif company_linkedin_url_raw:
             company_linkedin_url = identifier_utils.normalize_linkedin_url(company_linkedin_url_raw)
-            # Short-circuit: use the company-URL orchestrator directly
+            # Short-circuit: use the company-URL orchestrator directly.
+            # cascade_config flows in so the waterfall searches the USER's
+            # titles (not the DEFAULT tiers) and the local strict-title gate
+            # applies (2026-10-06 — this path used to bypass both).
             result = await _enrich_by_company_linkedin(
                 blitz_http=blitz_http,
                 contacts_http=contacts_http,
                 base_row={**row, "domain": domain, "company_linkedin_url": company_linkedin_url},
                 company_linkedin_url=company_linkedin_url,
                 domain=domain,
+                cascade_config=cascade_config,
                 max_dms=max_decision_makers,
                 domain_semaphore=domain_semaphore,
                 email_semaphore=email_semaphore,
@@ -1966,6 +2006,7 @@ async def run_domain_enrichment(
                 validate_email=validate_email,
                 record_provider_use=record_provider_use,
                 collector=collector,
+                gate_stats=gate_stats,
             )
         elif not domain:
             result = [{**row, **_empty_enriched(), "row_status": STATUS_SKIPPED}]
@@ -1988,6 +2029,7 @@ async def run_domain_enrichment(
                 collector=collector,
                 blitz_prepass=blitz_prepass,
                 blitz_miss_skip=_miss_armed,
+                gate_stats=gate_stats,
             )
             # Phase 1B (2026-07-21): by-company Contacts DB augment (flag-gated,
             # additive, emails preserved). See _merge_by_company_contacts.
@@ -2015,6 +2057,7 @@ async def run_domain_enrichment(
                     "contacts_found": len(result),
                     "emails_found": emails_found,
                     "source_counts": source_counts,
+                    "title_gate_dropped": gate_stats.get("dropped", 0),
                 }
                 # Handle both sync and async callbacks
                 if asyncio.iscoroutinefunction(on_progress):
@@ -3000,6 +3043,7 @@ async def _enrich_by_company_linkedin(
     company_linkedin_url: str,
     domain: str = "",
     cascade: Optional[list[dict[str, Any]]] = None,
+    cascade_config: Optional[str] = None,  # JSON cascade from the job (2026-10-06)
     max_dms: int = 5,
     domain_semaphore: Optional[asyncio.Semaphore] = None,
     email_semaphore: Optional[asyncio.Semaphore] = None,
@@ -3008,6 +3052,7 @@ async def _enrich_by_company_linkedin(
     validate_email: bool = True,
     record_provider_use: Optional[Callable[[str], None]] = None,
     collector: Optional[Any] = None,
+    gate_stats: Optional[dict[str, int]] = None,  # strict-title drop counter bag (2026-10-06)
 ) -> list[OutputRow]:
     """Enrich a single company LinkedIn URL → decision makers + emails.
 
@@ -3021,15 +3066,27 @@ async def _enrich_by_company_linkedin(
       4. Build ``OutputRow`` inline following the same pattern as
          ``_enrich_single_domain`` (list_builder.py:772-799).
 
+    Title filtering (2026-10-06): this path historically ran the DEFAULT
+    Blitz tiers and applied NO local title gate, so any Flow-1 CSV with a
+    populated Company LinkedIn column silently bypassed strict titles
+    (RCA jobs 144ee780/939136b6 — 97.4%/38.6% off-ICP delivered). The
+    waterfall now searches the caller's cascade (explicit ``cascade`` list
+    or parsed ``cascade_config``) and the local gate drops non-matches
+    BEFORE email resolution, mirroring ``_enrich_single_domain``.
+
     Args:
         company_linkedin_url: LinkedIn URL matching ``/company/``, ``/school/``,
             or ``/organization/``. Invalid URLs return a single
             ``STATUS_NO_LINKEDIN`` row.
         domain: Optional domain for email resolution (passed to
             ``_resolve_person_email``). May be empty.
-        cascade: Optional title tiers. Defaults to ``blitz_client.DEFAULT_CASCADE``.
+        cascade: Optional title tiers (wins over ``cascade_config``).
+        cascade_config: Optional JSON cascade from the job row; used for the
+            waterfall tiers AND the local title gate when ``cascade`` is None.
         max_dms: Cap on decision-makers returned.
         collector: Optional ``RawContactCollector`` propagated to the waterfall.
+        gate_stats: Optional bag that accumulates strict-title drops for the
+            job's ``title_gate_dropped`` counter.
 
     Returns:
         List of ``OutputRow`` dicts. Empty waterfall → single
@@ -3043,7 +3100,16 @@ async def _enrich_by_company_linkedin(
         return [row]
 
     if cascade is None:
-        cascade = blitz_client.DEFAULT_CASCADE
+        if cascade_config:
+            try:
+                cascade = json.loads(cascade_config)
+            except Exception:
+                logger.warning(
+                    "company-URL enrich: unparseable cascade_config, using DEFAULT_CASCADE"
+                )
+                cascade = blitz_client.DEFAULT_CASCADE
+        else:
+            cascade = blitz_client.DEFAULT_CASCADE
 
     # Run title-waterfall
     persons_raw = await _enrich_by_company_waterfall(
@@ -3054,6 +3120,28 @@ async def _enrich_by_company_linkedin(
         semaphore=domain_semaphore,
         collector=collector,
     )
+
+    # LOCAL TITLE GATE: same gate as the domain path. ``cascade`` here is
+    # the effective tier list (explicit list, parsed job cascade, or
+    # DEFAULT), so the default-cascade exemption keeps title-less traffic
+    # unfiltered while user-title cascades are enforced.
+    include_titles, exclude_titles = title_filter.gate_title_filter(
+        strict_titles=not title_filter.cascade_config_allows_strict_off(cascade),
+        cascade_config=cascade,
+        default_cascade=blitz_client.DEFAULT_CASCADE,
+    )
+    if (include_titles or exclude_titles) and persons_raw:
+        _persons_before = len(persons_raw)
+        persons_raw, _dropped = title_filter.filter_blitz_persons(
+            persons_raw, include_titles, exclude_titles,
+            _current_title_fn=_current_title,
+        )
+        if _dropped:
+            logger.info(
+                "Title gate (company-url waterfall) %s: dropped %d/%d off-ICP",
+                company_linkedin_url, _dropped, _persons_before,
+            )
+            _record_gate_drops(gate_stats, _dropped)
 
     if not persons_raw:
         row = {**base_row, **_empty_enriched()}

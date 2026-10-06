@@ -57,3 +57,47 @@ class TestDisplayNamePrecedence:
         assert re.search(
             r"esc\(job\.display_name \|\| ctx\.title", html_content
         ) is not None
+
+
+class TestTitleGateDropCounter:
+    """2026-10-06: the badge shows how many off-ICP contacts the gate
+    filtered (job.title_gate_dropped) so users can SEE the gate working —
+    the RCA complaint was 'strict titles gave me CTO/Finance/Sales people'
+    with a badge that just said ON."""
+
+    def test_counter_field_read(self, html_content):
+        assert "job.title_gate_dropped" in html_content
+
+    def test_counter_appended_to_on_chip(self, html_content):
+        assert re.search(
+            r"_tgDropped\s*=\s*parseInt\(job\.title_gate_dropped", html_content
+        ) is not None
+        assert "off-ICP filtered" in html_content
+
+
+class TestCompanyUrlColumnWarning:
+    """2026-10-06: upload page warns when the LinkedIn URL column mapping
+    selects a Company LinkedIn column — that routing fed the strict-titles
+    bypass (lookalikes_STL uploads)."""
+
+    def test_warning_element_exists(self, html_content):
+        assert 'id="domainCompanyUrlWarning"' in html_content
+
+    def test_warning_function_wired(self, html_content):
+        assert "updateDomainCompanyUrlWarning" in html_content
+        # re-evaluates when either the column mapping or the titles change
+        assert re.search(
+            r"getElementById\('linkedinUrlCol'\)\.onchange\s*=\s*updateDomainCompanyUrlWarning",
+            html_content,
+        ) is not None
+        assert re.search(
+            r"getElementById\('customTitles'\)\.oninput\s*=\s*updateDomainCompanyUrlWarning",
+            html_content,
+        ) is not None
+
+    def test_warning_targets_company_columns_only(self, html_content):
+        # the guard checks for a column that is BOTH linkedin and company
+        assert re.search(
+            r"selCol\.includes\('linkedin'\)\s*&&\s*selCol\.includes\('company'\)",
+            html_content,
+        ) is not None

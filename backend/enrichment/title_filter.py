@@ -23,7 +23,8 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Optional
+import re
+from typing import Any, Optional, Sequence
 
 # Candidate-pool size: how many Contacts-DB people to fetch per domain when a
 # title filter is active, so matches survive the local gate (consumers widen
@@ -74,8 +75,26 @@ _PRESIDENT_NEGATIONS = (
 
 # Connector words inside multi-word titles ("VP of growth", "Director of
 # Sales"). They carry no matching semantics and are skipped during the
-# ALL-words include check so structured signals can satisfy the real words.
+# include check so structured signals can satisfy the real words.
 _CONNECTOR_WORDS = {"of", "the", "for", "in", "and", "&"}
+
+# Separator class allowed BETWEEN the words of a phrase / synonym variant
+# ("professional  services", "Professional-Services", "Sales & Marketing").
+_PHRASE_SEP = r"[\s\-/,&]+"
+
+# Words of a user token that denote SENIORITY ("VP", "Director", "Head").
+# They may match anywhere in the role segment (or the structured
+# seniority/function signals). Everything else in the token is a FUNCTION
+# word and must appear CONTIGUOUSLY as a phrase — this is what stops a
+# company name from satisfying "VP Consulting" via "VP of Sales @Admiral
+# Consulting Group".
+_SENIORITY_WORDS = {
+    "vp", "svp", "avp", "evp", "dvp", "ceo", "cto", "cfo", "coo", "cmo",
+    "cio", "cpo", "cro", "chief", "officer", "president", "director",
+    "head", "manager", "mgr", "lead", "leader", "senior", "sr", "snr",
+    "founder", "cofounder", "co-founder", "owner", "partner", "principal",
+    "chair", "chairman", "chairperson",
+}
 
 _SENIOR_INDICATORS = (
     "chief", "ceo", "cto", "cfo", "coo", "cmo", "cio", "cpo", "president",
@@ -85,62 +104,147 @@ _SENIOR_INDICATORS = (
 )
 
 
-def _title_word_variants(word: str) -> list[str]:
-    """Lowercase word plus common synonym expansions for substring matching."""
+def _variants(word: str) -> list[str]:
+    """Lowercase word plus common synonym expansions."""
     w = (word or "").lower().strip()
     if not w:
         return []
     return [w, *_TITLE_SYNONYMS.get(w, ())]
 
 
-def _hay_has_word(hay: str, word: str) -> bool:
-    # "president" is negated by a prefix — "Vice President of Product
-    # Management" is not a President. Mask those phrases before the substring
-    # check. (The VP side is unaffected: the "vp" token matches via its
-    # "vice president" synonym against the unmasked hay.)
-    if word == "president":
-        masked = hay
-        for neg in _PRESIDENT_NEGATIONS:
-            masked = masked.replace(neg, " ")
-        return "president" in masked
-    return any(v and v in hay for v in _title_word_variants(word))
+def _word_pattern(variant: str) -> str:
+    """Word-boundary regex source for one word/phrase variant, plural
+    tolerant ("director" also matches "Directors"; "services" also
+    "service"). Multi-word variants join with the phrase separator."""
+    words = variant.split()
+    if not words:
+        return r"(?!x)x"  # never matches
+    escaped = [re.escape(w) for w in words]
+    last = words[-1]
+    if len(last) > 3 and last.endswith("s"):
+        escaped[-1] = re.escape(last[:-1]) + "s?"
+    else:
+        escaped[-1] = re.escape(last) + "s?"
+    return r"\b" + _PHRASE_SEP.join(escaped) + r"\b"
+
+
+def _word_in_hay(hay: str, word: str) -> bool:
+    """True if ``word`` (or a synonym variant) occurs in ``hay`` as a whole
+    word. Word boundaries kill substring leaks ("head" ⊄ "Headquarters")."""
+    return any(
+        v and re.search(_word_pattern(v), hay) for v in _variants(word)
+    )
+
+
+def _phrase_in_hay(hay: str, phrase_words: Sequence[str]) -> bool:
+    """True if the words occur CONTIGUOUSLY, in order. An empty phrase
+    trivially matches (token had only seniority words)."""
+    if not phrase_words:
+        return True
+    return re.search(_word_pattern(" ".join(phrase_words)), hay) is not None
+
+
+def _mask_president_negations(hay: str) -> str:
+    masked = hay
+    for neg in _PRESIDENT_NEGATIONS:
+        masked = masked.replace(neg, " ")
+    return masked
+
+
+def _collapse_vice_president(words: list[str]) -> list[str]:
+    """['vice', 'president'] -> ['vp'] inside a token, so an explicit
+    "Vice President" include matches VPs (the bare-"President" negation
+    masking would otherwise hide them)."""
+    out = list(words)
+    i = 0
+    while i < len(out) - 1:
+        if out[i] == "vice" and out[i + 1] == "president":
+            out[i:i + 2] = ["vp"]
+        i += 1
+    return out
+
+
+def _role_segment(title: str, headline: str) -> str:
+    """Title + the ROLE part of the headline only. LinkedIn headlines are
+    conventionally "Role | @Company" or "Role at Company" — everything from
+    the first "|" / "@" (else the last " at ") is the company, and company
+    words must not satisfy title tokens ("VP Consulting" must not match
+    "VP of Sales | @Admiral Consulting Group")."""
+    h = (headline or "").strip()
+    cuts = [i for i in (h.find("|"), h.find("@")) if i > 0]
+    if cuts:
+        h = h[: min(cuts)]
+    else:
+        i = h.lower().rfind(" at ")
+        if i > 0:
+            h = h[:i]
+    return f"{title or ''} {h}".strip()
 
 
 def person_matches_titles(
     title: str, headline: str, include_titles: list[str], exclude_titles: list[str],
     seniority: str = "", function: str = "",
 ) -> bool:
-    """True if a contact matches the title filter. Matches against title +
-    headline + seniority + function. ``seniority``/``function`` are structured
-    signals from the Contacts DB (e.g. seniority 'vp', function 'sales'), so
-    'VP' matches seniority 'vp' and 'Sales' matches function 'sales' even when
-    the free-text headline omits the word.
+    """True if a contact matches the title filter. Matches against the ROLE
+    segment of title + headline (the company tail of a headline is ignored)
+    plus the structured ``seniority``/``function`` signals from the Contacts
+    DB (e.g. seniority 'vp', function 'sales').
 
-    - exclude: if ANY exclude token has a matching word -> drop.
-    - include: a token matches when ALL its words match (comma = OR between tokens).
-    - No include list -> keep (subject to exclude).
+    Precision rules (2026-10-06, RCA jobs 144ee780/939136b6):
+    - exclude: if ANY exclude word matches -> drop (junior excludes are
+      overridden by a senior/decision-maker signal).
+    - include: a token matches when every SENIORITY word of the token
+      matches somewhere in the role segment AND the FUNCTION words occur
+      contiguously as a phrase. Words match on word boundaries, so
+      company-name words in a headline ("@Admiral Consulting Group") can
+      no longer satisfy an include token.
+    - comma-separated tokens are OR'ed; no include list -> keep.
     """
-    hay = f"{title or ''} {headline or ''} {seniority or ''} {function or ''}".lower()
+    role = _role_segment(title, headline).lower()
+    hay = " ".join(
+        part for part in (role, (seniority or "").lower(), (function or "").lower())
+        if part
+    )
     if not hay.strip():
         return False
     # Junior-level excludes are overridden when the title carries a senior/
     # decision-maker signal (keep "Associate General Counsel", "Assistant
     # Director", "Senior Associate"; drop standalone "Sales Associate"/"Intern").
-    has_senior = any(_hay_has_word(hay, s) for s in _SENIOR_INDICATORS)
+    has_senior = any(_word_in_hay(hay, s) for s in _SENIOR_INDICATORS)
     for ex in exclude_titles or []:
         ex_words = ex.lower().split()
         if ex_words and ex_words[0] in _JUNIOR_EXCLUDE_TOKENS and has_senior:
             continue
-        if any(_hay_has_word(hay, w) for w in ex_words):
+        if any(_word_in_hay(hay, w) for w in ex_words):
             return False
     if not include_titles:
         return True
+    masked_hay: Optional[str] = None  # computed lazily on bare-'president'
     for inc in include_titles or []:
         # Connector words ("VP of growth") carry no matching semantics — skip
         # them so structured signals (seniority='vp' + function='growth')
         # satisfy a multi-word include without a literal "of" anywhere.
-        words = [w for w in inc.lower().split() if w not in _CONNECTOR_WORDS]
-        if words and all(_hay_has_word(hay, w) for w in words):
+        words = _collapse_vice_president(
+            [w for w in inc.lower().split() if w not in _CONNECTOR_WORDS]
+        )
+        if not words:
+            continue
+        seniority_words = [w for w in words if w in _SENIORITY_WORDS]
+        function_words = [w for w in words if w not in _SENIORITY_WORDS]
+        matched = True
+        for w in seniority_words:
+            if w == "president":
+                # Bare "President" must NOT match "Vice President ..." —
+                # mask the negation phrases before the boundary check.
+                if masked_hay is None:
+                    masked_hay = _mask_president_negations(hay)
+                if not re.search(_word_pattern("president"), masked_hay):
+                    matched = False
+                    break
+            elif not _word_in_hay(hay, w):
+                matched = False
+                break
+        if matched and _phrase_in_hay(hay, function_words):
             return True
     return False
 

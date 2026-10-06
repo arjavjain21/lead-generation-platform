@@ -3465,6 +3465,25 @@ async def _enrich_domain(
         if _is_provider_error(dm_contacts):
             _record_company_error("getleads", "lookup_decision_makers", "insufficient credits (402)")
             dm_contacts = []
+        # LOCAL TITLE GATE (2026-10-06): the decision-makers layer returns
+        # generic C-Team/VP/Director/Head people by design — under a strict
+        # title request they must pass the same gate as every other
+        # discovery path (parity with list_builder Step 2.4; RCA 2026-10-06).
+        if dm_contacts and title_filter_active:
+            _dm_before = len(dm_contacts)
+            dm_contacts = [
+                c for c in dm_contacts
+                if isinstance(c, dict)
+                and title_filter.person_matches_titles(
+                    str(c.get("job_title", "")), "", include_titles, exclude_titles,
+                )
+            ]
+            _dm_dropped = _dm_before - len(dm_contacts)
+            if _dm_dropped:
+                logger.info(
+                    "Title gate (getleads dm fallback) %s: dropped %d/%d off-ICP",
+                    domain, _dm_dropped, _dm_before,
+                )
         if dm_contacts:
             persons = [
                 {
