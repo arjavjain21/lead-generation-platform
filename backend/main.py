@@ -44,6 +44,7 @@ from enrichment import identifier_utils
 from enrichment import job_store
 from enrichment import tam_routes
 from phone_enrichment import routes as phone_enrichment_routes
+from exploration import explorer_routes
 
 load_dotenv()
 
@@ -389,6 +390,8 @@ app.include_router(enrichment_routes.router, tags=["enrichment"])
 # (_job_signals / _active_jobs / _cancelled_jobs) at module load.
 app.include_router(tam_routes.router, tags=["enrichment"])
 app.include_router(phone_enrichment_routes.router, tags=["phone_enrichment"])
+# Data Explorer BFF — additive, flag-gated; see backend/exploration/.
+app.include_router(explorer_routes.router)
 
 # External scraper API (/api/external/scraper/*) — additive surface for
 # API-key clients. Kill-switch: ENABLE_EXTERNAL_SCRAPER_API=false omits it.

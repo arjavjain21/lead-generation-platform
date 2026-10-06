@@ -1474,6 +1474,56 @@ snapshotted at creation, so it survives the parent CSV's 30-day cleanup.
 
 ---
 
+## Section K — Data Explorer BFF (read-only, flag-gated; 2026-10-06)
+
+The Data Explorer is a read-only browsing surface (people search / saved views /
+CSV exports) over the owned contacts database. The **Contacts API**
+(`leadsdatabase.cc`) is the data service; this platform is a BFF only — every
+`/api/explorer/*` route requires a logged-in user (**JWT only**,
+`Authorization: Bearer <jwt>`) and proxies the call over HTTPS to the Contacts
+API with a server-side token. **The platform never connects to the contacts
+Postgres directly**, and the server-side token is never exposed to clients or
+logs. Implementation: `backend/exploration/explorer_routes.py`.
+
+**Disabled by default.** To enable, set in `backend/.env` (then restart the
+service):
+
+```bash
+DATA_EXPLORER_ENABLED=true
+CONTACTS_API_EXPLORER_TOKEN=<server-side explorer token issued by the Contacts API>
+# optional — defaults to https://leadsdatabase.cc (same var the enrichment
+# contacts_db client uses):
+CONTACTS_API_BASE_URL=https://leadsdatabase.cc
+```
+
+While the flag is off (or the token is empty) every data route returns
+`503 {"detail": "Data Explorer is disabled"}`; `GET /api/explorer/status`
+still answers `200 {"enabled": false, "contacts_api_ok": false}`.
+
+| Method | Path | Upstream (Contacts API) | Notes |
+|---|---|---|---|
+| GET | `/api/explorer/status` | `GET /health` | `{"enabled", "contacts_api_ok"}`; probe failure → `contacts_api_ok: false` (never an error) |
+| POST | `/api/explorer/people/search` | `POST /v1/data/people/search` | request body passthrough |
+| POST | `/api/explorer/people/count` | `POST /v1/data/people/count` | request body passthrough |
+| POST | `/api/explorer/people/facets` | `POST /v1/data/people/facets` | request body passthrough |
+| GET | `/api/explorer/people/{person_id}` | `GET /v1/data/people/{person_id}` | query params forwarded |
+| GET | `/api/explorer/views` | `GET /v1/data/views` | query params forwarded |
+| POST | `/api/explorer/views` | `POST /v1/data/views` | body `{name, filters}` passthrough |
+| GET | `/api/explorer/views/{view_id}` | `GET /v1/data/views/{view_id}` | |
+| PUT | `/api/explorer/views/{view_id}` | `PUT /v1/data/views/{view_id}` | body passthrough |
+| DELETE | `/api/explorer/views/{view_id}` | `DELETE /v1/data/views/{view_id}` | upstream `204` relays as `204` |
+| POST | `/api/explorer/exports` | `POST /v1/exports` | body `{source_type, view_id?, filters?, format, gzip?}`; upstream `201`/`200` body + status relayed |
+| GET | `/api/explorer/exports` | `GET /v1/exports` | query params forwarded |
+| GET | `/api/explorer/exports/{export_id}` | `GET /v1/exports/{export_id}` | |
+| GET | `/api/explorer/exports/{export_id}/download` | `GET /v1/exports/{export_id}/download` | **streamed**; upstream `Content-Type` (text/csv / application/gzip / application/x-ndjson) + `Content-Disposition` (+ `Content-Encoding`) passed through, bytes unchanged |
+
+Timeouts: 30 s for search/count/facets/views/exports JSON calls; downloads
+stream with no read cap. Error contract: an upstream JSON error body is relayed
+with its status code; a transport failure or non-JSON error body becomes
+`502 {"detail": "contacts api error"}`.
+
+---
+
 ## Error Code Reference
 
 ### HTTP 400 — Bad Request
@@ -1527,6 +1577,7 @@ Plain-text message about daily quota. No `Retry-After` header.
 
 | Date | Change |
 | --- | --- |
+| 2026-10-06 | **Section K added — Data Explorer BFF** (`/api/explorer/*`, JWT-only, disabled by default): read-only people search/count/facets, person detail, saved-view CRUD, and export create/list/status/download, proxied over HTTPS to the Contacts API `/v1/data/*` + `/v1/exports` surface with a server-side token (`CONTACTS_API_EXPLORER_TOKEN`). Enable with `DATA_EXPLORER_ENABLED=true`; downloads stream with upstream Content-Type/Content-Disposition passed through. |
 | 2026-09-29 | **Slack notifications added** (independent of SMTP): job completions and website-email followups now also post directly to Slack via the workspace bot (`enrichment/slack_notifier.py`, `SLACK_BOT_TOKEN`/`SLACK_CHANNEL`, kill-switch `SLACK_NOTIFY_ENABLED`). Followup webhook path declared permanently dormant (no inbound webhook secrets by owner decision) — the 30s poller is the only completion path. |
 | 2026-09-29 | **Section J added — Website-Email Followup.** Domain-job no-email misses auto-submit to the webscrapedash scrape-emails API; job cards gain a progress chip and, on completion, a second CSV download button + email/Slack/owner notification. Manual backfill button (with free estimate) on historical jobs. New followup endpoints under `/jobs/{id}/webscrape-followup` (+`/estimate`, `/download`, `/cancel`) and an HMAC-verified `/webscrape-followup/webhook`. Nightly website-scrape sync gained a 48h trailing-window re-scan (`WEBSITE_SCRAPE_LOOKBACK_HOURS`) because remote `completed_at` is stamped mid-pipeline. |
 | 2026-09-16 | **Section I fixes — TAM chain + loop guards + rollout honesty.** (1) TAM→Flow-1 chaining with `exact_titles: true` now stores the chained job's cascade **unbracketed** (a stored `[CEO]` cascade made the chained job's local title gate reject 100% of persons) and forwards `exact_titles` to the Flow-1 runner, which bracket-wraps at Blitz-call time — same mechanics as `/flows/domain-enrich` (I.1 Chaining). (2) TAM pagination hard-stops at `TAM_MAX_PAGES` pages (default 400, env-overridable) and after 5 consecutive empty pages — cursor-cycling server bugs can no longer loop forever; everything written is kept and `capped: true` reflects an outstanding cursor (I.1 Job lifecycle). (3) I.2 matrix honesty: `/enrich` and `/by-linkedin-v2` cells relabeled "accepted, currently no-op" — the forward-compat shim drops the flags at the callee until the callee signature wave lands; behavior is byte-identical to omitting them. |
