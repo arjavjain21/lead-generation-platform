@@ -1252,6 +1252,24 @@ async def _enrich_single_domain(
         except Exception as dm_exc:
             logger.debug("GetLeads decision-makers fallback failed for %s: %s", domain, dm_exc)
             dm_contacts = []
+        # Store-before-filter (2026-10-06): every PAID decision-makers record
+        # (1 credit each, always-verified emails) is captured to the collector
+        # — which drains to the Contacts DB per batch — BEFORE the title gate.
+        # Retrieval is storage; the gate only decides what reaches the CSV.
+        # (Also closes the pre-existing gap where DM records were never
+        # captured at all.)
+        if dm_contacts and collector is not None:
+            for _dm_c in dm_contacts:
+                if isinstance(_dm_c, dict):
+                    try:
+                        collector.capture_company_contact(
+                            source="getleads",
+                            domain=domain,
+                            company_linkedin_url=company_linkedin_url,
+                            contact=_dm_c,
+                        )
+                    except Exception:
+                        pass
         # LOCAL TITLE GATE (2026-10-06): the decision-makers layer returns
         # generic C-Team/VP/Director/Head people by design — under a strict
         # title request they must pass the same gate as every other

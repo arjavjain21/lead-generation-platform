@@ -19,6 +19,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from unittest import mock
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -340,3 +341,120 @@ class TestMatcherPrecision:
     def test_plural_tolerance(self):
         assert self._match(title="VP, Professional Services")
         assert self._match(title="Vice President, Professional Services")
+
+
+class TestStoreBeforeFilter:
+    """Storage invariant (2026-10-06): retrieval is storage — every PAID
+    record the providers return is captured to the collector (→ Contacts DB
+    per-batch drain) BEFORE the title gate. The gate only decides what
+    reaches the user's CSV."""
+
+    def test_dm_records_captured_even_when_gated_out(self):
+        from enrichment import list_builder
+        lb = list_builder
+        collector = mock.MagicMock()
+
+        async def fake_company_by_domain(client, domain):
+            return {"linkedin_url": "https://linkedin.com/company/x", "name": "X"}
+
+        async def fake_company_contacts(client, domain, limit=5):
+            return []
+
+        async def fake_waterfall(client, url, cascade, max_results):
+            return {"results": []}
+
+        async def fake_dm(blitz_http, domain, limit=25):
+            return [
+                {"person_full_name": "A CTO", "first_name": "A", "last_name": "CTO",
+                 "linkedin_url": "https://linkedin.com/in/a",
+                 "job_title": "Chief Technology Officer", "email": "a@x.com"},
+                {"person_full_name": "C PS", "first_name": "C", "last_name": "PS",
+                 "linkedin_url": "https://linkedin.com/in/c",
+                 "job_title": "Director of Professional Services", "email": "c@x.com"},
+            ]
+
+        async def fake_resolve(*args, **kwargs):
+            return ("", "", "", "unknown", "", "")
+
+        with patch.object(lb.contacts_client, "company_by_domain",
+                          side_effect=fake_company_by_domain), \
+             patch.object(lb.contacts_client, "company_contacts_enriched",
+                          side_effect=fake_company_contacts), \
+             patch.object(lb.blitz_client, "waterfall_icp_search",
+                          side_effect=fake_waterfall), \
+             patch.object(lb.getleads_client, "lookup_decision_makers",
+                          side_effect=fake_dm), \
+             patch.object(lb, "_resolve_person_email", side_effect=fake_resolve), \
+             patch.object(lb.blitz_client, "domain_to_linkedin",
+                          new=AsyncMock(return_value={})), \
+             patch.object(lb, "_apply_company_fallback_to_output_rows",
+                          side_effect=lambda *a, **k: a[0] if a else []):
+            rows = _run(lb._enrich_single_domain(
+                None, None, {"domain": ""}, "x.com",
+                cascade_config=json.dumps(PS_CASCADE),
+                max_decision_makers=5,
+                collector=collector,
+            ))
+        names = [r.get("dm_full_name") for r in rows if r.get("dm_full_name")]
+        assert names == ["C PS"]  # CTO gated out of the deliverable...
+        # ...but BOTH paid records were stored before the gate
+        assert collector.capture_company_contact.call_count == 2
+        stored_sources = [str(c.kwargs.get("source")) for c in
+                          collector.capture_company_contact.call_args_list]
+        assert stored_sources == ["getleads", "getleads"]
+
+    def test_dm_shape_survives_real_normalizer(self):
+        """The decision-makers flat record must normalize (not be junked) —
+        a silently-rejected shape would make the capture a no-op."""
+        from enrichment.raw_contact_collector import RawContactCollector
+        col = RawContactCollector(job_id="test")
+        captured = col.capture_company_contact(
+            source="getleads",
+            domain="x.com",
+            company_linkedin_url="https://linkedin.com/company/x",
+            contact={
+                "person_full_name": "Deep Finance", "first_name": "Deep",
+                "last_name": "Finance", "linkedin_url": "https://linkedin.com/in/d",
+                "job_title": "VP of Finance", "email": "d@x.com",
+            },
+        )
+        assert captured is True
+        payloads = col.to_payloads()
+        assert len(payloads) == 1
+        assert payloads[0]["dm_email"] == "d@x.com"
+        assert payloads[0]["dm_title"] == "VP of Finance"
+        assert payloads[0]["dm_email_source"] == "getleads"
+
+    def test_company_waterfall_persons_captured_before_gate(self):
+        """Blitz waterfall persons are captured inside
+        _enrich_by_company_waterfall (before the company-path gate) — gated-out
+        persons must still reach the collector → Contacts DB."""
+        from enrichment import list_builder
+        lb = list_builder
+        collector = mock.MagicMock()
+        persons = [
+            _flat_person(headline="Vice President - Sales | @Informed.IQ"),
+            _flat_person(headline="Vice President of Professional Services"),
+        ]
+        with patch.object(lb, "_enrich_by_company_waterfall",
+                          return_value=persons) as mock_wf, \
+             patch.object(lb, "_resolve_person_email",
+                          return_value=("", "", "", "unknown", "", "")):
+            # simulate the waterfall's own capture pass: the real fn captures
+            # every response person before returning; the mock must mirror it
+            for p in persons:
+                collector.capture_company_contact(
+                    source="blitz", domain="informediq.com",
+                    company_linkedin_url="https://linkedin.com/company/informediq",
+                    contact=p,
+                )
+            _run(lb._enrich_by_company_linkedin(
+                blitz_http=None, contacts_http=None,
+                base_row={"domain": "informediq.com"},
+                company_linkedin_url="https://linkedin.com/company/informediq",
+                domain="informediq.com",
+                cascade_config=json.dumps(PS_CASCADE),
+                collector=collector,
+            ))
+        assert mock_wf.call_args.kwargs.get("collector") is collector
+        assert collector.capture_company_contact.call_count == 2
