@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly scrape-mirror loader timer
+
+[Timer]
+OnCalendar=*-*-* 02:23
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

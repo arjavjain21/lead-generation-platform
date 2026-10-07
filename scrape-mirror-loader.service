@@ -1,0 +1,11 @@
+[Unit]
+Description=Scrape-mirror loader — ingests new scraper output CSVs into scraped_places (PG 5433)
+After=network.target pg-leadgen-5433.service
+Wants=pg-leadgen-5433.service
+
+[Service]
+Type=oneshot
+User=postgres
+Group=postgres
+ExecStart=/var/www/lead-generation-platform/backend/venv/bin/python /var/www/lead-generation-platform/backend/scripts/load_scraper_outputs_to_mirror.py
+TimeoutStartSec=4h
