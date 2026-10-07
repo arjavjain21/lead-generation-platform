@@ -8490,7 +8490,8 @@ example.org,Jane Doe</pre>
                     (d.unknown_terms && d.unknown_terms.length ? '  ⚠ unmapped: ' + d.unknown_terms.join(', ') : '');
                 explorerAfterControlChange();
             } catch (e) {
-                note.textContent = 'Ask failed (' + e.message + ')';
+                note.textContent = (e.message && e.message.indexOf('429') >= 0)
+                    ? 'Rate-limited — wait a few seconds and try again.' : 'Ask failed (' + e.message + ')';
             } finally {
                 btn.disabled = false;
             }
