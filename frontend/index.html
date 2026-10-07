@@ -2088,7 +2088,15 @@
             <div id="exContent" style="display:none;">
                 <div class="ex-layout">
                     <!-- Filter sidebar -->
-                    <div class="form-card ex-sidebar" id="exFilterPanel">
+                    <div class="form-card" id="exAskCard" style="margin-bottom:12px;">
+                            <h3>Ask <span class="ex-count-note">natural language</span></h3>
+                            <div style="display:flex;gap:8px;">
+                                <input type="text" id="exAskInput" placeholder="e.g. US SaaS founders with Google email, 200-1000 employees" style="flex:1;" maxlength="500">
+                                <button type="button" class="btn" id="exAskBtn">Ask</button>
+                            </div>
+                            <div class="ex-count-note" id="exAskNote" style="display:none;margin-top:6px;"></div>
+                        </div>
+                        <div class="form-card ex-sidebar" id="exFilterPanel">
                         <h3><i data-lucide="database" class="icon" style="vertical-align:text-bottom"></i> Data Explorer</h3>
                         <div class="filter-group">
                             <label for="exSavedViews">Saved views</label>
@@ -8355,7 +8363,8 @@ example.org,Jane Doe</pre>
                 if (btn) explorerRemoveFilter(btn.dataset.k, btn.dataset.v || '');
             });
             document.getElementById('exResetFilters').addEventListener('click', explorerResetFilters);
-            document.getElementById('exAskBtn').addEventListener('click', explorerRunAsk);
+            const askBtn = document.getElementById('exAskBtn');
+            if (askBtn) askBtn.addEventListener('click', explorerRunAsk);
             const askInput = document.getElementById('exAskInput');
             if (askInput) askInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); explorerRunAsk(); } });
             document.getElementById('exRefreshBtn').addEventListener('click', explorerRefresh);
@@ -8475,7 +8484,8 @@ example.org,Jane Doe</pre>
         }
 
         async function explorerRunAsk() {
-            const q = document.getElementById('exAskInput').value.trim();
+            const askEl = document.getElementById('exAskInput');
+            const q = askEl ? askEl.value.trim() : '';
             const note = document.getElementById('exAskNote');
             if (!q) return;
             const btn = document.getElementById('exAskBtn');
