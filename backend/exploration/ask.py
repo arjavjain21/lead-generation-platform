@@ -181,8 +181,12 @@ async def ask(question: str, fetch_facets) -> dict[str, Any]:
             {"role": "user", "content": f"VOCABULARY (live from the database):\n{vocab_text}\n\nREQUEST: {question.strip()}"},
         ],
         "temperature": 0.1,
-        "max_tokens": 900,
+        "max_tokens": 1500,
         "response_format": {"type": "json_object"},
+        # GLM reasoning models burn the whole token budget on hidden thinking
+        # before emitting content (measured: 50/50 tokens → empty content,
+        # finish=length). Slot-filling needs no reasoning — disable it.
+        "thinking": {"type": "disabled"},
         "stream": False,
     }
     try:
