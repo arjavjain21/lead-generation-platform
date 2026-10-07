@@ -88,18 +88,49 @@ def _zai_config() -> tuple[str, str, str]:
     return key, base, model
 
 
+def _stem(w: str) -> str:
+    """Very light stemming so recruitment/recruiting/recruit can meet."""
+    for suf in ("ments", "ment", "ings", "ing", "ies", "ers", "es", "s", "ed"):
+        if w.endswith(suf) and len(w) > len(suf) + 3:
+            return w[: -len(suf)]
+    return w
+
+
+_STOP = {"and", "the", "of", "for", "a", "an", "in", "with", "companies", "company",
+         "firms", "firm", "agencies", "other"}
+
+
 def _fuzzy_match(value: str, vocab: list[str]) -> Optional[str]:
-    """Resolve a model-provided value to a vocabulary entry; None if no match."""
+    """Resolve a model-provided value to a vocabulary entry; None if no match.
+
+    Pass 1: exact (case-insensitive). Pass 2: substring either way.
+    Pass 3: significant-token overlap with light stemming — catches
+    "logistics and 3PL companies" → "Transportation and Logistics" and
+    "recruitment firms" → "Staffing and Recruiting" when present in vocab.
+    """
     v = value.strip().lower()
     if not v:
         return None
     for entry in vocab:
         if v == entry.lower():
             return entry
-    for entry in vocab:  # substring both ways as fallback ("software" → "Software Development")
+    for entry in vocab:
         if v in entry.lower() or entry.lower() in v:
             return entry
-    return None
+    toks = {_stem(t) for t in v.replace("/", " ").replace("-", " ").replace(".", " ").split()
+            if t not in _STOP and len(t) >= 2}
+    if not toks:
+        return None
+    best, best_score = None, 0
+    for entry in vocab:
+        e_toks = {_stem(t) for t in entry.lower().replace("/", " ").replace("-", " ").replace(".", " ").split()
+                  if t not in _STOP and len(t) >= 2}
+        if not e_toks:
+            continue
+        score = len(toks & e_toks)
+        if score > best_score:
+            best, best_score = entry, score
+    return best if best_score >= 1 and best_score >= len(toks) / 2 else None
 
 
 def parse_and_validate(raw: str, vocab: dict[str, list[str]]) -> dict[str, Any]:

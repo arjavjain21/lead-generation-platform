@@ -8557,7 +8557,7 @@ example.org,Jane Doe</pre>
             const num = document.getElementById('exCountNum');
             num.textContent = '…';
             try {
-                const res = await explorerApi('/people/count', { method: 'POST', body: explorerReadFilters() });
+                const res = await explorerApi('/people/count', { method: 'POST', body: { filters: explorerReadFilters() } });
                 if (seq !== explorerState.seq) return;
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 const d = await res.json();
@@ -8587,7 +8587,7 @@ example.org,Jane Doe</pre>
 
         async function explorerFetchFacets(seq) {
             try {
-                const res = await explorerApi('/people/facets', { method: 'POST', body: Object.assign(explorerReadFilters(), { dims: EX_FACET_DIMS.slice() }) });
+                const res = await explorerApi('/people/facets', { method: 'POST', body: { filters: explorerReadFilters(), dims: EX_FACET_DIMS.slice() } });
                 if (seq !== explorerState.seq) return;
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 const d = await res.json();
@@ -8633,7 +8633,7 @@ example.org,Jane Doe</pre>
 
         async function explorerSearchPeople(append, seqRef) {
             const seq = seqRef != null ? seqRef : explorerState.seq;
-            const payload = Object.assign(explorerReadFilters(), { limit: EX_LIMIT });
+            const payload = { filters: explorerReadFilters(), limit: EX_LIMIT };
             if (append) {
                 if (!explorerState.nextCursor) return;
                 payload.cursor = explorerState.nextCursor;
