@@ -1,0 +1,10 @@
+[Unit]
+Description=BetterEnrich usage monitor (credits balance + call health, alerts on anomalies)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/var/www/lead-generation-platform/backend
+ExecStart=/var/www/lead-generation-platform/backend/venv/bin/python scripts/better_enrich_usage_monitor.py
+TimeoutStartSec=90
