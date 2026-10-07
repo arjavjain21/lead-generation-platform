@@ -1,0 +1,21 @@
+[Unit]
+Description=PostgreSQL 16 lead-gen cluster (port 5433) - boot start via pg_ctlcluster
+# Workaround: the Debian template postgresql@16-lead-gen.service can NEVER start
+# this cluster - systemd unescapes the dashes in the instance name, so its
+# AssertPathExists checks /etc/postgresql/16/lead/gen/postgresql.conf (missing).
+# This unit starts the cluster directly, bypassing the broken template.
+After=network.target
+ConditionPathExists=/etc/postgresql/16/lead-gen/postgresql.conf
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=postgres
+Group=postgres
+# exit 2 = "cluster is already running" - tolerate so restarts of this unit are safe
+ExecStart=/bin/sh -c '/usr/bin/pg_ctlcluster --skip-systemctl-redirect 16 lead-gen start || [ $? -eq 2 ]'
+ExecStop=/bin/sh -c '/usr/bin/pg_ctlcluster --skip-systemctl-redirect 16 lead-gen stop || [ $? -eq 2 ]'
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target
