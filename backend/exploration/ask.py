@@ -121,7 +121,14 @@ def parse_and_validate(raw: str, vocab: dict[str, list[str]]) -> dict[str, Any]:
             continue
         val = data[key]
         if kind is bool:
-            filters[key] = bool(val)
+            # Only affirmative flags are applied, except has_email/is_verified
+            # where an explicit negative is a meaningful targeting choice.
+            # (A model-emitted bare false for has_linkedin/exclude_generic
+            # would silently EXCLUDE people — never apply it.)
+            if key in ("has_email", "is_verified"):
+                filters[key] = bool(val)
+            elif val:
+                filters[key] = True
         elif kind is str:
             if isinstance(val, str) and val.strip():
                 filters[key] = val.strip()[:200]
