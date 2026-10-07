@@ -8540,7 +8540,17 @@ example.org,Jane Doe</pre>
         function explorerRenderFacets() {
             const wrap = document.getElementById('exFacets');
             wrap.innerHTML = EX_FACET_DIMS.map(dim => {
-                const vals = (explorerState.facets[dim] || []).slice(0, 12);
+                const raw = explorerState.facets[dim];
+                // Error-marked dims arrive as {"error": "timeout"|"summary-only"} —
+                // degrade to an 'unavailable' note instead of throwing on .slice.
+                if (!Array.isArray(raw)) {
+                    const why = raw && raw.error === 'summary-only'
+                        ? 'add a filter to compute'
+                        : (raw && raw.error === 'budget') ? 'took too long — narrow filters' : 'temporarily unavailable';
+                    return '<div class="ex-facet-dim"><h4>' + escHtml(EX_MULTI_LABELS[dim] || dim) + '</h4>' +
+                        '<span class="ex-count-note">unavailable (' + escHtml(why) + ')</span></div>';
+                }
+                const vals = raw.slice(0, 12);
                 const selected = explorerState.filters[dim] || [];
                 const items = vals.length ? vals.map(x =>
                     '<button type="button" class="ex-facet-item' + (selected.indexOf(x.value) >= 0 ? ' on' : '') + '" data-exkey="' + dim + '" data-exval="' + escHtml(x.value) + '" title="' + escHtml(x.value) + '"><span>' + escHtml(x.value) + '</span><span class="ex-facet-count">' + Number(x.count).toLocaleString('en-US') + '</span></button>'

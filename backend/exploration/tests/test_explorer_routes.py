@@ -361,3 +361,45 @@ def test_status_reports_enabled_for_canary(monkeypatch):
     from exploration.explorer_routes import explorer_status
     resp = asyncio.run(explorer_status(current_user={"email": "ops@example.com"}))
     assert resp["enabled"] is True
+
+
+# ---------------------------------------------------------------------------
+# Gate 2B GA guardrail: export-create preflight vs 256MB UI download cap
+# ---------------------------------------------------------------------------
+
+def test_export_preflight_refuses_huge_shapes(monkeypatch, client):
+    _canary_env(monkeypatch)
+    monkeypatch.setenv("DATA_EXPLORER_CANARY_USERS", "")
+
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path.endswith("/people/count"):
+            # ~2.5M rows -> ~357MB gzipped > 256MB cap
+            return httpx.Response(200, json={"count": 2_500_000, "approximate": True, "mode": "estimate"})
+        return httpx.Response(201, json={"export_id": "should-not-be-created"})
+
+    monkeypatch.setattr(explorer_routes, "_transport", httpx.MockTransport(handler))
+    r = client.post("/api/explorer/exports",
+                    json={"source_type": "filters", "filters": {"country": ["United States"]},
+                          "format": "csv", "gzip": True})
+    assert r.status_code == 422
+    assert "too large" in r.json()["detail"].lower()
+    assert not any(p.endswith("/exports") for p in calls), "export must NOT be created when preflight refuses"
+
+
+def test_export_preflight_allows_normal_shapes(monkeypatch, client):
+    _canary_env(monkeypatch)
+    monkeypatch.setenv("DATA_EXPLORER_CANARY_USERS", "")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/people/count"):
+            return httpx.Response(200, json={"count": 50_000, "approximate": True, "mode": "estimate"})
+        return httpx.Response(201, json={"export_id": "x1", "status": "queued"})
+
+    monkeypatch.setattr(explorer_routes, "_transport", httpx.MockTransport(handler))
+    r = client.post("/api/explorer/exports",
+                    json={"source_type": "filters", "filters": {"country": ["United States"]},
+                          "format": "csv", "gzip": True})
+    assert r.status_code == 201

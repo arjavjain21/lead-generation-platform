@@ -23,6 +23,7 @@ Contract (pinned by exploration/tests/test_explorer_routes.py):
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any, Optional
@@ -314,7 +315,32 @@ async def create_export(
     current_user: dict[str, Any] = Depends(auth.get_current_user),
 ) -> Response:
     """Proxy POST /v1/exports — body ``{source_type, view_id?, filters?,
-    format, gzip?}`` passthrough; upstream 201/200 body + status relayed."""
+    format, gzip?}`` passthrough; upstream 201/200 body + status relayed.
+
+    GA guardrail: the UI download path buffers up to 256 MB, so BEFORE
+    creating the job we pre-count (estimate mode) and refuse shapes whose
+    gzipped artifact would exceed that — an honest early "too large" beats
+    a job that completes and then cannot be downloaded. Direct Contacts-API
+    consumers are unaffected (no BFF in their path).
+    """
+    filters = (payload or {}).get("filters") if (payload or {}).get("source_type", "filters") == "filters" else None
+    if filters is not None:
+        try:
+            count_resp = await _proxy_json(
+                "POST", "/v1/data/people/count",
+                payload={"mode": "estimate", "filters": filters}, user=current_user)
+            count_body = json.loads(count_resp.body) if getattr(count_resp, "body", None) else {}
+            est = count_body.get("count") if isinstance(count_body, dict) else None
+            if isinstance(est, (int, float)):
+                est_gz_mb = est * 150 / (1024 * 1024)  # ~150 B/row gzipped, measured
+                if est_gz_mb > 256:
+                    return JSONResponse(status_code=422, content={
+                        "detail": (
+                            f"Export too large for UI download (~{int(est_gz_mb)} MB gzipped vs 256 MB cap). "
+                            "Narrow the filters (e.g. split by country or seniority) or contact ops for a "
+                            "direct-fetch export.")})
+        except Exception:  # preflight is best-effort; never block on it
+            pass
     return await _proxy_json("POST", "/v1/exports", payload=payload, user=current_user)
 
 
