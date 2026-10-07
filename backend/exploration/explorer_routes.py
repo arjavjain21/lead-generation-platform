@@ -55,6 +55,12 @@ _transport: Optional[httpx.AsyncBaseTransport] = None
 # Config helpers
 # ---------------------------------------------------------------------------
 
+import asyncio
+
+_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(2)   # concurrent buffered downloads
+_DOWNLOAD_MAX_BYTES = 256 * 1024 * 1024      # 256 MB hard cap (canary scale)
+
+
 def _explorer_enabled() -> bool:
     """DATA_EXPLORER_ENABLED is a bool-ish env string, default off."""
     raw = os.getenv("DATA_EXPLORER_ENABLED", "false").strip().lower()
@@ -335,63 +341,37 @@ async def download_export(
     export_id: str,
     current_user: dict[str, Any] = Depends(auth.get_current_user),
 ) -> Response:
-    """Stream the export file through from the Contacts API.
+    """Download the export file from the Contacts API (buffered).
 
-    The upstream Content-Type (text/csv / application/gzip /
-    application/x-ndjson) and Content-Disposition are passed through, plus
-    Content-Encoding when present — ``aiter_raw()`` streams the raw (still
-    encoded, if any) bytes, so the encoding header must ride along to keep
-    the download byte-identical. Error statuses are relayed like every
-    other route.
+    Gate 2A canary note: the original streaming pass-through
+    (StreamingResponse over upstream.aiter_raw()) raised
+    httpx.StreamConsumed inside the gunicorn worker stack while the same
+    logic worked in isolation; rather than ship a fragile stream, buffer
+    the artifact (canary files are KB–~150 MB) with a hard size cap and a
+    concurrency guard. True streaming can be revisited for GA.
     """
     token = _require_upstream_token(user=current_user)
     path = f"/v1/exports/{export_id}/download"
-    client = _open_client(token, _DOWNLOAD_TIMEOUT)
-    try:
-        upstream = await client.send(client.build_request("GET", path), stream=True)
-    except httpx.HTTPError as exc:
-        await client.aclose()
-        logger.warning("Explorer upstream GET %s failed: %s", path, exc)
-        return JSONResponse(status_code=502, content={"detail": "contacts api error"})
-
-    if not upstream.is_success:
-        try:
-            await upstream.aread()
-        except httpx.HTTPError as exc:
-            await upstream.aclose()
-            await client.aclose()
-            logger.warning("Explorer upstream GET %s error read failed: %s", path, exc)
-            return JSONResponse(
-                status_code=502, content={"detail": "contacts api error"}
-            )
-        relayed = _relay(upstream, method="GET", path=path)
-        await upstream.aclose()
-        await client.aclose()
-        return relayed
-
-    headers = {
-        "Content-Type": upstream.headers.get("content-type", "application/octet-stream"),
-    }
-    for header_name in ("content-disposition", "content-encoding"):
-        value = upstream.headers.get(header_name)
-        if value:
-            headers[header_name.title()] = value
-
-    async def _close_upstream() -> None:
-        # Runs after the stream completes (BackgroundTask); both closes are
-        # idempotent, and a close failure must never fail a finished stream.
-        try:
-            await upstream.aclose()
-        except httpx.HTTPError as exc:
-            logger.warning("Explorer download upstream close failed: %s", exc)
-        try:
-            await client.aclose()
-        except httpx.HTTPError as exc:
-            logger.warning("Explorer download client close failed: %s", exc)
-
-    return StreamingResponse(
-        upstream.aiter_raw(),
-        status_code=200,
-        headers=headers,
-        background=BackgroundTask(_close_upstream),
-    )
+    async with _DOWNLOAD_SEMAPHORE:
+        async with _open_client(token, _DOWNLOAD_TIMEOUT) as client:
+            try:
+                upstream = await client.send(client.build_request("GET", path))
+            except httpx.HTTPError as exc:
+                logger.warning("Explorer upstream GET %s failed: %s", path, exc)
+                return JSONResponse(status_code=502, content={"detail": "contacts api error"})
+        if not upstream.is_success:
+            return _relay(upstream, method="GET", path=path)
+        declared = upstream.headers.get("content-length")
+        if declared and int(declared) > _DOWNLOAD_MAX_BYTES:
+            return JSONResponse(status_code=413, content={
+                "detail": f"export file exceeds buffered-download cap ({_DOWNLOAD_MAX_BYTES} bytes); "
+                          "contact ops for direct-fetch instructions"})
+        body = upstream.content
+        if len(body) > _DOWNLOAD_MAX_BYTES:
+            return JSONResponse(status_code=413, content={"detail": "export file exceeds buffered-download cap"})
+        headers = {"Content-Type": upstream.headers.get("content-type", "application/octet-stream")}
+        for header_name in ("content-disposition", "content-encoding"):
+            value = upstream.headers.get(header_name)
+            if value:
+                headers[header_name.title()] = value
+        return Response(content=body, status_code=200, headers=headers)

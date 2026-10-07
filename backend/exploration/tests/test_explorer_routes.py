@@ -51,10 +51,16 @@ def _make_user(user_id: str = "explorer-user") -> dict[str, Any]:
 
 
 def _enable(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Turn the Explorer on against a fake Contacts API base URL."""
+    """Turn the Explorer on against a fake Contacts API base URL.
+
+    Also neutralizes DATA_EXPLORER_CANARY_USERS: the real backend/.env
+    (loaded into this process by main.py's load_dotenv) carries the
+    production canary allowlist, which would 503 these fake users.
+    """
     monkeypatch.setenv("DATA_EXPLORER_ENABLED", "true")
     monkeypatch.setenv("CONTACTS_API_EXPLORER_TOKEN", TOKEN)
     monkeypatch.setenv("CONTACTS_API_BASE_URL", BASE)
+    monkeypatch.setenv("DATA_EXPLORER_CANARY_USERS", "")
 
 
 def _mock_upstream(
