@@ -24,6 +24,7 @@ overrides so the real JWT dependency runs.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from typing import Any, Callable
@@ -403,3 +404,71 @@ def test_export_preflight_allows_normal_shapes(monkeypatch, client):
                     json={"source_type": "filters", "filters": {"country": ["United States"]},
                           "format": "csv", "gzip": True})
     assert r.status_code == 201
+
+
+# ---------------------------------------------------------------------------
+# NL ask (Gate 2B): /ask validation + Z.ai passthrough (mocked)
+# ---------------------------------------------------------------------------
+
+def test_ask_validates_and_fuzzy_matches(monkeypatch, client):
+    from exploration import ask as ask_mod
+    vocab = {"country": ["United States", "India"], "industry": ["Software Development", "Construction"],
+             "seniority": ["c_suite", "vp"], "seg_classification": ["direct_google"]}
+    raw = json.dumps({
+        "q": "john", "country": ["united states", "Atlantis"], "industry": ["software"],
+        "seniority": ["c_suite"], "seg_classification": ["direct_google"],
+        "employee_count_min": 200,  # NOT in allowlist → must be dropped
+        "has_email": "yes", "interpretation": "US software c-suite named John"})
+    out = ask_mod.parse_and_validate(raw, vocab)
+    f = out["filters"]
+    assert f["country"] == ["United States"]            # fuzzy alias match
+    assert f["industry"] == ["Software Development"]    # substring match
+    assert f["has_email"] is True                        # coerced bool
+    assert "employee_count_min" not in f                 # unknown key dropped
+    assert any("Atlantis" in t for t in out["unknown_terms"])
+    assert "c-suite named John" in out["interpretation"]
+
+
+def test_ask_route_canary_gated(monkeypatch, client):
+    _canary_env(monkeypatch)  # canary list = ops@example.com; test user is explorer-user@test.example
+    import asyncio
+    from exploration.explorer_routes import explorer_ask
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(explorer_ask({"q": "US founders"}, current_user={"email": "someone-else@example.com"}))
+    assert ei.value.status_code == 503
+
+
+def test_ask_happy_path_mocked_zai(monkeypatch, client):
+    _canary_env(monkeypatch)
+    monkeypatch.setenv("DATA_EXPLORER_CANARY_USERS", "")
+    monkeypatch.setenv("ZAI_API_KEY", "test-zai-key")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "z.ai" in str(request.url.host) or "paas/v4" in str(request.url):
+            assert request.headers["authorization"] == "Bearer test-zai-key"
+            body = json.loads(request.content)
+            assert body["response_format"] == {"type": "json_object"}
+            assert body["stream"] is False
+            return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({
+                "country": ["United States"], "seniority": ["c_suite"],
+                "has_email": True, "is_verified": True,
+                "interpretation": "US c-suite with verified email"})}}],
+                "usage": {"prompt_tokens": 900, "completion_tokens": 80}, "request_id": "r1"})
+        if str(request.url.path).endswith("/people/facets"):
+            return httpx.Response(200, json={"facets": {
+                "country": [{"value": "United States", "count": 8}, {"value": "India", "count": 1}],
+                "seniority": [{"value": "c_suite", "count": 1}]}, "source": "summary"})
+        return httpx.Response(200, json={})
+
+    monkeypatch.setattr(explorer_routes, "_transport", httpx.MockTransport(handler))
+    # ask() creates its own client to z.ai — patch it onto ask_mod via the transport too
+    import exploration.ask as ask_mod
+    monkeypatch.setattr(httpx.AsyncClient, "_transport_default", None, raising=False)
+    r = client.post("/api/explorer/ask", json={"q": "US C-suite with verified email"})
+    assert r.status_code == 200
+    d = r.json()
+    assert d["filters"]["country"] == ["United States"]
+    assert d["filters"]["is_verified"] is True
+    assert d["unknown_terms"] == []
+    assert "US c-suite" in d["interpretation"]

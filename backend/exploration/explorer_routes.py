@@ -187,6 +187,29 @@ def _query_params(request: Request) -> list[tuple[str, str]]:
 # Status
 # ---------------------------------------------------------------------------
 
+@router.post("/ask")
+async def explorer_ask(
+    payload: dict[str, Any],
+    current_user: dict[str, Any] = Depends(auth.get_current_user),
+) -> Response:
+    """Natural-language → validated filters (Gate 2B).
+
+    The model only fills the allowlisted filter schema; values are fuzzy-matched
+    against the live facet vocabulary and unresolvable terms are returned in
+    ``unknown_terms`` — never guessed. The result populates the SAME filter
+    state the UI edits; nothing here touches providers or canonical data.
+    """
+    from . import ask as ask_mod
+    token = _require_upstream_token(user=current_user)
+
+    async def _fetch_facets() -> Response:
+        return await _proxy_json("POST", "/v1/data/people/facets",
+                                 payload={}, user=current_user)
+
+    result = await ask_mod.ask(str((payload or {}).get("q", "")), _fetch_facets)
+    return JSONResponse(status_code=200, content=result)
+
+
 @router.get("/status")
 async def explorer_status(
     current_user: dict[str, Any] = Depends(auth.get_current_user),

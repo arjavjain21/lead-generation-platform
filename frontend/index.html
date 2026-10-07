@@ -8262,6 +8262,13 @@ example.org,Jane Doe</pre>
                 opts.body = JSON.stringify(opts.body);
             }
             const res = await fetch('/api/explorer' + path, opts);
+            if (res.status === 401) {
+                // Session expired/invalid — surface a clear action instead of
+                // raw "HTTP 401" in count/facets error notes (visual-pass find).
+                const note = document.getElementById('exApiNote');
+                if (note) { note.textContent = 'Session expired — please log out and log back in.'; note.style.display = ''; }
+                throw new Error('Session expired — log in again');
+            }
             if (res.status === 503) {
                 let detail = '';
                 try { detail = (await res.json()).detail || ''; } catch (e) { /* non-JSON 503 */ }
@@ -8332,6 +8339,9 @@ example.org,Jane Doe</pre>
                 if (btn) explorerRemoveFilter(btn.dataset.k, btn.dataset.v || '');
             });
             document.getElementById('exResetFilters').addEventListener('click', explorerResetFilters);
+            document.getElementById('exAskBtn').addEventListener('click', explorerRunAsk);
+            const askInput = document.getElementById('exAskInput');
+            if (askInput) askInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); explorerRunAsk(); } });
             document.getElementById('exRefreshBtn').addEventListener('click', explorerRefresh);
             document.getElementById('exLoadMore').addEventListener('click', () => explorerSearchPeople(true));
             document.getElementById('exResultsBody').addEventListener('click', (e) => {
@@ -8446,6 +8456,28 @@ example.org,Jane Doe</pre>
             document.getElementById('exCountNum').textContent = '…';
             document.getElementById('exResultsBody').innerHTML = '';
             explorerAfterControlChange();
+        }
+
+        async function explorerRunAsk() {
+            const q = document.getElementById('exAskInput').value.trim();
+            const note = document.getElementById('exAskNote');
+            if (!q) return;
+            const btn = document.getElementById('exAskBtn');
+            btn.disabled = true; note.style.display = ''; note.textContent = 'Thinking…';
+            try {
+                const res = await explorerApi('/ask', { method: 'POST', body: { q: q } });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const d = await res.json();
+                explorerWriteFilters(d.filters || {});
+                document.querySelectorAll('#exFilterPanel details').forEach(d2 => d2.open = true);
+                note.textContent = (d.interpretation ? d.interpretation : 'Applied.') +
+                    (d.unknown_terms && d.unknown_terms.length ? '  ⚠ unmapped: ' + d.unknown_terms.join(', ') : '');
+                explorerAfterControlChange();
+            } catch (e) {
+                note.textContent = 'Ask failed (' + e.message + ')';
+            } finally {
+                btn.disabled = false;
+            }
         }
 
         function explorerRenderSidebarChips() {
