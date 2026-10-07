@@ -264,7 +264,13 @@ def _getleads_filters(req: "TamRequest", profile: dict[str, Any]) -> dict[str, A
 
     Bands convert back to GetLeads's '11 to 50' form; industries ride the
     LinkedIn taxonomy both sides share. Empty dict = unfiltered leg (the
-    runner still caps it at GETLEADS_LOOKALIKE_MAX_CREDITS)."""
+    runner still caps it at GETLEADS_LOOKALIKE_MAX_CREDITS).
+
+    Company OWNERSHIP TYPE (``type_include``) is deliberately absent:
+    GetLeads' search dataset has no entity-type column (live-verified
+    2026-10-07 — the filter 400s), so the runner SKIPS the GetLeads leg
+    entirely when a type filter is set rather than silently diluting the
+    TAM with public/nonprofit companies (see tam_flow)."""
     from enrichment.lookalike import to_getleads_band
 
     bands = [
@@ -396,6 +402,21 @@ async def start_tam_flow(
         rank_seeds = lookalike.rank_seed_payloads(seed_results)
 
     sources = [s for s in (req.sources or ["blitz"]) if s in ("blitz", "getleads")] or ["blitz"]
+    # Company-type filters (Privately Held / Self-Employed …) are
+    # Blitz-source-only: GetLeads' search dataset has no ownership-type
+    # column (live-verified 2026-10-07). With 'both', the runner SKIPS the
+    # GetLeads leg (Blitz rows stand alone); with getleads-only there is no
+    # leg left to run — refuse up front instead of billing a guaranteed zero.
+    if req.company.type_include and sources == ["getleads"]:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Company type filter applies to the Blitz source only — "
+                "GetLeads' data has no ownership-type field. Pick sources "
+                "'Blitz' (or 'Both', where the GetLeads leg is skipped for "
+                "typed searches), or drop the company type filter."
+            ),
+        )
     if not req.seed_companies and not company_filters and not people_filters:
         raise HTTPException(
             status_code=400,

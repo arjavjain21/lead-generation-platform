@@ -45,9 +45,11 @@ def test_explainer_answers_why_and_where(html):
 
 def test_company_filter_ids_survived_for_options_loader(html):
     # loadSearchOptions() fills these by id — renaming them breaks it.
+    # (2026-10-07: searchCompanyType single-select became the
+    # tamCompanyTypes multi-select checkbox row.)
     for element_id in (
         "searchName", "searchIndustry", "searchEmployeeRange",
-        "searchCompanyType", "searchCountry",
+        "tamCompanyTypes", "searchCountry",
     ):
         assert f'id="{element_id}"' in html
 
@@ -157,3 +159,21 @@ def test_ranked_note_present(html):
     assert "Results are ranked by similarity to your examples (match_score 0-100)" in html
     # The page explainer mentions ranked results too.
     assert "ranked by similarity" in html
+
+
+class TestCompanyTypeMultiSelect:
+    """2026-10-07: company type on the TAM page is a multi-select checkbox
+    row (Rashi: Privately Held + Self-Employed together). Blitz-source-only —
+    the helper text says so and the GetLeads leg is skipped on typed runs."""
+
+    def test_checkbox_container_replaces_single_select(self, html):
+        assert 'id="tamCompanyTypes"' in html
+        assert 'id="searchCompanyType"' not in html  # old single-select gone
+
+    def test_loader_builds_checkboxes_from_options(self, html):
+        assert "data.company_types" in html
+        assert 'cb.name = \'tamCompanyType\'' in html
+
+    def test_submit_collects_checked_types_as_list(self, html):
+        assert 'input[name="tamCompanyType"]:checked' in html
+        assert "company.type_include = companyTypes" in html

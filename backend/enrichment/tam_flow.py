@@ -612,7 +612,21 @@ async def run_tam_flow(
             cursor = shared.cursor
 
             getleads_credits_used = 0
-            if "getleads" in sources and len(shared.rows) < max_companies:
+            # Company-type filters (Privately Held / Self-Employed …) are
+            # Blitz-source-only: GetLeads' search dataset has no
+            # ownership-type column (live-verified 2026-10-07). Skip the leg
+            # rather than silently diluting a typed TAM with companies the
+            # user filtered out. (getleads-only + type is refused at request
+            # time — tam_routes — so 'both' runs land here with Blitz rows.)
+            getleads_skipped_reason = ""
+            if "getleads" in sources and company_filters.get("type"):
+                getleads_skipped_reason = "company_type_filter"
+                logger.info(
+                    "TAM %s: company-type filter set — GetLeads leg skipped "
+                    "(no ownership-type column on GetLeads; Blitz rows only)",
+                    job_id,
+                )
+            elif "getleads" in sources and len(shared.rows) < max_companies:
                 gl_variants = (
                     tam_ranker.build_getleads_variants(
                         params.get("getleads_filters") or {}, query_plan
@@ -730,6 +744,7 @@ async def run_tam_flow(
         "capped": not cancelled and cursor is not None,
         "sources": sources,
         "getleads_credits_used": getleads_credits_used if "getleads" in sources else 0,
+        **({"getleads_skipped": getleads_skipped_reason} if getleads_skipped_reason else {}),
         **backup_stats,
     }
 

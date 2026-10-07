@@ -1292,7 +1292,7 @@ Persona + firmographic company discovery over Blitz `POST /v2/company/tam-by-peo
 | `linkedin_url` | array of strings | Restrict the TAM to specific company LinkedIn pages (max 50). |
 | `name_include` / `name_exclude` | array of strings | Company-name keyword include/exclude. |
 | `industry_include` / `industry_exclude` | array of strings | Fixed industry taxonomy include/exclude. |
-| `type_include` / `type_exclude` | array of strings | Company type (e.g. `"Privately Held"`, `"Public Company"`). |
+| `type_include` / `type_exclude` | array of strings | Company type, multi-select (e.g. `["Privately Held", "Self-Employed"]`; full list: Educational, Government Agency, Nonprofit, Partnership, Privately Held, Public Company, Self-Employed). **Blitz source only** — GetLeads' dataset has no ownership-type column (live-verified 2026-10-07): with `sources: ["both"]` the GetLeads leg is skipped on typed searches (summary carries `getleads_skipped: "company_type_filter"`), and `sources: ["getleads"]` + a type filter is refused with 422. |
 | `employee_range` | array of strings | LinkedIn size-band labels (e.g. `"11-50"`, `"51-200"`). |
 | `employee_count_min` / `employee_count_max` | integer | Exact headcount bounds (≥ 0). Use `employee_range` for bands. |
 | `min_linkedin_followers` | integer | Minimum LinkedIn follower count (≥ 0). |

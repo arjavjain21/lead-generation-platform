@@ -1182,3 +1182,68 @@ class TestIndustryEnumFallback(_TempDbTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGetleadsTypeSkip(_TempDbTestCase):
+    """2026-10-07: company-type filters (Privately Held / Self-Employed) are
+    Blitz-source-only — GetLeads' search dataset has no ownership-type column
+    (live-verified). The runner must SKIP the GetLeads leg on typed searches
+    instead of silently diluting the TAM with untyped companies."""
+
+    def _typed_params(self) -> dict[str, Any]:
+        return {
+            "company_filters": {
+                "employee_range": ["11-50"],
+                "type": {"include": ["Privately Held", "Self-Employed"]},
+            },
+            "people_filters": {"job_title": {"include": ["dentist"]}},
+            "max_companies": 100,
+            "sources": ["blitz", "getleads"],
+            "getleads_filters": {"job_titles": ["dentist"]},
+        }
+
+    def test_typed_search_skips_getleads_leg(self):
+        self._create_tam_job()
+
+        async def fake_tam(_http, *, company_filters, people_filters,
+                           max_results, cursor):
+            self.assertIn("type", company_filters)
+            return _page([_company_entry(0), _company_entry(1)], cursor=None)
+
+        async def fail_pull(*args, **kwargs):
+            raise AssertionError("GetLeads leg must not run on typed searches")
+
+        with patch("enrichment.blitz_client.tam_by_people", new=fake_tam), \
+             patch("enrichment.tam_flow._getleads_company_pull", new=fail_pull):
+            summary = asyncio.run(tam_flow.run_tam_flow(
+                "tam-test-job", self._typed_params(),
+            ))
+
+        self.assertEqual(summary["status"], "done")
+        self.assertEqual(summary["companies_found"], 2)
+        self.assertEqual(summary["getleads_skipped"], "company_type_filter")
+        self.assertEqual(summary["getleads_credits_used"], 0)
+
+    def test_untyped_search_still_runs_getleads_leg(self):
+        self._create_tam_job()
+        params = self._typed_params()
+        params["company_filters"] = {"employee_range": ["11-50"]}
+
+        async def fake_tam(_http, *, company_filters, people_filters,
+                           max_results, cursor):
+            return _page([_company_entry(0)], cursor=None)
+
+        pull_calls: list[dict[str, Any]] = []
+
+        async def ok_pull(http, *, getleads_filters, needed, existing_domains,
+                          exclude_domains, credits_cap):
+            pull_calls.append(dict(getleads_filters))
+            return [], 0
+
+        with patch("enrichment.blitz_client.tam_by_people", new=fake_tam), \
+             patch("enrichment.tam_flow._getleads_company_pull", new=ok_pull):
+            summary = asyncio.run(tam_flow.run_tam_flow("tam-test-job", params))
+
+        self.assertEqual(summary["status"], "done")
+        self.assertNotIn("getleads_skipped", summary)
+        self.assertEqual(len(pull_calls), 1)

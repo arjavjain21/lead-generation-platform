@@ -636,3 +636,30 @@ class TestForwardCompatKwargs(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCompanyTypeSourceValidation(_TamRouteTestCase):
+    """2026-10-07: company-type filters are Blitz-source-only (GetLeads' data
+    has no ownership-type column). getleads-only + type is refused; blitz /
+    both accept it (the runner skips the GetLeads leg on typed 'both' runs)."""
+
+    def test_getleads_only_with_company_type_is_422(self):
+        resp = self._client.post("/api/enrichment/flows/tam", json={
+            "company": {"type_include": ["Privately Held", "Self-Employed"]},
+            "people": {"job_title_include": ["dentist"]},
+            "sources": ["getleads"],
+        })
+        self.assertEqual(resp.status_code, 422)
+        self.assertIn("Blitz source only", resp.text)
+
+    def test_both_sources_with_company_type_accepted(self):
+        with patch("enrichment.blitz_client.tam_by_people", new=_one_page_tam):
+            resp = self._client.post("/api/enrichment/flows/tam", json={
+                "company": {"type_include": ["Privately Held", "Self-Employed"]},
+                "people": {"job_title_include": ["dentist"]},
+                "sources": ["blitz", "getleads"],
+                "max_companies": 10,
+            })
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("job_id", resp.json())
+

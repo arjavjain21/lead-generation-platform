@@ -1909,8 +1909,8 @@
                     </div>
                     <div class="filter-group">
                         <label>Type</label>
-                        <select id="searchCompanyType"><option value="">Any</option></select>
-                        <span class="field-helper">Public/Private/Non-profit (optional)</span>
+                        <div id="tamCompanyTypes" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding:6px 0;"></div>
+                        <span class="field-helper">Pick one or more (e.g. Privately Held + Self-Employed). Applies to the Blitz source; on 'Both' the GetLeads leg is skipped for typed searches.</span>
                     </div>
                     <div class="filter-group">
                         <label>Country</label>
@@ -3187,11 +3187,27 @@ example.org,Jane Doe</pre>
         async function loadSearchOptions() {
             try {
                 const res = await fetch('/api/enrichment/search/options', { headers: { 'Authorization': 'Bearer ' + token } }), data = await res.json();
-                ['Industry', 'EmployeeRange', 'CompanyType', 'Country'].forEach((type, i) => {
+                ['Industry', 'EmployeeRange', 'Country'].forEach((type, i) => {
                     const sel = document.getElementById('search' + type);
-                    const items = [data.industries, data.employee_ranges, data.company_types, data.countries][i];
+                    const items = [data.industries, data.employee_ranges, data.countries][i];
                     items.forEach(item => { const opt = document.createElement('option'); opt.value = item.code || item; opt.textContent = item.name || item; sel.appendChild(opt); });
                 });
+                // Company type is MULTI-select (2026-10-07): checkbox chips —
+                // e.g. Privately Held + Self-Employed in one TAM run. Blitz
+                // source only; typed 'both' runs skip the GetLeads leg.
+                const typeBox = document.getElementById('tamCompanyTypes');
+                if (typeBox) {
+                    typeBox.innerHTML = '';
+                    (data.company_types || []).forEach(t => {
+                        const lbl = document.createElement('label');
+                        lbl.style.cssText = 'display:flex;align-items:center;gap:4px;font-weight:400;font-size:0.85rem;';
+                        const cb = document.createElement('input');
+                        cb.type = 'checkbox'; cb.name = 'tamCompanyType'; cb.value = t;
+                        lbl.appendChild(cb);
+                        lbl.appendChild(document.createTextNode(' ' + t));
+                        typeBox.appendChild(lbl);
+                    });
+                }
             } catch (e) { console.error('Failed to load options:', e); }
         }
 
@@ -4949,12 +4965,12 @@ example.org,Jane Doe</pre>
             const searchName = document.getElementById('searchName').value.trim();
             const searchIndustry = document.getElementById('searchIndustry').value;
             const searchEmployeeRange = document.getElementById('searchEmployeeRange').value;
-            const searchCompanyType = document.getElementById('searchCompanyType').value;
             const searchCountry = document.getElementById('searchCountry').value;
+            const companyTypes = Array.from(document.querySelectorAll('input[name="tamCompanyType"]:checked')).map(cb => cb.value);
             if (searchName) company.name_include = [searchName];
             if (searchIndustry) company.industry_include = [searchIndustry];
             if (searchEmployeeRange) company.employee_range = [searchEmployeeRange];
-            if (searchCompanyType) company.type_include = [searchCompanyType];
+            if (companyTypes.length) company.type_include = companyTypes;
             if (searchCountry) company.hq_country_code = [searchCountry];
 
             // 2. People filters — the persona that defines the TAM

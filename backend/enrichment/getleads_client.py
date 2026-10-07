@@ -1160,6 +1160,11 @@ async def search_contacts_companies(
     contact: org_company_name, org_domain (CAN be empty), org_industry_linkedin,
     employee_count_range ('11 to 50' format), org_revenue_range, org_about_us.
 
+    NOTE (live-verified 2026-10-07): this dataset has NO ownership-type
+    column — an ``entity_types`` filter 400s ("Filter(s) not supported on
+    this dataset"). Company-type (Privately Held / Self-Employed …) filters
+    are Blitz-source-only; TAM skips the GetLeads leg when one is set.
+
     Returns the raw JSON: {ok, contacts[], total_available, has_more,
     next_offset, query_credits_used, ...}. Cost: 1 credit per contact
     returned. Errors return {"ok": False, "contacts": [], "error": ...}
