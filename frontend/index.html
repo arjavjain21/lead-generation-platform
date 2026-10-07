@@ -2239,6 +2239,7 @@
                     </div>
                     <div class="modal-body">
                         <div class="ex-count-note" id="exExportCountLabel" style="margin-bottom:0.75rem;"></div>
+                        <div class="ex-count-note" id="exExportExactHint" style="display:none;margin-bottom:0.75rem;color:#b45309;">count is a rough estimate — the export itself always produces the exact matching set</div>
                         <div class="form-group">
                             <label for="exExportFormat">Format</label>
                             <select id="exExportFormat"><option value="csv">CSV</option><option value="jsonl">JSON Lines</option></select>
@@ -8264,7 +8265,7 @@ example.org,Jane Doe</pre>
         window.explorerState = {
             enabled: null, contactsApiOk: null, loaded: false,
             filters: { seniority: [], country: [], lead_universe: [], industry: [], employee_band: [], email_verification_result: [], seg_classification: [] },
-            people: [], nextCursor: null, count: null, approximate: false,
+            people: [], nextCursor: null, count: null, approximate: false, countMode: '',
             facets: {}, facetsAsOf: null, views: [],
             exportId: null, exportFormat: 'csv', exportGzip: false, pollTimer: null, seq: 0,
         };
@@ -8565,11 +8566,11 @@ example.org,Jane Doe</pre>
                 if (seq !== explorerState.seq) return;
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 const d = await res.json();
-                explorerState = Object.assign({}, explorerState, { count: d.count, approximate: !!d.approximate });
+                explorerState = Object.assign({}, explorerState, { count: d.count, approximate: !!d.approximate, countMode: d.mode || '' });
                 explorerRenderCount();
             } catch (e) {
                 if (seq !== explorerState.seq) return;
-                explorerState = Object.assign({}, explorerState, { count: null, approximate: false });
+                explorerState = Object.assign({}, explorerState, { count: null, approximate: false, countMode: '' });
                 explorerRenderCount();
                 explorerShowError('Count failed: ' + e.message);
             }
@@ -8583,10 +8584,13 @@ example.org,Jane Doe</pre>
                 return;
             }
             const n = Number(explorerState.count).toLocaleString('en-US');
+            const rough = explorerState.countMode === 'timeout-estimate';
             num.textContent = (explorerState.approximate ? '≈ ' : '') + n;
-            num.title = explorerState.approximate ? 'estimated' : '';
+            num.title = rough
+                ? 'rough estimate — exact count too slow for these filters; multi-filter estimates can undercount 2-4x. Exports always produce the exact set.'
+                : (explorerState.approximate ? 'estimated' : '');
             const asOf = explorerState.facetsAsOf ? ' · updated ' + explorerState.facetsAsOf.slice(0, 16).replace('T', ' ') : '';
-            note.textContent = (explorerState.approximate ? ' · estimated' : '') + asOf;
+            note.textContent = (rough ? ' · rough estimate (may undercount — export gives exact)' : (explorerState.approximate ? ' · estimated' : '')) + asOf;
         }
 
         async function explorerFetchFacets(seq) {
@@ -8867,6 +8871,8 @@ example.org,Jane Doe</pre>
             document.getElementById('exExportDownload').style.display = 'none';
             document.getElementById('exExportConfirm').style.display = '';
             const count = explorerState.count;
+            document.getElementById('exExportExactHint').style.display =
+                (explorerState.countMode === 'timeout-estimate' && count != null) ? '' : 'none';
             document.getElementById('exExportCountLabel').textContent = count == null
                 ? 'Current match count unknown — run a search first.'
                 : 'Current match: ' + Number(count).toLocaleString('en-US') + (explorerState.approximate ? ' (estimated)' : '') + ' people';
