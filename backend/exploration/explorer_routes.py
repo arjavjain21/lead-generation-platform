@@ -29,7 +29,7 @@ import os
 from typing import Any, Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
@@ -58,7 +58,19 @@ _transport: Optional[httpx.AsyncBaseTransport] = None
 
 import asyncio
 
-_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(2)   # concurrent buffered downloads
+async def _user_or_token(
+    authorization: Optional[str] = Header(default=None),
+    token: Optional[str] = Query(default=None),
+) -> dict[str, Any]:
+    """JWT via Authorization header OR ?token= (native browser downloads)."""
+    if authorization and authorization.lower().startswith("bearer "):
+        return auth.decode_token(authorization[7:].strip())
+    if token:
+        return auth.decode_token(token)
+    raise HTTPException(status_code=401, detail="Authentication required.")
+
+
+_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(3)   # concurrent buffered downloads
 _DOWNLOAD_MAX_BYTES = 256 * 1024 * 1024      # 256 MB hard cap (canary scale)
 
 
@@ -388,9 +400,15 @@ async def get_export(
 @router.get("/exports/{export_id}/download")
 async def download_export(
     export_id: str,
-    current_user: dict[str, Any] = Depends(auth.get_current_user),
+    current_user: Optional[dict[str, Any]] = Depends(_user_or_token),
 ) -> Response:
     """Download the export file from the Contacts API (buffered).
+
+    Accepts ``?token=<JWT>`` in addition to the Authorization header: browser-
+    native downloads (anchor → download manager) cannot set headers, and the
+    fetch()+blob() path truncated large files in the browser (2026-10-07
+    "Failed to fetch" on a 28MB CSV). Same pattern as the job-CSV downloads
+    (enrichment/routes.py:4180) and the SSE stream.
 
     Gate 2A canary note: the original streaming pass-through
     (StreamingResponse over upstream.aiter_raw()) raised

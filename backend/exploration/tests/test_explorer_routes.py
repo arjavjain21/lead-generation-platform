@@ -79,6 +79,8 @@ def client():
 
     app.dependency_overrides.clear()
     app.dependency_overrides[_auth.get_current_user] = lambda: _make_user()
+    from exploration.explorer_routes import _user_or_token
+    app.dependency_overrides[_user_or_token] = lambda: _make_user()
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
@@ -472,3 +474,31 @@ def test_ask_happy_path_mocked_zai(monkeypatch, client):
     assert d["filters"]["is_verified"] is True
     assert d["unknown_terms"] == []
     assert "US c-suite" in d["interpretation"]
+
+
+# ---------------------------------------------------------------------------
+# Gate 2B: ?token= native download (fetch+blob truncated large files)
+# ---------------------------------------------------------------------------
+
+def test_download_via_query_token(anon_client, monkeypatch):
+    """No Authorization header — JWT arrives as ?token= (native downloads)."""
+    import asyncio
+    import jwt as pyjwt
+    from shared import auth as _auth
+    _enable(monkeypatch)
+    tok = _auth.create_token(_make_user())
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"a,b\n1,2\n",
+                              headers={"Content-Type": "text/csv"})
+    monkeypatch.setattr(explorer_routes, "_transport", httpx.MockTransport(handler))
+    r = anon_client.get(f"/api/explorer/exports/exp-9/download?token={tok}")
+    assert r.status_code == 200
+    assert r.headers["Content-Type"].startswith("text/csv")
+    assert b"1,2" in r.content
+
+
+def test_download_query_token_rejected_when_invalid(anon_client, monkeypatch):
+    _enable(monkeypatch)
+    r = anon_client.get("/api/explorer/exports/exp-9/download?token=not-a-jwt")
+    assert r.status_code == 401

@@ -8945,26 +8945,18 @@ example.org,Jane Doe</pre>
             explorerState = Object.assign({}, explorerState, { pollTimer: timer });
         }
 
-        async function explorerDownloadExport() {
-            const btn = document.getElementById('exExportDownload');
-            btn.disabled = true;
-            try {
-                const res = await explorerApi('/exports/' + encodeURIComponent(explorerState.exportId) + '/download');
-                if (!res.ok) throw new Error('HTTP ' + res.status);
-                const blob = await res.blob();
-                const cd = res.headers.get('Content-Disposition') || '';
-                const m = cd.match(/filename="?([^";]+)"?/);
-                const fallback = 'explorer_export_' + explorerState.exportId + '.' + explorerState.exportFormat + (explorerState.exportGzip ? '.gz' : '');
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement('a'); a.href = url; a.download = m ? m[1] : fallback;
-                document.body.appendChild(a); a.click(); window.URL.revokeObjectURL(url); a.remove();
-            } catch (e) {
-                const errEl = document.getElementById('exExportError');
-                errEl.textContent = 'Download failed: ' + e.message;
-                errEl.style.display = 'block';
-            } finally {
-                btn.disabled = false;
-            }
+        function explorerDownloadExport() {
+            // Native browser download via ?token= — the browser streams the file
+            // to disk with its own progress/resume UI. The old fetch()+blob()
+            // path buffered the whole artifact in memory and aborted with
+            // "Failed to fetch" on large files (2026-10-07, 28MB CSV).
+            const errEl = document.getElementById('exExportError');
+            errEl.style.display = 'none';
+            const url = '/api/explorer/exports/' + encodeURIComponent(explorerState.exportId)
+                + '/download?token=' + encodeURIComponent(token);
+            const a = document.createElement('a');
+            a.href = url; a.rel = 'noopener';
+            document.body.appendChild(a); a.click(); a.remove();
         }
 
         }); // End DOMContentLoaded
