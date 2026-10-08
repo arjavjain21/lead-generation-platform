@@ -141,9 +141,16 @@ def iter_mirror_rows(path: str) -> Iterator[tuple]:
 
 
 def ingest_file(conn, path: str) -> tuple[int, int]:
-    """Insert/update one file's rows. Returns (rows_read, rows_written)."""
+    """Insert/update one file's rows. Returns (rows_read, rows_written).
+
+    A place can appear multiple times in one CSV (multi-zoom jobs return the
+    same place at several zooms). ON CONFLICT cannot affect the same row twice
+    in one statement, so repeated dedupe_keys within a file are collapsed to
+    their FIRST occurrence via `seen`.
+    """
     rows_read = rows_written = 0
     buffer: list[tuple] = []
+    seen: set[str] = set()
 
     def flush() -> None:
         nonlocal rows_written
@@ -176,10 +183,18 @@ def ingest_file(conn, path: str) -> tuple[int, int]:
         )
         rows_written += len(buffer)
         buffer.clear()
+        # Commit per batch (not per file): a 300MB nationwide output can take
+        # an hour+ to stream; per-batch commits keep transactions short and a
+        # crash mid-file costs at most one 2K-row batch (re-ingest is idempotent).
+        conn.commit()
 
     numeric = {"latitude", "longitude", "rating"}
     int_cols = {"review_count"}
     for record in iter_mirror_rows(path):
+        key = record[0]  # dedupe_key is MIRROR_COLUMNS[0]
+        if key in seen:
+            continue  # same place earlier in this file — already queued
+        seen.add(key)
         rows_read += 1
         typed = list(record)
         for i, col in enumerate(MIRROR_COLUMNS):
@@ -221,9 +236,12 @@ def ensure_tables(conn) -> None:
 
 
 def logged_fingerprint(conn, path: str) -> Optional[tuple]:
+    """Fingerprint of a successfully-ingested file — error files return None so
+    they are retried on the next run instead of being skipped forever."""
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT mtime, size_bytes FROM mirror_ingest_log WHERE file_path = %s",
+            "SELECT mtime, size_bytes FROM mirror_ingest_log "
+            "WHERE file_path = %s AND status = 'ok'",
             (path,),
         )
         return cur.fetchone()
