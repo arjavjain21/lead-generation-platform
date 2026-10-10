@@ -96,7 +96,12 @@ def _blitz_waterfall_payload(n: int, *, with_job_fields: bool = True) -> dict:
             "first_name": f"BFirst{i}",
             "last_name": f"BLast{i}",
             "full_name": f"BFirst{i} BLast{i}",
-            "title": f"BTitle {i}",
+            # Title matches the custom cascade's include_title (["CEO"]) in
+            # TestPatternAPersonFields — the local title gate (shipped
+            # 2026-08-26) drops waterfall persons whose title doesn't match
+            # the requested titles, and a non-matching fixture title made
+            # these rows vanish before _build_person_row ever ran.
+            "title": f"CEO {i}",
             "headline": f"BHeadline {i}",
             "linkedin_url": f"https://linkedin.com/in/blitz-{i}",
             "location": {"city": "SF", "country_code": "US"},
@@ -434,8 +439,23 @@ class TestPatternCErrorCapture(unittest.IsolatedAsyncioTestCase):
 
     async def test_error_captured_on_better_enrich_failure(self):
         person = {"full_name": "John Doe", "linkedin_url": ""}
-        with patch.object(cc, "person_by_name_and_domain",
+        from enrichment import providers as providers_mod
+        from enrichment import smartprospect_client as sp
+        from enrichment import quickenrich_client as qe
+        from enrichment import getleads_client as gl
+        # better_enrich is globally disabled in ENABLED_PROVIDERS (since
+        # 2026-09-29) and the kill-switch precedence fix means no per-request
+        # override re-enables it — this test drives the BE FAILURE-CAPTURE
+        # code, so it must enable the switch in the fixture. The SP/QE/GL
+        # tiers sit between blitz and better_enrich in the 2026-10-10 order;
+        # mock them to clean misses so the cascade reaches better_enrich
+        # hermetically (no ambient-API-key dependence).
+        with patch.dict(providers_mod.ENABLED_PROVIDERS, {"better_enrich": True}), \
+             patch.object(cc, "person_by_name_and_domain",
                           AsyncMock(return_value=None)), \
+             patch.object(sp, "find_email", AsyncMock(return_value=None)), \
+             patch.object(qe, "find_person_email", AsyncMock(return_value=None)), \
+             patch.object(gl, "find_email", AsyncMock(return_value=None)), \
              patch.object(bc, "person_enrich",
                           AsyncMock(return_value={"found": False})), \
              patch.object(wl, "find_email",
@@ -450,10 +470,22 @@ class TestPatternCErrorCapture(unittest.IsolatedAsyncioTestCase):
     async def test_multiple_errors_per_row(self):
         """All providers fail → all 4 errors captured in the list."""
         person = {"full_name": "John Doe", "linkedin_url": ""}
-        with patch.object(cc, "person_by_name_and_domain",
+        from enrichment import providers as providers_mod
+        from enrichment import smartprospect_client as sp
+        from enrichment import quickenrich_client as qe
+        from enrichment import getleads_client as gl
+        # See test_error_captured_on_better_enrich_failure: BE switch must be
+        # flipped on in the fixture (globally disabled since 2026-09-29);
+        # SP/QE/GL mocked to misses so the errors come from the mocked
+        # providers only.
+        with patch.dict(providers_mod.ENABLED_PROVIDERS, {"better_enrich": True}), \
+             patch.object(cc, "person_by_name_and_domain",
                           AsyncMock(side_effect=Exception("e1"))), \
              patch.object(cc, "person_by_linkedin",
                           AsyncMock(side_effect=Exception("e2"))), \
+             patch.object(sp, "find_email", AsyncMock(return_value=None)), \
+             patch.object(qe, "find_person_email", AsyncMock(return_value=None)), \
+             patch.object(gl, "find_email", AsyncMock(return_value=None)), \
              patch.object(bc, "person_enrich",
                           AsyncMock(side_effect=Exception("e3"))), \
              patch.object(bc, "find_work_email",

@@ -461,7 +461,7 @@ def test_valid_providers_mirror_x3():
     assert set(pipeline_mod.VALID_PROVIDERS) == set(routes_mod.VALID_PROVIDERS)
     assert set(pipeline_mod.VALID_PROVIDERS) == set(lb.VALID_PROVIDERS)
     assert set(pipeline_mod.VALID_PROVIDERS) == {
-        "contacts_db", "blitz", "getleads", "smartprospect",
+        "contacts_db", "blitz", "getleads", "smartprospect", "quickenrich",
         "wizleads", "better_enrich",
     }
 

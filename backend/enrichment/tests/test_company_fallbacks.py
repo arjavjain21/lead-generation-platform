@@ -32,6 +32,7 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from enrichment import pipeline as pipeline_mod  # noqa: E402
+from enrichment import providers as providers_mod  # noqa: E402
 from enrichment import better_enrich_client as bec  # noqa: E402
 from enrichment import company_fallback as cf  # noqa: E402
 from enrichment import fallback_config as fb_cfg  # noqa: E402
@@ -49,13 +50,23 @@ def _enable_company_fallbacks(
     enable_company: bool = True,
     enable_facebook: bool = True,
 ):
-    """Return a contextmanager stack that patches the four flags."""
+    """Return a contextmanager stack that patches the four flags.
+
+    Also re-enables better_enrich in ENABLED_PROVIDERS: the provider has
+    been globally disabled since 2026-09-29, and the 2026-10-10 kill-switch
+    precedence fix means no per-request override can turn it back on. These
+    tests exercise the BetterEnrich fallback CODE (gating, classification,
+    dedupe, accounting) with mocked endpoints, so they must enable the
+    switch in the fixture — exactly like a production deployment that
+    re-enables the provider would.
+    """
     from contextlib import ExitStack
     stack = ExitStack()
     stack.enter_context(patch.object(fb_cfg, "ENABLE_COMPANY_EMAIL_FALLBACK", enable_company, create=True))
     stack.enter_context(patch.object(fb_cfg, "ENABLE_FACEBOOK_EMAIL_FALLBACK", enable_facebook, create=True))
     stack.enter_context(patch.object(fb_cfg, "ALLOW_GENERIC_COMPANY_EMAIL", allow_generic, create=True))
     stack.enter_context(patch.object(fb_cfg, "ALLOW_COMPANY_EMAIL_AS_FINAL", allow_as_final, create=True))
+    stack.enter_context(patch.dict(providers_mod.ENABLED_PROVIDERS, {"better_enrich": True}))
     return stack
 
 

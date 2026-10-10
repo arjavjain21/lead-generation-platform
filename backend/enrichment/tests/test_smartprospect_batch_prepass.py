@@ -14,8 +14,9 @@ Scope:
   * Collector capture: batch success writes to collector, batch failure
     writes nothing; pre-resolved emails consumed in Step 5 are also
     captured via ``_capture("smartprospect", ...)``.
-  * Cascade ordering preserved: free-tier (Contacts DB) and paid-tier
-    (Blitz verified_email) emails still win when pre_resolved is set.
+  * Cascade ordering (2026-10-10): free-tier (Contacts DB) emails still
+    win over pre_resolved; a pre-resolved SmartProspect hit now wins over
+    a Blitz verified_email (SmartProspect was promoted above Blitz).
   * End-to-end via ``_enrich_domain``: 3-person case (1 batch, 0 single),
     1-person case (0 batch, 1 single), 15-person case (2 batches, 0 single).
 
@@ -1113,9 +1114,11 @@ class TestCollectorCapture:
 
 
 class TestFreeTierWins:
-    """Even when ``pre_resolved_smartprospect`` is set, free-tier
-    providers (Contacts DB) and paid-tier upstream providers (Blitz) run
-    first — they win when they return a verified email."""
+    """Cascade precedence around ``pre_resolved_smartprospect`` (2026-10-10
+    order): the free tier (Contacts DB) still runs FIRST and wins when it
+    returns an email. Below it, SmartProspect — including its pre-resolved
+    batch result — now sits ABOVE Blitz, so a pre-resolved hit wins over a
+    Blitz verified_email (intentional flip; Blitz demoted for FUP relief)."""
 
     def test_contacts_db_email_wins_over_pre_resolved(self, monkeypatch):
         """Step 1 (Contacts DB name+domain) returns a valid email ->
@@ -1166,12 +1169,16 @@ class TestFreeTierWins:
             "Contacts DB must short-circuit before Step 5"
         )
 
-    def test_blitz_verified_email_wins_over_pre_resolved(self, monkeypatch):
-        """Blitz ``person_enrich`` returns a verified_email -> cascade
-        returns at Step 3 and never reaches Step 5 even when
-        pre_resolved_smartprospect is set."""
+    def test_pre_resolved_smartprospect_wins_over_blitz(self, monkeypatch):
+        """2026-10-10 reorder: SmartProspect sits ABOVE Blitz in the person
+        waterfall, so a pre-resolved batch hit now WINS over a Blitz
+        verified_email — the old blitz-first semantic flipped by design
+        (Blitz demoted for FUP budget relief). The batch result short-
+        circuits the SmartProspect step and Blitz ``person_enrich`` is
+        never consulted."""
         monkeypatch.setenv("ENABLE_SMARTPROSPECT", "true")
         sp_find_calls = {"n": 0}
+        blitz_calls = {"n": 0}
 
         async def fake_sp_find(*a, **kw):
             sp_find_calls["n"] += 1
@@ -1181,6 +1188,7 @@ class TestFreeTierWins:
             return None  # Step 1 finds nothing
 
         async def fake_person_enrich(http, **kw):
+            blitz_calls["n"] += 1
             return {
                 "found": True,
                 "person": {
@@ -1216,9 +1224,18 @@ class TestFreeTierWins:
             )
             email, source, _ = asyncio.run(pipeline_mod._resolve_email_for_person(**args))
 
-        assert email == "blitz.verified@example.com"
-        assert source == pipeline_mod.SOURCE_BLITZ_EMAIL
-        assert sp_find_calls["n"] == 0
+        # The pre-resolved SmartProspect email wins; Blitz is below SP now
+        # and is never reached.
+        assert email == "pre@example.com"
+        assert source == pipeline_mod.SOURCE_SMARTPROSPECT
+        assert sp_find_calls["n"] == 0, (
+            "The pre-resolved batch result must satisfy the SP step without "
+            "a single find_email call"
+        )
+        assert blitz_calls["n"] == 0, (
+            "Blitz sits below SmartProspect in the 2026-10-10 order — a "
+            "pre-resolved SP hit must short-circuit before Blitz runs"
+        )
 
 
 # ---------------------------------------------------------------------------

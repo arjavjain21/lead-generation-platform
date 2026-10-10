@@ -53,14 +53,23 @@ class TestAcceptance1SuccessfulLinkedIn(unittest.IsolatedAsyncioTestCase):
     async def test_linkedin_only_success_path(self):
         from enrichment import blitz_client as bc
         from enrichment import contacts_client as cc
+        from enrichment import getleads_client as gl
+        from enrichment import quickenrich_client as qe
 
-        # Contacts DB returns None; Blitz person_enrich_by_linkedin returns email.
+        # Contacts DB returns None; the QuickEnrich + GetLeads tiers miss;
+        # Blitz person_enrich_by_linkedin returns the email. LinkedIn arm
+        # order (2026-10-10): contacts_db -> quickenrich -> getleads ->
+        # blitz(person_enrich_by_linkedin) -> blitz(find_work_email).
         with patch.object(
             cc, "person_by_linkedin", AsyncMock(return_value=None)
         ), patch.object(
             cc, "extract_email_from_contacts_response", MagicMock(return_value=None)
         ), patch.object(
             cc, "mark_email_invalid", AsyncMock(return_value=None)
+        ), patch.object(
+            qe, "find_person_email", AsyncMock(return_value=None)
+        ), patch.object(
+            gl, "find_email_by_linkedin", AsyncMock(return_value=None)
         ), patch.object(
             bc, "person_enrich_by_linkedin",
             AsyncMock(return_value={"found": True, "email": "jane@acme.com"}),
@@ -79,10 +88,14 @@ class TestAcceptance1SuccessfulLinkedIn(unittest.IsolatedAsyncioTestCase):
         self.assertIn("blitz", result["source_path"])
         self.assertIn("person_enrich_by_linkedin", result["source_path"])
         # 2. The structured attempt records must include the successful provider/method.
-        # Blitz short-circuits on success, so we have 2 attempts:
-        # contacts_db (no_match) + blitz person_enrich_by_linkedin (email_found).
+        # Blitz short-circuits on success, so we have 4 attempts in the
+        # LinkedIn-arm order: contacts_db (no_match), quickenrich (no_match),
+        # getleads (no_match), blitz person_enrich_by_linkedin (email_found).
         attempts = result["provider_attempts_json"]
-        self.assertEqual(len(attempts), 2)
+        self.assertEqual(
+            [a["provider"] for a in attempts],
+            ["contacts_db", "quickenrich", "getleads", "blitz"],
+        )
         blitz_attempt = next(
             (a for a in attempts if a["method"] == "person_enrich_by_linkedin"), None
         )

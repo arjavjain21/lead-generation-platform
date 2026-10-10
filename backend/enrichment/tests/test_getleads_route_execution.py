@@ -9,7 +9,8 @@ missed the ``_run_route_step`` dispatch that ``run_enrichment_route`` uses to
 actually invoke each provider. Without a getleads branch in ``_run_route_step``,
 GetLeads was silently skipped (fell through to SOURCE_NOT_FOUND) on the /enrich
 path even though it appeared in the cascade plan. This test locks the fix in and
-verifies the cascade order (Blitz -> GetLeads -> SmartProspect).
+verifies the cascade order (2026-10-10 reorder:
+contacts_db -> smartprospect -> quickenrich -> getleads -> blitz -> wizleads).
 
 All provider calls are mocked — no credits spent.
 """
@@ -29,15 +30,17 @@ from enrichment import pipeline as pipeline_mod  # noqa: E402
 from enrichment import contacts_client as cc  # noqa: E402
 from enrichment import blitz_client as bc  # noqa: E402
 from enrichment import getleads_client as gl  # noqa: E402
+from enrichment import quickenrich_client as qe  # noqa: E402
 from enrichment import smartprospect_client as sc  # noqa: E402
 from enrichment import wizleads_client as wc  # noqa: E402
 from enrichment import better_enrich_client as bec  # noqa: E402
 
 
 class TestGetLeadsExecutesInRunEnrichmentRoute(unittest.IsolatedAsyncioTestCase):
-    """GetLeads fires after Blitz and before SmartProspect on the /enrich path."""
+    """GetLeads fires after SmartProspect + QuickEnrich and before Blitz on
+    the /enrich path (2026-10-10 reorder)."""
 
-    async def test_getleads_fires_after_blitz_before_smartprospect(self):
+    async def test_getleads_fires_after_smartprospect_and_quickenrich_before_blitz(self):
         called: list[str] = []
 
         async def fake_cc_name_domain(http, full_name, domain):
@@ -60,6 +63,10 @@ class TestGetLeadsExecutesInRunEnrichmentRoute(unittest.IsolatedAsyncioTestCase)
                 "phone": "",
             }
 
+        async def fake_quickenrich(http, **kwargs):
+            called.append("quickenrich")
+            return None
+
         async def fake_smartprospect(http, first_name, last_name, company_domain):
             called.append("smartprospect")
             return None
@@ -77,6 +84,7 @@ class TestGetLeadsExecutesInRunEnrichmentRoute(unittest.IsolatedAsyncioTestCase)
              patch.object(bc, "person_enrich", fake_blitz_person_enrich), \
              patch.object(bc, "find_work_email", AsyncMock(return_value={"found": False, "email": ""})), \
              patch.object(gl, "find_email", fake_getleads), \
+             patch.object(qe, "find_person_email", fake_quickenrich), \
              patch.object(sc, "find_email", fake_smartprospect), \
              patch.object(wc, "find_email", fake_wizleads), \
              patch.object(bec, "find_work_email_v3", fake_better_enrich):
@@ -106,11 +114,16 @@ class TestGetLeadsExecutesInRunEnrichmentRoute(unittest.IsolatedAsyncioTestCase)
         self.assertIn("getleads", called)
         self.assertEqual(result["email"], "jane@acme.com")
         self.assertEqual(result["source"], pipeline_mod.SOURCE_GETLEADS)
-        # Cascade order: GetLeads AFTER Blitz.
-        self.assertIn("blitz", called)
-        self.assertLess(called.index("blitz"), called.index("getleads"))
-        # A GetLeads hit short-circuits -> later providers never run.
-        self.assertNotIn("smartprospect", called)
+        # Cascade order (2026-10-10): contacts_db -> smartprospect ->
+        # quickenrich -> getleads. A GetLeads hit short-circuits, so blitz
+        # (now BELOW getleads) and everything after never run.
+        self.assertIn("contacts_db", called)
+        self.assertIn("smartprospect", called)
+        self.assertIn("quickenrich", called)
+        self.assertLess(called.index("contacts_db"), called.index("smartprospect"))
+        self.assertLess(called.index("smartprospect"), called.index("quickenrich"))
+        self.assertLess(called.index("quickenrich"), called.index("getleads"))
+        self.assertNotIn("blitz", called)
         self.assertNotIn("wizleads", called)
         self.assertNotIn("better_enrich", called)
 

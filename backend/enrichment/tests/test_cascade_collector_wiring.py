@@ -53,6 +53,7 @@ os.environ.setdefault("CONTACTS_API_TOKEN", "test-token-from-suite")
 
 from enrichment import pipeline as pipeline_mod  # noqa: E402
 from enrichment import list_builder as lb  # noqa: E402
+from enrichment import providers as providers_mod  # noqa: E402
 from enrichment import contacts_client as cc  # noqa: E402
 from enrichment import blitz_client as bc  # noqa: E402
 from enrichment import better_enrich_client as be  # noqa: E402
@@ -73,6 +74,11 @@ def _enable_company_fallbacks(
     """Return a contextmanager stack that patches the four fb_cfg flags.
 
     Defaults to permissive so company emails flow through to the row.
+    Also re-enables better_enrich in ENABLED_PROVIDERS: it has been
+    globally disabled since 2026-09-29 and (per the 2026-10-10 kill-switch
+    precedence fix) cannot be re-enabled per-request, so tests exercising
+    the BetterEnrich fallback CODE with mocked endpoints must flip the
+    switch in the fixture.
     """
     from contextlib import ExitStack
     stack = ExitStack()
@@ -80,6 +86,7 @@ def _enable_company_fallbacks(
     stack.enter_context(patch.object(fb_cfg, "ENABLE_FACEBOOK_EMAIL_FALLBACK", enable_facebook, create=True))
     stack.enter_context(patch.object(fb_cfg, "ALLOW_GENERIC_COMPANY_EMAIL", allow_generic, create=True))
     stack.enter_context(patch.object(fb_cfg, "ALLOW_COMPANY_EMAIL_AS_FINAL", allow_as_final, create=True))
+    stack.enter_context(patch.dict(providers_mod.ENABLED_PROVIDERS, {"better_enrich": True}))
     return stack
 
 
@@ -576,7 +583,11 @@ class TestCompanyEmailCapturedViaBetterEnrichFallback(unittest.IsolatedAsyncioTe
                 "email_status": "verified",
             }
 
-        with patch.object(cc, "company_by_domain", fake_company_by_domain), \
+        # better_enrich is globally disabled in ENABLED_PROVIDERS (since
+        # 2026-09-29); the pipeline gate honors that switch, so exercising
+        # the fallback capture requires enabling it here (mocked endpoint).
+        with patch.dict(providers_mod.ENABLED_PROVIDERS, {"better_enrich": True}), \
+             patch.object(cc, "company_by_domain", fake_company_by_domain), \
              patch.object(cc, "company_contacts_enriched", fake_company_contacts_enriched), \
              patch.object(bc, "waterfall_icp_search", fake_blitz_waterfall), \
              patch.object(be, "find_company_email", fake_find_company_email):
