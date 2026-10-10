@@ -321,7 +321,7 @@ class TestDomainSearch:
         def handler(request: httpx.Request) -> httpx.Response:
             assert request.url.path == "/api/employees/dataset-search"
             assert request.url.params["company_url"] == "acme.com"
-            assert request.url.params["has_email"] == "true"
+            assert request.url.params["has_email"] == "1"
             assert request.url.params["title"] == "CEO,Founder"
             assert request.url.params["page"] == "1"
             return _json(

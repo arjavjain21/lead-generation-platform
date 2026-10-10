@@ -484,7 +484,10 @@ async def domain_search(
     page_cap = max(1, max_pages if max_pages is not None else _DATASET_MAX_PAGES)
     params: dict[str, Any] = {
         "company_url": domain,
-        "has_email": "true",
+        # Boolean as 1/0, NOT "true"/"false" strings — the API's validator
+        # 422s on the string form ("must be true or false"), verified live
+        # 2026-10-10 (has_email=1 → 200, has_email=true → 422).
+        "has_email": "1",
     }
     if titles:
         joined = ",".join(t for t in titles if t and str(t).strip())
