@@ -76,14 +76,21 @@ def better_enrich_allowed(selected_providers: Optional[list[str]]) -> bool:
     a job uploaded as "Blitz + GetLeads + SmartProspect" still burned
     BetterEnrich calls on every no-hit domain.
     """
-    if selected_providers is not None:
-        return "better_enrich" in selected_providers
+    # GLOBAL KILL SWITCH FIRST — beats any selection (same precedence as
+    # the three _should_skip_provider implementations, fix 9b6f86d). Before
+    # this ordering, a request whose selection listed better_enrich kept
+    # firing the dead key post-disable (33 live 403s observed 2026-10-10
+    # from resumed jobs carrying their original UI selections).
     try:
         from . import providers as _providers
 
-        return bool(_providers.ENABLED_PROVIDERS.get("better_enrich", False))
+        if not _providers.ENABLED_PROVIDERS.get("better_enrich", False):
+            return False
     except Exception:  # pragma: no cover - defensive: never block on import
-        return True
+        pass
+    if selected_providers is not None:
+        return "better_enrich" in selected_providers
+    return True
 
 
 async def _verify_with_mailtester(

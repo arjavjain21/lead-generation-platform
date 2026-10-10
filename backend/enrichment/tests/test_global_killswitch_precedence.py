@@ -136,3 +136,30 @@ class TestAllThreeGatesAgree:
                             f"{impl_name} lets globally-disabled {name} through "
                             f"(force={force}, selected={selected})"
                         )
+
+
+class TestCompanyFallbackGate:
+    """company_fallback.better_enrich_allowed must ALSO check the global kill
+    switch before honoring a selection (2026-10-10: resumed jobs carrying
+    legacy selections with better_enrich kept firing the dead key)."""
+
+    def test_selection_cannot_override_global_disable(self, monkeypatch):
+        from enrichment import company_fallback
+
+        monkeypatch.setitem(providers.ENABLED_PROVIDERS, "better_enrich", False)
+        assert company_fallback.better_enrich_allowed(["blitz", "better_enrich"]) is False
+
+    def test_enabled_provider_respects_selection(self, monkeypatch):
+        from enrichment import company_fallback
+
+        monkeypatch.setitem(providers.ENABLED_PROVIDERS, "better_enrich", True)
+        assert company_fallback.better_enrich_allowed(["better_enrich"]) is True
+        assert company_fallback.better_enrich_allowed(["blitz"]) is False
+
+    def test_no_selection_uses_global(self, monkeypatch):
+        from enrichment import company_fallback
+
+        monkeypatch.setitem(providers.ENABLED_PROVIDERS, "better_enrich", True)
+        assert company_fallback.better_enrich_allowed(None) is True
+        monkeypatch.setitem(providers.ENABLED_PROVIDERS, "better_enrich", False)
+        assert company_fallback.better_enrich_allowed(None) is False
