@@ -989,7 +989,7 @@ _LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
             "query_params": [
                 {"name": "max_results", "type": "int", "default": "5"},
                 {"name": "cascade_json", "type": "string (URL-encoded JSON)", "required": "no"},
-                {"name": "force_provider", "type": "string", "required": "no", "values": ["contacts_db", "blitz", "smartprospect", "wizleads", "better_enrich"]},
+                {"name": "force_provider", "type": "string", "required": "no", "values": ["contacts_db", "smartprospect", "quickenrich", "getleads", "blitz", "wizleads", "better_enrich"]},
             ],
         },
         {
@@ -1015,7 +1015,7 @@ _LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
                 {"name": "max_results", "type": "int", "default": "5", "range": "1-10"},
                 {"name": "titles", "type": "string", "notes": "comma-separated, e.g. 'CEO,CTO', max 50"},
                 {"name": "cascade", "type": "array<dict>", "notes": "advanced — overrides titles"},
-                {"name": "force_provider", "type": "string", "values": ["contacts_db", "blitz", "smartprospect", "wizleads", "better_enrich"]},
+                {"name": "force_provider", "type": "string", "values": ["contacts_db", "smartprospect", "quickenrich", "getleads", "blitz", "wizleads", "better_enrich"]},
             ],
             "query_params": [{"name": "debug", "type": "bool", "default": "false", "notes": "adds routing block"}],
             "modes": {

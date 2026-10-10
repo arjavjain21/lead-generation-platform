@@ -122,6 +122,14 @@ class TestAcceptance2BetterEnrichAfterWizLeads(unittest.IsolatedAsyncioTestCase)
     called and the email it returns must be the final answer."""
 
     async def test_enhanced_route_falls_through_to_better_enrich(self):
+        from enrichment import providers as _providers_mod
+        # better_enrich is globally disabled (2026-09-29) and filtered from
+        # routes since 2026-10-10 — this test drives the BE cascade tier, so
+        # enable the switch for its duration (same fixture pattern as
+        # test_company_fallbacks / test_pattern_ac).
+        self.enterContext(
+            patch.dict(_providers_mod.ENABLED_PROVIDERS, {"better_enrich": True})
+        )
         called_providers: list[str] = []
 
         async def fake_cc_name_domain(http, full_name, domain):
@@ -464,6 +472,11 @@ class TestAcceptance7BetterEnrichPollingStillWorks(unittest.IsolatedAsyncioTestC
     the completed email. The cascade must receive the polled email."""
 
     async def test_better_enrich_polling_returns_email(self):
+        from enrichment import providers as _providers_mod
+        # Globally-disabled provider — enable for the test (see Acceptance 2).
+        self.enterContext(
+            patch.dict(_providers_mod.ENABLED_PROVIDERS, {"better_enrich": True})
+        )
         be_call_count = {"v3": 0, "poll": 0}
 
         async def fake_find_work_email_v3(http, full_name, company_domain, linkedin_url):

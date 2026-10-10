@@ -203,6 +203,7 @@ class TestRoutePlanning:
             domain="example.com",
         )
         providers_in_order = [step["provider"] for step in result["steps"]]
+        # better_enrich globally disabled -> filtered from routes.
         assert providers_in_order == [
             "contacts_db",
             "smartprospect",
@@ -210,7 +211,6 @@ class TestRoutePlanning:
             "getleads",
             "blitz",
             "wizleads",
-            "better_enrich",
         ]
         blitz_idx = providers_in_order.index("blitz")
         sp_idx = providers_in_order.index("smartprospect")
@@ -309,7 +309,6 @@ class TestRouteEnrichmentAutoDerivesNames:
             "getleads",
             "blitz",
             "wizleads",
-            "better_enrich",
         ]
 
     def test_explicit_first_and_last_are_not_overridden(self):

@@ -880,14 +880,40 @@ async def find_emails_by_linkedin_batch(
 
     urls = [str(u or "").strip() for u in linkedin_urls]
 
+    # G7 parity (2026-10-10): the SINGLE from-linkedin call rejects
+    # non-person URLs (company pages / garbage) pre-HTTP; the batch must not
+    # be the bypass — 1 credit per success row makes a wrong-entity match
+    # worse than a miss. Invalid URLs resolve to not-found entries, same
+    # shape the single-call guard produces.
+    from urllib.parse import urlparse as _urlparse
+
+    def _is_person_url(u: str) -> bool:
+        parsed = _urlparse(u if "://" in u else f"https://{u}")
+        host = (parsed.netloc or "").lower()
+        return (
+            host == "linkedin.com" or host.endswith(".linkedin.com")
+        ) and "/in/" in (parsed.path or "")
+
+    _person_urls = [u for u in urls if _is_person_url(u)]
+    _invalid_urls = [u for u in urls if not _is_person_url(u)]
+    if _invalid_urls:
+        logger.debug(
+            "GetLeads from-linkedin batch: dropping %d non-person URLs",
+            len(_invalid_urls),
+        )
+    urls = _person_urls
+
     if not API_KEY:
         logger.warning("GetLeads API key not configured, skipping")
         return [
             _not_found_contact(linkedin_url=u)
-            for u in urls
+            for u in linkedin_urls
         ]
 
     output: list[dict[str, Any]] = []
+    # Invalid URLs still get a not-found entry so the caller's zip/keying
+    # by original input stays aligned (they were never worth a credit).
+    output.extend(_not_found_contact(linkedin_url=u) for u in _invalid_urls)
     for chunk in _chunk(urls, _MAX_CONTACTS_PER_REQUEST):
         chunk_result = await _post_enrich(
             client,

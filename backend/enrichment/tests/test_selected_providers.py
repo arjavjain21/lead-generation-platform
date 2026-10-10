@@ -21,6 +21,10 @@ Surfaces tested:
   * Group D-post: POST /api/enrichment/enrich validation 400s (the POST
     endpoint has its own parallel cascade implementation separate from
     ``_unified_enrich_logic``, so validation is tested independently).
+  * Group D-post-filtering: POST /api/enrichment/enrich allowlist filtering —
+    the POST endpoint's INLINE cascade must honor selected_providers (every
+    step gate threads req.selected_providers); non-selected paid providers
+    never fire (mock call counts == 0).
   * Group E: Regression — ``force_provider`` still works unchanged.
 
 Run:
@@ -118,10 +122,12 @@ class TestRouteEnrichmentSelectedProviders:
             selected_providers=["blitz", "better_enrich"],
         )
         providers = [s["provider"] for s in result["steps"]]
-        # contacts_db always present, plus the two selected.
+        # contacts_db always present, plus blitz. better_enrich is globally
+        # disabled (2026-09-29) and filtered from routes (2026-10-10) even
+        # when explicitly selected — the kill switch beats the allowlist.
         assert "contacts_db" in providers
         assert "blitz" in providers
-        assert "better_enrich" in providers
+        assert "better_enrich" not in providers
         # smartprospect and wizleads filtered out.
         assert "smartprospect" not in providers
         assert "wizleads" not in providers
@@ -134,9 +140,10 @@ class TestRouteEnrichmentSelectedProviders:
             selected_providers=None,
         )
         providers = [s["provider"] for s in result["steps"]]
-        # Full cascade (2026-10-10 reorder):
+        # Full cascade (2026-10-10 reorder; better_enrich disabled ->
+        # filtered):
         # contacts_db -> smartprospect -> quickenrich -> getleads -> blitz
-        # -> wizleads -> better_enrich
+        # -> wizleads
         assert providers == [
             "contacts_db",
             "smartprospect",
@@ -144,7 +151,6 @@ class TestRouteEnrichmentSelectedProviders:
             "getleads",
             "blitz",
             "wizleads",
-            "better_enrich",
         ]
 
     def test_selected_providers_empty_list_surfaces_no_email_reason(self):
@@ -661,6 +667,85 @@ class TestPostEnrichSelectedProvidersValidation:
                 for p in patches:
                     p.stop()
         assert resp.status_code == 200, resp.text
+
+
+class TestPostEnrichSelectedProvidersFiltering:
+    """POST /api/enrichment/enrich runs its own INLINE cascade (separate
+    from ``_unified_enrich_logic``). This pins that ``selected_providers``
+    actually reaches every inline provider-step gate in the person arms:
+    with selected_providers=['quickenrich'] only the free contacts_db tier
+    and quickenrich fire — smartprospect / getleads / blitz / wizleads never
+    do (AsyncMock call counts == 0), even though the enhanced arm would
+    otherwise call every one of them for a name+domain miss.
+    """
+
+    def test_post_selected_quickenrich_blocks_nonselected_paid_providers(self, client):
+        """selected_providers=['quickenrich'] on POST /enrich (enhanced arm:
+        domain + full_name, every provider mocked to miss) — only contacts_db
+        (always allowed) and quickenrich (selected) fire; every other paid
+        provider's client function is never invoked."""
+        contacts_by_name = AsyncMock(return_value=None)
+        qe_mock = AsyncMock(return_value={"found": False, "email": ""})
+        sp_mock = AsyncMock(return_value={"found": False, "email": ""})
+        gl_mock = AsyncMock(return_value={"found": False, "email": ""})
+        blitz_person_li = AsyncMock(return_value={"found": False, "email": ""})
+        blitz_work = AsyncMock(return_value={"found": False, "email": ""})
+        blitz_person = AsyncMock(return_value={"found": False, "person": {}})
+        wl_mock = AsyncMock(return_value={"found": False, "email": ""})
+
+        hermetic = [
+            patch.object(contacts_writer, "is_v2_enabled", MagicMock(return_value=False)),
+            patch.object(cc, "person_by_linkedin", AsyncMock(return_value=None)),
+            patch.object(cc, "person_by_name_and_domain", contacts_by_name),
+            patch.object(cc, "company_by_domain", AsyncMock(return_value=None)),
+            patch.object(cc, "company_contacts_enriched", AsyncMock(return_value=[])),
+            patch.object(cc, "extract_email_from_contacts_response", MagicMock(return_value=None)),
+            patch.object(bc, "waterfall_icp_search", AsyncMock(return_value={"results": []})),
+            patch.object(bc, "person_enrich_by_linkedin", blitz_person_li),
+            patch.object(bc, "find_work_email", blitz_work),
+            patch.object(bc, "person_enrich", blitz_person),
+            patch.object(bc, "domain_to_linkedin", AsyncMock(return_value={"found": False, "company_linkedin_url": ""})),
+            patch.object(routes_mod.quickenrich_client, "find_person_email", qe_mock),
+            patch.object(routes_mod.smartprospect_client, "find_email", sp_mock),
+            patch.object(routes_mod.getleads_client, "find_email", gl_mock),
+            patch.object(routes_mod.wizleads_client, "find_email", wl_mock),
+        ]
+        with patch.object(routes_mod, "_record_unified_enrich_stats"), \
+             patch.object(routes_mod, "sync_contacts") as fake_sync:
+            fake_sync.sync_enrichment_to_contacts = MagicMock(
+                return_value={"synced": 0, "skipped": 0, "failed": 0}
+            )
+            for p in hermetic:
+                p.start()
+            try:
+                resp = client.post(
+                    "/api/enrichment/enrich",
+                    json={
+                        "domain": "acme.com",
+                        "full_name": "Jane Doe",
+                        "first_name": "Jane",
+                        "last_name": "Doe",
+                        "selected_providers": ["quickenrich"],
+                    },
+                )
+            finally:
+                for p in reversed(hermetic):
+                    p.stop()
+
+        assert resp.status_code == 200, resp.text
+        # Free tier (always allowed) + the selected paid tier ran.
+        assert contacts_by_name.call_count == 1
+        assert qe_mock.call_count == 1
+        # Every NON-selected paid provider never fired.
+        assert sp_mock.call_count == 0
+        assert gl_mock.call_count == 0
+        assert blitz_person_li.call_count == 0
+        assert blitz_work.call_count == 0
+        assert blitz_person.call_count == 0
+        assert wl_mock.call_count == 0
+        # Misses everywhere → no contacts, nothing synced.
+        body = resp.json()
+        assert body.get("contact_count") == 0
 
 
 # ---------------------------------------------------------------------------

@@ -129,6 +129,14 @@ class TestDomainOnlyCallsAllFourProviders(unittest.IsolatedAsyncioTestCase):
     loop runs with name splits."""
 
     async def test_domain_only_falls_through_to_wizleads_and_better_enrich(self):
+        from enrichment import providers as _providers_mod
+        from unittest.mock import patch as _patch
+        # better_enrich is globally disabled (2026-09-29) and filtered from
+        # routes since 2026-10-10 — enable for the test (fixture pattern from
+        # test_company_fallbacks).
+        self.enterContext(
+            _patch.dict(_providers_mod.ENABLED_PROVIDERS, {"better_enrich": True})
+        )
         called_providers: list[str] = []
 
         def make_recorder(name):

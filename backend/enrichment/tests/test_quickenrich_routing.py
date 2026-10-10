@@ -46,7 +46,8 @@ class TestNameDomainOrder:
             full_name="Jane Doe", first_name="Jane", last_name="Doe", domain="acme.com"
         )
         assert route["mode"] == "name_domain"
-        assert _providers(route) == [P, S, Q, G, B, W, BE]
+        # better_enrich is globally disabled — filtered from routes.
+        assert _providers(route) == [P, S, Q, G, B, W]
 
     def test_contacts_db_always_first(self):
         route = pipeline.route_enrichment(
@@ -85,7 +86,7 @@ class TestNameDomainOrder:
         # "Plato" -> first_name="Plato", last_name="" -> SP/QE/GL/WizLeads
         # capability-dropped; blitz (full_name+domain) + BE remain.
         route = pipeline.route_enrichment(full_name="Plato", domain="acme.com")
-        assert _providers(route) == [P, B, BE]
+        assert _providers(route) == [P, B]
 
 
 class TestLinkedInOrder:
@@ -116,7 +117,7 @@ class TestLinkedInOrder:
         nd = _providers(route, identifier=pipeline.ROUTE_IDENTIFIER_NAME_DOMAIN)
         assert li == [P, Q, G, B, B]
         # WizLeads now present in the name-domain fallback arm (G16 fix).
-        assert nd == [P, S, Q, G, B, W, BE]
+        assert nd == [P, S, Q, G, B, W]
 
 
 class TestQuickEnrichCapabilityGates:
@@ -168,6 +169,21 @@ class TestQuickEnrichRestrictors:
         route2 = pipeline.route_enrichment(phone="+15550001111", force_provider="quickenrich")
         assert route2["no_email_reason"] == pipeline.NO_EMAIL_REASON_FORCED_PROVIDER_CANNOT_USE_INPUT
 
+    def test_force_provider_globally_disabled_rejected(self):
+        """Forcing a globally-disabled provider (better_enrich since
+        2026-09-29) returns zero steps with the DISTINCT provider_disabled
+        reason — not the input-shape reason (route-surface analog of
+        test_global_killswitch_precedence.py)."""
+        route = pipeline.route_enrichment(
+            full_name="Jane Doe",
+            first_name="Jane",
+            last_name="Doe",
+            domain="acme.com",
+            force_provider="better_enrich",
+        )
+        assert route["steps"] == []
+        assert route["no_email_reason"] == "provider_disabled"
+
     def test_selected_providers_filters_to_selection(self):
         route = pipeline.route_enrichment(
             full_name="Jane Doe",
@@ -196,7 +212,7 @@ class TestInputHardening:
             first_name="Jane", last_name="Doe", domain="acme.com"
         )
         assert route["mode"] == "name_domain"
-        assert _providers(route) == [P, S, Q, G, B, W, BE]
+        assert _providers(route) == [P, S, Q, G, B, W]
 
     def test_whitespace_only_full_name_is_invalid(self):
         route = pipeline.route_enrichment(full_name="   ", domain="acme.com")

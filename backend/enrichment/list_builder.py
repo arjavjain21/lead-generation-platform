@@ -586,10 +586,17 @@ async def _resolve_person_email(
     # QuickEnrich dataset-search discovery short-circuit (2026-10-10): the
     # domain orchestrator's QuickEnrich discovery tier puts the email it
     # already returned (has_email=true search) INSIDE the person dict — the
-    # whole cascade short-circuits, nothing is re-asked. Only QuickEnrich
-    # discovery sets person["email"], so no other caller can trip this.
-    if person_data.get("email") and not _should_skip_provider(
-        "quickenrich", force_provider, selected_providers
+    # whole cascade short-circuits, nothing is re-asked. Guarded by the
+    # EXPLICIT email_provider tag set only by _quickenrich_domain_discovery:
+    # flat waterfall rows (_enrich_by_company_waterfall) also carry
+    # person["email"] from Blitz, and inferring from the bare key
+    # mislabeled those as quickenrich_email (adversarial-review, 2026-10-10).
+    if (
+        person_data.get("email")
+        and person_data.get("email_provider") == "quickenrich"
+        and not _should_skip_provider(
+            "quickenrich", force_provider, selected_providers
+        )
     ):
         if record_provider_use:
             record_provider_use("quickenrich")
@@ -618,7 +625,12 @@ async def _resolve_person_email(
     # capability-skip instead of firing doomed calls).
     if linkedin_url:
         _norm_li = identifier_utils.normalize_linkedin_url(linkedin_url)
-        linkedin_url = _norm_li or ""
+        if _norm_li:
+            linkedin_url = _norm_li
+        elif "linkedin.com" not in linkedin_url.lower():
+            # normalize only accepts (www.)linkedin.com — keep country
+            # subdomains (uk.linkedin.com) that contacts_db can still resolve.
+            linkedin_url = ""
 
     # Initialize verification fields
     mailtester_code = ""
@@ -2666,6 +2678,8 @@ async def _enrich_single_linkedin(
     record_provider_use: Optional[Callable[[str], None]] = None,
     pre_resolved_getleads_linkedin: Optional[dict[str, Any]] = None,
     allow_getleads_single: bool = False,
+    force_provider: Optional[str] = None,
+    selected_providers: Optional[list[str]] = None,
 ) -> OutputRow:
     """
     Enrich a single LinkedIn URL with person + company details.
@@ -2689,6 +2703,12 @@ async def _enrich_single_linkedin(
         allow_getleads_single: When True (batch pre-pass did NOT run for this
             URL), a GetLeads miss in the pre-resolved data — or no pre-resolved
             data — falls back to a single ``find_email_by_linkedin`` call.
+        force_provider: Optional request-time restrictor — when set, only the
+            paid tiers matching it run (same contract as /enrich). contacts_db
+            below is deliberately exempt: the free tier feeds the G17
+            emailless fall-through row semantics.
+        selected_providers: Optional allowlist — only listed paid tiers run;
+            contacts_db is always allowed (module-wide convention).
 
     Returns single output row.
     """
@@ -2698,14 +2718,19 @@ async def _enrich_single_linkedin(
     row = {**base_row, **_empty_enriched()}
 
     async with semaphore:
-        # Step 1: Try Contacts DB first (FREE)
+        # Step 1: Try Contacts DB first (FREE). contacts_db is the mandatory
+        # free tier: exempt from force_provider (the free identity hit feeds
+        # the G17 emailless fall-through row semantics) and always allowed
+        # under a selected_providers allowlist — this gate only honors the
+        # allowlist + global kill switch, never the force pin.
         contacts_data = None
-        if record_provider_use:
-            record_provider_use("contacts_db")
-        try:
-            contacts_data = await contacts_client.person_by_linkedin(contacts_http, linkedin_url)
-        except Exception as e:
-            logger.debug("Contacts DB lookup failed: %s", e)
+        if not _should_skip_provider("contacts_db", None, selected_providers):
+            if record_provider_use:
+                record_provider_use("contacts_db")
+            try:
+                contacts_data = await contacts_client.person_by_linkedin(contacts_http, linkedin_url)
+            except Exception as e:
+                logger.debug("Contacts DB lookup failed: %s", e)
 
         if contacts_data:
             # Use Contacts DB data
@@ -2739,7 +2764,9 @@ async def _enrich_single_linkedin(
         # 2026-10-10 provider add — sits between the free contacts_db tier
         # and the other paid tiers). Hit emails carry
         # email_verification_date: a dated email counts as verified.
-        if linkedin_url and not _should_skip_provider("quickenrich", None, None):
+        if linkedin_url and not _should_skip_provider(
+            "quickenrich", force_provider, selected_providers
+        ):
             if record_provider_use:
                 record_provider_use("quickenrich")
             try:
@@ -2775,20 +2802,23 @@ async def _enrich_single_linkedin(
         # Contacts DB and QuickEnrich both missed (G17: also on an emailless
         # contacts_db hit). Prefers the batch pre-pass result for this URL;
         # the single call only runs when the pre-pass did not cover this URL
-        # (allow_getleads_single=True).
+        # (allow_getleads_single=True). Gated on the request restrictors —
+        # a restricted getleads skips BOTH the pre-resolved consumption and
+        # the single call (the runner-side pre-pass is gated identically).
         gl_result: Optional[dict[str, Any]] = None
-        if pre_resolved_getleads_linkedin is not None:
-            if pre_resolved_getleads_linkedin.get("email"):
-                gl_result = pre_resolved_getleads_linkedin
-        elif allow_getleads_single:
-            if record_provider_use:
-                record_provider_use("getleads")
-            try:
-                gl_result = await getleads_client.find_email_by_linkedin(
-                    blitz_http, linkedin_url
-                )
-            except Exception as e:
-                logger.debug("GetLeads find_email_by_linkedin failed: %s", e)
+        if not _should_skip_provider("getleads", force_provider, selected_providers):
+            if pre_resolved_getleads_linkedin is not None:
+                if pre_resolved_getleads_linkedin.get("email"):
+                    gl_result = pre_resolved_getleads_linkedin
+            elif allow_getleads_single:
+                if record_provider_use:
+                    record_provider_use("getleads")
+                try:
+                    gl_result = await getleads_client.find_email_by_linkedin(
+                        blitz_http, linkedin_url
+                    )
+                except Exception as e:
+                    logger.debug("GetLeads find_email_by_linkedin failed: %s", e)
 
         if gl_result and gl_result.get("email"):
             row["dm_linkedin_url"] = (
@@ -2814,22 +2844,23 @@ async def _enrich_single_linkedin(
         # (no "person" object) — same endpoint as blitz_client.find_work_email.
         # The old code read result["person"], which never exists, so every Blitz
         # email was silently dropped (2026-07-15 zero-email bug).
-        if record_provider_use:
-            record_provider_use("blitz")
-        try:
-            result = await blitz_client.person_enrich_by_linkedin(blitz_http, linkedin_url, include_phone=True)
-            if result.get("found") and result.get("email"):
-                all_emails = result.get("all_emails") or []
-                verified = "yes" if (all_emails and all_emails[0].get("verified")) else "unknown"
-                row["dm_linkedin_url"] = linkedin_url
-                row["dm_email"] = result.get("email", "")
-                row["dm_email_verified"] = verified
-                row["dm_email_source"] = SOURCE_BLITZ_LINKEDIN
-                # email-only endpoint: name/title/company are not returned here
-                row["row_status"] = STATUS_ENRICHED
-                return row
-        except Exception as e:
-            logger.debug("Blitz person enrich failed: %s", e)
+        if not _should_skip_provider("blitz", force_provider, selected_providers):
+            if record_provider_use:
+                record_provider_use("blitz")
+            try:
+                result = await blitz_client.person_enrich_by_linkedin(blitz_http, linkedin_url, include_phone=True)
+                if result.get("found") and result.get("email"):
+                    all_emails = result.get("all_emails") or []
+                    verified = "yes" if (all_emails and all_emails[0].get("verified")) else "unknown"
+                    row["dm_linkedin_url"] = linkedin_url
+                    row["dm_email"] = result.get("email", "")
+                    row["dm_email_verified"] = verified
+                    row["dm_email_source"] = SOURCE_BLITZ_LINKEDIN
+                    # email-only endpoint: name/title/company are not returned here
+                    row["row_status"] = STATUS_ENRICHED
+                    return row
+            except Exception as e:
+                logger.debug("Blitz person enrich failed: %s", e)
 
     # Not found anywhere. An emailless contacts_db identity hit (G17) keeps
     # its no_contacts status + free identity fields instead of not_found.
@@ -2913,6 +2944,8 @@ async def run_linkedin_enrichment(
     existing_email_col: Optional[str] = None,
     prepend_rows: Optional[list[dict]] = None,  # resume: carried-over partial rows (written first, NOT checkpointed)
     return_partial_on_cancel: bool = False,  # Flow 3 runner: cancel returns partial (no raise) so the writer closes cleanly
+    force_provider: Optional[str] = None,
+    selected_providers: Optional[list[str]] = None,
 ) -> list[OutputRow]:
     """
     Main entry point for Flow 3: LinkedIn URLs → Full Enrichment
@@ -2938,6 +2971,10 @@ async def run_linkedin_enrichment(
         prepend_rows: Resume seed — written after the header, not checkpointed.
         return_partial_on_cancel: When True, a mid-run cancel returns whatever
             completed (no raise) so the caller can mark the job 'partial'.
+        force_provider: Optional request-time restrictor threaded into
+            ``_enrich_single_linkedin`` paid-tier gates and the GetLeads
+            pre-pass gate (None = unrestricted, today's Flow-3 default).
+        selected_providers: Optional allowlist, same threading.
 
     Returns:
         List of enriched output rows
@@ -2966,7 +3003,7 @@ async def run_linkedin_enrichment(
             _gl_urls.append(_u)
     if (
         len(_gl_urls) >= 2
-        and not _should_skip_provider("getleads", None, None)
+        and not _should_skip_provider("getleads", force_provider, selected_providers)
     ):
         pre_resolved_gl_by_url = await _getleads_linkedin_prepass(
             blitz_http, list(dict.fromkeys(_gl_urls)), record_provider_use
@@ -3037,6 +3074,8 @@ async def run_linkedin_enrichment(
                 record_provider_use=record_provider_use,
                 pre_resolved_getleads_linkedin=_pre_gl,
                 allow_getleads_single=not _gl_prepass_ran,
+                force_provider=force_provider,
+                selected_providers=selected_providers,
             )
 
         if on_progress:
@@ -3570,6 +3609,8 @@ async def run_unified_linkedin_enrichment(
     existing_email_col: Optional[str] = None,
     prepend_rows: Optional[list[dict]] = None,  # resume: carried-over partial rows (written first, NOT checkpointed)
     return_partial_on_cancel: bool = False,  # Flow 3 v2 runner: cancel returns partial (no raise) so the writer closes cleanly
+    force_provider: Optional[str] = None,
+    selected_providers: Optional[list[str]] = None,
 ) -> list[OutputRow]:
     """
     Unified enrichment for CSV with personal and/or company LinkedIn URLs.
@@ -3597,6 +3638,10 @@ async def run_unified_linkedin_enrichment(
         prepend_rows: Resume seed — written after the header, not checkpointed.
         return_partial_on_cancel: When True, a mid-run cancel returns whatever
             completed (no raise) so the caller can mark the job 'partial'.
+        force_provider: Optional request-time restrictor threaded into
+            ``_enrich_single_linkedin`` paid-tier gates and the GetLeads
+            pre-pass gate (None = unrestricted, today's Flow-3 default).
+        selected_providers: Optional allowlist, same threading.
 
     Returns:
         List of enriched output rows (can be > len(rows) due to waterfall expansion)
@@ -3619,7 +3664,7 @@ async def run_unified_linkedin_enrichment(
                 _gl_urls.append(_u)
     if (
         len(_gl_urls) >= 2
-        and not _should_skip_provider("getleads", None, None)
+        and not _should_skip_provider("getleads", force_provider, selected_providers)
     ):
         pre_resolved_gl_by_url = await _getleads_linkedin_prepass(
             blitz_http, list(dict.fromkeys(_gl_urls)), record_provider_use
@@ -3703,6 +3748,8 @@ async def run_unified_linkedin_enrichment(
                 record_provider_use=record_provider_use,
                 pre_resolved_getleads_linkedin=_pre_gl,
                 allow_getleads_single=not _gl_prepass_ran,
+                force_provider=force_provider,
+                selected_providers=selected_providers,
             )
             if person_result.get("dm_email") or person_result.get("row_status") == STATUS_ENRICHED:
                 results.append(person_result)

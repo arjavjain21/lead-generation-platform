@@ -907,6 +907,14 @@ def route_enrichment(
             "no_email_reason": NO_EMAIL_REASON_NO_IDENTIFIERS,
         }
 
+    # Globally disabled providers never emit steps (2026-10-10 review):
+    # better_enrich is off since 2026-09-29 — emitting its steps made
+    # force_provider=better_enrich return a plausible cascade the executors
+    # then skip, surfacing a misleading no_email_reason.
+    raw_steps = [
+        s for s in raw_steps if providers.is_provider_enabled(s["provider"])
+    ]
+
     # Apply force_provider.
     if force_provider:
         family_map = {
@@ -924,6 +932,14 @@ def route_enrichment(
                 "mode": mode,
                 "steps": [],
                 "no_email_reason": NO_EMAIL_REASON_FORCED_PROVIDER_CANNOT_USE_INPUT,
+            }
+        if not providers.is_provider_enabled(force_provider):
+            # The provider exists but is globally disabled — a distinct
+            # signal from input-shape incompatibility.
+            return {
+                "mode": mode,
+                "steps": [],
+                "no_email_reason": NO_EMAIL_REASON_PROVIDER_DISABLED,
             }
         filtered = [s for s in raw_steps if s["provider"] == forced]
         if not filtered:
@@ -2306,11 +2322,18 @@ async def _resolve_email_for_person(
         full_name = " ".join(p for p in (first_name, last_name) if p)
     # G5: normalize the LinkedIn URL once here so every downstream
     # by-LinkedIn step (contacts_db / blitz / quickenrich) sees the same
-    # canonical form the routed path enforces. Unparseable → "" (LinkedIn
-    # steps capability-skip instead of firing doomed calls).
+    # canonical form the routed path enforces. identifier_utils only accepts
+    # (www.)linkedin.com — country subdomains (uk.linkedin.com/in/x) would be
+    # DROPPED here although contacts_db previously resolved them, so on a
+    # normalize-miss we keep the original when it plainly carries linkedin.com
+    # and let the per-client guards decide. Garbage → "" (LinkedIn steps
+    # capability-skip instead of firing doomed calls).
     if linkedin_url:
         _norm_li = identifier_utils.normalize_linkedin_url(linkedin_url)
-        linkedin_url = _norm_li or ""
+        if _norm_li:
+            linkedin_url = _norm_li
+        elif "linkedin.com" not in linkedin_url.lower():
+            linkedin_url = ""
 
     # Initialize verification info
     verification_info: dict[str, Any] = {
@@ -3104,6 +3127,12 @@ async def _quickenrich_domain_discovery(
                 "email": emp["email"],
                 "email_verification_date": emp.get("email_verification_date", ""),
             }
+            # Explicit provenance tag: the ONLY producers allowed to satisfy
+            # the list_builder discovery short-circuit. Flat waterfall rows
+            # (_enrich_by_company_waterfall) also carry person["email"] from
+            # Blitz — without this tag those Blitz emails were mislabeled
+            # quickenrich_email (adversarial-review high, 2026-10-10).
+            person_dict["email_provider"] = "quickenrich"
         persons.append({"person": person_dict, "icp": 0})
     return persons, pre_resolved
 
@@ -3650,8 +3679,14 @@ async def _enrich_domain(
                         # Convert Contacts DB format to Blitz format for compatibility.
                         # Local title gate: skip contacts that don't match the
                         # user's requested titles (title+headline+seniority+
-                        # function, synonym-aware).
-                        persons = []
+                        # function, synonym-aware). Build a FRESH list and
+                        # only REPLACE `persons` when a contact SURVIVED the
+                        # gate — an in-place `persons = []` wipe here used to
+                        # discard a paid QuickEnrich no-LI rescue AND leave a
+                        # stale index-keyed qe_pre_resolved_by_index that the
+                        # GetLeads-DM fallback would then graft onto unrelated
+                        # persons (adversarial-review critical, 2026-10-10).
+                        _cd_persons: list[dict[str, Any]] = []
                         for contact in contacts_contacts:
                             if title_filter_active and not title_filter.person_matches_titles(
                                 contact.get("title", ""), contact.get("headline", ""),
@@ -3659,7 +3694,7 @@ async def _enrich_domain(
                                 contact.get("seniority", ""), contact.get("function", ""),
                             ):
                                 continue
-                            if len(persons) >= max_results:
+                            if len(_cd_persons) >= max_results:
                                 break
                             person_dict = {
                                 "person": {
@@ -3677,18 +3712,23 @@ async def _enrich_domain(
                                 },
                                 "icp": 0,  # Contacts DB doesn't provide ICP scoring
                             }
-                            persons.append(person_dict)
+                            _cd_persons.append(person_dict)
 
                         # Quality met only when at least one person SURVIVED
-                        # the title gate; otherwise fall through to Blitz.
-                        if persons:
+                        # the title gate; otherwise fall through (keeping any
+                        # QE rescue rows + their aligned pre-resolved map).
+                        if _cd_persons:
+                            # Free tier wins — wholesale replace (the
+                            # contacts_db_quality_met branch in the discovery
+                            # chain clears the QE map as needed).
+                            persons = _cd_persons
                             contacts_db_quality_met = True
                         else:
                             logger.info(
-                                "Title gate dropped all %d Contacts DB people for %s — falling back to Blitz",
-                                len(contacts_contacts), domain,
+                                "Title gate dropped all %d Contacts DB people for %s — QE rescue rows kept (%d)",
+                                len(contacts_contacts), domain, len(persons),
                             )
-                        logger.debug("Using Contacts DB for %d decision makers from %s", len(persons), domain)
+                        logger.debug("Using Contacts DB for %d decision makers from %s", len(_cd_persons), domain)
             except Exception as e:
                 _record_company_error("contacts_db", "company_contacts_enriched", str(e))
                 logger.warning("Contacts DB contacts lookup failed for %s: %s", domain, e)
@@ -3987,8 +4027,14 @@ async def _enrich_domain(
         and len(persons) >= 2
     ):
         # Build the batch input list — only persons with first+last+domain.
+        # Skip QuickEnrich-discovered persons whose email is already in hand
+        # (qe_pre_resolved_by_index): re-asking SP wastes a call AND its tier-3
+        # result would override the already-paid QE email with a mislabeled
+        # source (adversarial-review high, 2026-10-10).
         batch_inputs: list[tuple[int, str, str]] = []  # (person_idx, first, last)
         for idx, item in enumerate(persons):
+            if idx in qe_pre_resolved_by_index:
+                continue
             p = item.get("person", {}) if isinstance(item, dict) else {}
             if not isinstance(p, dict):
                 continue
@@ -4102,6 +4148,10 @@ async def _enrich_domain(
         # Build the batch input list — only persons with first+last+domain.
         getleads_batch_inputs: list[tuple[int, str, str]] = []  # (person_idx, first, last)
         for idx, item in enumerate(persons):
+            # QuickEnrich-discovered emails are already in hand — never
+            # re-ask GetLeads for them (mirror of the SP pre-pass skip).
+            if idx in qe_pre_resolved_by_index:
+                continue
             # Skip decision-makers-layer persons whose email is already in
             # hand — the from-person batch must not re-ask (re-pay) for them.
             if idx in pre_resolved_getleads_by_index:

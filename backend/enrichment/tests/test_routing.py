@@ -99,7 +99,9 @@ class TestRouteEnrichmentPure(unittest.TestCase):
         self.assertEqual(methods[2], pipeline_mod.ROUTE_METHOD_EMPLOYEE_SEARCH_QUICKENRICH)
         self.assertEqual(methods[3], pipeline_mod.ROUTE_METHOD_FIND_EMAIL_GETLEADS)
         self.assertEqual(methods[4], pipeline_mod.ROUTE_METHOD_PERSON_ENRICH)
-        self.assertIn(pipeline_mod.ROUTE_METHOD_FIND_WORK_EMAIL_V3, methods)
+        # better_enrich is globally disabled (2026-09-29) and filtered
+        # from routes since 2026-10-10.
+        self.assertNotIn(pipeline_mod.ROUTE_METHOD_FIND_WORK_EMAIL_V3, methods)
 
     def test_domain_only_returns_empty_steps(self):
         route = pipeline_mod.route_enrichment(domain="acme.com")

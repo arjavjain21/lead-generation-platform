@@ -268,10 +268,10 @@ def _terminal_error(response: httpx.Response, method: str) -> Any:
     ``pipeline._is_provider_error``). Other 4xx (400/404/422) are logged and
     return None — a bad request shape is a skip, not a cascade event.
     """
-    try:
-        body_snippet = response.text[:200]
-    except Exception:
-        body_snippet = ""
+    # Status-only messages: raw vendor bodies must NOT flow into
+    # _ProviderError.message — it lands in user-visible provider_errors CSV
+    # cells / API responses (adversarial-review security finding; sibling
+    # clients embed no response bodies).
     if response.status_code in (401, 402, 403):
         error_type = {
             401: "auth_error",
@@ -282,12 +282,9 @@ def _terminal_error(response: httpx.Response, method: str) -> Any:
             provider="quickenrich",
             method=method,
             error_type=error_type,
-            message=f"QuickEnrich {response.status_code}: {body_snippet or 'no body'}",
+            message=f"QuickEnrich {response.status_code} ({error_type})",
         )
-    logger.warning(
-        "QuickEnrich %s terminal %d: %s",
-        method, response.status_code, body_snippet,
-    )
+    logger.warning("QuickEnrich %s terminal %d", method, response.status_code)
     return None
 
 
