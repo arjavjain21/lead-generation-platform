@@ -490,7 +490,21 @@ async def domain_search(
         "has_email": "1",
     }
     if titles:
-        joined = ",".join(t for t in titles if t and str(t).strip())
+        # title is capped at 255 chars server-side (live-verified 422:
+        # "must not be greater than 255 characters"; the flattened
+        # DEFAULT_CCASCADE tiers total 259). Keep titles in priority order
+        # and drop trailing ones that would overflow — the server-side list
+        # is only a cost-narrowing net; the local strict title gate
+        # re-filters the results precisely.
+        joined = ""
+        for t in titles:
+            t = str(t).strip()
+            if not t:
+                continue
+            candidate = f"{joined},{t}" if joined else t
+            if len(candidate) > 255:
+                break
+            joined = candidate
         if joined:
             params["title"] = joined
 
