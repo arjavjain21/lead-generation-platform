@@ -115,27 +115,33 @@ def _should_skip_provider(
     Returns:
         True if the provider should be skipped, False otherwise
 
-    Checks:
-      1. Is the provider globally disabled in ENABLED_PROVIDERS?
-      2. If force_provider is set, does it match the current provider?
-      3. If selected_providers is set, is the provider in the list?
+    Checks (in priority order — matches pipeline.py and routes.py):
+      1. Global ENABLED_PROVIDERS kill switch (beats everything below)
+      2. force_provider (if set) — only that provider passes
+      3. selected_providers (if set) — only those providers pass; contacts_db
+         is always allowed
     """
-    # force_provider takes precedence - if set, only use that provider
-    if force_provider:
-        return provider != force_provider
-
-    # If selected_providers is set, it takes precedence over global enablement
-    # This allows user to disable a globally-enabled provider
-    if selected_providers is not None:
-        # contacts_db is ALWAYS included (mandatory first step) - cannot be skipped
-        if provider == "contacts_db":
-            return False
-        return provider not in selected_providers
-
-    # No user selection - use global enablement check
+    # Global enablement check — beats force_provider and selected_providers.
+    # A globally disabled provider (e.g. better_enrich since 2026-09-29) can
+    # never be re-enabled per-request. Before this ordering, force_provider /
+    # selected_providers bypassed the kill switch and kept hammering the dead
+    # better_enrich key with 403s (~950/hr) even after the disable.
     if not providers.is_provider_enabled(provider):
         logger.debug("_should_skip_provider: %s disabled in ENABLED_PROVIDERS", provider)
         return True
+
+    # force_provider takes precedence over selected_providers - if set, only
+    # that provider passes.
+    if force_provider:
+        return provider != force_provider
+
+    # selected_providers is an allowlist. contacts_db is ALWAYS included
+    # (mandatory first step) — it cannot be skipped by omission. For every
+    # other provider this lets a request narrow an enabled cascade.
+    if selected_providers is not None:
+        if provider == "contacts_db":
+            return False
+        return provider not in selected_providers
 
     return False
 
