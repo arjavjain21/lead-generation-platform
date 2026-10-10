@@ -44,6 +44,8 @@ from . import list_builder
 from . import better_enrich_client
 from . import wizleads_client
 from . import getleads_client
+from . import smartprospect_client
+from . import quickenrich_client
 from . import providers
 from . import identifier_utils
 from . import contacts_writer
@@ -204,7 +206,7 @@ async def _run_contacts_writer_v2(
 
 
 # Valid provider values for force_provider / selected_providers parameter
-VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "getleads", "smartprospect", "wizleads", "better_enrich"})
+VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "getleads", "smartprospect", "quickenrich", "wizleads", "better_enrich"})
 
 
 def _should_skip_provider(
@@ -2210,10 +2212,23 @@ async def unified_enrich(
         if not domain:
             raise HTTPException(status_code=400, detail="Invalid domain format")
 
-    # Resolve full_name from first_name + last_name if provided
+    # Normalize person-name inputs once (G14, 2026-10-10): whitespace-only
+    # values must not pass the `full_name and domain` gates below. Mirrors
+    # the derivation block in pipeline.route_enrichment: compose full_name
+    # from first+last when full_name is empty, split first/last from
+    # full_name when they are empty (only fills — never overrides).
+    req.full_name = (req.full_name or "").strip()
+    req.first_name = (req.first_name or "").strip()
+    req.last_name = (req.last_name or "").strip()
     full_name = req.full_name
-    if not full_name and (req.first_name or req.last_name):
-        full_name = f"{req.first_name or ''} {req.last_name or ''}".strip()
+    if full_name:
+        _name_parts = full_name.split(" ", 1)
+        if not req.first_name and _name_parts:
+            req.first_name = _name_parts[0]
+        if not req.last_name and len(_name_parts) > 1:
+            req.last_name = _name_parts[1]
+    elif req.first_name or req.last_name:
+        full_name = " ".join(p for p in (req.first_name, req.last_name) if p)
 
     # Auto-detect LinkedIn URL type — if a /company/ URL was put into the
     # person linkedin_url field, move it to company_linkedin_url (and vice
@@ -2303,7 +2318,95 @@ async def unified_enrich(
                 except Exception as e:
                     logger.debug("Contacts DB LinkedIn lookup failed: %s", e)
 
-            # Step 2: Try Blitz to get work email if not found.
+            # Step 2: QuickEnrich employee-search by LinkedIn URL
+            # (2026-10-10 reorder: contacts_db -> quickenrich -> getleads
+            # -> blitz; Blitz demoted to the last active email tier for FUP
+            # budget relief). Hit emails carry an email_verification_date —
+            # a dated email counts as verified ("yes"), otherwise the hit is
+            # accepted unverified ("unknown"). Miss / provider error just
+            # continues the cascade.
+            if (not contacts or not any(c.get("email") for c in contacts)) and not _should_skip_provider("quickenrich", req.force_provider, req.selected_providers):
+                try:
+                    qe_result = await quickenrich_client.find_person_email(
+                        blitz_http,
+                        linkedin_url=linkedin_for_blitz,
+                    )
+                    if pipeline._is_provider_error(qe_result):
+                        logger.warning("QuickEnrich employee_search (linkedin) provider error: %s", qe_result.message)
+                    elif qe_result and qe_result.get("found") and qe_result.get("email"):
+                        qe_email = qe_result["email"]
+                        qe_verified = "yes" if qe_result.get("email_verification_date") else "unknown"
+                        if contacts:
+                            contacts[0]["email"] = qe_email
+                            contacts[0]["email_source"] = pipeline.SOURCE_QUICKENRICH
+                        else:
+                            first_bf, last_bf, title_bf = pipeline._backfill_person_identity(qe_result)
+                            contacts.append({
+                                "full_name": qe_result.get("full_name", ""),
+                                "first_name": first_bf,
+                                "last_name": last_bf,
+                                "title": title_bf,
+                                "email": qe_email,
+                                "linkedin_url": qe_result.get("linkedin_url") or (req.linkedin_url or ""),
+                                "headline": "",
+                                "location_city": "",
+                                "location_country": "",
+                                "icp_tier": 1,
+                                "email_source": pipeline.SOURCE_QUICKENRICH,
+                            })
+                        sources["contacts"] = "quickenrich"
+                        sources["emails"] = "quickenrich"
+                        logger.info("QuickEnrich found email via LinkedIn (verified=%s): %s", qe_verified, qe_email)
+                except httpx.HTTPStatusError as e:
+                    _qe_et, _qe_msg = pipeline._classify_http_error(e, "quickenrich", "find_person_email")
+                    logger.warning("QuickEnrich employee_search (linkedin) failed: %s (%s)", _qe_msg, _qe_et)
+                except Exception as e:
+                    logger.debug("QuickEnrich LinkedIn lookup failed: %s", e)
+
+            # Step 3: GetLeads from-linkedin fallback (same verification
+            # contract as pipeline's ROUTE_METHOD_FIND_EMAIL_LINKEDIN_GETLEADS:
+            # verification_status="Valid" counts as verified, otherwise the
+            # hit is accepted unverified).
+            if (not contacts or not any(c.get("email") for c in contacts)) and not _should_skip_provider("getleads", req.force_provider, req.selected_providers):
+                try:
+                    gl_result = await getleads_client.find_email_by_linkedin(
+                        blitz_http,
+                        linkedin_for_blitz,
+                    )
+                    if pipeline._is_provider_error(gl_result):
+                        logger.warning("GetLeads find_email_by_linkedin provider error: %s", gl_result.message)
+                    elif gl_result and gl_result.get("email"):
+                        gl_email = gl_result["email"]
+                        gl_verified = "yes" if gl_result.get("verification_status") == "Valid" else "unknown"
+                        if contacts:
+                            contacts[0]["email"] = gl_email
+                            contacts[0]["email_source"] = pipeline.SOURCE_GETLEADS
+                        else:
+                            gl_first = (gl_result.get("first_name") or "").strip()
+                            gl_last = (gl_result.get("last_name") or "").strip()
+                            contacts.append({
+                                "full_name": " ".join(p for p in (gl_first, gl_last) if p),
+                                "first_name": gl_first,
+                                "last_name": gl_last,
+                                "title": "",
+                                "email": gl_email,
+                                "linkedin_url": gl_result.get("linkedin_url") or (req.linkedin_url or ""),
+                                "headline": "",
+                                "location_city": "",
+                                "location_country": "",
+                                "icp_tier": 1,
+                                "email_source": pipeline.SOURCE_GETLEADS,
+                            })
+                        sources["contacts"] = "getleads"
+                        sources["emails"] = "getleads"
+                        logger.info("GetLeads found email via LinkedIn (verified=%s): %s", gl_verified, gl_email)
+                except httpx.HTTPStatusError as e:
+                    _gl_et, _gl_msg = pipeline._classify_http_error(e, "getleads", "find_email_by_linkedin")
+                    logger.warning("GetLeads find_email_by_linkedin failed: %s (%s)", _gl_msg, _gl_et)
+                except Exception as e:
+                    logger.debug("GetLeads LinkedIn lookup failed: %s", e)
+
+            # Step 4: Try Blitz person enrichment by LinkedIn URL.
             # The linkedin endpoint returns a single `email` (no
             # verified/unverified flag in the response shape). Treat any
             # email Blitz returns as provider-acceptable (this matches the
@@ -2341,81 +2444,43 @@ async def unified_enrich(
                         sources["emails"] = "blitz"
                         logger.info("Blitz found email via LinkedIn: %s", candidate_li)
 
-                        # Extract full_name from Blitz result for BetterEnrich fallback
+                        # Extract full_name from Blitz result for downstream use
                         if not full_name:
                             full_name = result.get("full_name", "")
                 except Exception as e:
                     logger.debug("Blitz LinkedIn email lookup failed: %s", e)
 
-            # Step 3: Try WizLeads as fallback (between Blitz and BetterEnrich
-            # to match documented cascade: Contacts DB → Blitz → WizLeads →
-            # BetterEnrich). Eligibility: full_name (or first_name) + domain.
-            if full_name and domain and (not contacts or not any(c.get("email") for c in contacts)) and not _should_skip_provider("wizleads", req.force_provider, req.selected_providers):
+            # Step 5: Blitz find_work_email — the direct per-call email
+            # endpoint (bills per call, miss included). Previously missing
+            # from this arm; mirrors pipeline's ROUTE_METHOD_FIND_WORK_EMAIL:
+            # mailtester-free, `found` + `email` = provider-verified hit.
+            if (not contacts or not any(c.get("email") for c in contacts)) and not _should_skip_provider("blitz", req.force_provider, req.selected_providers):
                 try:
-                    result = await wizleads_client.find_email(
-                        blitz_http,
-                        first_name=full_name.split(" ")[0],
-                        last_name=" ".join(full_name.split(" ")[1:]) if " " in full_name else "",
-                        website=domain,
-                    )
-                    if result and result.get("email"):
-                        email = result["email"]
+                    result = await blitz_client.find_work_email(blitz_http, linkedin_for_blitz)
+                    if result and result.get("found") and result.get("email"):
+                        fw_email = result["email"]
                         if contacts:
-                            contacts[0]["email"] = email
-                            contacts[0]["email_source"] = "wizleads"
+                            contacts[0]["email"] = fw_email
+                            contacts[0]["email_source"] = "blitz"
                         else:
                             contacts.append({
-                                "full_name": full_name,
-                                "first_name": "",
-                                "last_name": "",
+                                "full_name": full_name or "",
+                                "first_name": req.first_name or "",
+                                "last_name": req.last_name or "",
                                 "title": "",
-                                "email": email,
+                                "email": fw_email,
                                 "linkedin_url": req.linkedin_url or "",
                                 "headline": "",
                                 "location_city": "",
                                 "location_country": "",
                                 "icp_tier": 1,
-                                "email_source": "wizleads",
+                                "email_source": "blitz",
                             })
-                        sources["contacts"] = "wizleads"
-                        sources["emails"] = "wizleads"
-                        logger.info("WizLeads found email via LinkedIn: %s", email)
+                        sources["contacts"] = "blitz"
+                        sources["emails"] = "blitz"
+                        logger.info("Blitz find_work_email found email via LinkedIn: %s", fw_email)
                 except Exception as e:
-                    logger.debug("WizLeads lookup failed: %s", e)
-
-            # Step 4: Try BetterEnrich V3 as final fallback (requires full_name AND domain)
-            # BetterEnrich V3 requires domain, so only try when domain is available
-            if full_name and domain and (not contacts or not any(c.get("email") for c in contacts)) and not _should_skip_provider("better_enrich", req.force_provider, req.selected_providers):
-                try:
-                    be_result = await better_enrich_client.find_work_email_v3(
-                        blitz_http,
-                        full_name=full_name,
-                        company_domain=domain,
-                        linkedin_url=req.linkedin_url,
-                    )
-                    if be_result and be_result.get("email"):
-                        if contacts:
-                            contacts[0]["email"] = be_result.get("email")
-                            contacts[0]["email_source"] = "better_enrich"
-                        else:
-                            contacts.append({
-                                "full_name": full_name,
-                                "first_name": "",
-                                "last_name": "",
-                                "title": "",
-                                "email": be_result.get("email"),
-                                "linkedin_url": req.linkedin_url or "",
-                                "headline": "",
-                                "location_city": "",
-                                "location_country": "",
-                                "icp_tier": 1,
-                                "email_source": "better_enrich",
-                            })
-                        sources["contacts"] = "better_enrich"
-                        sources["emails"] = "better_enrich"
-                        logger.info("BetterEnrich V3 found email via LinkedIn: %s", be_result.get("email"))
-                except Exception as e:
-                    logger.debug("BetterEnrich V3 LinkedIn lookup failed: %s", e)
+                    logger.debug("Blitz find_work_email lookup failed: %s", e)
 
         elif mode == "company_linkedin_only":
             # Company LinkedIn URL only → run title-waterfall directly.
@@ -2614,7 +2679,149 @@ async def unified_enrich(
                 except Exception as e:
                     logger.debug("Contacts DB person lookup failed: %s", e)
 
-            # If no contacts from Contacts DB, try Blitz (person-specific lookup)
+            # Step 1.5a: SmartProspect — 2026-10-10 reorder promotes it ahead
+            # of Blitz (self-verifying person-email finder on the shared
+            # 1900 RPM bucket). Requires first+last+domain (the split is
+            # derived from full_name at the top of the handler).
+            # verification_status="Valid" counts as verified; a found-but-
+            # unverified email is accepted as "unknown".
+            if (not contacts or not any(c.get("email") for c in contacts)) and req.first_name and req.last_name and domain and not _should_skip_provider("smartprospect", req.force_provider, req.selected_providers):
+                try:
+                    sp_result = await smartprospect_client.find_email(
+                        blitz_http,
+                        first_name=req.first_name,
+                        last_name=req.last_name,
+                        company_domain=domain,
+                    )
+                    if pipeline._is_provider_error(sp_result):
+                        logger.warning("SmartProspect find_email provider error: %s", sp_result.message)
+                    elif sp_result and sp_result.get("email"):
+                        sp_email = sp_result["email"]
+                        sp_verified = "yes" if sp_result.get("verification_status") == "Valid" else "unknown"
+                        if contacts:
+                            contacts[0]["email"] = sp_email
+                            contacts[0]["email_source"] = pipeline.SOURCE_SMARTPROSPECT
+                        else:
+                            contacts.append({
+                                "full_name": full_name or "",
+                                "first_name": req.first_name or "",
+                                "last_name": req.last_name or "",
+                                "title": "",
+                                "email": sp_email,
+                                "linkedin_url": req.linkedin_url or "",
+                                "headline": "",
+                                "location_city": "",
+                                "location_country": "",
+                                "icp_tier": 1,
+                                "email_source": pipeline.SOURCE_SMARTPROSPECT,
+                            })
+                        sources["contacts"] = "smartprospect"
+                        sources["emails"] = "smartprospect"
+                        logger.info("SmartProspect found email in enhanced mode (verified=%s): %s", sp_verified, sp_email)
+                except httpx.HTTPStatusError as e:
+                    _sp_et, _sp_msg = pipeline._classify_http_error(e, "smartprospect", "find_email")
+                    logger.warning("SmartProspect find_email failed: %s (%s)", _sp_msg, _sp_et)
+                except Exception as e:
+                    logger.debug("SmartProspect lookup failed in enhanced mode: %s", e)
+
+            # Step 1.5b: QuickEnrich employee-search — by linkedin_url when
+            # present, else first+last+company_url (mirrors pipeline's
+            # ROUTE_METHOD_EMPLOYEE_SEARCH_{LINKEDIN_,}QUICKENRICH). A dated
+            # email_verification_date counts as verified ("yes"), otherwise
+            # the hit is accepted unverified ("unknown").
+            if (not contacts or not any(c.get("email") for c in contacts)) and not _should_skip_provider("quickenrich", req.force_provider, req.selected_providers):
+                try:
+                    if req.linkedin_url:
+                        qe_result = await quickenrich_client.find_person_email(
+                            blitz_http,
+                            linkedin_url=req.linkedin_url,
+                        )
+                    elif req.first_name and req.last_name and domain:
+                        qe_result = await quickenrich_client.find_person_email(
+                            blitz_http,
+                            first_name=req.first_name,
+                            last_name=req.last_name,
+                            company_url=domain,
+                        )
+                    else:
+                        qe_result = None
+                    if pipeline._is_provider_error(qe_result):
+                        logger.warning("QuickEnrich employee_search provider error: %s", qe_result.message)
+                    elif qe_result and qe_result.get("found") and qe_result.get("email"):
+                        qe_email = qe_result["email"]
+                        qe_verified = "yes" if qe_result.get("email_verification_date") else "unknown"
+                        if contacts:
+                            contacts[0]["email"] = qe_email
+                            contacts[0]["email_source"] = pipeline.SOURCE_QUICKENRICH
+                        else:
+                            first_bf, last_bf, title_bf = pipeline._backfill_person_identity(qe_result)
+                            contacts.append({
+                                "full_name": qe_result.get("full_name") or (full_name or ""),
+                                "first_name": first_bf,
+                                "last_name": last_bf,
+                                "title": title_bf,
+                                "email": qe_email,
+                                "linkedin_url": qe_result.get("linkedin_url") or (req.linkedin_url or ""),
+                                "headline": "",
+                                "location_city": "",
+                                "location_country": "",
+                                "icp_tier": 1,
+                                "email_source": pipeline.SOURCE_QUICKENRICH,
+                            })
+                        sources["contacts"] = "quickenrich"
+                        sources["emails"] = "quickenrich"
+                        logger.info("QuickEnrich found email in enhanced mode (verified=%s): %s", qe_verified, qe_email)
+                except httpx.HTTPStatusError as e:
+                    _qe_et, _qe_msg = pipeline._classify_http_error(e, "quickenrich", "find_person_email")
+                    logger.warning("QuickEnrich employee_search failed: %s (%s)", _qe_msg, _qe_et)
+                except Exception as e:
+                    logger.debug("QuickEnrich lookup failed in enhanced mode: %s", e)
+
+            # Step 1.5c: GetLeads from-person email finder (first+last+domain;
+            # mirrors pipeline's ROUTE_METHOD_FIND_EMAIL_GETLEADS).
+            if (not contacts or not any(c.get("email") for c in contacts)) and req.first_name and req.last_name and domain and not _should_skip_provider("getleads", req.force_provider, req.selected_providers):
+                try:
+                    gl_result = await getleads_client.find_email(
+                        blitz_http,
+                        first_name=req.first_name,
+                        last_name=req.last_name,
+                        company_domain=domain,
+                    )
+                    if pipeline._is_provider_error(gl_result):
+                        logger.warning("GetLeads find_email provider error: %s", gl_result.message)
+                    elif gl_result and gl_result.get("email"):
+                        gl_email = gl_result["email"]
+                        gl_verified = "yes" if gl_result.get("verification_status") == "Valid" else "unknown"
+                        if contacts:
+                            contacts[0]["email"] = gl_email
+                            contacts[0]["email_source"] = pipeline.SOURCE_GETLEADS
+                        else:
+                            gl_first = (gl_result.get("first_name") or "").strip()
+                            gl_last = (gl_result.get("last_name") or "").strip()
+                            contacts.append({
+                                "full_name": full_name or " ".join(p for p in (gl_first, gl_last) if p),
+                                "first_name": gl_first or (req.first_name or ""),
+                                "last_name": gl_last or (req.last_name or ""),
+                                "title": "",
+                                "email": gl_email,
+                                "linkedin_url": gl_result.get("linkedin_url") or (req.linkedin_url or ""),
+                                "headline": "",
+                                "location_city": "",
+                                "location_country": "",
+                                "icp_tier": 1,
+                                "email_source": pipeline.SOURCE_GETLEADS,
+                            })
+                        sources["contacts"] = "getleads"
+                        sources["emails"] = "getleads"
+                        logger.info("GetLeads found email in enhanced mode (verified=%s): %s", gl_verified, gl_email)
+                except httpx.HTTPStatusError as e:
+                    _gl_et, _gl_msg = pipeline._classify_http_error(e, "getleads", "find_email")
+                    logger.warning("GetLeads find_email failed: %s (%s)", _gl_msg, _gl_et)
+                except Exception as e:
+                    logger.debug("GetLeads lookup failed in enhanced mode: %s", e)
+
+            # If no contacts from Contacts DB (or the paid tiers above), try
+            # Blitz (person-specific lookup)
             # Skip if force_provider is set and it's not "blitz"
             # Per the cascade contract, an unverified Blitz email is NOT a
             # stopping point; the cascade continues to WizLeads and
@@ -2729,9 +2936,10 @@ async def unified_enrich(
                     logger.debug("Blitz person enrichment failed: %s", e)
 
             # Step 2.5: If Blitz returned an unverified email, try WizLeads as
-            # the next provider in the cascade. WizLeads is eligible when
-            # full_name (or first_name) + domain are present.
-            # Skip if force_provider is set and it's not "wizleads".
+            # the next provider in the cascade (after Blitz per the 2026-10-10
+            # order). WizLeads is eligible when full_name (or first_name) +
+            # domain are present. Skip if force_provider is set and it's not
+            # "wizleads".
             wizleads_tried = False
             has_email_now = any(c.get("email") for c in contacts)
             should_try_wizleads = (not has_email_now or blitz_fall_through) and (
@@ -2741,37 +2949,41 @@ async def unified_enrich(
                 wizleads_tried = True
                 first_name_wz = (req.first_name or "").strip() or (full_name.split(" ")[0] if full_name else "")
                 last_name_wz = (req.last_name or "").strip() or (" ".join(full_name.split(" ")[1:]) if full_name and " " in full_name else "")
-                try:
-                    wl_result = await wizleads_client.find_email(
-                        blitz_http,
-                        first_name=first_name_wz,
-                        last_name=last_name_wz,
-                        website=domain,
-                    )
-                    if wl_result and wl_result.get("email"):
-                        wz_email = wl_result["email"]
-                        if contacts:
-                            contacts[0]["email"] = wz_email
-                            contacts[0]["email_source"] = "wizleads"
-                        else:
-                            contacts.append({
-                                "full_name": full_name or "",
-                                "first_name": first_name_wz,
-                                "last_name": last_name_wz,
-                                "title": "",
-                                "email": wz_email,
-                                "linkedin_url": req.linkedin_url or "",
-                                "headline": "",
-                                "location_city": "",
-                                "location_country": "",
-                                "icp_tier": 1,
-                                "email_source": "wizleads",
-                            })
-                        sources["contacts"] = "wizleads"
-                        sources["emails"] = "wizleads"
-                        logger.info("WizLeads found email in enhanced mode: %s", wz_email)
-                except Exception as e:
-                    logger.debug("WizLeads lookup failed in enhanced mode: %s", e)
+                # G3 (2026-10-10): single-token names must not reach WizLeads —
+                # the API requires BOTH a first and a last name; an empty
+                # last name burns a call on a guaranteed-bad lookup shape.
+                if first_name_wz and last_name_wz:
+                    try:
+                        wl_result = await wizleads_client.find_email(
+                            blitz_http,
+                            first_name=first_name_wz,
+                            last_name=last_name_wz,
+                            website=domain,
+                        )
+                        if wl_result and wl_result.get("email"):
+                            wz_email = wl_result["email"]
+                            if contacts:
+                                contacts[0]["email"] = wz_email
+                                contacts[0]["email_source"] = "wizleads"
+                            else:
+                                contacts.append({
+                                    "full_name": full_name or "",
+                                    "first_name": first_name_wz,
+                                    "last_name": last_name_wz,
+                                    "title": "",
+                                    "email": wz_email,
+                                    "linkedin_url": req.linkedin_url or "",
+                                    "headline": "",
+                                    "location_city": "",
+                                    "location_country": "",
+                                    "icp_tier": 1,
+                                    "email_source": "wizleads",
+                                })
+                            sources["contacts"] = "wizleads"
+                            sources["emails"] = "wizleads"
+                            logger.info("WizLeads found email in enhanced mode: %s", wz_email)
+                    except Exception as e:
+                        logger.debug("WizLeads lookup failed in enhanced mode: %s", e)
 
             # Step 3: If still no email, try BetterEnrich V3 as final fallback
             # BetterEnrich V3 requires both full_name and domain
@@ -3098,10 +3310,23 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
         if not domain:
             raise HTTPException(status_code=400, detail="Invalid domain format")
 
-    # Resolve full_name from first_name + last_name if provided
+    # Normalize person-name inputs once (G14, 2026-10-10): whitespace-only
+    # values must not pass `full_name and domain` gates. Mirrors the
+    # derivation block in pipeline.route_enrichment (same as the POST
+    # handler): compose full_name from first+last when full_name is empty,
+    # split first/last from full_name when they are empty.
+    req.full_name = (req.full_name or "").strip()
+    req.first_name = (req.first_name or "").strip()
+    req.last_name = (req.last_name or "").strip()
     full_name = req.full_name
-    if not full_name and (req.first_name or req.last_name):
-        full_name = f"{req.first_name or ''} {req.last_name or ''}".strip()
+    if full_name:
+        _name_parts = full_name.split(" ", 1)
+        if not req.first_name and _name_parts:
+            req.first_name = _name_parts[0]
+        if not req.last_name and len(_name_parts) > 1:
+            req.last_name = _name_parts[1]
+    elif req.first_name or req.last_name:
+        full_name = " ".join(p for p in (req.first_name, req.last_name) if p)
 
     # Determine input mode based on which fields have values
     # linkedin_only: only LinkedIn URL provided (no domain)
@@ -3151,8 +3376,13 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
             # Best-effort name enrichment from Contacts DB so the response
             # contact dict is populated even when no email is found. This
             # mirrors the legacy behaviour of populating name fields before
-            # the email cascade. Skipped when force_provider forbids it.
-            if not _should_skip_provider("contacts_db", req.force_provider, req.selected_providers):
+            # the email cascade. Skipped when force_provider forbids it, and
+            # (G8, 2026-10-10) when no linkedin_url is present — enhanced
+            # name+domain-only requests used to fire an empty-string lookup
+            # here. The routed cascade below re-queries contacts_db by
+            # linkedin when the URL exists; this pre-step is kept only for
+            # its name/title backfill side effect.
+            if req.linkedin_url and not _should_skip_provider("contacts_db", req.force_provider, req.selected_providers):
                 try:
                     person = await contacts_client.person_by_linkedin(
                         contacts_http, req.linkedin_url or ""
@@ -3346,26 +3576,34 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
 
             return "", "not_found"
 
-        async def get_decision_makers():
-            """Get decision maker contacts."""
+        async def get_decision_makers(company_linkedin_url: Optional[str] = None):
+            """Get decision maker contacts.
+
+            ``company_linkedin_url``: pass the value already resolved by
+            ``get_company_linkedin()`` so the Contacts DB company_by_domain +
+            Blitz domain_to_linkedin lookups run ONCE per request instead of
+            twice (G9, 2026-10-10). None → resolve here (standalone
+            behaviour, kept for callers that have no pre-resolved value).
+            """
             # Use custom cascade if provided, otherwise use default
             cascade = req.cascade if req.cascade else blitz_client.DEFAULT_CASCADE
             has_custom_cascade = req.cascade is not None
 
             # Get company LinkedIn URL first (required for Blitz waterfall)
-            company_linkedin_url = ""
-            try:
-                # Try Contacts DB first for company lookup
-                company = await contacts_client.company_by_domain(contacts_http, domain)
-                if company and company.get("linkedin_url"):
-                    company_linkedin_url = company.get("linkedin_url")
-                else:
-                    # Fall back to Blitz domain → LinkedIn
-                    blitz_result = await blitz_client.domain_to_linkedin(blitz_http, domain)
-                    if blitz_result and blitz_result.get("company_linkedin_url"):
-                        company_linkedin_url = blitz_result.get("company_linkedin_url")
-            except Exception as e:
-                logger.warning("Company LinkedIn lookup failed: %s", e)
+            if company_linkedin_url is None:
+                company_linkedin_url = ""
+                try:
+                    # Try Contacts DB first for company lookup
+                    company = await contacts_client.company_by_domain(contacts_http, domain)
+                    if company and company.get("linkedin_url"):
+                        company_linkedin_url = company.get("linkedin_url")
+                    else:
+                        # Fall back to Blitz domain → LinkedIn
+                        blitz_result = await blitz_client.domain_to_linkedin(blitz_http, domain)
+                        if blitz_result and blitz_result.get("company_linkedin_url"):
+                            company_linkedin_url = blitz_result.get("company_linkedin_url")
+                except Exception as e:
+                    logger.warning("Company LinkedIn lookup failed: %s", e)
 
             # If no custom cascade specified, try Contacts DB contacts first
             # Skip if force_provider is set and it's not "contacts_db"
@@ -3473,9 +3711,11 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
             source = route_result.get("source", "not_found") or "not_found"
             return email, source, route_result
 
-        # Execute the workflow
+        # Execute the workflow. G9 (2026-10-10): resolve the company LinkedIn
+        # URL ONCE and hand it to get_decision_makers — it previously re-ran
+        # the same contacts_db + blitz domain→LinkedIn resolution internally.
         company_linkedin_url, company_source = await get_company_linkedin()
-        contacts_list, contacts_source = await get_decision_makers()
+        contacts_list, contacts_source = await get_decision_makers(company_linkedin_url)
 
         # Determine email sources
         email_source_db = contacts_source if contacts_source == "contacts_db" else "not_found"
@@ -3626,31 +3866,11 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
             except Exception as e:
                 logger.debug("BetterEnrich company email lookup failed for %s: %s", domain, e)
 
-        # If enhanced mode and no contacts found, try to find specific person
-        if mode == "enhanced" and not enriched_contacts:
-            # Try to find specific person
-            person_linkedin = req.linkedin_url
-            if person_linkedin:
-                email, email_src, route_result = await find_email_for_person(
-                    person_linkedin,
-                    full_name,
-                    person_first_name=req.first_name or "",
-                    person_last_name=req.last_name or "",
-                )
-                if email:
-                    enriched_contacts.append({
-                        "full_name": full_name,
-                        "first_name": req.first_name or "",
-                        "last_name": req.last_name or "",
-                        "title": "",
-                        "email": email,
-                        "linkedin_url": person_linkedin,
-                        "headline": "",
-                        "location_city": "",
-                        "location_country": "",
-                        "icp_tier": 1,
-                        "email_source": email_src,
-                    })
+        # (G18, 2026-10-10) The "enhanced mode retry" block that lived here
+        # was unreachable dead code: the `mode in ("linkedin_only", "enhanced")`
+        # branch above returns unconditionally, so this point is only reached
+        # in domain_only mode — where mode == "enhanced" is never true and
+        # req.linkedin_url is empty by mode definition. Deleted.
 
         # Sync to Contacts DB
         sync_result = {"synced": 0, "skipped": 0, "failed": 0}

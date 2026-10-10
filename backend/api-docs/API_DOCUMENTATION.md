@@ -4,7 +4,7 @@
 
 ## Overview
 
-The Lead Generation Platform API enriches domains with decision-maker contacts by checking an internal database first, then falling back to an external Blitz API, and automatically syncing results back to the internal database.
+The Lead Generation Platform API enriches domains with decision-maker contacts by running a cascading provider waterfall — the internal Contacts DB first, then the paid providers (SmartProspect → QuickEnrich → GetLeads → Blitz → WizLeads → BetterEnrich; order set 2026-10-10) — and automatically syncing results back to the internal database.
 
 **Base URL:** `https://listbuilding.eagleinfoservice.com`
 
@@ -345,7 +345,7 @@ curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/enrich \
 | location_city | string | City |
 | location_country | string | Country |
 | icp_tier | integer | ICP tier (1 = highest priority) |
-| email_source | string | Source of email: `contacts_db`, `blitz`, `better_enrich` |
+| email_source | string | Source of email: `contacts_db`, `smartprospect`, `quickenrich`, `getleads`, `blitz`, `wizleads`, `better_enrich` |
 
 ---
 
@@ -356,23 +356,29 @@ The `data_sources` field indicates where the data came from:
 | Source | Description |
 |--------|-------------|
 | `contacts_db` | Internal database |
+| `smartprospect` | SmartLead Find Emails (self-verifying person email) |
+| `quickenrich` | QuickEnrich — person email (employee-search) + domain decision-makers (dataset-search); shared rate buckets 900/280 RPM |
+| `getleads` | GetLeads (verified decision-maker emails) |
 | `blitz` | Blitz API |
-| `better_enrich` | BetterEnrich V2 (fallback) |
+| `wizleads` | WizLeads (catch-all verified email) |
+| `better_enrich` | BetterEnrich V2 (fallback; disabled since 2026-09-29) |
 
 ---
 
 #### Enrichment Flow
 
-The endpoint uses a cascading approach:
+The endpoint uses a cascading approach (order set 2026-10-10):
 
 1. **Domain Only Mode:**
-   - Contacts DB → Blitz API (cascade: CEO → VP → Director) → Sync to DB
+   - Decision-maker discovery: Contacts DB → QuickEnrich (dataset-search) → Blitz API (title waterfall: CEO → VP → Director) → GetLeads (decision-makers fallback) → Sync to DB
+   - Per-person email resolution: Contacts DB → SmartProspect → QuickEnrich → GetLeads → Blitz → WizLeads → BetterEnrich
 
 2. **LinkedIn Only Mode:**
-   - Contacts DB (by LinkedIn) → Blitz API → BetterEnrich V2 (fallback)
+   - Contacts DB (by LinkedIn) → QuickEnrich (employee-search by LinkedIn URL) → GetLeads from-linkedin fallback → Blitz
+   - SmartProspect/WizLeads need name+domain, so they are not in this arm
 
 3. **Enhanced Mode:**
-   - Contacts DB (by LinkedIn or name) → Blitz API → BetterEnrich V2 (fallback) → Sync to DB
+   - Contacts DB (by LinkedIn or name) → SmartProspect → QuickEnrich → GetLeads → Blitz → WizLeads → BetterEnrich (fallback) → Sync to DB
 
 ---
 
@@ -464,6 +470,11 @@ curl -X GET "https://listbuilding.eagleinfoservice.com/api/enrichment/enrich/goo
 |-------|-------------|
 | `contacts_db_email` | Email found in internal Contacts DB |
 | `blitz_email` | Email found via Blitz API |
+| `smartprospect_email` | Email found via SmartProspect |
+| `quickenrich_email` | Email found via QuickEnrich employee-search |
+| `getleads_email` | Email found via GetLeads |
+| `wizleads_email` | Email found via WizLeads |
+| `better_enrich` | Email found via BetterEnrich |
 | `not_found` | No email found |
 
 ### Data Sources
@@ -473,8 +484,8 @@ The `data_sources` object shows where each piece of data came from:
 | Field | Values | Description |
 |-------|--------|-------------|
 | company_linkedin | `contacts_db`, `blitz`, `not_found` | Source of company LinkedIn URL |
-| contacts | `contacts_db`, `blitz`, `not_found` | Source of decision-maker contacts |
-| emails | `contacts_db`, `blitz`, `not_found` | Source of email addresses |
+| contacts | `contacts_db`, `quickenrich`, `blitz`, `getleads`, `not_found` | Source of decision-maker contacts |
+| emails | `contacts_db`, `smartprospect`, `quickenrich`, `getleads`, `blitz`, `wizleads`, `better_enrich`, `not_found` | Source of email addresses |
 
 ### Sync Status
 
@@ -539,14 +550,13 @@ Decoded JSON: `[{"include_title": ["CEO", "CTO"]}]`
    - Look up company by domain
    - Get decision-maker contacts with emails
 
-2. **Fallback to Blitz API**
-   - If not found in internal DB, use Blitz API
-   - Search for company LinkedIn URL
-   - Find decision makers using waterfall ICP search
+2. **Paid provider waterfall (order set 2026-10-10)**
+   - Decision-maker discovery: QuickEnrich (dataset-search) → Blitz API (title waterfall) → GetLeads (decision-makers fallback)
+   - Person email resolution: SmartProspect → QuickEnrich → GetLeads → Blitz → WizLeads
 
 3. **Email Resolution**
    - For each person, try to find work email
-   - Priority: Contacts DB → Blitz API
+   - Priority: Contacts DB → SmartProspect → QuickEnrich → GetLeads → Blitz → WizLeads → BetterEnrich
 
 4. **Write Back to Internal DB**
    - All found contacts are automatically synced

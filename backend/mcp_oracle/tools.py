@@ -311,6 +311,8 @@ def explain_response_field(field_name: str) -> str:
             "- `blitz_email`, `blitz_linkedin` — found via Blitz API (paid)\n"
             "- `getleads_email` — found via GetLeads (paid)\n"
             "- `smartprospect_email` — found via SmartProspect (paid)\n"
+            "- `quickenrich_email` — person email via QuickEnrich employee-search (paid)\n"
+            "- `quickenrich_contacts` — decision makers via QuickEnrich dataset-search (paid)\n"
             "- `wizleads_email` — found via WizLeads (paid)\n"
             "- `better_enrich`, `better_enrich_company_email` — found via BetterEnrich (paid)\n"
             "- `not_found` — cascade ran but no provider returned an email\n"
@@ -319,7 +321,8 @@ def explain_response_field(field_name: str) -> str:
         "data_sources": (
             "**`data_sources`** is an object with three keys showing the source for each data type:\n\n"
             "- `company_linkedin`: where the company LinkedIn URL came from (`contacts_db`, `blitz`, `not_found`)\n"
-            "- `contacts`: where the decision-maker contacts came from\n"
+            "- `contacts`: where the decision-maker contacts came from "
+            "(`contacts_db`, `quickenrich`, `blitz`, `getleads`, `not_found`)\n"
             "- `emails`: where the email addresses came from\n\n"
             "Each value is either a provider name or `not_found`."
         ),
@@ -454,15 +457,15 @@ def explain_error_code(error_message: str) -> str:
             return (
                 "## Empty selected_providers List\n\n"
                 "`selected_providers` must contain at least one provider.\n\n"
-                "**Valid values:** `contacts_db`, `blitz`, `getleads`, `smartprospect`, "
-                "`wizleads`, `better_enrich`"
+                "**Valid values:** `contacts_db`, `smartprospect`, `quickenrich`, "
+                "`getleads`, `blitz`, `wizleads`, `better_enrich`"
             )
         if "invalid" in msg_lower:
             return (
                 "## Unknown Provider Name\n\n"
                 "One of your `selected_providers` values is not a valid provider name.\n\n"
-                "**Valid values:** `contacts_db`, `blitz`, `getleads`, `smartprospect`, "
-                "`wizleads`, `better_enrich`\n\n"
+                "**Valid values:** `contacts_db`, `smartprospect`, `quickenrich`, "
+                "`getleads`, `blitz`, `wizleads`, `better_enrich`\n\n"
                 "Check for typos and case sensitivity (all lowercase)."
             )
 
@@ -510,11 +513,12 @@ def list_current_providers() -> str:
 
     cascade = [
         (1, "contacts_db", "75 RPS", "Free"),
-        (2, "blitz", "50 RPS/endpoint*", "Paid"),
-        (3, "getleads", "100/min*", "Paid"),
-        (4, "smartprospect", "30 RPS", "Paid"),
-        (5, "wizleads", "10 RPS", "Paid"),
-        (6, "better_enrich", "10 RPS", "Paid"),
+        (2, "smartprospect", "1900 RPM shared*", "Paid"),
+        (3, "quickenrich", "900/280 RPM*", "Paid"),
+        (4, "getleads", "100/min*", "Paid"),
+        (5, "blitz", "50 RPS/endpoint*", "Paid"),
+        (6, "wizleads", "10 RPS", "Paid"),
+        (7, "better_enrich", "10 RPS (disabled 2026-09-29)", "Paid"),
     ]
 
     lines = [
@@ -532,6 +536,21 @@ def list_current_providers() -> str:
         "The cascade stops at the first provider that returns a valid email.",
         "Use `selected_providers` to restrict the cascade to a subset.",
         "`contacts_db` is always allowed even if not listed.",
+        "",
+        "*Order set 2026-10-10: SmartProspect promoted to 2nd (self-verifying, "
+        "shared 1900 RPM bucket via `SMARTPROSPECT_RATE_LIMIT_RPM`); QuickEnrich "
+        "added 3rd; Blitz demoted from 2nd to 5th (fair-use 15M records/month "
+        "relief); WizLeads is the last active tier. BetterEnrich disabled since "
+        "2026-09-29. Domain-only decision-maker discovery runs a dedicated arm: "
+        "Contacts DB → QuickEnrich (dataset-search) → Blitz (title waterfall) → "
+        "GetLeads (decision-makers fallback).",
+        "",
+        "*QuickEnrich (app.quickenrich.io): two SHARED cross-process lanes — "
+        "`QUICKENRICH_RATE_LIMIT_RPM` default 900 (Standard plan cap 1000/min) "
+        "for person email via employee-search, and "
+        "`QUICKENRICH_DATASET_RATE_LIMIT_RPM` default 280 (cap 300/min) for "
+        "domain decision-makers via dataset-search. GTM Unlimited plan = 6000/min "
+        "(raise both). Kill switch: `ENABLE_QUICKENRICH`.",
         "",
         "*Blitz legacy plan (2026-09): 50 RPS per endpoint (separate buckets per "
         "endpoint, not shared) + fair use of 15M records/month. Our client caps "
@@ -572,7 +591,8 @@ def get_quota_guide() -> str:
         "job creation is the heavy item — each task costs ~10 units\n"
         "- **Enrichment endpoints are NOT metered by this quota** — the real cost "
         "meter for enrichment is paid-provider spend behind the cascade "
-        "(Blitz/SmartProspect/WizLeads/BetterEnrich credits). Control it with "
+        "(Blitz/GetLeads/SmartProspect/QuickEnrich/WizLeads/BetterEnrich credits). "
+        "Control it with "
         "`selected_providers: [\"contacts_db\"]` (free) or `website_only: true` "
         "(Flow 1, zero paid providers)\n\n"
         "## How to reduce quota usage\n\n"
@@ -603,10 +623,16 @@ def compare_enrichment_modes() -> str:
         "- **linkedin_only**: Best when you have a person's LinkedIn but don't know their company\n"
         "- **enhanced**: Best for finding a SPECIFIC person at a known company\n\n"
         "## Provider cascade per mode\n\n"
+        "Order set 2026-10-10: SmartProspect promoted to 2nd, QuickEnrich added "
+        "3rd, Blitz demoted from 2nd to 5th (FUP relief).\n\n"
         "- `domain_only` and `enhanced`: Full cascade "
-        "(Contacts DB → Blitz → GetLeads → SmartProspect → WizLeads → BetterEnrich)\n"
+        "(Contacts DB → SmartProspect → QuickEnrich → GetLeads → Blitz → WizLeads "
+        "→ BetterEnrich). Domain-only decision-maker discovery runs a dedicated "
+        "arm: Contacts DB → QuickEnrich (dataset-search) → Blitz (title "
+        "waterfall) → GetLeads (decision-makers fallback)\n"
         "- `linkedin_only`: LinkedIn cascade "
-        "(Contacts DB → Blitz → GetLeads from-linkedin fallback; "
+        "(Contacts DB → QuickEnrich (employee-search by LinkedIn URL) → GetLeads "
+        "from-linkedin fallback → Blitz; "
         "SmartProspect/WizLeads need name+domain so they are not in this arm)\n\n"
         "## Important\n\n"
         "In `enhanced` mode, the API looks for the SPECIFIC person only. "

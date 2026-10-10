@@ -139,18 +139,20 @@ def providers_status() -> str:
     state — if a provider is disabled via ``providers.py`` or env var,
     it shows as disabled here.
 
-    Cascade order: Contacts DB → Blitz → GetLeads → SmartProspect → WizLeads → BetterEnrich.
+    Cascade order (2026-10-10): Contacts DB → SmartProspect → QuickEnrich → GetLeads →
+    Blitz → WizLeads → BetterEnrich (disabled since 2026-09-29).
     The cascade stops at the first provider that returns a valid email.
     """
     from enrichment import providers as prov
 
     cascade = [
         (1, "contacts_db", "75 RPS", "Free — internal database"),
-        (2, "blitz", "50 RPS/endpoint*", "Paid — LinkedIn enrichment"),
-        (3, "getleads", "100/min*", "Paid — verified DM emails + bonus phones (batch 100)"),
-        (4, "smartprospect", "30 RPS", "Paid — SmartLead Find Emails"),
-        (5, "wizleads", "10 RPS", "Paid — verified email"),
-        (6, "better_enrich", "10 RPS", "Paid — person + company email"),
+        (2, "smartprospect", "1900 RPM shared*", "Paid — SmartLead Find Emails (self-verifying, batch ≤10)"),
+        (3, "quickenrich", "900/280 RPM*", "Paid — QuickEnrich person email (employee-search) + domain decision-makers (dataset-search)"),
+        (4, "getleads", "100/min*", "Paid — verified DM emails + bonus phones (batch 100)"),
+        (5, "blitz", "50 RPS/endpoint*", "Paid — LinkedIn enrichment (title waterfall)"),
+        (6, "wizleads", "10 RPS", "Paid — verified email"),
+        (7, "better_enrich", "10 RPS", "Paid — person + company email (disabled since 2026-09-29)"),
     ]
 
     lines = [
@@ -167,14 +169,26 @@ def providers_status() -> str:
     lines.extend([
         "",
         "**Valid provider names for `selected_providers`:** "
-        "`contacts_db`, `blitz`, `getleads`, `smartprospect`, `wizleads`, `better_enrich`",
+        "`contacts_db`, `smartprospect`, `quickenrich`, `getleads`, `blitz`, "
+        "`wizleads`, `better_enrich`",
         "",
         "**Note:** `contacts_db` is always allowed even when not explicitly "
         "listed in `selected_providers` (mandatory first step).",
         "",
-        "`*` GetLeads batch of 100 amortizes to ~10k/min on the unlimited plan. "
-        "Blitz: 50 RPS per endpoint (legacy plan, 2026-09) + 15M records/month "
-        "fair use; our client caps below plan via `BLITZ_RPS` (per-process limiter).",
+        "`*` Order set 2026-10-10: SmartProspect promoted to 2nd (self-verifying, "
+        "shared 1900 RPM via `SMARTPROSPECT_RATE_LIMIT_RPM`), QuickEnrich added "
+        "3rd, Blitz demoted from 2nd to 5th (fair-use 15M records/month relief); "
+        "WizLeads is the last active tier. GetLeads batch of 100 amortizes to "
+        "~10k/min on the unlimited plan. Blitz: 50 RPS per endpoint (legacy plan, "
+        "2026-09) + 15M records/month fair use; our client caps below plan via "
+        "`BLITZ_RPS` (per-process limiter). QuickEnrich (app.quickenrich.io): two "
+        "SHARED cross-process lanes — `QUICKENRICH_RATE_LIMIT_RPM` default 900 "
+        "(Standard plan cap 1000/min) for person email and "
+        "`QUICKENRICH_DATASET_RATE_LIMIT_RPM` default 280 (cap 300/min) for "
+        "domain decision-makers; GTM Unlimited plan = 6000/min (raise both); kill "
+        "switch `ENABLE_QUICKENRICH`. Domain-only DM discovery arm: Contacts DB → "
+        "QuickEnrich (dataset-search) → Blitz (waterfall) → GetLeads "
+        "(decision-makers fallback).",
     ])
     return "\n".join(lines)
 

@@ -3535,6 +3535,7 @@ async def _enrich_domain(
 
     qe_pre_resolved_by_index: dict[int, dict[str, Any]] = {}
     qe_discovery_met = False
+    persons: list[dict[str, Any]] = []  # may be seeded by the QE no-LI rescue below
     if not company_linkedin_url:
         # QuickEnrich no-LI rescue (2026-10-10): dataset-search is domain-keyed
         # (company_url IS the domain) — the one DM-discovery tier that needs NO
@@ -3600,7 +3601,9 @@ async def _enrich_domain(
             return [no_linkedin_out]
 
     # Step 2: Get decision makers (Contacts DB FIRST, unless custom cascade or force_provider provided)
-    persons: list[dict[str, Any]] = []
+    # `persons` was initialized above — a QuickEnrich no-LI rescue may already
+    # have seeded it. The contacts_db quality-met branch below REPLACES it
+    # wholesale when the free tier wins; every other path must keep the rows.
     contacts_db_quality_met = False
 
     skip_contacts = _should_skip_provider("contacts_db", force_provider)
@@ -3725,16 +3728,16 @@ async def _enrich_domain(
                     "QuickEnrich dataset-search: %d decision makers for %s",
                     len(qe_persons), domain,
                 )
-        elif _blitz_waterfall_skip:
-            logger.info(
-                "Blitz waterfall skipped for %s (stored 'contacts' miss within TTL)",
-                domain,
-            )
         if contacts_db_quality_met and qe_pre_resolved_by_index:
             # contacts_db (free, first tier) won after a QE no-LI rescue —
             # its persons replaced the QE discovery rows, so the QE
             # pre-resolved indexes no longer line up.
             qe_pre_resolved_by_index = {}
+        elif _blitz_waterfall_skip:
+            logger.info(
+                "Blitz waterfall skipped for %s (stored 'contacts' miss within TTL)",
+                domain,
+            )
         elif (
             not contacts_db_quality_met
             and not qe_discovery_met

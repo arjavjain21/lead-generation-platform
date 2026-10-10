@@ -244,6 +244,16 @@ class TestSegPrepassStampsRows(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestSegFlagOffAndMissingDomain(unittest.TestCase):
+    def setUp(self):
+        # Hermetic flag-off: an earlier suite test may load backend/.env
+        # (main import), which carries ENABLE_SEG_CLASSIFICATION=true in
+        # production. Pop it for this class and restore after.
+        self._saved_seg_flag = os.environ.pop("ENABLE_SEG_CLASSIFICATION", None)
+
+    def tearDown(self):
+        if self._saved_seg_flag is not None:
+            os.environ["ENABLE_SEG_CLASSIFICATION"] = self._saved_seg_flag
+
     def test_flag_off_columns_present_but_empty(self):
         """classify_domains returns {} when the flag is off — columns exist,
         blank. No seg module monkeypatch: real flag-off behavior."""

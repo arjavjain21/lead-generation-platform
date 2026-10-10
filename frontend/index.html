@@ -1237,7 +1237,7 @@
         <div class="page active" id="page-home">
             <div class="welcome-card">
                 <h2>Find Decision Makers with Verified Emails</h2>
-                <p>Build targeted lead lists by uploading domains, searching companies, or enriching LinkedIn profiles. Get emails using our 6-source cascade: Contacts DB, Blitz API, GetLeads, smartprospect, WizLeads, and BetterEnrich.</p>
+                <p>Build targeted lead lists by uploading domains, searching companies, or enriching LinkedIn profiles. Get emails using our 6-source cascade: Contacts DB, smartprospect, QuickEnrich, GetLeads, Blitz API, and WizLeads.</p>
             </div>
             
             <div class="info-grid">
@@ -1246,11 +1246,11 @@
                     <p>We use 6 data sources (in priority order):</p>
                     <ol>
                         <li><strong>Contacts DB</strong> - Free, cached data (75 RPS)</li>
-                        <li><strong>Blitz API</strong> - LinkedIn-based enrichment (25 RPS)</li>
-                        <li><strong>GetLeads</strong> - Verified DM emails + bonus phones (batch of 100, unlimited plan)</li>
                         <li><strong>smartprospect</strong> - Verified email finder (30 RPS, batch up to 10)</li>
+                        <li><strong>QuickEnrich</strong> - Employee email + phone enrichment (6000 req/min)</li>
+                        <li><strong>GetLeads</strong> - Verified DM emails + bonus phones (batch of 100, unlimited plan)</li>
+                        <li><strong>Blitz API</strong> - LinkedIn-based enrichment (25 RPS)</li>
                         <li><strong>WizLeads</strong> - Catchall email verification (10 RPS)</li>
-                        <li><strong>BetterEnrich</strong> - Person/company email lookup (10 RPS)</li>
                     </ol>
                 </div>
                 <div class="info-card">
@@ -1479,9 +1479,14 @@
                         </div>
                         <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:20px;">
                             <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
-                                <input type="checkbox" id="chain_provider_blitz" checked style="width:18px;height:18px;">
-                                <span style="font-weight:500;">Blitz API</span>
-                                <span style="font-size:0.75rem;color:#64748b;margin-left:auto;">LinkedIn-based</span>
+                                <input type="checkbox" id="chain_provider_smartprospect" checked style="width:18px;height:18px;">
+                                <span style="font-weight:500;">smartprospect</span>
+                                <span style="font-size:0.75rem;color:#64748b;margin-left:auto;">Verified · 2000 req/min</span>
+                            </label>
+                            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+                                <input type="checkbox" id="chain_provider_quickenrich" checked style="width:18px;height:18px;">
+                                <span style="font-weight:500;">QuickEnrich</span>
+                                <span style="font-size:0.75rem;color:#64748b;margin-left:auto;">Verified emails + phones</span>
                             </label>
                             <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
                                 <input type="checkbox" id="chain_provider_getleads" checked style="width:18px;height:18px;">
@@ -1489,9 +1494,9 @@
                                 <span style="font-size:0.75rem;color:#64748b;margin-left:auto;">Verified · batch 100</span>
                             </label>
                             <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
-                                <input type="checkbox" id="chain_provider_smartprospect" checked style="width:18px;height:18px;">
-                                <span style="font-weight:500;">smartprospect</span>
-                                <span style="font-size:0.75rem;color:#64748b;margin-left:auto;">Verified · 2000 req/min</span>
+                                <input type="checkbox" id="chain_provider_blitz" checked style="width:18px;height:18px;">
+                                <span style="font-weight:500;">Blitz API</span>
+                                <span style="font-size:0.75rem;color:#64748b;margin-left:auto;">LinkedIn-based</span>
                             </label>
                             <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
                                 <input type="checkbox" id="chain_provider_wizleads" checked style="width:18px;height:18px;">
@@ -1750,9 +1755,14 @@
                             <span style="font-size:0.75rem;color:#64748b;">Always used</span>
                         </div>
                         <div style="display:flex;align-items:center;gap:8px;">
-                            <input type="checkbox" id="provider_blitz" checked style="width:16px;height:16px;cursor:pointer;">
-                            <label style="font-weight:600;cursor:pointer;">Blitz API</label>
-                            <span style="font-size:0.75rem;color:#64748b;">Runs if Internal DB has no data</span>
+                            <input type="checkbox" id="provider_smartprospect" checked style="width:16px;height:16px;cursor:pointer;">
+                            <label style="font-weight:600;cursor:pointer;">smartprospect</label>
+                            <span style="font-size:0.75rem;color:#64748b;">Verified emails · 2000 req/min</span>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <input type="checkbox" id="provider_quickenrich" checked style="width:16px;height:16px;cursor:pointer;">
+                            <label style="font-weight:600;cursor:pointer;">QuickEnrich</label>
+                            <span style="font-size:0.75rem;color:#64748b;">Verified emails + phones · 6000 req/min</span>
                         </div>
                         <div style="display:flex;align-items:center;gap:8px;">
                             <input type="checkbox" id="provider_getleads" checked style="width:16px;height:16px;cursor:pointer;">
@@ -1760,14 +1770,14 @@
                             <span style="font-size:0.75rem;color:#64748b;">Verified emails + phones · batch 100</span>
                         </div>
                         <div style="display:flex;align-items:center;gap:8px;">
-                            <input type="checkbox" id="provider_smartprospect" checked style="width:16px;height:16px;cursor:pointer;">
-                            <label style="font-weight:600;cursor:pointer;">smartprospect</label>
-                            <span style="font-size:0.75rem;color:#64748b;">Verified emails · 2000 req/min</span>
+                            <input type="checkbox" id="provider_blitz" checked style="width:16px;height:16px;cursor:pointer;">
+                            <label style="font-weight:600;cursor:pointer;">Blitz API</label>
+                            <span style="font-size:0.75rem;color:#64748b;">Runs if GetLeads has no data</span>
                         </div>
                         <div style="display:flex;align-items:center;gap:8px;">
                             <input type="checkbox" id="provider_wizleads" checked style="width:16px;height:16px;cursor:pointer;">
                             <label style="font-weight:600;cursor:pointer;">WizLeads</label>
-                            <span style="font-size:0.75rem;color:#64748b;">Runs if smartprospect has no data</span>
+                            <span style="font-size:0.75rem;color:#64748b;">Runs if Blitz has no data</span>
                         </div>
                         <div style="display:flex;align-items:center;gap:8px;">
                             <input type="checkbox" id="provider_better_enrich" title="Disabled 2026-09-29 — credits exhausted, not renewed" style="width:16px;height:16px;cursor:pointer;">
@@ -1809,11 +1819,11 @@
                     </div>
                     <div class="cascade-steps" id="enrichmentCascadeSteps">
                         <div class="cascade-step" data-provider="contacts_db">Contacts DB</div>
-                        <div class="cascade-step" data-provider="blitz">Blitz API</div>
-                        <div class="cascade-step" data-provider="getleads">GetLeads</div>
                         <div class="cascade-step" data-provider="smartprospect">smartprospect</div>
+                        <div class="cascade-step" data-provider="quickenrich">QuickEnrich</div>
+                        <div class="cascade-step" data-provider="getleads">GetLeads</div>
+                        <div class="cascade-step" data-provider="blitz">Blitz API</div>
                         <div class="cascade-step" data-provider="wizleads">WizLeads</div>
-                        <div class="cascade-step" data-provider="better_enrich">BetterEnrich</div>
                         <div class="cascade-step" data-provider="complete">Complete</div>
                     </div>
                     <div class="provider-results" id="providerResults" style="display:none;">
@@ -1822,16 +1832,20 @@
                             <span class="provider-result-label">Contacts DB</span>
                         </div>
                         <div class="provider-result-item">
-                            <span class="provider-result-value" id="blitzResults">0</span>
-                            <span class="provider-result-label">Blitz</span>
+                            <span class="provider-result-value" id="smartprospectResults">0</span>
+                            <span class="provider-result-label">smartprospect</span>
+                        </div>
+                        <div class="provider-result-item">
+                            <span class="provider-result-value" id="quickenrichResults">0</span>
+                            <span class="provider-result-label">QuickEnrich</span>
                         </div>
                         <div class="provider-result-item">
                             <span class="provider-result-value" id="getleadsResults">0</span>
                             <span class="provider-result-label">GetLeads</span>
                         </div>
                         <div class="provider-result-item">
-                            <span class="provider-result-value" id="smartprospectResults">0</span>
-                            <span class="provider-result-label">smartprospect</span>
+                            <span class="provider-result-value" id="blitzResults">0</span>
+                            <span class="provider-result-label">Blitz</span>
                         </div>
                         <div class="provider-result-item">
                             <span class="provider-result-value" id="wizleadsResults">0</span>
@@ -2266,7 +2280,7 @@
             <div class="form-card">
                 <h3><i data-lucide="link" class="icon" style="vertical-align:text-bottom"></i> Upload LinkedIn CSV</h3>
                 <div style="background:#f0f9ff;border-left:4px solid #1a315d;padding:12px;margin-bottom:1rem;border-radius:4px;font-size:0.85rem;color:#374151;">
-                    <strong>How to use:</strong> Upload a CSV file with LinkedIn profile URLs. We'll find work emails, phone numbers, and company details for each person (Contacts DB → Blitz, with a GetLeads fallback). Required column: <code>linkedin_url</code> (e.g., https://linkedin.com/in/johndoe)
+                    <strong>How to use:</strong> Upload a CSV file with LinkedIn profile URLs. We'll find work emails, phone numbers, and company details for each person (Contacts DB → smartprospect → QuickEnrich → GetLeads → Blitz). Required column: <code>linkedin_url</code> (e.g., https://linkedin.com/in/johndoe)
                 </div>
                 <div class="upload-zone" id="linkedinUploadZone" role="button" tabindex="0" aria-label="Upload CSV file">
                     <input type="file" id="linkedinFile" accept=".csv">
@@ -2453,7 +2467,7 @@
             
             <div class="help-section">
                 <h3>Data Sources</h3>
-                <p>We use 4 data sources in a cascade to maximize coverage while minimizing costs:</p>
+                <p>We use 6 data sources in a cascade to maximize coverage while minimizing costs:</p>
                 <div class="data-sources">
                     <h4>1. Contacts DB (Primary - Free)</h4>
                     <p style="font-size:0.85rem;color:var(--gray-600);">Cached database with millions of contacts. Always checked first (75 RPS).</p>
@@ -2464,7 +2478,19 @@
                     </div>
                 </div>
                 <div class="data-sources">
-                    <h4>2. Blitz API (Secondary - Paid)</h4>
+                    <h4>2. smartprospect (Paid)</h4>
+                    <p style="font-size:0.85rem;color:var(--gray-600);">Self-verifying person email finder — first + last name + domain (batches up to 10).</p>
+                </div>
+                <div class="data-sources">
+                    <h4>3. QuickEnrich (Paid)</h4>
+                    <p style="font-size:0.85rem;color:var(--gray-600);">Employee email and phone enrichment by name or company (6000 req/min).</p>
+                </div>
+                <div class="data-sources">
+                    <h4>4. GetLeads (Paid)</h4>
+                    <p style="font-size:0.85rem;color:var(--gray-600);">Verified decision-maker emails plus bonus phones (batches of 100).</p>
+                </div>
+                <div class="data-sources">
+                    <h4>5. Blitz API (Paid)</h4>
                     <p style="font-size:0.85rem;color:var(--gray-600);">LinkedIn-based enrichment with title cascade prioritizing executives (25 RPS).</p>
                     <div style="margin-top:0.5rem;">
                         <span class="source-tag">blitz_linkedin</span>
@@ -2473,16 +2499,12 @@
                     </div>
                 </div>
                 <div class="data-sources">
-                    <h4>3. BetterEnrich (Fallback - Paid)</h4>
-                    <p style="font-size:0.85rem;color:var(--gray-600);">Person email lookup and company catchall emails (10 RPS).</p>
-                    <div style="margin-top:0.5rem;">
-                        <span class="source-tag">better_enrich_person</span>
-                        <span class="source-tag">better_enrich_company</span>
-                    </div>
+                    <h4>6. WizLeads (Paid)</h4>
+                    <p style="font-size:0.85rem;color:var(--gray-600);">Catchall email verification (10 RPS).</p>
                 </div>
                 <div class="data-sources">
-                    <h4>4. Prospeo</h4>
-                    <p style="font-size:0.85rem;color:var(--gray-600);">Currently disabled — contact admin to enable.</p>
+                    <h4>Disabled sources</h4>
+                    <p style="font-size:0.85rem;color:var(--gray-600);">BetterEnrich (person email lookup and company catchall emails) and Prospeo are currently disabled — contact admin to enable.</p>
                 </div>
             </div>
             
@@ -3134,7 +3156,7 @@ example.org,Jane Doe</pre>
             if (!wsOnly || !statusEl) return;
 
             const providerBoxes = [
-                'provider_blitz', 'provider_getleads', 'provider_smartprospect',
+                'provider_blitz', 'provider_getleads', 'provider_smartprospect', 'provider_quickenrich',
                 'provider_wizleads', 'provider_better_enrich', 'provider_outscraper',
             ].map(id => document.getElementById(id)).filter(Boolean);
 
@@ -3627,9 +3649,10 @@ example.org,Jane Doe</pre>
 
             // Collect selected providers (contacts_db is always sent but backend enforces it)
             const providers = [];
-            if (document.getElementById('provider_blitz').checked) providers.push('blitz');
-            if (document.getElementById('provider_getleads').checked) providers.push('getleads');
             if (document.getElementById('provider_smartprospect').checked) providers.push('smartprospect');
+            if (document.getElementById('provider_quickenrich').checked) providers.push('quickenrich');
+            if (document.getElementById('provider_getleads').checked) providers.push('getleads');
+            if (document.getElementById('provider_blitz').checked) providers.push('blitz');
             if (document.getElementById('provider_wizleads').checked) providers.push('wizleads');
             if (document.getElementById('provider_better_enrich').checked) providers.push('better_enrich');
 
@@ -4768,9 +4791,10 @@ example.org,Jane Doe</pre>
 
             // Collect selected providers (contacts_db is always enabled on backend)
             const providers = [];
-            if (document.getElementById('chain_provider_blitz').checked) providers.push('blitz');
-            if (document.getElementById('chain_provider_getleads').checked) providers.push('getleads');
             if (document.getElementById('chain_provider_smartprospect').checked) providers.push('smartprospect');
+            if (document.getElementById('chain_provider_quickenrich').checked) providers.push('quickenrich');
+            if (document.getElementById('chain_provider_getleads').checked) providers.push('getleads');
+            if (document.getElementById('chain_provider_blitz').checked) providers.push('blitz');
             if (document.getElementById('chain_provider_wizleads').checked) providers.push('wizleads');
             if (document.getElementById('chain_provider_better_enrich').checked) providers.push('better_enrich');
 
@@ -5774,7 +5798,7 @@ example.org,Jane Doe</pre>
                 // Update activity text
                 const activityText = document.getElementById('enrichmentActivityText');
                 if (activityText && data.current_provider) {
-                    const providerNames = { contacts_db: 'Internal Database', blitz: 'Blitz API', getleads: 'GetLeads', smartprospect: 'smartprospect', wizleads: 'WizLeads', better_enrich: 'BetterEnrich' };
+                    const providerNames = { contacts_db: 'Internal Database', smartprospect: 'smartprospect', quickenrich: 'QuickEnrich', getleads: 'GetLeads', blitz: 'Blitz API', wizleads: 'WizLeads', better_enrich: 'BetterEnrich' };
                     activityText.textContent = 'Checking ' + (providerNames[data.current_provider] || data.current_provider) + '...';
                     updateCascadeStep(data.current_provider);
                 }
@@ -5819,7 +5843,7 @@ example.org,Jane Doe</pre>
         // Update cascade step indicator
         function updateCascadeStep(activeProvider) {
             const steps = document.querySelectorAll('#enrichmentCascadeSteps .cascade-step');
-            const providerOrder = ['contacts_db', 'blitz', 'getleads', 'smartprospect', 'wizleads', 'better_enrich', 'complete'];
+            const providerOrder = ['contacts_db', 'smartprospect', 'quickenrich', 'getleads', 'blitz', 'wizleads', 'complete'];
             const activeIndex = providerOrder.indexOf(activeProvider);
 
             steps.forEach((step, i) => {
@@ -5840,9 +5864,10 @@ example.org,Jane Doe</pre>
         // Update provider results display
         function updateProviderResults(results) {
             if (results.contacts_db !== undefined) document.getElementById('contactsDbResults').textContent = results.contacts_db;
-            if (results.blitz !== undefined) document.getElementById('blitzResults').textContent = results.blitz;
-            if (results.getleads !== undefined) document.getElementById('getleadsResults').textContent = results.getleads;
             if (results.smartprospect !== undefined) document.getElementById('smartprospectResults').textContent = results.smartprospect;
+            if (results.quickenrich !== undefined) document.getElementById('quickenrichResults').textContent = results.quickenrich;
+            if (results.getleads !== undefined) document.getElementById('getleadsResults').textContent = results.getleads;
+            if (results.blitz !== undefined) document.getElementById('blitzResults').textContent = results.blitz;
             if (results.wizleads !== undefined) document.getElementById('wizleadsResults').textContent = results.wizleads;
             if (results.better_enrich !== undefined) document.getElementById('betterEnrichResults').textContent = results.better_enrich;
         }
@@ -5878,8 +5903,10 @@ example.org,Jane Doe</pre>
         function formatProviderName(provider) {
             const names = {
                 'contacts_db': 'Contacts DB',
-                'blitz': 'Blitz',
                 'smartprospect': 'smartprospect',
+                'quickenrich': 'QuickEnrich',
+                'getleads': 'GetLeads',
+                'blitz': 'Blitz',
                 'wizleads': 'WizLeads',
                 'better_enrich': 'BetterEnrich'
             };
@@ -6677,9 +6704,10 @@ example.org,Jane Doe</pre>
                         // 2. usedDisplay: what actually executed (from used_providers, or inferred from email counts for old jobs)
                         const labelFor = (p) => {
                             if (p === 'contacts_db') return 'Internal Contacts DB';
-                            if (p === 'blitz') return 'Blitz';
-                            if (p === 'getleads') return 'GetLeads';
                             if (p === 'smartprospect') return 'smartprospect';
+                            if (p === 'quickenrich') return 'QuickEnrich';
+                            if (p === 'getleads') return 'GetLeads';
+                            if (p === 'blitz') return 'Blitz';
                             if (p === 'wizleads') return 'WizLeads';
                             if (p === 'better_enrich') return 'Better Enrich';
                             return p;
@@ -6702,7 +6730,7 @@ example.org,Jane Doe</pre>
                             selectedDisplay = selectedParsed.map(labelFor).join(' + ');
                         } else {
                             // Old job without selection field - assume defaults (all enabled)
-                            selectedDisplay = 'Internal Contacts DB + Blitz + GetLeads + smartprospect + WizLeads + Better Enrich';
+                            selectedDisplay = 'Internal Contacts DB + smartprospect + QuickEnrich + GetLeads + Blitz + WizLeads';
                         }
 
                         // 2. USED: from job.used_providers (new), or infer from email counts (old)
@@ -6716,10 +6744,12 @@ example.org,Jane Doe</pre>
                             const usedList = ['contacts_db'];  // Internal DB is always queried first
                             const blitzEmails = job.emails_blitz || 0;
                             const smartprospectEmails = job.emails_smartprospect || 0;
+                            const quickenrichEmails = job.emails_quickenrich || 0;
                             const betterEmails = job.emails_better_enrich || 0;
                             const wizleadsEmails = job.emails_wizleads || 0;
-                            if (blitzEmails > 0) usedList.push('blitz');
                             if (smartprospectEmails > 0) usedList.push('smartprospect');
+                            if (quickenrichEmails > 0) usedList.push('quickenrich');
+                            if (blitzEmails > 0) usedList.push('blitz');
                             if (wizleadsEmails > 0) usedList.push('wizleads');
                             if (betterEmails > 0) usedList.push('better_enrich');
                             usedDisplay = usedList.map(labelFor).join(' + ');
@@ -7704,9 +7734,10 @@ example.org,Jane Doe</pre>
             try {
                 // Collect selected providers (contacts_db is always enabled on backend)
                 const providers = [];
-                if (document.getElementById('chain_provider_blitz').checked) providers.push('blitz');
-                if (document.getElementById('chain_provider_getleads').checked) providers.push('getleads');
                 if (document.getElementById('chain_provider_smartprospect').checked) providers.push('smartprospect');
+                if (document.getElementById('chain_provider_quickenrich').checked) providers.push('quickenrich');
+                if (document.getElementById('chain_provider_getleads').checked) providers.push('getleads');
+                if (document.getElementById('chain_provider_blitz').checked) providers.push('blitz');
                 if (document.getElementById('chain_provider_wizleads').checked) providers.push('wizleads');
                 if (document.getElementById('chain_provider_better_enrich').checked) providers.push('better_enrich');
 

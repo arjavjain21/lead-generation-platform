@@ -112,7 +112,7 @@ The primary endpoint for finding contact data for one company or person.
 | `titles` | string | No | — | Comma-separated titles filter (e.g., `"CEO,CTO,VP"`). Max 50. |
 | `strict_titles` | boolean | No | true | Strict local title gate: drop contacts that don't match `titles`/`cascade` after provider matching (see A.6). `false` = keep provider fuzzy matches. |
 | `cascade` | array of objects | No | — | Advanced: list of title-filter dicts (see A.7). |
-| `force_provider` | string | No | — | Force a single provider. One of: `contacts_db`, `blitz`, `smartprospect`, `wizleads`, `better_enrich`. Mutually exclusive with `selected_providers`. |
+| `force_provider` | string | No | — | Force a single provider. One of: `contacts_db`, `smartprospect`, `quickenrich`, `getleads`, `blitz`, `wizleads`, `better_enrich`. Mutually exclusive with `selected_providers`. |
 | `selected_providers` | array of strings | No | — | Restrict cascade to a subset (see A.6). Mutually exclusive with `force_provider`. |
 
 \*At least one of `domain`, `linkedin_url`, or `company_linkedin_url` is required.
@@ -208,10 +208,12 @@ The `email_source` field on each contact tells you which provider found the emai
 | `email_source` | Provider |
 | --- | --- |
 | `contacts_db_email`, `contacts_db_name`, `contacts_db_linkedin`, `contacts_db_contacts` | Contacts DB (free) |
-| `blitz_email`, `blitz_linkedin` | Blitz |
 | `smartprospect_email` | SmartProspect |
+| `quickenrich_email` | QuickEnrich (person email via employee-search); `quickenrich_contacts` = decision makers via dataset-search |
+| `getleads_email` | GetLeads |
+| `blitz_email`, `blitz_linkedin` | Blitz |
 | `wizleads_email` | WizLeads |
-| `better_enrich`, `better_enrich_company_email` | BetterEnrich |
+| `better_enrich`, `better_enrich_company_email` | BetterEnrich (disabled since 2026-09-29) |
 | `not_found` | No provider found an email |
 
 ### A.2 Single-row enrichment via GET
@@ -238,7 +240,7 @@ Older path-style single-domain lookup. Accepts `max_results`, `cascade_json`, `f
 
 **By-company Contacts DB lookup (added 2026-07-21).** When the `ENABLE_COMPANY_LOOKUP` env flag is `true` (set via the `lead-generation-platform.service` systemd drop-in), this endpoint additionally returns **every person filed under the company in the Contacts DB** — not only those whose email matches the lookup domain — with emails **preserved as stored** (no mailtester re-validation, so `.mil`/`.gov` emails are no longer dropped as "No MX"). These rows carry `email_source: "contacts_db"`, `validation_status: "preserved"`.
 
-- **Additive only** — the normal provider cascade (Contacts DB → Blitz → SmartProspect → WizLeads → BetterEnrich) runs unchanged; by-company rows are merged in afterward, so the contact count never drops below the cascade-only result.
+- **Additive only** — the normal provider cascade (Contacts DB → SmartProspect → QuickEnrich → GetLeads → Blitz → WizLeads → BetterEnrich) runs unchanged; by-company rows are merged in afterward, so the contact count never drops below the cascade-only result.
 - **Skipped when `force_provider` is set** — forcing one provider returns only that provider's path.
 - A same-name cascade contact is replaced by the by-company version **only if its email was stripped/empty**; a validated cascade email is never overwritten.
 - Backed by a new Contacts API endpoint: `GET /v1/company/persons/by-domain?domain=&limit=&source=` (optional `source`, e.g. `outscraper`, filters by provenance).
@@ -248,21 +250,25 @@ Older path-style single-domain lookup. Accepts `max_results`, `cascade_json`, `f
 
 **Phase 2 (2026-07-22) — `source` filter:** all enrichment entry points (`POST /enrich`, `GET /enrich/{domain}`, `POST /flows/domain-enrich`) accept an optional `source` param. Set `source="outscraper"` to narrow the by-company lookup to outscraper-sourced (Google Maps) contacts only; omit/`null` = all sources (default, no change). Backed by `company_persons_by_domain?source=...`. The UI exposes this as the "Outscraper (Google Maps)" checkbox in the Data Sources block. (Known gap: `GET /enrich` query form accepts `source` but has no by-company merge, so it's a no-op there — Phase 1c.)
 
-**Website-only mode (2026-08-27) — `website_only` flag on `POST /flows/domain-enrich`:** when `true`, the job reads **exclusively** from the `website_scrape` cohort that the nightly sync imports from webscraper.eagleinfoservice.com into the Contacts DB. Zero paid providers run (no Blitz/GetLeads/SmartProspect/WizLeads/BetterEnrich), no company-email fallback, no mailtester — emails are returned as stored, tagged `dm_email_source="contacts_db_by_company"`. Title filters still apply. `providers`, `source`, and company-LinkedIn columns are ignored in this mode (company-URL rows fall back to the domain-keyed lookup). Data freshness is up to ~24h + one failed sync — query `GET /api/enrichment/website-scrape/status` for the as-of watermark, last-run telemetry, and a `synced_within_hours` flag (48h threshold). New website scraping is **not** triggered by this mode; submit new domains at webscraper.eagleinfoservice.com and they appear after the next nightly sync. The flag persists on the job row, so restarts/resumes keep the mode.
+**Website-only mode (2026-08-27) — `website_only` flag on `POST /flows/domain-enrich`:** when `true`, the job reads **exclusively** from the `website_scrape` cohort that the nightly sync imports from webscraper.eagleinfoservice.com into the Contacts DB. Zero paid providers run (no Blitz/GetLeads/SmartProspect/QuickEnrich/WizLeads/BetterEnrich), no company-email fallback, no mailtester — emails are returned as stored, tagged `dm_email_source="contacts_db_by_company"`. Title filters still apply. `providers`, `source`, and company-LinkedIn columns are ignored in this mode (company-URL rows fall back to the domain-keyed lookup). Data freshness is up to ~24h + one failed sync — query `GET /api/enrichment/website-scrape/status` for the as-of watermark, last-run telemetry, and a `synced_within_hours` flag (48h threshold). New website scraping is **not** triggered by this mode; submit new domains at webscraper.eagleinfoservice.com and they appear after the next nightly sync. The flag persists on the job row, so restarts/resumes keep the mode.
 
 **Phase 3 (2026-07-22) — crash-safe jobs (`ENABLE_INCREMENTAL_PERSISTENCE`):** when this flag is on, a cancelled or crashed enrichment job persists its partial results — a partial CSV at `data/outputs/<job_id>.csv` plus a collector drain to the Contacts DB — and ends with `status="partial"` instead of losing all in-memory data. The partial CSV is downloadable via the usual `/jobs/{id}/download`. Default off; enabled in production via the `enable-incremental-persistence.conf` systemd drop-in.
 
 ### A.4 Provider cascade order
 
-When resolving emails, the system queries providers in this order, stopping at the first one that returns a valid email:
+When resolving emails, the system queries providers in this order, stopping at the first one that returns a valid email (order set **2026-10-10**):
 
 | # | Provider | Rate Limit | Cost | Purpose |
 | --- | --- | --- | --- | --- |
 | 1 | Contacts DB | 75 RPS | Free | Internal database lookup |
-| 2 | Blitz | 50 RPS per endpoint (legacy plan 2026-09; fair use 15M records/mo; client caps at 40 via `BLITZ_RPS`) | Paid | LinkedIn-based enrichment with title cascade |
-| 3 | SmartProspect | 30 RPS | Paid | Self-verifying person-email finder |
-| 4 | WizLeads | 10 RPS | Paid | Catch-all verified email |
-| 5 | BetterEnrich | 10 RPS | Paid | Person + company email fallback |
+| 2 | SmartProspect | shared cross-process 1900 RPM (`SMARTPROSPECT_RATE_LIMIT_RPM`; account cap 2000/min) | Paid | Self-verifying person-email finder (batch ≤10) |
+| 3 | QuickEnrich | two SHARED cross-process lanes: `QUICKENRICH_RATE_LIMIT_RPM` default 900 (Standard plan cap 1000/min) for person email + `QUICKENRICH_DATASET_RATE_LIMIT_RPM` default 280 (cap 300/min) for dataset-search; GTM Unlimited plan = 6000/min (raise both) | Paid | Person email via `GET /api/employees/search` (by `linkedin_url` OR `company_url` + `first_name` + `last_name`; credit on match only, clean miss free) + domain decision-makers via `GET /api/employees/dataset-search` (`company_url` + `titles` + `has_email`, 20/page, page-capped; 1 credit per returned employee-with-email, empty page free). Kill switch `ENABLE_QUICKENRICH`; source strings `quickenrich_email` / `quickenrich_contacts` |
+| 4 | GetLeads | batch 100 (~10k/min amortized on the unlimited plan) | Paid | Verified DM emails + bonus phones; from-linkedin fallback in the LinkedIn-only arm; decision-makers domain fallback |
+| 5 | Blitz | 50 RPS per endpoint (legacy plan 2026-09; fair use 15M records/mo; client caps at 40 via `BLITZ_RPS`) | Paid | LinkedIn-based enrichment with title cascade |
+| 6 | WizLeads | 10 RPS | Paid | Catch-all verified email (last active tier) |
+| 7 | BetterEnrich | 10 RPS | Paid | Person + company email fallback (disabled since 2026-09-29) |
+
+> **2026-10-10 reorder (owner decision):** SmartProspect promoted to 2nd (self-verifying, shared 1900 RPM bucket); QuickEnrich added 3rd; Blitz demoted from 2nd to 5th (fair-use 15M records/month relief); WizLeads is now the last active tier. BetterEnrich has been disabled since 2026-09-29 and Prospeo is disabled end-to-end. Two arms differ from the linear order: **domain-only decision-maker discovery** runs Contacts DB → QuickEnrich (dataset-search) → Blitz (title waterfall) → GetLeads (decision-makers fallback), and the **`linkedin_only` arm** runs Contacts DB → QuickEnrich (employee-search by LinkedIn URL) → GetLeads from-linkedin fallback → Blitz (SmartProspect/WizLeads need name+domain, so they are not in that arm).
 
 > **SEG classification is not a cascade provider.** It is a side-channel DNS-over-HTTPS (MX) domain lookup that runs alongside the cascade; it does not count as a provider call for job counters and never affects which cascade step wins. Its DoH lookups do appear in `provider_call_log` under the `seg` provider key for observability.
 
@@ -270,7 +276,7 @@ When resolving emails, the system queries providers in this order, stopping at t
 
 Restricts the cascade to a subset of providers.
 
-**Valid names:** `contacts_db`, `blitz`, `smartprospect`, `wizleads`, `better_enrich`
+**Valid names:** `contacts_db`, `smartprospect`, `quickenrich`, `getleads`, `blitz`, `wizleads`, `better_enrich`
 
 **Rules:**
 - `contacts_db` is always allowed even if not in your list (mandatory first step)
@@ -424,7 +430,7 @@ curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/flows/doma
     "upload_id": "8ec32b12-fb17-4a5a-b8d2-6142f59df480",
     "domain_col": "domain",
     "max_results": 5,
-    "providers": ["contacts_db", "blitz", "smartprospect", "wizleads", "better_enrich"],
+    "providers": ["contacts_db", "smartprospect", "quickenrich", "getleads", "blitz", "wizleads"],
     "titles": "CEO,CTO",
     "strict_titles": true,
     "normalize_domains": true,
@@ -919,7 +925,7 @@ Hand off a completed scraper job's results to the enrichment pipeline.
 curl -X POST https://listbuilding.eagleinfoservice.com/api/jobs/SCRAPER_JOB_ID/chain \
   -H "Authorization: Bearer YOUR_JWT" \
   -H "Content-Type: application/json" \
-  -d '{"providers": ["contacts_db", "blitz", "smartprospect"]}'
+  -d '{"providers": ["contacts_db", "smartprospect", "quickenrich"]}'
 ```
 
 Reads the scraper output CSV (requires a `website` column), filters valid domains, creates an enrichment job with `parent_job_id` set to the scraper job.
@@ -963,10 +969,10 @@ Download filename pattern: `{query}_{total_tasks}_centers_{result_count}_results
 
 ### E.2 List enabled providers: `GET /api/enrichment/providers`
 
-Returns the dynamic list of currently-enabled providers. Useful for building UIs that adapt to provider availability.
+Returns the dynamic list of currently-enabled providers (order follows `providers.py`; disabled providers like `better_enrich` are omitted). Useful for building UIs that adapt to provider availability.
 
 ```json
-{"providers": ["contacts_db", "blitz", "smartprospect", "wizleads", "better_enrich"]}
+{"providers": ["contacts_db", "blitz", "smartprospect", "wizleads", "getleads", "quickenrich"]}
 ```
 
 ### E.3 Default title cascade: `GET /api/enrichment/default-cascade` (no auth)
@@ -1022,10 +1028,12 @@ These are the per-provider ceilings the platform respects when calling upstream 
 | Provider | Rate | Concurrency |
 | --- | --- | --- |
 | Contacts DB | 75 requests/sec | 25 concurrent domain lookups |
-| Blitz | 25 requests/sec | 25 concurrent |
-| SmartProspect | 30 requests/sec (account-level 2000 req/min) | batch up to 10 per call |
+| SmartProspect | 1900 req/min shared cross-process (`SMARTPROSPECT_RATE_LIMIT_RPM`; account cap 2000/min) | batch up to 10 per call |
+| QuickEnrich | 900 req/min person-search + 280 req/min dataset-search, both SHARED cross-process (`QUICKENRICH_RATE_LIMIT_RPM` / `QUICKENRICH_DATASET_RATE_LIMIT_RPM`; Standard plan caps 1000/300 per min, GTM Unlimited 6000/min) | circuit breaker (10 failures / 60s recovery) |
+| GetLeads | batch 100 (~10k/min amortized on the unlimited plan) | batch of 100 per call |
+| Blitz | per-lane `BLITZ_RPS` default 40 (legacy plan 50 RPS/endpoint; fair use 15M records/mo) | 25 concurrent |
 | WizLeads | 10 requests/sec | 15 concurrent email lookups |
-| BetterEnrich | 10 requests/sec | shared with company-email fallback |
+| BetterEnrich | 10 requests/sec | shared with company-email fallback (disabled since 2026-09-29) |
 | Phone Enrichment | 5 requests/sec | 5 concurrent |
 | Scraper | 8 concurrent workers | per-job |
 
@@ -1242,7 +1250,7 @@ The card also gets an orange left-border. The backend now marks such jobs as `fa
 
 On the Upload Domains page, the provider checkboxes let you pick which providers run for that job:
 - **Contacts DB** is always on and locked (mandatory first step)
-- **Blitz**, **SmartProspect**, **WizLeads**, **BetterEnrich** are toggleable
+- **SmartProspect**, **QuickEnrich**, **GetLeads**, **Blitz**, **WizLeads**, **BetterEnrich** are toggleable (BetterEnrich is disabled since 2026-09-29)
 
 This UI maps to the `providers` field in `ProviderToggleRequest` (same semantics as `selected_providers` on the single-row endpoint).
 
@@ -1554,8 +1562,8 @@ Common cases and their exact messages:
 | Bad domain | `Invalid domain format` |
 | Missing identifier | `Either 'domain', 'linkedin_url', or 'company_linkedin_url' must be provided` |
 | `force_provider` + `selected_providers` both set | `force_provider and selected_providers are mutually exclusive. Pick one: force_provider='blitz' (single) or selected_providers=['contacts_db','smartprospect'] (subset).` |
-| Empty `selected_providers` list | `selected_providers must be a non-empty list. Valid providers: ['better_enrich', 'blitz', 'contacts_db', 'smartprospect', 'wizleads']` |
-| Unknown provider name | `Invalid provider(s) in selected_providers: ['fake_provider']. Valid: ['better_enrich', 'blitz', 'contacts_db', 'smartprospect', 'wizleads']` |
+| Empty `selected_providers` list | `selected_providers must be a non-empty list. Valid providers: ['better_enrich', 'blitz', 'contacts_db', 'getleads', 'quickenrich', 'smartprospect', 'wizleads']` |
+| Unknown provider name | `Invalid provider(s) in selected_providers: ['fake_provider']. Valid: ['better_enrich', 'blitz', 'contacts_db', 'getleads', 'quickenrich', 'smartprospect', 'wizleads']` |
 | Bad titles value | `Titles cannot be empty` |
 | Too many titles | `Maximum 50 titles allowed. Contact support for bulk operations.` |
 | Non-CSV upload | `Only CSV files are accepted.` |
@@ -1596,6 +1604,7 @@ Plain-text message about daily quota. No `Retry-After` header.
 
 | Date | Change |
 | --- | --- |
+| 2026-10-10 | **QuickEnrich provider added + cascade reordered.** New provider `quickenrich` (app.quickenrich.io, Bearer auth; `enrichment/quickenrich_client.py`, kill switch `ENABLE_QUICKENRICH`, env `QUICKENRICH_API_KEY`): person email via `GET /api/employees/search` (by `linkedin_url` OR `company_url`+`first_name`+`last_name`; credit on match only) and domain decision-makers via `GET /api/employees/dataset-search` (`company_url`+`titles`+`has_email`, 20/page, page-capped; credit per returned employee-with-email, empty page free). Shared cross-process rate lanes `QUICKENRICH_RATE_LIMIT_RPM` (default 900, Standard cap 1000/min) + `QUICKENRICH_DATASET_RATE_LIMIT_RPM` (default 280, cap 300/min); GTM Unlimited = 6000/min. New source strings `quickenrich_email` / `quickenrich_contacts`; `force_provider=quickenrich` and `selected_providers` incl. `quickenrich` valid. Cascade reordered (owner decision): contacts_db → smartprospect → quickenrich → getleads → blitz → wizleads → better_enrich (Blitz demoted from 2nd for FUP 15M records/mo relief; SmartProspect promoted to 2nd; WizLeads last active tier). Domain DM discovery arm: contacts_db → quickenrich (dataset-search) → blitz (waterfall) → getleads (decision-makers fallback). Also: better_enrich kill-switch bypass fixed (global disable now beats force_provider/selected_providers in `list_builder`). |
 | 2026-10-06 | **Section K added — Data Explorer BFF** (`/api/explorer/*`, JWT-only, disabled by default): read-only people search/count/facets, person detail, saved-view CRUD, and export create/list/status/download, proxied over HTTPS to the Contacts API `/v1/data/*` + `/v1/exports` surface with a server-side token (`CONTACTS_API_EXPLORER_TOKEN`). Enable with `DATA_EXPLORER_ENABLED=true`; downloads stream with upstream Content-Type/Content-Disposition passed through. |
 | 2026-09-29 | **Slack notifications added** (independent of SMTP): job completions and website-email followups now also post directly to Slack via the workspace bot (`enrichment/slack_notifier.py`, `SLACK_BOT_TOKEN`/`SLACK_CHANNEL`, kill-switch `SLACK_NOTIFY_ENABLED`). Followup webhook path declared permanently dormant (no inbound webhook secrets by owner decision) — the 30s poller is the only completion path. |
 | 2026-09-29 | **Section J added — Website-Email Followup.** Domain-job no-email misses auto-submit to the webscrapedash scrape-emails API; job cards gain a progress chip and, on completion, a second CSV download button + email/Slack/owner notification. Manual backfill button (with free estimate) on historical jobs. New followup endpoints under `/jobs/{id}/webscrape-followup` (+`/estimate`, `/download`, `/cancel`) and an HMAC-verified `/webscrape-followup/webhook`. Nightly website-scrape sync gained a 48h trailing-window re-scan (`WEBSITE_SCRAPE_LOOKBACK_HOURS`) because remote `completed_at` is stamped mid-pipeline. |

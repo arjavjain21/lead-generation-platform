@@ -58,6 +58,7 @@ DB changes (`everything-claude-code:database-reviewer`), security (`everything-c
 │   │   ├── call_tracker.py      # provider_call_log + email ledger + email-quality counters + blitz FUP meter observability
 │   │   ├── blitz_client.py      # Blitz API wrapper (50 RPS/endpoint legacy plan; per-lane caps BLITZ_RPS[,_EMAIL,_DISCOVERY,_SEARCH])
 │   │   ├── smartprospect_client.py  # SmartLead Find Emails (shared 1900 RPM limiter, batch ≤10)
+│   │   ├── quickenrich_client.py    # QuickEnrich (shared 900/280 RPM lanes; person email + domain DMs)
 │   │   ├── contacts_client.py   # Contacts DB wrapper (75 RPS) + business upsert
 │   │   ├── wizleads_client.py   # WizLeads (10 RPS)
 │   │   ├── better_enrich_client.py  # BetterEnrich (10/5 RPS)
@@ -75,7 +76,7 @@ DB changes (`everything-claude-code:database-reviewer`), security (`everything-c
 │       ├── db.py                # Thread-local SQLite, WAL (30s busy_timeout, 200MB cap), 50K quota fns
 │       ├── job_store_base.py    # Base class for job stores (append_event, heartbeat, checkpoints)
 │       ├── mcp_auth.py          # MCPAuthMiddleware (self-scopes to /mcp*, X-API-Key or Bearer)
-│       └── circuit_breaker.py   # Circuit breaker (Blitz / Contacts DB / SmartProspect only)
+│       └── circuit_breaker.py   # Circuit breaker (Blitz / Contacts DB / SmartProspect / QuickEnrich only)
 ├── scripts/
 │   ├── migrate_scraped_places_to_pg.py  # One-time SQLite → PG migration (Phase 1)
 │   └── validate_migration.py             # Post-migration validation
@@ -139,16 +140,17 @@ sqlite3 data/jobs.db "PRAGMA wal_checkpoint(TRUNCATE);"  # Fix locks
 
 ## API Integrations (Enrichment Cascade)
 
-Each enrichment source has different cost/quality tradeoffs:
+Each enrichment source has different cost/quality tradeoffs. Cascade order (set **2026-10-10**): `contacts_db → smartprospect → quickenrich → getleads → blitz → wizleads → better_enrich (disabled since 2026-09-29) → prospeo (disabled)`. Domain-only decision-maker discovery arm: `contacts_db → quickenrich (dataset-search) → blitz (waterfall) → getleads (decision-makers fallback)`.
 
 | API | Rate Limit | Priority | Purpose |
 |-----|------------|----------|---------|
 | **Contacts DB** | 75 RPS | 1st (free) | Domain → company → contacts with emails |
-| **Blitz** | 50 RPS per endpoint (legacy plan 2026-09; per-lane caps `BLITZ_RPS` default + `BLITZ_RPS_EMAIL/_DISCOVERY/_SEARCH`; FUP 15M records/mo, metered live in `blitz_fair_use`) | 2nd | LinkedIn-based enrichment with title cascade. Summer release (2026-09-16): find-people batch prepass (`/v2/search/people`, 50 companies/call, jobs with >5 domains), TAM-by-People flow (`/flows/tam`, 1 record/company), 30-day domain-miss negative cache (`blitz_domain_miss`, definitive misses only), optional DM phone bundle (`include_phone`, 1 record/call, US-only). **Billing truths:** search endpoints bill 1 record per returned result (empty = free); `/v2/enrichment/email` + `/v2/enrichment/phone` bill 1 record per CALL (miss still bills); `/v2/enrichment/person` + domain-to-linkedin bill on success only; errors never bill |
-| **GetLeads** | batch 100 (~10k/min) | 3rd | Verified DM emails + bonus phones (batch of 100, unlimited plan); from-linkedin fallback in the LinkedIn-only arm (after Blitz); decision-makers domain fallback when contacts_db + Blitz waterfall both find nobody (`lookup_decision_makers`, C-Team/VP/Director, 1 credit/record vs fair use) |
-| **smartprospect** | shared cross-process 1900 RPM (`SMARTPROSPECT_RATE_LIMIT_RPM`, acct 2000/min) | 4th | Person-email finder, batch up to 10, self-verifying |
-| **WizLeads** | 10 RPS | 5th | Catch-all verified email enrichment |
-| **BetterEnrich** | 10 RPS | 6th | Person email, company email |
+| **smartprospect** | shared cross-process 1900 RPM (`SMARTPROSPECT_RATE_LIMIT_RPM`, acct 2000/min) | 2nd | Person-email finder, batch up to 10, self-verifying |
+| **QuickEnrich** | two SHARED cross-process lanes: `QUICKENRICH_RATE_LIMIT_RPM` default 900 (Standard plan cap 1000/min) + `QUICKENRICH_DATASET_RATE_LIMIT_RPM` default 280 (cap 300/min); GTM Unlimited = 6000/min (raise both); kill switch `ENABLE_QUICKENRICH` | 3rd | Person email (GET `/api/employees/search` by `linkedin_url` OR `company_url`+`first_name`+`last_name`; credit on match only) + domain decision-makers (GET `/api/employees/dataset-search` by `company_url`+`titles`+`has_email`, 20/page, page-capped; credit per returned employee-with-email, empty page free). Source strings `quickenrich_email` / `quickenrich_contacts` |
+| **GetLeads** | batch 100 (~10k/min) | 4th | Verified DM emails + bonus phones (batch of 100, unlimited plan); from-linkedin fallback in the LinkedIn-only arm (after QuickEnrich); decision-makers domain fallback when contacts_db + QuickEnrich + Blitz waterfall all find nobody (`lookup_decision_makers`, C-Team/VP/Director, 1 credit/record vs fair use) |
+| **Blitz** | 50 RPS per endpoint (legacy plan 2026-09; per-lane caps `BLITZ_RPS` default + `BLITZ_RPS_EMAIL/_DISCOVERY/_SEARCH`; FUP 15M records/mo, metered live in `blitz_fair_use`) | 5th | LinkedIn-based enrichment with title cascade. Summer release (2026-09-16): find-people batch prepass (`/v2/search/people`, 50 companies/call, jobs with >5 domains), TAM-by-People flow (`/flows/tam`, 1 record/company), 30-day domain-miss negative cache (`blitz_domain_miss`, definitive misses only), optional DM phone bundle (`include_phone`, 1 record/call, US-only). **Billing truths:** search endpoints bill 1 record per returned result (empty = free); `/v2/enrichment/email` + `/v2/enrichment/phone` bill 1 record per CALL (miss still bills); `/v2/enrichment/person` + domain-to-linkedin bill on success only; errors never bill |
+| **WizLeads** | 10 RPS | 6th | Catch-all verified email enrichment (last active tier) |
+| **BetterEnrich** | 10 RPS | 7th (disabled since 2026-09-29) | Person email, company email |
 
 > **Prospeo** is implemented in `backend/enrichment/prospeo_client.py` but **disabled end-to-end via a 4-layer belt-and-suspenders**: (1) `ENABLED_PROVIDERS["prospeo"]=False` in `providers.py`; (2) `ENABLE_PROSPEO=false` in `backend/.env`; (3) a hard guard at `pipeline.py` (~L294) that reads `ENABLE_PROSPEO` and skips *before* the global check; (4) `prospeo_client` is imported but **never called** anywhere in the cascade. **To re-enable requires all of:** `ENABLE_PROSPEO=true` + flip the dict to `True` + wire an actual cascade step (currently absent). Full provider lifecycle in the `lead-generation-platform-workflow` skill → `references/providers.md`.
 
@@ -179,7 +181,7 @@ Both accept request-time cascade restrictors (mutually exclusive): `force_provid
 
 **Flow 1:** `POST /api/enrichment/flows/domain-enrich` - Domain CSV → decision makers
 **Flow 2:** `POST /api/enrichment/flows/search` - Company search by criteria
-**Flow 3:** `POST /api/enrichment/flows/linkedin-enrich` - Bulk LinkedIn enrichment (3 steps per URL: Contacts DB → Blitz → GetLeads from-linkedin fallback, with a GetLeads batch pre-pass of 100/chunk)
+**Flow 3:** `POST /api/enrichment/flows/linkedin-enrich` - Bulk LinkedIn enrichment (per URL: Contacts DB → SmartProspect → QuickEnrich → GetLeads → Blitz → WizLeads, with a GetLeads batch pre-pass of 100/chunk)
 **TAM flow:** `POST /api/enrichment/flows/tam` (2026-09-16; **UI: "Find Companies (TAM)" page**; 2026-09-18 lookalike mode (`seed_companies` + `analyze_seeds`; sources blitz/getleads/both; GetLeads leg capped `GETLEADS_LOOKALIKE_MAX_CREDITS`=500), which replaced the old sync Company Search) - TAM-by-People: persona + firmographic filters → deduplicated company CSV with `matched_people` counts (job-based `job_type='enrichment'`; 1 Blitz record/company, cursor-paginated 50/page; optional chaining into Flow-1 enrichment for rows with domains; `routes: tam_routes.py`, runner: `tam_flow.py`)
 
 **Concurrency:** 25 domains, 15 LinkedIn URLs, 5 searches in parallel
@@ -226,6 +228,10 @@ BLITZ_API_KEY=<blitz-key>
 GETLEADS_API_KEY=<getleads-key>
 ENABLE_GETLEADS=true
 SMARTPROSPECT_API_KEY=<smartprospect-key>
+QUICKENRICH_API_KEY=<quickenrich-key>
+ENABLE_QUICKENRICH=true                 # QuickEnrich kill switch
+QUICKENRICH_RATE_LIMIT_RPM=900          # person-search lane, SHARED cross-process (Standard plan cap 1000/min)
+QUICKENRICH_DATASET_RATE_LIMIT_RPM=280  # dataset-search lane (Standard plan cap 300/min); GTM Unlimited = 6000/min (raise both)
 CONTACTS_API_TOKEN=<contacts-token>
 BETTER_ENRICH_API_KEY=<betterenrich-key>
 PROSPEO_API_KEY=<prospeo-key>
@@ -453,6 +459,13 @@ This project changes often; do not rely on a frozen snapshot here. For current s
   `~/.claude/projects/-var-www-lead-generation-platform/memory/`.
 - **Live health:** `curl -s http://localhost:8765/api/health` and `./monitor.sh`.
 - **Canonical API contract:** `docs/ListBuilding_Platform_Full_API_Reference_2026-07-16.md`.
+- **2026-10-10 shipped:** QuickEnrich provider + cascade reorder. New provider `quickenrich`
+  (app.quickenrich.io; `enrichment/quickenrich_client.py`; person email via employee-search +
+  domain decision-makers via dataset-search; shared 900/280 RPM lanes, kill switch
+  `ENABLE_QUICKENRICH`). Cascade reordered: contacts_db → smartprospect → quickenrich → getleads →
+  blitz → wizleads (Blitz demoted from 2nd for FUP 15M records/mo relief; smartprospect promoted to
+  2nd; wizleads last active tier). Also: better_enrich kill-switch bypass fix (global disable now
+  beats force_provider/selected_providers in list_builder).
 - **2026-09-29 shipped:** Website-email followup — when a domain job (Flow 1 / google_maps_chain /
   TAM-chained) finishes, its no-email domains auto-submit to the webscrapedash scrape-emails API
   (`enrichment/webscrape_followup.py`, lease-guarded poller in lifespan, `webscrape_followups` table

@@ -278,7 +278,10 @@ class TestWebsiteOnlyFlow:
 
 
 class TestWebsiteScrapeStatus:
-    def test_status_payload_shape(self, tmp_path):
+    def test_status_payload_shape(self, tmp_path, monkeypatch):
+        # Hermetic: production .env carries WEBSITE_SCRAPE_SYNC_ENABLED=true;
+        # an earlier suite test that imports main loads it into os.environ.
+        monkeypatch.delenv("WEBSITE_SCRAPE_SYNC_ENABLED", raising=False)
         from enrichment import website_scrape_sync as wss
         from enrichment.routes import _website_scrape_status_payload
 

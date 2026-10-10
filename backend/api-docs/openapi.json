@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Lead Generation Platform API",
-    "description": "API for enriching domains with decision-maker contacts. Uses internal Contacts DB first, falls back to Blitz API, and automatically syncs results back to the internal database.",
+    "description": "API for enriching domains with decision-maker contacts. Runs a cascading provider waterfall — internal Contacts DB first, then paid providers (SmartProspect → QuickEnrich → GetLeads → Blitz → WizLeads → BetterEnrich; order set 2026-10-10) — and automatically syncs results back to the internal database.",
     "version": "1.0.0",
     "contact": {
       "name": "API Support",
@@ -29,7 +29,7 @@
       "get": {
         "tags": ["Enrichment"],
         "summary": "Enrich a single domain with decision-maker contacts",
-        "description": "## Overview\nEnrich a domain with decision-maker contacts by:\n1. Checking the internal Contacts DB first\n2. Falling back to Blitz API if not found\n3. Resolving emails via Contacts DB then Blitz\n4. Writing back found contacts to Contacts DB\n\n## Decision Maker Priority (Cascade)\nThe system searches for decision makers in this order:\n- **Tier 1**: Owner, CEO, Founder, Co-Founder, President\n- **Tier 2**: CMO, VP Marketing, VP Sales, Chief Revenue Officer\n- **Tier 3**: Director of Marketing, Director of Sales, Head of Marketing\n\n## Data Sources\nThe response includes `data_sources` showing where each piece of data came from:\n- `contacts_db`: Data found in the internal database\n- `blitz`: Data found via Blitz API (external)\n- `not_found`: No data found\n\n## Write-back\nAll found contacts are automatically synced back to the internal Contacts DB.",
+        "description": "## Overview\nEnrich a domain with decision-maker contacts by:\n1. Checking the internal Contacts DB first\n2. Falling back to the paid provider waterfall if not found (order set 2026-10-10: SmartProspect → QuickEnrich → GetLeads → Blitz → WizLeads → BetterEnrich; domain decision-maker discovery: QuickEnrich dataset-search → Blitz waterfall → GetLeads fallback)\n3. Resolving emails via the cascade (Contacts DB → SmartProspect → QuickEnrich → GetLeads → Blitz → WizLeads → BetterEnrich)\n4. Writing back found contacts to Contacts DB\n\n## Decision Maker Priority (Cascade)\nThe system searches for decision makers in this order:\n- **Tier 1**: Owner, CEO, Founder, Co-Founder, President\n- **Tier 2**: CMO, VP Marketing, VP Sales, Chief Revenue Officer\n- **Tier 3**: Director of Marketing, Director of Sales, Head of Marketing\n\n## Data Sources\nThe response includes `data_sources` showing where each piece of data came from:\n- `contacts_db`: Data found in the internal database\n- `smartprospect`: Data found via SmartProspect\n- `quickenrich`: Data found via QuickEnrich (person email + domain decision-makers)\n- `getleads`: Data found via GetLeads\n- `blitz`: Data found via Blitz API (external)\n- `wizleads`: Data found via WizLeads\n- `better_enrich`: Data found via BetterEnrich (disabled since 2026-09-29)\n- `not_found`: No data found\n\n## Write-back\nAll found contacts are automatically synced back to the internal Contacts DB.",
         "operationId": "enrich_single_domain",
         "parameters": [
           {
@@ -132,7 +132,7 @@
                           },
                           "email_source": {
                             "type": "string",
-                            "enum": ["contacts_db_email", "blitz_email", "not_found"],
+                            "enum": ["contacts_db_email", "blitz_email", "getleads_email", "smartprospect_email", "quickenrich_email", "wizleads_email", "better_enrich", "better_enrich_company_email", "not_found"],
                             "description": "Source of the email data"
                           }
                         }
@@ -152,12 +152,12 @@
                         },
                         "contacts": {
                           "type": "string",
-                          "enum": ["contacts_db", "blitz", "not_found"],
+                          "enum": ["contacts_db", "quickenrich", "blitz", "getleads", "not_found"],
                           "description": "Source of decision maker contacts"
                         },
                         "emails": {
                           "type": "string",
-                          "enum": ["contacts_db", "blitz", "not_found"],
+                          "enum": ["contacts_db", "smartprospect", "quickenrich", "getleads", "blitz", "wizleads", "better_enrich", "not_found"],
                           "description": "Source of email addresses"
                         }
                       }

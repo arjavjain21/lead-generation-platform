@@ -181,7 +181,10 @@ class TestFirmographicTuple:
         body = _capture_person_body({"dm_email": "a@nowhere.test"})
         assert body.get("custom_fields") in (None, {})
 
-    def test_empty_string_never_lands_in_custom_fields(self):
+    def test_empty_string_never_lands_in_custom_fields(self, monkeypatch):
+        # Hermetic: the flag-off contract must not depend on suite order
+        # (an earlier test loading backend/.env flips seg on in prod config).
+        monkeypatch.delenv("ENABLE_SEG_CLASSIFICATION", raising=False)
         """Guard: an upstream '' seg value must NOT be written as ''."""
         body = _capture_person_body({
             "dm_email": "a@acme.com",
