@@ -49,6 +49,7 @@ from . import mailtester_client
 from . import wizleads_client
 from . import smartprospect_client
 from . import getleads_client
+from . import quickenrich_client
 from . import identifier_utils
 from . import company_fallback
 from . import seg
@@ -273,7 +274,7 @@ def _compact_attempts_summary(attempts: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 # Valid provider values for force_provider / selected_providers parameter
-VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "getleads", "smartprospect", "wizleads", "better_enrich"})
+VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "getleads", "smartprospect", "quickenrich", "wizleads", "better_enrich"})
 
 
 def _should_skip_provider(
@@ -348,6 +349,8 @@ def _normalize_source(source: str) -> str:
         return "blitz"
     elif source.startswith("getleads"):
         return "getleads"
+    elif source.startswith("quickenrich"):
+        return "quickenrich"
     elif source.startswith("smartprospect"):
         return "smartprospect"
     elif source.startswith("better_enrich"):
@@ -403,6 +406,8 @@ SOURCE_BETTER_ENRICH_COMPANY_V2 = "better_enrich_company_email"  # Company email
 SOURCE_WIZLEADS = "wizleads_email"                        # Person email from WizLeads
 SOURCE_SMARTPROSPECT = "smartprospect_email"              # Person email from SmartLead Find Emails (self-verifying)
 SOURCE_GETLEADS = "getleads_email"                        # Person email from GetLeads (app.getleads.io)
+SOURCE_QUICKENRICH = "quickenrich_email"                  # Person email from QuickEnrich employee-search (app.quickenrich.io)
+SOURCE_QUICKENRICH_CONTACTS = "quickenrich_contacts"      # Decision makers from QuickEnrich dataset-search
 
 # Routing reasons (no_email_reason values)
 # The full standard enum (per LOOP.md acceptance test 2/8):
@@ -454,6 +459,7 @@ ROUTE_PROVIDER_CONTACTS_DB = "contacts_db"
 ROUTE_PROVIDER_BLITZ = "blitz"
 ROUTE_PROVIDER_GETLEADS = "getleads"
 ROUTE_PROVIDER_SMARTPROSPECT = "smartprospect"
+ROUTE_PROVIDER_QUICKENRICH = "quickenrich"
 ROUTE_PROVIDER_WIZLEADS = "wizleads"
 ROUTE_PROVIDER_BETTER_ENRICH = "better_enrich"
 
@@ -467,6 +473,8 @@ ROUTE_METHOD_FIND_EMAIL = "find_email"
 ROUTE_METHOD_FIND_EMAIL_SMARTPROSPECT = "find_email_smartprospect"
 ROUTE_METHOD_FIND_EMAIL_GETLEADS = "find_email_getleads"
 ROUTE_METHOD_FIND_EMAIL_LINKEDIN_GETLEADS = "find_email_linkedin_getleads"
+ROUTE_METHOD_EMPLOYEE_SEARCH_QUICKENRICH = "employee_search_quickenrich"
+ROUTE_METHOD_EMPLOYEE_SEARCH_LINKEDIN_QUICKENRICH = "employee_search_linkedin_quickenrich"
 ROUTE_METHOD_FIND_WORK_EMAIL_V3 = "find_work_email_v3"
 ROUTE_METHOD_PHONE_REVERSE_LOOKUP = "phone_reverse_lookup"
 
@@ -561,6 +569,11 @@ def _provider_label(method: str) -> str:
         return ROUTE_PROVIDER_GETLEADS
     if method == ROUTE_METHOD_FIND_EMAIL_SMARTPROSPECT:
         return ROUTE_PROVIDER_SMARTPROSPECT
+    if method in (
+        ROUTE_METHOD_EMPLOYEE_SEARCH_QUICKENRICH,
+        ROUTE_METHOD_EMPLOYEE_SEARCH_LINKEDIN_QUICKENRICH,
+    ):
+        return ROUTE_PROVIDER_QUICKENRICH
     if method == ROUTE_METHOD_FIND_WORK_EMAIL_V3:
         return ROUTE_PROVIDER_BETTER_ENRICH
     if method == ROUTE_METHOD_PHONE_REVERSE_LOOKUP:
@@ -601,6 +614,11 @@ def _can_provider_use_method(method: str, inputs: dict[str, str]) -> bool:
         return bool(li)
     if method == ROUTE_METHOD_FIND_EMAIL_SMARTPROSPECT:
         return bool(first) and bool(last) and bool(dom)
+    if method == ROUTE_METHOD_EMPLOYEE_SEARCH_LINKEDIN_QUICKENRICH:
+        return bool(li)
+    if method == ROUTE_METHOD_EMPLOYEE_SEARCH_QUICKENRICH:
+        # QuickEnrich employee-search: company_url + first + last.
+        return bool(first) and bool(last) and bool(dom)
     if method == ROUTE_METHOD_FIND_WORK_EMAIL_V3:
         return bool(fn) and bool(dom)
     if method == ROUTE_METHOD_PHONE_REVERSE_LOOKUP:
@@ -610,7 +628,7 @@ def _can_provider_use_method(method: str, inputs: dict[str, str]) -> bool:
 
 def _method_is_paid(method: str) -> bool:
     """Return True if the method calls a paid provider family."""
-    return _provider_label(method) in (ROUTE_PROVIDER_BLITZ, ROUTE_PROVIDER_BETTER_ENRICH, ROUTE_PROVIDER_WIZLEADS, ROUTE_PROVIDER_SMARTPROSPECT)
+    return _provider_label(method) in (ROUTE_PROVIDER_BLITZ, ROUTE_PROVIDER_BETTER_ENRICH, ROUTE_PROVIDER_WIZLEADS, ROUTE_PROVIDER_SMARTPROSPECT, ROUTE_PROVIDER_QUICKENRICH)
 
 
 def _method_is_free(method: str) -> bool:
@@ -649,11 +667,12 @@ def route_enrichment(
       1. If linkedin_url is set and not a parseable LinkedIn URL, return
          `mode="invalid"`, `no_email_reason="linkedin_parse_failed"`.
       2. If linkedin_url is set: produce a LinkedIn-first cascade
-         (contacts_db -> blitz -> better_enrich). Domain-only fallbacks
-         may run after if name+domain are also present.
+         (contacts_db -> quickenrich -> getleads -> blitz). Domain-only
+         fallbacks may run after if name+domain are also present.
       3. Else if phone is set: produce a phone -> linkedin cascade.
       4. Else if full_name and domain: produce a name+domain cascade
-         (contacts_db -> blitz -> smartprospect -> wizleads -> better_enrich).
+         (contacts_db -> smartprospect -> quickenrich -> getleads -> blitz
+         -> wizleads -> better_enrich).
       5. Else if domain: produce a domain-only cascade.
       6. Else: return `mode="invalid"`, `no_email_reason="no_identifiers"`.
 
@@ -666,6 +685,7 @@ def route_enrichment(
       * "contacts_db": keep only contacts_db steps; if none can run, return
         no_email_reason="forced_provider_cannot_use_input".
       * "smartprospect": keep only smartprospect steps.
+      * "quickenrich": keep only quickenrich steps.
       * "wizleads": keep only wizleads steps.
       * "better_enrich": keep only better_enrich steps.
 
@@ -691,13 +711,21 @@ def route_enrichment(
     """
     # Auto-derive first_name / last_name from full_name when not provided.
     # See docstring above for rationale. Matches the splitting convention
-    # used in the legacy cascade (_resolve_email_for_person Step 5/6).
+    # used in the legacy cascade (_resolve_email_for_person).
+    # Reverse composition (full_name from first+last) is equally load-bearing:
+    # without it, a person dict carrying only split names would fail every
+    # `full_name and domain` gate and silently skip the whole name arm.
+    full_name = (full_name or "").strip()
+    first_name = (first_name or "").strip()
+    last_name = (last_name or "").strip()
     if full_name:
-        parts = full_name.strip().split(" ", 1)
+        parts = full_name.split(" ", 1)
         if not first_name and parts:
             first_name = parts[0]
         if not last_name and len(parts) > 1:
             last_name = parts[1]
+    elif first_name or last_name:
+        full_name = " ".join(p for p in (first_name, last_name) if p)
 
     inputs = {
         "linkedin_url": linkedin_url or "",
@@ -733,11 +761,24 @@ def route_enrichment(
 
     if has_li:
         # LinkedIn-first cascade. Domain fallbacks only run if name+domain present.
+        # Order (2026-10-10): contacts_db -> quickenrich -> getleads -> blitz.
+        # Blitz demoted to last active email tier (FUP budget relief);
+        # quickenrich employee-search takes linkedin_url directly.
         raw_steps.extend([
             {
                 "identifier": ROUTE_IDENTIFIER_LINKEDIN,
                 "method": ROUTE_METHOD_PERSON_BY_LINKEDIN,
                 "provider": ROUTE_PROVIDER_CONTACTS_DB,
+            },
+            {
+                "identifier": ROUTE_IDENTIFIER_LINKEDIN,
+                "method": ROUTE_METHOD_EMPLOYEE_SEARCH_LINKEDIN_QUICKENRICH,
+                "provider": ROUTE_PROVIDER_QUICKENRICH,
+            },
+            {
+                "identifier": ROUTE_IDENTIFIER_LINKEDIN,
+                "method": ROUTE_METHOD_FIND_EMAIL_LINKEDIN_GETLEADS,
+                "provider": ROUTE_PROVIDER_GETLEADS,
             },
             {
                 "identifier": ROUTE_IDENTIFIER_LINKEDIN,
@@ -749,14 +790,6 @@ def route_enrichment(
                 "method": ROUTE_METHOD_FIND_WORK_EMAIL,
                 "provider": ROUTE_PROVIDER_BLITZ,
             },
-            # GetLeads from-linkedin fallback AFTER both Blitz steps miss
-            # (only needs the LinkedIn URL). SmartProspect/WizLeads stay out
-            # of the LinkedIn arm — they are name+domain gated.
-            {
-                "identifier": ROUTE_IDENTIFIER_LINKEDIN,
-                "method": ROUTE_METHOD_FIND_EMAIL_LINKEDIN_GETLEADS,
-                "provider": ROUTE_PROVIDER_GETLEADS,
-            },
         ])
         if has_name_domain:
             raw_steps.extend([
@@ -765,27 +798,36 @@ def route_enrichment(
                     "method": ROUTE_METHOD_PERSON_BY_NAME_DOMAIN,
                     "provider": ROUTE_PROVIDER_CONTACTS_DB,
                 },
-                {
-                    "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
-                    "method": ROUTE_METHOD_PERSON_ENRICH,
-                    "provider": ROUTE_PROVIDER_BLITZ,
-                },
             ])
             if first_name and last_name:
-                # getleads + smartprospect inserted between Blitz and BetterEnrich
-                # in the LinkedIn-first name+domain fallback arm too, mirroring the
-                # name_domain cascade ordering (blitz -> getleads -> smartprospect).
-                raw_steps.append({
-                    "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
-                    "method": ROUTE_METHOD_FIND_EMAIL_GETLEADS,
-                    "provider": ROUTE_PROVIDER_GETLEADS,
-                })
+                # Name+domain fallback arm mirrors the pure name_domain ordering:
+                # smartprospect -> quickenrich -> getleads -> blitz -> wizleads.
                 raw_steps.append({
                     "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
                     "method": ROUTE_METHOD_FIND_EMAIL_SMARTPROSPECT,
                     "provider": ROUTE_PROVIDER_SMARTPROSPECT,
                 })
-        if has_name_domain:
+                raw_steps.append({
+                    "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
+                    "method": ROUTE_METHOD_EMPLOYEE_SEARCH_QUICKENRICH,
+                    "provider": ROUTE_PROVIDER_QUICKENRICH,
+                })
+                raw_steps.append({
+                    "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
+                    "method": ROUTE_METHOD_FIND_EMAIL_GETLEADS,
+                    "provider": ROUTE_PROVIDER_GETLEADS,
+                })
+            raw_steps.append({
+                "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
+                "method": ROUTE_METHOD_PERSON_ENRICH,
+                "provider": ROUTE_PROVIDER_BLITZ,
+            })
+            if first_name and last_name:
+                raw_steps.append({
+                    "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
+                    "method": ROUTE_METHOD_FIND_EMAIL,
+                    "provider": ROUTE_PROVIDER_WIZLEADS,
+                })
             raw_steps.append({
                 "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
                 "method": ROUTE_METHOD_FIND_WORK_EMAIL_V3,
@@ -804,33 +846,43 @@ def route_enrichment(
         })
         mode = "phone_then_linkedin"
     elif has_name_domain:
-        # Name+domain cascade.
+        # Name+domain cascade. Order (2026-10-10):
+        # contacts_db -> smartprospect -> quickenrich -> getleads -> blitz
+        # -> wizleads -> better_enrich(disabled). Blitz demoted from 2nd to
+        # 5th (FUP relief); smartprospect promoted to 2nd (self-verifying,
+        # shared 1900 RPM bucket); wizleads last active catch-all.
         raw_steps.extend([
             {
                 "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
                 "method": ROUTE_METHOD_PERSON_BY_NAME_DOMAIN,
                 "provider": ROUTE_PROVIDER_CONTACTS_DB,
             },
-            {
-                "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
-                "method": ROUTE_METHOD_PERSON_ENRICH,
-                "provider": ROUTE_PROVIDER_BLITZ,
-            },
         ])
         if first_name and last_name:
-            # getleads runs before SmartProspect — both first+last+domain gated.
-            # smartprospect runs before WizLeads — self-verifying, 30 RPS,
-            # batch-capable. Same first+last+domain gate as WizLeads.
-            raw_steps.append({
-                "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
-                "method": ROUTE_METHOD_FIND_EMAIL_GETLEADS,
-                "provider": ROUTE_PROVIDER_GETLEADS,
-            })
+            # smartprospect/quickenrich/getleads/wizleads all gate on
+            # first+last+domain; blitz person_enrich + better_enrich v3
+            # accept full_name+domain.
             raw_steps.append({
                 "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
                 "method": ROUTE_METHOD_FIND_EMAIL_SMARTPROSPECT,
                 "provider": ROUTE_PROVIDER_SMARTPROSPECT,
             })
+            raw_steps.append({
+                "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
+                "method": ROUTE_METHOD_EMPLOYEE_SEARCH_QUICKENRICH,
+                "provider": ROUTE_PROVIDER_QUICKENRICH,
+            })
+            raw_steps.append({
+                "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
+                "method": ROUTE_METHOD_FIND_EMAIL_GETLEADS,
+                "provider": ROUTE_PROVIDER_GETLEADS,
+            })
+        raw_steps.append({
+            "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
+            "method": ROUTE_METHOD_PERSON_ENRICH,
+            "provider": ROUTE_PROVIDER_BLITZ,
+        })
+        if first_name and last_name:
             raw_steps.append({
                 "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
                 "method": ROUTE_METHOD_FIND_EMAIL,
@@ -862,6 +914,7 @@ def route_enrichment(
             "blitz": ROUTE_PROVIDER_BLITZ,
             "getleads": ROUTE_PROVIDER_GETLEADS,
             "smartprospect": ROUTE_PROVIDER_SMARTPROSPECT,
+            "quickenrich": ROUTE_PROVIDER_QUICKENRICH,
             "wizleads": ROUTE_PROVIDER_WIZLEADS,
             "better_enrich": ROUTE_PROVIDER_BETTER_ENRICH,
         }
@@ -1259,6 +1312,68 @@ async def _run_route_step(
                     verification["dm_email_verified"] = "unknown"
                 verification["getleads_dm"] = _getleads_dm_snapshot(result)
                 return {"email": result["email"], "source": SOURCE_GETLEADS, "verification": verification}
+            return {"email": "", "source": SOURCE_NOT_FOUND}
+
+        if method == ROUTE_METHOD_EMPLOYEE_SEARCH_LINKEDIN_QUICKENRICH:
+            # QuickEnrich employee-search by LinkedIn URL. Hit emails carry an
+            # email_verification_date — a dated email counts as verified
+            # ("yes", GetLeads-Valid convention), otherwise accept-unverified.
+            _record("quickenrich")
+            try:
+                result = await quickenrich_client.find_person_email(
+                    blitz_http,
+                    linkedin_url=inputs["linkedin_url"],
+                )
+            except httpx.HTTPStatusError as e:
+                logger.warning("QuickEnrich employee_search (linkedin) failed: %s", e)
+                error_type, message = _classify_http_error(e, "quickenrich", "find_person_email")
+                return _ProviderError(
+                    provider="quickenrich",
+                    method="find_person_email",
+                    error_type=error_type,
+                    message=message,
+                )
+            except Exception as e:
+                logger.warning("QuickEnrich employee_search (linkedin) failed: %s", e)
+                return {"email": "", "source": SOURCE_NOT_FOUND}
+            if _is_provider_error(result):
+                return result
+            if result and result.get("found") and result.get("email"):
+                if result.get("email_verification_date"):
+                    verification["dm_email_verified"] = "yes"
+                    verification["email_last_verified_at"] = result["email_verification_date"]
+                return {"email": result["email"], "source": SOURCE_QUICKENRICH, "verification": verification}
+            return {"email": "", "source": SOURCE_NOT_FOUND}
+
+        if method == ROUTE_METHOD_EMPLOYEE_SEARCH_QUICKENRICH:
+            # QuickEnrich employee-search by first+last+domain.
+            _record("quickenrich")
+            try:
+                result = await quickenrich_client.find_person_email(
+                    blitz_http,
+                    first_name=inputs["first_name"],
+                    last_name=inputs["last_name"],
+                    company_url=inputs["domain"],
+                )
+            except httpx.HTTPStatusError as e:
+                logger.warning("QuickEnrich employee_search failed: %s", e)
+                error_type, message = _classify_http_error(e, "quickenrich", "find_person_email")
+                return _ProviderError(
+                    provider="quickenrich",
+                    method="find_person_email",
+                    error_type=error_type,
+                    message=message,
+                )
+            except Exception as e:
+                logger.warning("QuickEnrich employee_search failed: %s", e)
+                return {"email": "", "source": SOURCE_NOT_FOUND}
+            if _is_provider_error(result):
+                return result
+            if result and result.get("found") and result.get("email"):
+                if result.get("email_verification_date"):
+                    verification["dm_email_verified"] = "yes"
+                    verification["email_last_verified_at"] = result["email_verification_date"]
+                return {"email": result["email"], "source": SOURCE_QUICKENRICH, "verification": verification}
             return {"email": "", "source": SOURCE_NOT_FOUND}
 
         if method == ROUTE_METHOD_FIND_EMAIL_SMARTPROSPECT:
@@ -2121,19 +2236,22 @@ async def _resolve_email_for_person(
     company_linkedin_url: str = "",
     pre_resolved_smartprospect: Optional[dict[str, Any]] = None,
     pre_resolved_getleads: Optional[dict[str, Any]] = None,
+    pre_resolved_quickenrich: Optional[dict[str, Any]] = None,
 ) -> tuple[str, str, dict[str, Any]]:
     """
     Returns (email, source, verification_info).
-    Priority cascade:
+    Priority cascade (2026-10-10 reorder — blitz demoted for FUP relief,
+    smartprospect promoted to first paid tier, quickenrich added):
       1. Contacts DB by person's name + domain (PRIMARY - avoids stale LinkedIn emails)
       2. Contacts DB by LinkedIn URL (SECONDARY)
-      3. Blitz person enrich by name + domain (PRIMARY PAID)
-      4. Blitz email from LinkedIn URL (SECONDARY PAID)
+      3. SmartProspect person email (self-verifying, shared 1900 RPM, batch-capable)
+      4. QuickEnrich person email (linkedin_url OR first+last+domain)
       5. GetLeads person email (first + last + domain, batch-capable)
-      6. SmartProspect person email (self-verifying, 30 RPS, batch-capable)
-      7. WizLeads person email (CATCHALL VERIFIED, 10 RPS)
-      8. BetterEnrich work email (person lookup)
-      9. Contacts DB by name + domain (name from input row, if different)
+      6. Blitz person enrich by name + domain (PRIMARY PAID, tier demoted)
+      7. Blitz email from LinkedIn URL (SECONDARY PAID, tier demoted)
+      8. WizLeads person email (CATCHALL VERIFIED, 10 RPS, last active tier)
+      9. BetterEnrich work email (person lookup — provider disabled 2026-09-29)
+      10. Contacts DB by name + domain (name from input row, if different)
 
     Args:
         force_provider: If set, only use that specific provider.
@@ -2165,16 +2283,34 @@ async def _resolve_email_for_person(
             domain, verification_status, linkedin_url, phone}``. When None (or
             when its email is empty), Step 5 falls back to the normal single-call
             path. The pre-resolved check ONLY short-circuits the getleads step.
+        pre_resolved_quickenrich: seeded by the domain orchestrator's QuickEnrich
+            dataset-search discovery — persons QuickEnrich already returned an
+            email for (the search runs has_email=true). Shape:
+            ``{email, email_verification_date, ...}``. A hit short-circuits the
+            whole paid tier (a discovery hit means the email is already in
+            hand); None = normal cascade.
 
     verification_info dict contains:
         - dm_email_verified: "yes", "no", "unknown"
         - mailtester_code: "ok", "mb", "ko", "unavailable", ""
         - mailtester_message: Message from mailtester
     """
-    linkedin_url = person.get("linkedin_url", "")
-    full_name = person.get("full_name", "")
-    first_name = person.get("first_name", "")
-    last_name = person.get("last_name", "")
+    linkedin_url = (person.get("linkedin_url") or "").strip()
+    full_name = (person.get("full_name") or "").strip()
+    first_name = (person.get("first_name") or "").strip()
+    last_name = (person.get("last_name") or "").strip()
+    # G15: split-only names (first+last, empty full_name) previously failed
+    # every `full_name and domain` gate and skipped the whole name arm.
+    # Compose the missing direction (route_enrichment mirrors this).
+    if not full_name and (first_name or last_name):
+        full_name = " ".join(p for p in (first_name, last_name) if p)
+    # G5: normalize the LinkedIn URL once here so every downstream
+    # by-LinkedIn step (contacts_db / blitz / quickenrich) sees the same
+    # canonical form the routed path enforces. Unparseable → "" (LinkedIn
+    # steps capability-skip instead of firing doomed calls).
+    if linkedin_url:
+        _norm_li = identifier_utils.normalize_linkedin_url(linkedin_url)
+        linkedin_url = _norm_li or ""
 
     # Initialize verification info
     verification_info: dict[str, Any] = {
@@ -2358,114 +2494,133 @@ async def _resolve_email_for_person(
                 _record_error("contacts_db", "person_by_linkedin", e)
                 logger.warning("Contacts DB LinkedIn lookup failed for %s: %s", linkedin_url, e)
 
-        # Step 3: Blitz person enrich by name + domain (PRIMARY PAID)
-        # Prioritize name+domain for the same reason as Contacts DB
-        if full_name and domain and not _should_skip_provider("blitz", force_provider):
-            _record("blitz")
-            try:
-                result = await blitz_client.person_enrich(
-                    blitz_client_inst,
-                    full_name=full_name,
-                    domain=domain,
-                    include_phone=False,
-                )
-                if result.get("found") and result.get("person"):
-                    person_data = result.get("person", {})
-                    # Phase 2a: capture the Blitz person dict BEFORE any
-                    # mailtester-driven truncation. person_data already
-                    # carries full_name, linkedin_url, title, etc.
-                    _capture("blitz", person_data)
-                    # Check for verified_email field first — provider-acceptable
-                    verified_email = person_data.get("verified_email", "")
-                    if verified_email:
-                        verification_info["dm_email_verified"] = "yes"
-                        return verified_email, SOURCE_BLITZ_EMAIL, verification_info
-                    # Fall back to unverified emails list. Per the cascade
-                    # contract, an unverified Blitz email is NOT acceptable as
-                    # the final answer unless Mailtester confirms it (or
-                    # Mailtester is unavailable under a fail-open policy).
-                    # Otherwise we fall through to WizLeads and BetterEnrich.
-                    emails_list = person_data.get("emails", [])
-                    if emails_list:
-                        candidate = emails_list[0].get("email", "")
-                        if candidate and validate_email:
-                            try:
-                                result_mt = await mailtester_client.verify_email(
-                                    blitz_client_inst, candidate
-                                )
-                                verification_info["dm_email_verified"] = "yes" if result_mt["valid"] else "no"
-                                verification_info["mailtester_code"] = result_mt["code"]
-                                verification_info["mailtester_message"] = result_mt["message"]
-                                if result_mt["valid"]:
-                                    logger.debug("Blitz unverified email confirmed by Mailtester: %s", candidate)
-                                    return candidate, SOURCE_BLITZ_EMAIL, verification_info
-                                # Mailtester rejected it — continue cascade.
-                                logger.info("Blitz unverified email rejected by Mailtester: %s (code: %s) - falling through",
-                                            candidate, result_mt["code"])
-                            except RuntimeError:
-                                # Mailtester unavailable — FAIL OPEN at the
-                                # candidate level (consistent with Contacts DB
-                                # policy above) and accept as final.
-                                logger.warning("Mailtester unavailable for Blitz unverified %s - accepting without verification", candidate)
-                                verification_info["mailtester_code"] = "unavailable"
+        # Step 3: SmartProspect person email (self-verifying, shared 1900 RPM,
+        # batch-capable). 2026-10-10 reorder: promoted to the FIRST paid tier
+        # (contacts_db is the only free step above it). Gates on firstName +
+        # lastName + domain. The names can come from the input row or Contacts DB.
+        if full_name and domain and not _should_skip_provider("smartprospect", force_provider):
+            first_name_sp = person.get("first_name", "") or (full_name.split(" ")[0] if full_name else "")
+            last_name_sp = person.get("last_name", "") or (" ".join(full_name.split(" ")[1:]) if " " in full_name else "")
+            if first_name_sp and last_name_sp:
+                # Phase 5: when the domain orchestrator ran a batch pre-pass,
+                # reuse its result instead of re-calling the API. The pre-resolved
+                # check short-circuits ONLY the smartprospect step — Contacts DB
+                # and Blitz above already ran, so free-tier emails still win.
+                if pre_resolved_smartprospect is not None:
+                    _record("smartprospect")
+                    pre_email = pre_resolved_smartprospect.get("email", "")
+                    if pre_email:
+                        _capture("smartprospect", {
+                            **pre_resolved_smartprospect,
+                            "full_name": full_name,
+                            "first_name": first_name_sp,
+                            "last_name": last_name_sp,
+                            "linkedin_url": linkedin_url,
+                            "email": pre_email,
+                        })
+                        vs = pre_resolved_smartprospect.get("verification_status")
+                        verification_info["dm_email_verified"] = "yes" if vs == "Valid" else "unknown"
+                        logger.info("SmartProspect (batch pre-pass) found email for %s: %s", full_name, pre_email)
+                        return pre_email, SOURCE_SMARTPROSPECT, verification_info
+                    # Batch tried but no email (Not Found / Invalid) — fall through
+                    # to WizLeads without re-calling the single endpoint.
+                else:
+                    _record("smartprospect")
+                    try:
+                        result = await smartprospect_client.find_email(
+                            blitz_client_inst,
+                            first_name=first_name_sp,
+                            last_name=last_name_sp,
+                            company_domain=domain,
+                        )
+                        if result and result.get("email"):
+                            email = result["email"]
+                            # Phase 2a: capture the SmartProspect response.
+                            _capture("smartprospect", {
+                                **result,
+                                "full_name": full_name,
+                                "first_name": first_name_sp,
+                                "last_name": last_name_sp,
+                                "linkedin_url": linkedin_url,
+                                "email": email,
+                            })
+                            # SmartProspect self-verifies. Trust "Valid" status,
+                            # otherwise accept as "unknown" (mirrors WizLeads catchall
+                            # policy per user decision).
+                            vs = result.get("verification_status")
+                            if vs == "Valid":
+                                verification_info["dm_email_verified"] = "yes"
+                            else:
                                 verification_info["dm_email_verified"] = "unknown"
-                                return candidate, SOURCE_BLITZ_EMAIL, verification_info
-                        # Either no candidate, validation disabled, or
-                        # Mailtester rejected — log and fall through to
-                        # WizLeads/BetterEnrich.
-                        if candidate:
-                            logger.info("Blitz returned unverified email %s but cascade continues to WizLeads/BetterEnrich", candidate)
-                            verification_info["dm_email_verified"] = "no"
-                        # Fall through to WizLeads step below.
-            except Exception as e:
-                _record_error("blitz", "person_enrich", e)
-                logger.warning("Blitz person enrich failed for %s / %s: %s", full_name, domain, e)
+                            logger.info("SmartProspect found email for %s: %s (verification_status: %s)",
+                                        full_name, email, vs)
+                            return email, SOURCE_SMARTPROSPECT, verification_info
+                    except Exception as e:
+                        _record_error("smartprospect", "find_email", e)
+                        logger.warning("SmartProspect lookup failed for %s / %s: %s", full_name, domain, e)
 
-        # Step 4: Blitz email from LinkedIn URL (SECONDARY PAID)
-        # Fall back to LinkedIn if name+domain didn't find email, or if name not available
-        if linkedin_url and not _should_skip_provider("blitz", force_provider):
-            _record("blitz")
-            try:
-                result = await blitz_client.find_work_email(blitz_client_inst, linkedin_url)
-                if result.get("found") and result.get("email"):
-                    candidate = result["email"]
-                    # Phase 2a: capture the Blitz find_work_email response.
-                    # Stitch in identity from the input person so the
-                    # payload has full_name + linkeded_url for lineage.
-                    _capture("blitz", {
-                        **result,
+        # Step 4: QuickEnrich person email (employee-search; linkedin_url OR
+        # first+last+domain — 2026-10-10 provider add, 3rd tier). Hit emails carry
+        # email_verification_date: a dated email counts as verified.
+        if not _should_skip_provider("quickenrich", force_provider) and (
+            linkedin_url or (full_name and domain)
+        ):
+            # Capability gate: never fire without one of the two documented
+            # identity patterns (the API 400s otherwise).
+            _qe_first = first_name or (full_name.split(" ")[0] if full_name else "")
+            _qe_last = last_name or (" ".join(full_name.split(" ")[1:]) if " " in full_name else "")
+            if linkedin_url or (_qe_first and _qe_last and domain):
+                _record("quickenrich")
+                # Pre-resolved: QuickEnrich dataset-search discovery already
+                # returned an email for this person (has_email=true search) —
+                # the whole paid tier short-circuits, nothing re-asked.
+                if pre_resolved_quickenrich is not None and pre_resolved_quickenrich.get("email"):
+                    _pre = pre_resolved_quickenrich
+                    _capture("quickenrich", {
+                        **_pre,
                         "full_name": full_name,
-                        "first_name": first_name,
-                        "last_name": last_name,
+                        "first_name": _qe_first,
+                        "last_name": _qe_last,
                         "linkedin_url": linkedin_url,
-                        "email": candidate,
+                        "email": _pre["email"],
                     })
-                    # Verify with Mailtester; only treat as final if confirmed
-                    # or if Mailtester is unavailable. Otherwise fall through.
-                    if validate_email:
-                        try:
-                            result_mt = await mailtester_client.verify_email(
-                                blitz_client_inst, candidate
-                            )
-                            verification_info["dm_email_verified"] = "yes" if result_mt["valid"] else "no"
-                            verification_info["mailtester_code"] = result_mt["code"]
-                            verification_info["mailtester_message"] = result_mt["message"]
-                            if result_mt["valid"]:
-                                return candidate, SOURCE_BLITZ_EMAIL, verification_info
-                            logger.info("Blitz find_work_email rejected by Mailtester: %s - falling through", candidate)
-                        except RuntimeError:
-                            verification_info["mailtester_code"] = "unavailable"
-                            verification_info["dm_email_verified"] = "unknown"
-                            return candidate, SOURCE_BLITZ_EMAIL, verification_info
-                    else:
+                    if _pre.get("email_verification_date"):
                         verification_info["dm_email_verified"] = "yes"
-                        return candidate, SOURCE_BLITZ_EMAIL, verification_info
-            except Exception as e:
-                _record_error("blitz", "find_work_email", e)
-                logger.warning("Blitz email lookup failed for %s: %s", linkedin_url, e)
+                        verification_info["email_last_verified_at"] = _pre["email_verification_date"]
+                    logger.info("QuickEnrich (dataset-search discovery) already resolved %s", full_name)
+                    return _pre["email"], SOURCE_QUICKENRICH, verification_info
+                try:
+                    if linkedin_url:
+                        _qe_result = await quickenrich_client.find_person_email(
+                            blitz_client_inst,
+                            linkedin_url=linkedin_url,
+                        )
+                    else:
+                        _qe_result = await quickenrich_client.find_person_email(
+                            blitz_client_inst,
+                            first_name=_qe_first,
+                            last_name=_qe_last,
+                            company_url=domain,
+                        )
+                    if _is_provider_error(_qe_result):
+                        _record_error("quickenrich", "find_person_email", _qe_result.message,
+                                      _qe_result.error_type)
+                    elif _qe_result and _qe_result.get("found") and _qe_result.get("email"):
+                        _capture("quickenrich", {
+                            **_qe_result,
+                            "linkedin_url": _qe_result.get("linkedin_url") or linkedin_url,
+                        })
+                        if _qe_result.get("email_verification_date"):
+                            verification_info["dm_email_verified"] = "yes"
+                            verification_info["email_last_verified_at"] = _qe_result["email_verification_date"]
+                        logger.info("QuickEnrich found email for %s: %s", full_name, _qe_result["email"])
+                        return _qe_result["email"], SOURCE_QUICKENRICH, verification_info
+                except Exception as e:
+                    _record_error("quickenrich", "find_person_email", e)
+                    logger.warning("QuickEnrich lookup failed for %s / %s: %s", full_name, domain, e)
 
         # Step 5: GetLeads person email (first + last + domain, batch-capable)
-        # Inserted between Blitz and SmartProspect. Gates on firstName + lastName +
+        # Runs after SmartProspect + QuickEnrich. Gates on firstName + lastName +
         # domain — decoupled from Blitz (mirrors the smartprospect capability
         # gate). The firstName/lastName can come from the input row, Contacts DB,
         # or Blitz.
@@ -2536,106 +2691,152 @@ async def _resolve_email_for_person(
                         _record_error("getleads", "find_email", e)
                         logger.warning("GetLeads lookup failed for %s / %s: %s", full_name, domain, e)
 
-        # Step 6: SmartProspect person email (self-verifying, 30 RPS, batch-capable)
-        # Inserted between GetLeads and WizLeads. Gates on firstName + lastName +
-        # domain — decoupled from Blitz (per user requirement: "It does not
-        # depend on blitz, it only depends on the input parameters"). The
-        # firstName/lastName can come from the input row, Contacts DB, or Blitz.
-        if full_name and domain and not _should_skip_provider("smartprospect", force_provider):
-            first_name_sp = person.get("first_name", "") or (full_name.split(" ")[0] if full_name else "")
-            last_name_sp = person.get("last_name", "") or (" ".join(full_name.split(" ")[1:]) if " " in full_name else "")
-            if first_name_sp and last_name_sp:
-                # Phase 5: when the domain orchestrator ran a batch pre-pass,
-                # reuse its result instead of re-calling the API. The pre-resolved
-                # check short-circuits ONLY the smartprospect step — Contacts DB
-                # and Blitz above already ran, so free-tier emails still win.
-                if pre_resolved_smartprospect is not None:
-                    _record("smartprospect")
-                    pre_email = pre_resolved_smartprospect.get("email", "")
-                    if pre_email:
-                        _capture("smartprospect", {
-                            **pre_resolved_smartprospect,
-                            "full_name": full_name,
-                            "first_name": first_name_sp,
-                            "last_name": last_name_sp,
-                            "linkedin_url": linkedin_url,
-                            "email": pre_email,
-                        })
-                        vs = pre_resolved_smartprospect.get("verification_status")
-                        verification_info["dm_email_verified"] = "yes" if vs == "Valid" else "unknown"
-                        logger.info("SmartProspect (batch pre-pass) found email for %s: %s", full_name, pre_email)
-                        return pre_email, SOURCE_SMARTPROSPECT, verification_info
-                    # Batch tried but no email (Not Found / Invalid) — fall through
-                    # to WizLeads without re-calling the single endpoint.
-                else:
-                    _record("smartprospect")
-                    try:
-                        result = await smartprospect_client.find_email(
-                            blitz_client_inst,
-                            first_name=first_name_sp,
-                            last_name=last_name_sp,
-                            company_domain=domain,
-                        )
-                        if result and result.get("email"):
-                            email = result["email"]
-                            # Phase 2a: capture the SmartProspect response.
-                            _capture("smartprospect", {
-                                **result,
-                                "full_name": full_name,
-                                "first_name": first_name_sp,
-                                "last_name": last_name_sp,
-                                "linkedin_url": linkedin_url,
-                                "email": email,
-                            })
-                            # SmartProspect self-verifies. Trust "Valid" status,
-                            # otherwise accept as "unknown" (mirrors WizLeads catchall
-                            # policy per user decision).
-                            vs = result.get("verification_status")
-                            if vs == "Valid":
-                                verification_info["dm_email_verified"] = "yes"
-                            else:
-                                verification_info["dm_email_verified"] = "unknown"
-                            logger.info("SmartProspect found email for %s: %s (verification_status: %s)",
-                                        full_name, email, vs)
-                            return email, SOURCE_SMARTPROSPECT, verification_info
-                    except Exception as e:
-                        _record_error("smartprospect", "find_email", e)
-                        logger.warning("SmartProspect lookup failed for %s / %s: %s", full_name, domain, e)
-
-        # Step 7: WizLeads person email (catchall verified, 10 RPS)
-        # Inserted between SmartProspect and BetterEnrich per user-confirmed cascade order.
-        if full_name and domain and not _should_skip_provider("wizleads", force_provider):
-            _record("wizleads")
-            first_name = person.get("first_name", "") or (full_name.split(" ")[0] if full_name else "")
-            last_name = person.get("last_name", "") or (" ".join(full_name.split(" ")[1:]) if " " in full_name else "")
+        # Step 6: Blitz person enrich by name + domain (PAID — demoted tier,
+        # 2026-10-10: blitz moved after smartprospect/quickenrich/getleads for
+        # FUP-budget relief)
+        # Prioritize name+domain for the same reason as Contacts DB
+        if full_name and domain and not _should_skip_provider("blitz", force_provider):
+            _record("blitz")
             try:
-                result = await wizleads_client.find_email(
+                result = await blitz_client.person_enrich(
                     blitz_client_inst,
-                    first_name=first_name,
-                    last_name=last_name,
-                    website=domain,
+                    full_name=full_name,
+                    domain=domain,
+                    include_phone=False,
                 )
-                if result and result.get("email"):
-                    email = result["email"]
-                    # Phase 2a: capture the WizLeads response (already includes
-                    # email; stitch in identity for lineage).
-                    _capture("wizleads", {
+                if result.get("found") and result.get("person"):
+                    person_data = result.get("person", {})
+                    # Phase 2a: capture the Blitz person dict BEFORE any
+                    # mailtester-driven truncation. person_data already
+                    # carries full_name, linkedin_url, title, etc.
+                    _capture("blitz", person_data)
+                    # Check for verified_email field first — provider-acceptable
+                    verified_email = person_data.get("verified_email", "")
+                    if verified_email:
+                        verification_info["dm_email_verified"] = "yes"
+                        return verified_email, SOURCE_BLITZ_EMAIL, verification_info
+                    # Fall back to unverified emails list. Per the cascade
+                    # contract, an unverified Blitz email is NOT acceptable as
+                    # the final answer unless Mailtester confirms it (or
+                    # Mailtester is unavailable under a fail-open policy).
+                    # Otherwise we fall through to WizLeads and BetterEnrich.
+                    emails_list = person_data.get("emails", [])
+                    if emails_list:
+                        candidate = emails_list[0].get("email", "")
+                        if candidate and validate_email:
+                            try:
+                                result_mt = await mailtester_client.verify_email(
+                                    blitz_client_inst, candidate
+                                )
+                                verification_info["dm_email_verified"] = "yes" if result_mt["valid"] else "no"
+                                verification_info["mailtester_code"] = result_mt["code"]
+                                verification_info["mailtester_message"] = result_mt["message"]
+                                if result_mt["valid"]:
+                                    logger.debug("Blitz unverified email confirmed by Mailtester: %s", candidate)
+                                    return candidate, SOURCE_BLITZ_EMAIL, verification_info
+                                # Mailtester rejected it — continue cascade.
+                                logger.info("Blitz unverified email rejected by Mailtester: %s (code: %s) - falling through",
+                                            candidate, result_mt["code"])
+                            except RuntimeError:
+                                # Mailtester unavailable — FAIL OPEN at the
+                                # candidate level (consistent with Contacts DB
+                                # policy above) and accept as final.
+                                logger.warning("Mailtester unavailable for Blitz unverified %s - accepting without verification", candidate)
+                                verification_info["mailtester_code"] = "unavailable"
+                                verification_info["dm_email_verified"] = "unknown"
+                                return candidate, SOURCE_BLITZ_EMAIL, verification_info
+                        # Either no candidate, validation disabled, or
+                        # Mailtester rejected — log and fall through to
+                        # WizLeads/BetterEnrich.
+                        if candidate:
+                            logger.info("Blitz returned unverified email %s but cascade continues to WizLeads/BetterEnrich", candidate)
+                            verification_info["dm_email_verified"] = "no"
+                        # Fall through to WizLeads step below.
+            except Exception as e:
+                _record_error("blitz", "person_enrich", e)
+                logger.warning("Blitz person enrich failed for %s / %s: %s", full_name, domain, e)
+
+        # Step 7: Blitz email from LinkedIn URL (SECONDARY PAID — demoted tier)
+        # Fall back to LinkedIn if name+domain didn't find email, or if name not available
+        if linkedin_url and not _should_skip_provider("blitz", force_provider):
+            _record("blitz")
+            try:
+                result = await blitz_client.find_work_email(blitz_client_inst, linkedin_url)
+                if result.get("found") and result.get("email"):
+                    candidate = result["email"]
+                    # Phase 2a: capture the Blitz find_work_email response.
+                    # Stitch in identity from the input person so the
+                    # payload has full_name + linkeded_url for lineage.
+                    _capture("blitz", {
                         **result,
                         "full_name": full_name,
                         "first_name": first_name,
                         "last_name": last_name,
                         "linkedin_url": linkedin_url,
-                        "email": email,
+                        "email": candidate,
                     })
-                    verification_info["dm_email_verified"] = "yes"  # catchall verified by WizLeads
-                    logger.info("WizLeads found email for %s: %s (catchall: %s)",
-                                full_name, email, result.get("catchall"))
-                    return email, SOURCE_WIZLEADS, verification_info
+                    # Verify with Mailtester; only treat as final if confirmed
+                    # or if Mailtester is unavailable. Otherwise fall through.
+                    if validate_email:
+                        try:
+                            result_mt = await mailtester_client.verify_email(
+                                blitz_client_inst, candidate
+                            )
+                            verification_info["dm_email_verified"] = "yes" if result_mt["valid"] else "no"
+                            verification_info["mailtester_code"] = result_mt["code"]
+                            verification_info["mailtester_message"] = result_mt["message"]
+                            if result_mt["valid"]:
+                                return candidate, SOURCE_BLITZ_EMAIL, verification_info
+                            logger.info("Blitz find_work_email rejected by Mailtester: %s - falling through", candidate)
+                        except RuntimeError:
+                            verification_info["mailtester_code"] = "unavailable"
+                            verification_info["dm_email_verified"] = "unknown"
+                            return candidate, SOURCE_BLITZ_EMAIL, verification_info
+                    else:
+                        verification_info["dm_email_verified"] = "yes"
+                        return candidate, SOURCE_BLITZ_EMAIL, verification_info
             except Exception as e:
-                _record_error("wizleads", "find_email", e)
-                logger.warning("WizLeads lookup failed for %s / %s: %s", full_name, domain, e)
+                _record_error("blitz", "find_work_email", e)
+                logger.warning("Blitz email lookup failed for %s: %s", linkedin_url, e)
 
-        # Step 8: BetterEnrich person email (V3 with built-in verification)
+        # Step 8: WizLeads person email (catchall verified, 10 RPS)
+        # Last ACTIVE tier (2026-10-10 reorder — after blitz, before the
+        # disabled better_enrich). G1 fix: WizLeads needs a real first+last
+        # split — a single-token full_name used to reach it with an empty
+        # last_name (the route gate has always required both).
+        if full_name and domain and not _should_skip_provider("wizleads", force_provider):
+            first_name = person.get("first_name", "") or (full_name.split(" ")[0] if full_name else "")
+            last_name = person.get("last_name", "") or (" ".join(full_name.split(" ")[1:]) if " " in full_name else "")
+            if first_name and last_name:
+                _record("wizleads")
+                try:
+                    result = await wizleads_client.find_email(
+                        blitz_client_inst,
+                        first_name=first_name,
+                        last_name=last_name,
+                        website=domain,
+                    )
+                    if result and result.get("email"):
+                        email = result["email"]
+                        # Phase 2a: capture the WizLeads response (already includes
+                        # email; stitch in identity for lineage).
+                        _capture("wizleads", {
+                            **result,
+                            "full_name": full_name,
+                            "first_name": first_name,
+                            "last_name": last_name,
+                            "linkedin_url": linkedin_url,
+                            "email": email,
+                        })
+                        verification_info["dm_email_verified"] = "yes"  # catchall verified by WizLeads
+                        logger.info("WizLeads found email for %s: %s (catchall: %s)",
+                                    full_name, email, result.get("catchall"))
+                        return email, SOURCE_WIZLEADS, verification_info
+                except Exception as e:
+                    _record_error("wizleads", "find_email", e)
+                    logger.warning("WizLeads lookup failed for %s / %s: %s", full_name, domain, e)
+
+        # Step 9: BetterEnrich person email (V3 with built-in verification)
         if full_name and domain and not _should_skip_provider("better_enrich", force_provider):
             _record("better_enrich")
             try:
@@ -2666,7 +2867,7 @@ async def _resolve_email_for_person(
                 _record_error("better_enrich", "find_work_email_v3", e)
                 logger.warning("BetterEnrich V3 person lookup failed for %s / %s: %s", full_name, domain, e)
 
-        # Step 9: Contacts DB by input row name + domain (if different from person name)
+        # Step 10: Contacts DB by input row name + domain (if different from person name)
         # This handles edge cases where the input name differs from the person's current name
         if input_full_name and input_full_name != full_name and domain and not _should_skip_provider("contacts_db", force_provider):
             _record("contacts_db")
@@ -2793,6 +2994,118 @@ def _recent_blitz_miss(domain: str) -> Optional[dict[str, str]]:
         }
     # Legacy string shape ("company"/"contacts") — no URL known.
     return {"kind": str(info), "company_url": ""}
+
+
+def _quickenrich_default_titles() -> list[str]:
+    """Flatten blitz_client.DEFAULT_CASCADE tier include-titles for the
+    QuickEnrich dataset-search server-side ``title`` param (any-title match,
+    comma-joined by the client). The local strict title gate re-filters the
+    results, so a broad server-side net + strict local filter is correct."""
+    titles: list[str] = []
+    for tier in blitz_client.DEFAULT_CASCADE:
+        for t in tier.get("include_title", []):
+            if t not in titles:
+                titles.append(t)
+    return titles
+
+
+async def _quickenrich_domain_discovery(
+    blitz_http: httpx.AsyncClient,
+    domain: str,
+    *,
+    include_titles: list[str],
+    exclude_titles: list[str],
+    title_filter_active: bool,
+    max_results: int,
+    collector: Optional[Any] = None,
+    company_linkedin_url: str = "",
+    record_provider_use: Optional[Callable[[str], None]] = None,
+) -> tuple[list[dict[str, Any]], dict[int, dict[str, Any]]]:
+    """QuickEnrich dataset-search -> waterfall-item persons + pre-resolved emails.
+
+    Returns ``(persons, pre_resolved_by_index)``. Empty persons = clean miss /
+    provider off / provider error (never raises out). Mirrors the contacts_db
+    discovery path exactly: local strict-titles gate, max_results truncation,
+    and collector capture BEFORE truncation. Persons whose dataset-search row
+    already carried an email (the search runs has_email=true) seed the
+    pre-resolved map so the per-person cascade never re-asks a paid tier for
+    an email QuickEnrich already returned.
+    """
+    if record_provider_use is not None:
+        try:
+            record_provider_use("quickenrich")
+        except Exception:
+            pass
+    try:
+        page = await quickenrich_client.domain_search(
+            blitz_http,
+            company_url=domain,
+            titles=include_titles if title_filter_active else _quickenrich_default_titles(),
+        )
+    except Exception as e:
+        logger.warning("QuickEnrich dataset_search failed for %s: %s", domain, e)
+        return [], {}
+    if page is None or _is_provider_error(page):
+        if page is not None:
+            logger.warning(
+                "QuickEnrich dataset_search error for %s: %s", domain, getattr(page, "message", "")
+            )
+        return [], {}
+
+    employees = page.get("employees") or []
+    if not employees:
+        return [], {}
+
+    # Collector capture BEFORE the title gate / truncation (parity with the
+    # contacts_db + blitz paths — everything the provider returned is kept in
+    # the audit surface).
+    if collector is not None:
+        for emp in employees:
+            try:
+                collector.capture_company_contact(
+                    source="quickenrich",
+                    domain=domain,
+                    company_linkedin_url=company_linkedin_url,
+                    contact=emp,
+                )
+            except Exception as cap_err:
+                logger.debug(
+                    "collector.capture_company_contact(quickenrich) failed for %s: %s",
+                    domain, cap_err,
+                )
+
+    persons: list[dict[str, Any]] = []
+    pre_resolved: dict[int, dict[str, Any]] = {}
+    for emp in employees:
+        title = emp.get("title", "")
+        if title_filter_active and not title_filter.person_matches_titles(
+            title, "", include_titles, exclude_titles, "", "",
+        ):
+            continue
+        if len(persons) >= max_results:
+            break
+        person_dict = {
+            "title": title,
+            "first_name": emp.get("first_name", ""),
+            "last_name": emp.get("last_name", ""),
+            "full_name": emp.get("full_name", ""),
+            "headline": "",
+            "linkedin_url": emp.get("linkedin_url", ""),
+            "email": emp.get("email", ""),
+            "phone": emp.get("phone", ""),
+            "location": {
+                "city": emp.get("city", ""),
+                "country_code": emp.get("country_code", ""),
+            },
+            "experiences": [],
+        }
+        if emp.get("email"):
+            pre_resolved[len(persons)] = {
+                "email": emp["email"],
+                "email_verification_date": emp.get("email_verification_date", ""),
+            }
+        persons.append({"person": person_dict, "icp": 0})
+    return persons, pre_resolved
 
 
 def _prepass_flat_to_waterfall_item(flat: dict[str, Any]) -> dict[str, Any]:
@@ -3174,7 +3487,11 @@ async def _enrich_domain(
                             "Blitz skipped for %s (stored %s miss within TTL)",
                             domain, _miss_kind,
                         )
-                else:
+                elif not _should_skip_provider("blitz", force_provider):
+                    # G12 fix (2026-10-10): the live d2l is a Blitz call —
+                    # force_provider/selected_providers must gate it like every
+                    # other Blitz step (the prepass-URL reuse above stays
+                    # ungated: that answer was already paid for).
                     _record("blitz")
                     try:
                         d2l = await blitz_client.domain_to_linkedin(blitz_http, domain)
@@ -3202,44 +3519,6 @@ async def _enrich_domain(
         "company_employee_count": company_employee_count_for_row,
     }
 
-    if not company_linkedin_url:
-        # No company LinkedIn found — try fallback if we have a name
-        if full_name and not _should_skip_provider("contacts_db", force_provider):
-            _record("contacts_db")
-            try:
-                contacts_data = await contacts_client.person_by_name_and_domain(
-                    contacts_http, full_name, domain
-                )
-                email = contacts_client.extract_email_from_contacts_response(contacts_data)
-                if contacts_data:
-                    person_stub: dict[str, Any] = {
-                        "first_name": contacts_data.get("first_name", ""),
-                        "last_name": contacts_data.get("last_name", ""),
-                        "full_name": contacts_data.get("full_name", full_name),
-                        "headline": contacts_data.get("headline", ""),
-                        "linkedin_url": contacts_data.get("linkedin_url", ""),
-                        "location": {
-                            "city": contacts_data.get("city", ""),
-                            "country_code": contacts_data.get("country_code", ""),
-                        },
-                        "experiences": [],
-                    }
-                    return [
-                        _build_person_row(
-                            base_row, "", person_stub, 0, email or "", SOURCE_CONTACTS_NAME
-                        )
-                    ]
-            except Exception as e:
-                _record_company_error("contacts_db", "person_by_name_and_domain_fallback", str(e))
-                logger.warning("Contacts DB fallback for no-linkedin failed: %s", e)
-        no_linkedin_out = _no_linkedin_row(base_row)
-        _stamp_company_errors(no_linkedin_out, company_provider_errors)
-        return [no_linkedin_out]
-
-    # Step 2: Get decision makers (Contacts DB FIRST, unless custom cascade or force_provider provided)
-    persons: list[dict[str, Any]] = []
-    contacts_db_quality_met = False
-
     # Local title gate (parity with list_builder): when the request carried
     # titles (cascade with include/exclude), EVERY discovery path — Contacts
     # DB, the Blitz waterfall — is re-filtered locally so the response only
@@ -3252,6 +3531,77 @@ async def _enrich_domain(
         default_cascade=blitz_client.DEFAULT_CASCADE,
     )
     title_filter_active = bool(include_titles or exclude_titles)
+
+
+    qe_pre_resolved_by_index: dict[int, dict[str, Any]] = {}
+    qe_discovery_met = False
+    if not company_linkedin_url:
+        # QuickEnrich no-LI rescue (2026-10-10): dataset-search is domain-keyed
+        # (company_url IS the domain) — the one DM-discovery tier that needs NO
+        # company LinkedIn URL. Domains where Contacts DB + Blitz d2l both
+        # failed previously died on the no_linkedin return below; QuickEnrich
+        # now answers them. Success flows into Step 2 (contacts_db DMs may
+        # still win — free tier precedence) with the QE pre-resolved emails.
+        if (
+            not use_custom_cascade
+            and not _should_skip_provider("quickenrich", force_provider)
+        ):
+            qe_persons, qe_pre = await _quickenrich_domain_discovery(
+                blitz_http,
+                domain,
+                include_titles=include_titles,
+                exclude_titles=exclude_titles,
+                title_filter_active=title_filter_active,
+                max_results=max_results,
+                collector=collector,
+                company_linkedin_url="",
+                record_provider_use=record_provider_use,
+            )
+            if qe_persons:
+                persons = qe_persons
+                qe_pre_resolved_by_index = qe_pre
+                qe_discovery_met = True
+                logger.info(
+                    "QuickEnrich no-LI rescue: %d decision makers for %s",
+                    len(qe_persons), domain,
+                )
+        if not persons:
+            # No company LinkedIn found — try fallback if we have a name
+            if full_name and not _should_skip_provider("contacts_db", force_provider):
+                _record("contacts_db")
+                try:
+                    contacts_data = await contacts_client.person_by_name_and_domain(
+                        contacts_http, full_name, domain
+                    )
+                    email = contacts_client.extract_email_from_contacts_response(contacts_data)
+                    if contacts_data:
+                        person_stub: dict[str, Any] = {
+                            "first_name": contacts_data.get("first_name", ""),
+                            "last_name": contacts_data.get("last_name", ""),
+                            "full_name": contacts_data.get("full_name", full_name),
+                            "headline": contacts_data.get("headline", ""),
+                            "linkedin_url": contacts_data.get("linkedin_url", ""),
+                            "location": {
+                                "city": contacts_data.get("city", ""),
+                                "country_code": contacts_data.get("country_code", ""),
+                            },
+                            "experiences": [],
+                        }
+                        return [
+                            _build_person_row(
+                                base_row, "", person_stub, 0, email or "", SOURCE_CONTACTS_NAME
+                            )
+                        ]
+                except Exception as e:
+                    _record_company_error("contacts_db", "person_by_name_and_domain_fallback", str(e))
+                    logger.warning("Contacts DB fallback for no-linkedin failed: %s", e)
+            no_linkedin_out = _no_linkedin_row(base_row)
+            _stamp_company_errors(no_linkedin_out, company_provider_errors)
+            return [no_linkedin_out]
+
+    # Step 2: Get decision makers (Contacts DB FIRST, unless custom cascade or force_provider provided)
+    persons: list[dict[str, Any]] = []
+    contacts_db_quality_met = False
 
     skip_contacts = _should_skip_provider("contacts_db", force_provider)
     logger.info("Step 2: force_provider=%s, use_custom_cascade=%s, skip_contacts=%s",
@@ -3345,12 +3695,51 @@ async def _enrich_domain(
         # the waterfall too — the marker already answered it with a
         # definitive zero; the flow continues to the Step-2.4 GetLeads
         # fallback below exactly like the waterfall-empty path.
-        if _blitz_waterfall_skip:
+        if (
+            not contacts_db_quality_met
+            and not qe_discovery_met
+            and not use_custom_cascade
+            and not _should_skip_provider("quickenrich", force_provider)
+        ):
+            # QuickEnrich dataset-search — 2nd DM-discovery tier (2026-10-10
+            # reorder: contacts_db -> quickenrich -> blitz -> getleads).
+            # Runs BEFORE the blitz-waterfall-skip check on purpose: a stored
+            # Blitz 'contacts' miss says BLITZ found nobody; QuickEnrich is a
+            # different source and still gets its chance.
+            qe_persons, qe_pre = await _quickenrich_domain_discovery(
+                blitz_http,
+                domain,
+                include_titles=include_titles,
+                exclude_titles=exclude_titles,
+                title_filter_active=title_filter_active,
+                max_results=max_results,
+                collector=collector,
+                company_linkedin_url=company_linkedin_url,
+                record_provider_use=record_provider_use,
+            )
+            if qe_persons:
+                persons = qe_persons
+                qe_pre_resolved_by_index = qe_pre
+                qe_discovery_met = True
+                logger.info(
+                    "QuickEnrich dataset-search: %d decision makers for %s",
+                    len(qe_persons), domain,
+                )
+        elif _blitz_waterfall_skip:
             logger.info(
                 "Blitz waterfall skipped for %s (stored 'contacts' miss within TTL)",
                 domain,
             )
-        elif not contacts_db_quality_met and not _should_skip_provider("blitz", force_provider):
+        if contacts_db_quality_met and qe_pre_resolved_by_index:
+            # contacts_db (free, first tier) won after a QE no-LI rescue —
+            # its persons replaced the QE discovery rows, so the QE
+            # pre-resolved indexes no longer line up.
+            qe_pre_resolved_by_index = {}
+        elif (
+            not contacts_db_quality_met
+            and not qe_discovery_met
+            and not _should_skip_provider("blitz", force_provider)
+        ):
             _record("blitz")
             if _prepass_covered:
                 # Wave 2: the find-people prepass already answered Blitz for
@@ -3819,6 +4208,7 @@ async def _enrich_domain(
             company_linkedin_url=company_linkedin_url,
             pre_resolved_smartprospect=pre_resolved_by_index.get(idx),
             pre_resolved_getleads=pre_resolved_getleads_by_index.get(idx),
+            pre_resolved_quickenrich=qe_pre_resolved_by_index.get(idx),
         )
         for idx, item in enumerate(persons)
     ]

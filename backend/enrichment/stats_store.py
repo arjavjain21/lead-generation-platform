@@ -65,6 +65,12 @@ SOURCE_GROUPS: dict[str, str] = {
     # `getleads` provider group so reporting aggregates to one number.
     "getleads": "getleads",
     "getleads_email": "getleads",
+    # QuickEnrich sources — person email from employee-search and decision
+    # makers from dataset-search both aggregate to the canonical
+    # `quickenrich` provider group.
+    "quickenrich": "quickenrich",
+    "quickenrich_email": "quickenrich",
+    "quickenrich_contacts": "quickenrich",
     # BetterEnrich sources
     "better_enrich_company": "better_enrich",
     "better_enrich_person": "better_enrich",

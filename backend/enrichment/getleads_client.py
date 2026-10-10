@@ -817,6 +817,21 @@ async def find_email_by_linkedin(
     if not url:
         logger.debug("GetLeads find_email_by_linkedin requires linkedin_url")
         return None
+    # G7 fix (2026-10-10): from-linkedin is a PAID endpoint (1 credit per
+    # success row) and previously accepted ANY non-empty string — company
+    # pages (/company/...) and garbage URLs were POSTed and could match a
+    # wrong entity. Require a person profile URL (linkedin.com host + /in/
+    # path), same rules as blitz_client._valid_person_linkedin_url.
+    from urllib.parse import urlparse as _urlparse
+    _parsed = _urlparse(url if "://" in url else f"https://{url}")
+    _host = (_parsed.netloc or "").lower()
+    _path = _parsed.path or ""
+    if (
+        (_host != "linkedin.com" and not _host.endswith(".linkedin.com"))
+        or "/in/" not in _path
+    ):
+        logger.debug("GetLeads find_email_by_linkedin: not a person profile URL, skipping")
+        return None
 
     result = await _post_enrich(
         client,

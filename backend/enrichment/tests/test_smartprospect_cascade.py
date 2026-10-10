@@ -191,9 +191,10 @@ class TestMethodHelpers:
 
 class TestRoutePlanning:
     def test_name_domain_cascade_has_smartprospect_between_blitz_and_wizleads(self):
-        """CRITICAL: smartprospect is positioned between Blitz and WizLeads
-        in the name+domain cascade. Mirrors the cascade order documented in
-        pipeline.route_enrichment.
+        """CRITICAL (2026-10-10 reorder): smartprospect now runs BEFORE blitz
+        (promoted to the first paid tier); blitz is demoted to 5th, wizleads
+        stays last-active. Full order: contacts_db -> smartprospect ->
+        quickenrich -> getleads -> blitz -> wizleads -> better_enrich.
         """
         result = pipeline.route_enrichment(
             full_name="John Doe",
@@ -202,11 +203,19 @@ class TestRoutePlanning:
             domain="example.com",
         )
         providers_in_order = [step["provider"] for step in result["steps"]]
-        assert "smartprospect" in providers_in_order
+        assert providers_in_order == [
+            "contacts_db",
+            "smartprospect",
+            "quickenrich",
+            "getleads",
+            "blitz",
+            "wizleads",
+            "better_enrich",
+        ]
         blitz_idx = providers_in_order.index("blitz")
         sp_idx = providers_in_order.index("smartprospect")
         wl_idx = providers_in_order.index("wizleads")
-        assert blitz_idx < sp_idx < wl_idx
+        assert sp_idx < blitz_idx < wl_idx
 
     def test_name_domain_cascade_no_smartprospect_when_first_name_missing(self):
         """When only full_name is present (no first_name/last_name split),
@@ -286,13 +295,22 @@ class TestRouteEnrichmentAutoDerivesNames:
 
     def test_full_name_only_produces_all_six_providers_in_correct_order(self):
         """End-to-end check: enhanced-mode style call produces the full cascade
-        in the documented order (getleads sits between blitz and smartprospect)."""
+        in the documented order (2026-10-10: contacts_db -> smartprospect ->
+        quickenrich -> getleads -> blitz -> wizleads -> better_enrich)."""
         result = pipeline.route_enrichment(
             full_name="Connor Gillivan",
             domain="ecombalance.com",
         )
         providers = [s["provider"] for s in result["steps"]]
-        assert providers == ["contacts_db", "blitz", "getleads", "smartprospect", "wizleads", "better_enrich"]
+        assert providers == [
+            "contacts_db",
+            "smartprospect",
+            "quickenrich",
+            "getleads",
+            "blitz",
+            "wizleads",
+            "better_enrich",
+        ]
 
     def test_explicit_first_and_last_are_not_overridden(self):
         """When the caller provides explicit first_name and last_name, the

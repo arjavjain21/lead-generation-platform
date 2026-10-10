@@ -55,6 +55,8 @@ def _run(coro):
 
 class TestRoutePlanGetLeadsAfterBlitz:
     def test_linkedin_only_step_order(self):
+        """2026-10-10 reorder: contacts_db -> quickenrich -> getleads ->
+        blitz(person_enrich_by_linkedin) -> blitz(find_work_email)."""
         route = pipeline_mod.route_enrichment(
             linkedin_url="https://linkedin.com/in/jane"
         )
@@ -62,14 +64,16 @@ class TestRoutePlanGetLeadsAfterBlitz:
         methods = [s["method"] for s in route["steps"]]
         assert methods == [
             pipeline_mod.ROUTE_METHOD_PERSON_BY_LINKEDIN,
+            pipeline_mod.ROUTE_METHOD_EMPLOYEE_SEARCH_LINKEDIN_QUICKENRICH,
+            pipeline_mod.ROUTE_METHOD_FIND_EMAIL_LINKEDIN_GETLEADS,
             pipeline_mod.ROUTE_METHOD_PERSON_ENRICH_BY_LINKEDIN,
             pipeline_mod.ROUTE_METHOD_FIND_WORK_EMAIL,
-            pipeline_mod.ROUTE_METHOD_FIND_EMAIL_LINKEDIN_GETLEADS,
         ], methods
 
     def test_linkedin_first_with_name_domain_getleads_before_fallbacks(self):
         """With linkedin + name + domain, the getleads LinkedIn step stays in
-        the LinkedIn block (after Blitz) and BEFORE the name+domain block."""
+        the LinkedIn block (now BEFORE both Blitz steps — 2026-10-10 reorder)
+        and BEFORE the name+domain block."""
         route = pipeline_mod.route_enrichment(
             linkedin_url="https://linkedin.com/in/jane",
             full_name="Jane Doe",
@@ -81,7 +85,7 @@ class TestRoutePlanGetLeadsAfterBlitz:
         gl_idx = methods.index(pipeline_mod.ROUTE_METHOD_FIND_EMAIL_LINKEDIN_GETLEADS)
         blitz_fwe_idx = methods.index(pipeline_mod.ROUTE_METHOD_FIND_WORK_EMAIL)
         nd_idx = methods.index(pipeline_mod.ROUTE_METHOD_PERSON_BY_NAME_DOMAIN)
-        assert blitz_fwe_idx < gl_idx < nd_idx
+        assert gl_idx < blitz_fwe_idx < nd_idx
 
     def test_capability_gate_requires_linkedin_url(self):
         assert pipeline_mod._can_provider_use_method(

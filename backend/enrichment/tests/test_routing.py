@@ -42,8 +42,9 @@ from enrichment import providers as providers_mod  # noqa: E402
 
 class TestRouteEnrichmentPure(unittest.TestCase):
     def test_linkedin_first_cascade_order(self):
-        """Criterion 2: LinkedIn URL is present, calls land in this order:
-        Contacts DB -> Blitz LinkedIn -> Blitz find_work_email -> (name/domain fallbacks).
+        """Criterion 2: LinkedIn URL is present, calls land in this order
+        (2026-10-10 reorder): Contacts DB -> QuickEnrich -> GetLeads ->
+        Blitz LinkedIn -> Blitz find_work_email -> (name/domain fallbacks).
         """
         route = pipeline_mod.route_enrichment(
             linkedin_url="https://linkedin.com/in/johndoe",
@@ -52,9 +53,11 @@ class TestRouteEnrichmentPure(unittest.TestCase):
         )
         methods = [s["method"] for s in route["steps"]]
         self.assertEqual(
-            methods[:3],
+            methods[:5],
             [
                 pipeline_mod.ROUTE_METHOD_PERSON_BY_LINKEDIN,
+                pipeline_mod.ROUTE_METHOD_EMPLOYEE_SEARCH_LINKEDIN_QUICKENRICH,
+                pipeline_mod.ROUTE_METHOD_FIND_EMAIL_LINKEDIN_GETLEADS,
                 pipeline_mod.ROUTE_METHOD_PERSON_ENRICH_BY_LINKEDIN,
                 pipeline_mod.ROUTE_METHOD_FIND_WORK_EMAIL,
             ],
@@ -89,8 +92,13 @@ class TestRouteEnrichmentPure(unittest.TestCase):
         route = pipeline_mod.route_enrichment(full_name="John Doe", domain="acme.com")
         self.assertEqual(route["mode"], "name_domain")
         methods = [s["method"] for s in route["steps"]]
+        # 2026-10-10 order: contacts_db -> smartprospect -> quickenrich ->
+        # getleads -> blitz -> wizleads -> better_enrich.
         self.assertEqual(methods[0], pipeline_mod.ROUTE_METHOD_PERSON_BY_NAME_DOMAIN)
-        self.assertEqual(methods[1], pipeline_mod.ROUTE_METHOD_PERSON_ENRICH)
+        self.assertEqual(methods[1], pipeline_mod.ROUTE_METHOD_FIND_EMAIL_SMARTPROSPECT)
+        self.assertEqual(methods[2], pipeline_mod.ROUTE_METHOD_EMPLOYEE_SEARCH_QUICKENRICH)
+        self.assertEqual(methods[3], pipeline_mod.ROUTE_METHOD_FIND_EMAIL_GETLEADS)
+        self.assertEqual(methods[4], pipeline_mod.ROUTE_METHOD_PERSON_ENRICH)
         self.assertIn(pipeline_mod.ROUTE_METHOD_FIND_WORK_EMAIL_V3, methods)
 
     def test_domain_only_returns_empty_steps(self):

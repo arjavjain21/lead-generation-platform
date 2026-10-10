@@ -19,6 +19,7 @@ ENABLED_PROVIDERS: Final[dict[str, bool]] = {
     "wizleads": True,
     "better_enrich": False,   # ← disabled 2026-09-29: $240/10K-credit packs burning ~1/day (100K+ calls/day); key re-exhausted (403 storm). No budget to renew — see BETTERENRICH_BILLING_REVIEW_2026-09-27.md
     "getleads": True,   # GetLeads (app.getleads.io), email + decision-makers enrichment
+    "quickenrich": True,   # QuickEnrich (app.quickenrich.io), person email + domain decision-makers. Standard plan ($99/mo, 2026-10): 1000 RPM search / 300 RPM domain. Kill switch ENABLE_QUICKENRICH.
     "prospeo": False,   # ← disable Prospeo (was paid, temporarily disabled)
 }
 
@@ -41,6 +42,9 @@ def is_provider_enabled(provider: str) -> bool:
             return False
     if provider == "getleads":
         if os.environ.get("ENABLE_GETLEADS", "true").lower() != "true":
+            return False
+    if provider == "quickenrich":
+        if os.environ.get("ENABLE_QUICKENRICH", "true").lower() != "true":
             return False
     return True
 

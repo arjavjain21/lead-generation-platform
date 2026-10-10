@@ -888,6 +888,62 @@ def normalize_getleads_contact(raw: dict) -> Optional[dict[str, str]]:
     )
 
 
+def normalize_quickenrich_contact(raw: dict) -> Optional[dict[str, str]]:
+    """Normalize a QuickEnrich (app.quickenrich.io) contact dict.
+
+    Handles BOTH shapes that flow through the cascade:
+
+      (a) ``quickenrich_client._parse_employee_record`` output — the client's
+          canonical dict (``email``, ``first_name``/``last_name``/``full_name``,
+          ``linkedin_url``, ``phone``, firmographics).
+      (b) A raw vendor EmployeeRecord — ``employee_linkedin`` instead of
+          ``linkedin_url``, ``email_verification_date``, ``employee_phone``,
+          literal ``"N/A"`` sentinels for missing values.
+
+    QuickEnrich never emits a failure flag: a no-match is HTTP 200 with
+    ``data: []`` (filtered upstream — such rows never reach the collector).
+    A record that reaches here with no email is skipped (None), matching the
+    GetLeads found-gate convention — the dataset-search lane always asks
+    ``has_email=true`` so an email-less record is noise, not a lead.
+    """
+    if not isinstance(raw, dict):
+        return None
+
+    email = raw.get("email")
+    if not normalize_email(email):
+        return None
+
+    def _pick(*keys: str) -> Any:
+        for key in keys:
+            value = raw.get(key)
+            if isinstance(value, str):
+                stripped = value.strip()
+                if stripped and stripped.lower() != "n/a":
+                    return stripped
+            elif value not in (None, ""):
+                return value
+        return ""
+
+    return _build_record(
+        source="quickenrich",
+        email=email,
+        first_name=_pick("first_name"),
+        last_name=_pick("last_name"),
+        full_name=_pick("full_name"),
+        title=_pick("title"),
+        linkedin_url=_pick("linkedin_url", "employee_linkedin"),
+        domain=_pick("email_domain", "company_url", "domain"),
+        phone=_pick("phone", "employee_phone"),
+        city=_pick("city"),
+        country=_pick("country_code", "country"),
+        company_name=_pick("company_name"),
+        company_industry=_pick("industry"),
+        employee_count=_pick("employee_count"),
+        revenue=_pick("revenue"),
+        email_last_verified_at=_pick("email_verification_date"),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Generic dispatcher
 # ---------------------------------------------------------------------------
@@ -910,6 +966,10 @@ _PROVIDER_DISPATCH: dict[str, Callable[[dict], Optional[dict[str, str]]]] = {
     "getleads": normalize_getleads_contact,
     "get_leads": normalize_getleads_contact,
     "get-leads": normalize_getleads_contact,
+    "quickenrich": normalize_quickenrich_contact,
+    "quick_enrich": normalize_quickenrich_contact,
+    "quick-enrich": normalize_quickenrich_contact,
+    "qe": normalize_quickenrich_contact,
 }
 
 
@@ -952,6 +1012,7 @@ __all__ = [
     "normalize_better_enrich_contact",
     "normalize_wizleads_contact",
     "normalize_getleads_contact",
+    "normalize_quickenrich_contact",
     "normalize_provider_contact",
     "previous_companies_titles",
 ]
