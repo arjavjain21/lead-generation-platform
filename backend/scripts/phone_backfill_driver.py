@@ -56,6 +56,10 @@ DRIVER_LOG = STATE / "driver.log"
 
 BATCH = 2000
 CONCURRENCY = 40
+# STORE_MODE=off: write result CSVs but skip core.phone upserts (used when a
+# recovery/storage transaction holds the table — CSVs are recovered later by
+# the same staging upsert).
+STORE_MODE = os.getenv("PHONE_BACKFILL_STORE", "on").lower() != "off"
 POOL_FLOOR = 1_000_000
 ERROR_STOP = 60
 SOURCE_NAME = "blitz_direct_phone_backfill_20261010"
@@ -93,40 +97,48 @@ async def pool_remaining() -> int | None:
         return None
 
 
+def _db_stored_count() -> int:
+    r = subprocess.run(
+        ["sudo", "-u", "postgres", "psql", "-p", "5432", "contacts", "-qAt",
+         "-c", f"SELECT COUNT(*) FROM core.phone WHERE source_name='{SOURCE_NAME}';"],
+        capture_output=True, text=True, timeout=120,
+    )
+    try:
+        return int(r.stdout.strip() or 0)
+    except ValueError:
+        return 0
+
+
 def store_batch(rows: list[tuple[str, str]]) -> int:
-    """Upsert found (slug, phone) rows into core.phone. Returns stored count."""
+    """Upsert found (slug, phone) rows into core.phone. Returns NEW rows stored
+    (computed as a DB count delta — the reliable way; INSERT tags and RETURNING
+    variants both proved fragile through psql stdin scripting)."""
     if not rows:
         return 0
+    before = _db_stored_count()
     stage = RESULTS / "stage.tsv"
     with open(stage, "w") as f:
         for slug, phone in rows:
             f.write(f"{slug}\t{phone}\n")
-    # \copy is a psql meta-command: the script must go via stdin (not -c).
     script = f"""
 BEGIN;
 CREATE TEMP TABLE _stage (linkedin_norm text, phone_e164 text);
 \\copy _stage FROM '{stage}' WITH (FORMAT csv, DELIMITER E'\\t')
-CREATE TEMP TABLE _ins AS
 INSERT INTO core.phone (person_id, phone_e164, type, source_name)
 SELECT p.person_id, s.phone_e164, 'mobile', '{SOURCE_NAME}'
 FROM _stage s JOIN core.person p ON p.linkedin_norm = s.linkedin_norm
-ON CONFLICT (phone_e164) DO NOTHING
-RETURNING person_id;
-SELECT count(*) FROM _ins;
+ON CONFLICT (phone_e164) DO NOTHING;
 COMMIT;
 """
     proc = subprocess.run(
-        ["sudo", "-u", "postgres", "psql", "-p", "5432", "contacts", "-qAt"],
+        ["sudo", "-u", "postgres", "psql", "-p", "5432", "contacts", "-qAt",
+         "-v", "ON_ERROR_STOP=1"],
         input=script, capture_output=True, text=True, timeout=300,
     )
-    # -qAt prints the SELECT count(*) line (quiet mode hides INSERT tags).
-    stored = 0
-    for m in re.finditer(r"^(\d+)$", proc.stdout.strip(), re.M):
-        stored = int(m.group(1))
     if proc.returncode != 0:
         log(f"STORE ERROR: {proc.stderr[:300]}")
         return 0
-    return stored
+    return max(0, _db_stored_count() - before)
 
 
 async def main() -> None:
@@ -184,13 +196,14 @@ async def main() -> None:
             done += len(batch)
             batch_no += 1
 
-            with open(RESULTS / f"batch_{batch_no:05d}.csv", "w", newline="") as f:
+            _stamp = time.strftime("%H%M%S")
+            with open(RESULTS / f"batch_{_stamp}_{batch_no:05d}.csv", "w", newline="") as f:
                 w = csv.writer(f)
                 w.writerow(["linkedin_url", "phone_number", "phone_found"])
                 for u, p in rows:
                     w.writerow([u, p or "", bool(p)])
 
-            stored = store_batch(hits)
+            stored = store_batch(hits) if STORE_MODE else 0
             stored_total += stored
             for _, u in batch:
                 outf.write(u.rstrip("/").split("/in/")[-1] + "\n")
@@ -221,4 +234,5 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    (STATE / "driver.pid").write_text(str(os.getpid()))
     asyncio.run(main())
