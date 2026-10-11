@@ -62,7 +62,7 @@ CONCURRENCY = 40
 STORE_MODE = os.getenv("PHONE_BACKFILL_STORE", "on").lower() != "off"
 POOL_FLOOR = 1_000_000
 ERROR_STOP = 60
-SOURCE_NAME = "blitz_direct_phone_backfill_20261010"
+SOURCE_NAME = os.getenv("PHONE_BACKFILL_SOURCE", "blitz_direct_phone_backfill_20261010")
 PROBE_URL = "https://www.linkedin.com/in/zzz-nonexistent-pool-probe"  # known miss -> free
 BLITZ_KEY = re.search(r"^BLITZ_API_KEY=(.+)$", (Path(__file__).resolve().parent.parent / ".env").read_text(), re.M).group(1).strip()
 
