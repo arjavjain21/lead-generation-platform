@@ -921,13 +921,16 @@ _LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
     "providers": {
         "cascade_order": [
             {"name": "contacts_db", "rate": "75 RPS", "role": "Internal PostgreSQL DB, always first, free"},
-            {"name": "blitz", "rate": "50 RPS per endpoint (legacy plan; client cap BLITZ_RPS, default 40)", "role": "LinkedIn-based enrichment with title cascade. Fair use: 15M records/month."},
-            {"name": "smartprospect", "rate": "30 RPS", "role": "SmartLead Find Emails — self-verifying person-email finder, batch up to 10. Gates on firstName+lastName+domain."},
-            {"name": "wizleads", "rate": "10 RPS", "role": "Catch-all verified email enrichment"},
-            {"name": "better_enrich", "rate": "10 RPS", "role": "Person + company email (final fallback)"},
+            {"name": "smartprospect", "rate": "1900 RPM shared cross-process (account cap 2000/min)", "role": "SmartLead Find Emails — self-verifying person-email finder, batch up to 10. Gates on firstName+lastName+domain."},
+            {"name": "quickenrich", "rate": "900/280 RPM (two shared lanes: person-search / dataset-search)", "role": "QuickEnrich — person email via employee-search + domain decision-makers via dataset-search (added 2026-10-10)."},
+            {"name": "getleads", "rate": "batch 100 (plan ~10k/min, fair-use metered)", "role": "Verified DM emails + bonus phones; from-linkedin fallback in the LinkedIn arm; decision-makers domain fallback when the whole arm misses."},
+            {"name": "blitz", "rate": "50 RPS per endpoint (per-lane caps BLITZ_RPS family; FUP 15M records/mo)", "role": "LinkedIn-based enrichment with title waterfall. Billing: search bills per returned result; email/phone bill per call; person/domain-to-linkedin success-only."},
+            {"name": "wizleads", "rate": "10 RPS", "role": "Catch-all verified email enrichment (last active tier)"},
+            {"name": "better_enrich", "rate": "10 RPS", "role": "DISABLED since 2026-09-29 (credit incident) — global kill switch beats force_provider/selected_providers"},
             {"name": "prospeo", "rate": "n/a", "role": "DISABLED — code present, end-to-end off"},
         ],
         "cascade_behavior": "Stop on first provider that returns a usable contact. Later providers are skipped for that row.",
+        "cascade_arms": "order above = person arm (name+domain) · linkedin_url arm: contacts_db -> quickenrich -> getleads -> blitz · domain-only DM discovery arm: contacts_db -> quickenrich(dataset-search) -> blitz(waterfall) -> getleads(decision-makers fallback)",
         "title_tiers_default": {
             "tier_1": ["Owner", "CEO", "Founder", "Co-Founder", "President"],
             "tier_2": ["CMO", "CTO", "COO", "VP-level"],
@@ -956,7 +959,8 @@ _LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
             "path": "/api/enrichment/providers",
             "auth": "jwt or api key",
             "summary": "List currently enabled providers.",
-            "response_shape": '{"providers": ["contacts_db","blitz","smartprospect","wizleads","better_enrich"]}',
+            "response_shape": '{"providers": ["contacts_db","blitz","smartprospect","wizleads","getleads","quickenrich"]}',
+            "note": "Membership only — the response order is NOT the cascade order; see providers.cascade_order above.",
         },
         {
             "method": "GET",
