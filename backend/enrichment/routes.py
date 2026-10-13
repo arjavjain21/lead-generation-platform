@@ -46,6 +46,7 @@ from . import wizleads_client
 from . import getleads_client
 from . import smartprospect_client
 from . import quickenrich_client
+from . import mailtester_client
 from . import providers
 from . import identifier_utils
 from . import contacts_writer
@@ -4011,6 +4012,275 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
     finally:
         # Shared cascade clients are reused across requests — do NOT close here.
         _ENRICH_SEMAPHORE.release()
+
+
+# ---------------------------------------------------------------------------
+# QuickEnrich direct endpoint (2026-10-13) — QE-only fast path
+#
+# Thin wrapper over the POST /enrich executor (unified_enrich) with
+# force_provider="quickenrich":
+# one call → QuickEnrich employee-search (person) or dataset-search (domain
+# decision-makers), normalized contacts, and the standard contacts_writer
+# write-back with the sync_to_contacts_db receipt. On the GTM Unlimited plan
+# (5800/5800 RPM shared lanes) this is the fastest paid path in the platform.
+# Optional validate_emails=true adds a MailTester pass: emails whose code is not in
+# the accepted set (default "ok") are dropped from the response; hard-invalid
+# ("ko") emails are additionally poisoned in the Contacts DB via
+# mark_email_invalid (mark-not-delete, matching the cascade's policy).
+# ---------------------------------------------------------------------------
+
+_QUICKENRICH_ENDPOINT_MAX_DOMAINS = int(
+    os.getenv("QUICKENRICH_ENDPOINT_MAX_DOMAINS", "25")
+)
+_QUICKENRICH_BATCH_CONCURRENCY = int(
+    os.getenv("QUICKENRICH_BATCH_CONCURRENCY", "5")
+)
+
+
+class QuickEnrichDirectRequest(BaseModel):
+    """Request model for POST /api/enrichment/quickenrich.
+
+    Single lookup: pass ONE of
+        - domain (+ optional full_name for a specific person)
+        - linkedin_url (person email via employee-search)
+    Batch lookup: pass domains (list, deduplicated, max
+    QUICKENRICH_ENDPOINT_MAX_DOMAINS); cannot be combined with other fields.
+
+    titles: comma-separated decision-maker titles for domain mode
+        (default cascade tiers apply when omitted; local strict-title gate
+        still filters the results).
+    validate_emails: run MailTester on every returned email; non-accepted
+        codes (default policy accepts "ok" only) are dropped from the
+        response, hard-invalid ("ko") emails are marked invalid in the
+        Contacts DB.
+    """
+
+    domain: Optional[str] = None
+    domains: Optional[list[str]] = None
+    full_name: Optional[str] = None
+    linkedin_url: Optional[str] = None
+    titles: Optional[str] = None
+    max_results: int = 5
+    validate_emails: bool = False
+
+    class Config:
+        schema_extra = {
+            "examples": [
+                {"domain": "stripe.com"},
+                {"domain": "stripe.com", "full_name": "Patrick Collison"},
+                {"linkedin_url": "https://www.linkedin.com/in/patrickcollison"},
+                {"domains": ["stripe.com", "linear.app", "vercel.com"]},
+                {"domain": "stripe.com", "titles": "CEO,CTO,Founder"},
+                {"domain": "stripe.com", "validate_emails": True},
+            ]
+        }
+
+
+def _quickenrich_endpoint_available() -> bool:
+    """True when QuickEnrich can serve requests (key + kill switches)."""
+    return (
+        quickenrich_client.is_configured()
+        and os.environ.get("ENABLE_QUICKENRICH", "true").lower() == "true"
+        and providers.is_provider_enabled("quickenrich")
+    )
+
+
+def _quickenrich_validation_summary(counts: dict) -> dict:
+    return {
+        "validator": "mailtester",
+        "validated": counts.get("validated", 0),
+        "accepted": counts.get("accepted", 0),
+        "dropped_policy_rejected": counts.get("mb", 0),
+        "dropped_invalid": counts.get("ko", 0),
+        "unavailable": counts.get("unavailable", 0),
+    }
+
+
+async def _quickenrich_validate_contacts(
+    contacts: list, domain: Optional[str]
+) -> tuple[list, dict]:
+    """MailTester-validate QuickEnrich contacts.
+
+    Returns (kept_contacts, summary). Contacts whose email codes outside the
+    accepted set are dropped; "ko" emails are additionally poisoned in the
+    Contacts DB (mark_email_invalid). MailTester unavailability fails OPEN
+    (contact kept, validation_status "unknown") — same policy as the cascade.
+    """
+    kept: list = []
+    counts = {"validated": 0, "accepted": 0, "mb": 0, "ko": 0, "unavailable": 0}
+    async with httpx.AsyncClient(timeout=_ENRICH_HTTP_TIMEOUT) as http:
+        for contact in contacts or []:
+            email = (contact or {}).get("email") or ""
+            if not email:
+                kept.append(contact)
+                continue
+            try:
+                result = await mailtester_client.verify_email(http, email)
+            except RuntimeError:
+                counts["validated"] += 1
+                counts["unavailable"] += 1
+                kept.append({
+                    **contact,
+                    "validation_status": "unknown",
+                    "mailtester_code": "unavailable",
+                })
+                continue
+            code = result.get("code", "")
+            counts["validated"] += 1
+            if result.get("valid"):
+                counts["accepted"] += 1
+                kept.append({
+                    **contact,
+                    "validation_status": _map_validation_status(code),
+                    "mailtester_code": code,
+                    "mailtester_message": result.get("message", ""),
+                })
+                continue
+            # Policy-rejected ("mb") or hard-invalid ("ko"): drop from the
+            # response. Only "ko" poisons the DB row — "mb" may resurface if
+            # the accept policy is later relaxed (cascade precedent).
+            counts[code if code in ("mb", "ko") else "ko"] += 1
+            if code == "ko":
+                try:
+                    await contacts_client.mark_email_invalid(
+                        http, email=email, domain=domain
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "QuickEnrich validate: mark_email_invalid failed for %s: %s",
+                        email, exc,
+                    )
+    return kept, _quickenrich_validation_summary(counts)
+
+
+@router.post("/quickenrich")
+async def quickenrich_direct(
+    req: QuickEnrichDirectRequest,
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """QuickEnrich-only lookup (person or domain decision-makers) with
+    contacts_writer sync. See QuickEnrichDirectRequest for the input shapes."""
+    if not _quickenrich_endpoint_available():
+        raise HTTPException(
+            status_code=503,
+            detail="QuickEnrich is disabled (kill switch or missing API key).",
+        )
+
+    has_single = bool(req.domain or req.linkedin_url)
+    if req.domains and has_single:
+        raise HTTPException(
+            status_code=400,
+            detail="'domains' (batch) cannot be combined with 'domain' or 'linkedin_url'.",
+        )
+    if not req.domains and not has_single:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide 'domain', 'linkedin_url', or 'domains' (batch).",
+        )
+    if req.full_name and not req.domain:
+        raise HTTPException(
+            status_code=400,
+            detail="'full_name' requires 'domain' (person lookup by name + company).",
+        )
+
+    def _sub_request(**overrides) -> UnifiedEnrichRequest:
+        return UnifiedEnrichRequest(
+            force_provider="quickenrich",
+            titles=req.titles,
+            max_results=req.max_results,
+            **overrides,
+        )
+
+    async def _run_one(item_domain: Optional[str], linkedin_url: Optional[str],
+                       full_name: Optional[str]) -> dict:
+        sub = _sub_request(
+            domain=item_domain,
+            linkedin_url=linkedin_url,
+            full_name=full_name,
+        )
+        # Delegate to the POST /enrich executor (unified_enrich): unlike the
+        # GET-shared _unified_enrich_logic, its domain_only arm has the full
+        # QuickEnrich dataset-search discovery wired (GET parity is a known
+        # open gap — G10).
+        result = await unified_enrich(sub, False, current_user)
+        if req.validate_emails:
+            kept, summary = await _quickenrich_validate_contacts(
+                result.get("contacts") or [], item_domain
+            )
+            result = {
+                **result,
+                "contacts": kept,
+                "contact_count": len(kept),
+                "validation": summary,
+            }
+        return result
+
+    if not req.domains:
+        return await _run_one(req.domain, req.linkedin_url, req.full_name)
+
+    # Batch mode: dedupe preserving order, cap, fan out bounded.
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in req.domains:
+        d = (raw or "").strip().lower()
+        if d and d not in seen:
+            seen.add(d)
+            cleaned.append(d)
+    if not cleaned:
+        raise HTTPException(
+            status_code=400, detail="'domains' contains no valid entries."
+        )
+    if len(cleaned) > _QUICKENRICH_ENDPOINT_MAX_DOMAINS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Batch too large: {len(cleaned)} domains "
+                f"(max {_QUICKENRICH_ENDPOINT_MAX_DOMAINS})."
+            ),
+        )
+
+    semaphore = asyncio.Semaphore(_QUICKENRICH_BATCH_CONCURRENCY)
+
+    async def _run_batch_item(item_domain: str) -> dict:
+        async with semaphore:
+            try:
+                result = await _run_one(item_domain, None, None)
+                return {"domain": item_domain, **result}
+            except HTTPException as exc:
+                return {
+                    "domain": item_domain,
+                    "error": exc.detail,
+                    "error_status": exc.status_code,
+                }
+            except Exception as exc:
+                logger.error(
+                    "QuickEnrich batch item %s failed: %s", item_domain, exc
+                )
+                return {
+                    "domain": item_domain,
+                    "error": "internal error",
+                    "error_status": 500,
+                }
+
+    results = await asyncio.gather(
+        *[_run_batch_item(d) for d in cleaned], return_exceptions=True
+    )
+    safe_results = [
+        r if not isinstance(r, Exception) else {"error": "internal error"}
+        for r in results
+    ]
+    succeeded = sum(1 for r in safe_results if "error" not in r)
+    contacts_found = sum(r.get("contact_count", 0) for r in safe_results)
+    return {
+        "success": True,
+        "batch": {
+            "total": len(cleaned),
+            "succeeded": succeeded,
+            "failed": len(cleaned) - succeeded,
+            "contacts_found": contacts_found,
+        },
+        "results": safe_results,
+    }
 
 
 @router.post("/upload")
