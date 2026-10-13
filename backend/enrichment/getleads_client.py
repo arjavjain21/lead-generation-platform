@@ -59,6 +59,7 @@ import httpx
 from . import pipeline  # For _ProviderError (insufficient_credits signaling)
 from shared import rate_limiter
 from shared.circuit_breaker import get_circuit_breaker, CircuitBreakerError
+from shared.env_utils import env_float
 
 logger = logging.getLogger(__name__)
 
@@ -87,10 +88,10 @@ if _LEGACY_RPS_RAW:
         _RATE_LIMIT_RPM,
     )
 else:
-    _RATE_LIMIT_RPM = float(os.getenv("GETLEADS_RATE_LIMIT_RPM", "95"))
+    _RATE_LIMIT_RPM = env_float("GETLEADS_RATE_LIMIT_RPM", "95")
 
 _REFILL_PER_SEC = _RATE_LIMIT_RPM / 60.0
-_CAPACITY = float(os.getenv("GETLEADS_RATE_LIMIT_BURST", str(_REFILL_PER_SEC)))
+_CAPACITY = env_float("GETLEADS_RATE_LIMIT_BURST", _REFILL_PER_SEC)
 
 # Endpoint paths for the enrichment APIs (auth via Bearer header).
 _FROM_PERSON_PATH = "/api/v1/enrich/from-person"

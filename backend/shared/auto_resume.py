@@ -39,13 +39,14 @@ import os
 from typing import Any
 
 from shared import db
+from shared.env_utils import env_float
 
 logger = logging.getLogger(__name__)
 
 # Jobs whose heartbeat went stale longer ago than this are NOT auto-resumed
 # (they predate this boot cycle; resurrecting weeks-old jobs would surprise
 # the user and burn provider credits).
-AUTO_RESUME_MAX_STALE_AGE_HOURS = float(os.getenv("AUTO_RESUME_MAX_STALE_AGE_HOURS", "24"))
+AUTO_RESUME_MAX_STALE_AGE_HOURS = env_float("AUTO_RESUME_MAX_STALE_AGE_HOURS", "24")
 
 # Hard cap on enrichment restart_count — beyond this the job is presumed
 # pathological and left for a human.
@@ -53,7 +54,7 @@ AUTO_RESUME_MAX_RESTARTS = int(os.getenv("AUTO_RESUME_MAX_RESTARTS", "10"))
 
 # How long to wait after boot before resuming (lets the flood settle and the
 # reaper finish marking everything first).
-AUTO_RESUME_DELAY_SECONDS = float(os.getenv("AUTO_RESUME_DELAY_SECONDS", "15"))
+AUTO_RESUME_DELAY_SECONDS = env_float("AUTO_RESUME_DELAY_SECONDS", "15")
 
 # Scraper-specific: max automatic resume attempts per job CHAIN (counted on
 # the root job via restart_count). After this, the job stays abandoned for a
@@ -82,7 +83,7 @@ ENRICHMENT_AUTO_RESUME_MAX_RESTARTS = int(
 # abandoned by a crashed worker: the job becomes claimable again. The real
 # claim->child gap is seconds (a CSV read + one INSERT), so 30 minutes is
 # conservatively huge — no legitimate claimant can still be mid-flight.
-RESUME_CLAIM_STALE_MINUTES = float(os.getenv("RESUME_CLAIM_STALE_MINUTES", "30"))
+RESUME_CLAIM_STALE_MINUTES = env_float("RESUME_CLAIM_STALE_MINUTES", "30")
 
 
 def try_claim_abandoned(job_id: str) -> bool:
@@ -579,11 +580,11 @@ async def maybe_auto_resume_abandoned_jobs() -> None:
 # overlap is bounded to one in-flight batch.
 
 # How often the guard polls for stale running enrichment jobs.
-ENRICHMENT_GUARD_POLL_SECONDS = float(os.getenv("ENRICHMENT_GUARD_POLL_SECONDS", "60"))
+ENRICHMENT_GUARD_POLL_SECONDS = env_float("ENRICHMENT_GUARD_POLL_SECONDS", "60")
 
 # A running enrichment job whose heartbeat is older than this is presumed
 # dead (runner murdered with its worker) and is reaped + auto-resumed.
-ENRICHMENT_GUARD_STALE_MINUTES = float(os.getenv("ENRICHMENT_GUARD_STALE_MINUTES", "10"))
+ENRICHMENT_GUARD_STALE_MINUTES = env_float("ENRICHMENT_GUARD_STALE_MINUTES", "10")
 
 # Kill-switch for the whole guard loop (default on; no .env entry required).
 ENABLE_ENRICHMENT_RUNTIME_GUARD = os.getenv(

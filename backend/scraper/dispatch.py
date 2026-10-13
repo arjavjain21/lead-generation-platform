@@ -43,6 +43,7 @@ import os
 from typing import Any, Awaitable, Callable
 
 from shared import db
+from shared.env_utils import env_float
 
 logger = logging.getLogger(__name__)
 
@@ -57,10 +58,10 @@ MAX_CONCURRENT_SCRAPER_JOBS = int(os.getenv("MAX_CONCURRENT_SCRAPER_JOBS", "6"))
 SCRAPER_JOBS_PER_WORKER = int(os.getenv("SCRAPER_JOBS_PER_WORKER", "2"))
 
 # How often each worker's dispatch loop looks for a free slot.
-DISPATCH_POLL_SECONDS = float(os.getenv("SCRAPER_DISPATCH_POLL_SECONDS", "5"))
+DISPATCH_POLL_SECONDS = env_float("SCRAPER_DISPATCH_POLL_SECONDS", "5")
 
 # How often the runtime guard reaps stale jobs + triggers auto-resume.
-GUARD_POLL_SECONDS = float(os.getenv("SCRAPER_GUARD_POLL_SECONDS", "60"))
+GUARD_POLL_SECONDS = env_float("SCRAPER_GUARD_POLL_SECONDS", "60")
 
 
 def count_running_scraper_jobs() -> int:

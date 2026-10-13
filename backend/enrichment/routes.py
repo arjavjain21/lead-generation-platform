@@ -56,6 +56,7 @@ from .raw_contact_collector import RawContactCollector
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import sync_contacts
+from shared.env_utils import env_float
 
 logger = logging.getLogger(__name__)
 
@@ -470,7 +471,7 @@ def _forward_compat_kwargs(fn, **wanted) -> dict[str, Any]:
 # at pipeline.py ~L2902) are reused across requests — caps connection memory
 # and kills per-request TLS/pool churn. They are NOT closed per-request.
 ENRICH_MAX_CONCURRENT = int(os.getenv("ENRICH_MAX_CONCURRENT", "16"))
-ENRICH_QUEUE_TIMEOUT = float(os.getenv("ENRICH_QUEUE_TIMEOUT", "5.0"))
+ENRICH_QUEUE_TIMEOUT = env_float("ENRICH_QUEUE_TIMEOUT", "5.0")
 _ENRICH_SEMAPHORE = asyncio.Semaphore(ENRICH_MAX_CONCURRENT)
 
 _ENRICH_HTTP_LIMITS = httpx.Limits(
@@ -530,7 +531,7 @@ async def _acquire_enrich_slot() -> None:
 # Gated by ENRICH_RESPONSE_CACHE (default on); TTL/maxsize env-tunable. Bypassed
 # when debug=True. GET path only (that is 100% of Clay's traffic).
 ENRICH_RESPONSE_CACHE = os.getenv("ENRICH_RESPONSE_CACHE", "true").lower() in ("1", "true", "yes", "on")
-ENRICH_CACHE_TTL = float(os.getenv("ENRICH_CACHE_TTL", "300"))
+ENRICH_CACHE_TTL = env_float("ENRICH_CACHE_TTL", "300")
 ENRICH_CACHE_MAX = int(os.getenv("ENRICH_CACHE_MAX", "10000"))
 _enrich_response_cache: dict[str, tuple[float, Any]] = {}
 

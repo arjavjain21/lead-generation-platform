@@ -46,6 +46,7 @@ import httpx
 
 from . import pipeline  # For _ProviderError (insufficient_credits signaling)
 from shared.circuit_breaker import get_circuit_breaker, CircuitBreakerError
+from shared.env_utils import env_float
 
 logger = logging.getLogger(__name__)
 
@@ -61,9 +62,9 @@ API_KEY = os.getenv("SMARTPROSPECT_API_KEY", "")
 
 # Account limit is 2000 req/min. The shared cross-process limiter enforces
 # one GLOBAL bucket across all gunicorn workers (env-tunable; 5% margin).
-_RATE_LIMIT_RPM = float(os.getenv("SMARTPROSPECT_RATE_LIMIT_RPM", "1900"))
+_RATE_LIMIT_RPM = env_float("SMARTPROSPECT_RATE_LIMIT_RPM", "1900")
 _REFILL_PER_SEC = _RATE_LIMIT_RPM / 60.0
-_CAPACITY = float(os.getenv("SMARTPROSPECT_RATE_LIMIT_BURST", str(_REFILL_PER_SEC)))
+_CAPACITY = env_float("SMARTPROSPECT_RATE_LIMIT_BURST", _REFILL_PER_SEC)
 
 # Endpoint path for the Find Emails API (key passed as query param, not here).
 _FIND_EMAILS_PATH = "/api/v1/search-email-leads/search-contacts/find-emails"

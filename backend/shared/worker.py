@@ -41,12 +41,13 @@ import threading
 import time
 
 from uvicorn.workers import UvicornWorker
+from shared.env_utils import env_float
 
 logger = logging.getLogger(__name__)
 
 # How often the worker tells the arbiter it's alive. Default 30s = ~20x
 # headroom under the 600s murder timeout. Env-tunable without redeploy.
-NOTIFY_INTERVAL_SECONDS = float(os.getenv("WORKER_NOTIFY_INTERVAL", "30"))
+NOTIFY_INTERVAL_SECONDS = env_float("WORKER_NOTIFY_INTERVAL", "30")
 
 
 def _notify_interval(timeout: float | None) -> float:

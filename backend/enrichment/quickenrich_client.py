@@ -66,6 +66,7 @@ import httpx
 from . import pipeline  # For _ProviderError (insufficient-credits signaling)
 from shared import rate_limiter
 from shared.circuit_breaker import get_circuit_breaker
+from shared.env_utils import env_float
 
 logger = logging.getLogger(__name__)
 
@@ -81,11 +82,11 @@ API_KEY = os.getenv("QUICKENRICH_API_KEY", "")
 # both. GTM Unlimited (6,000 req/min across endpoints) = raise both envs.
 # Buckets are SHARED across gunicorn workers via shared/rate_limiter.py
 # (SQLite-backed), so 4 workers draw from ONE bucket per lane.
-_RATE_LIMIT_RPM = float(os.getenv("QUICKENRICH_RATE_LIMIT_RPM", "900"))
+_RATE_LIMIT_RPM = env_float("QUICKENRICH_RATE_LIMIT_RPM", "900")
 _REFILL_PER_SEC = _RATE_LIMIT_RPM / 60.0
-_CAPACITY = float(os.getenv("QUICKENRICH_RATE_LIMIT_BURST", str(_REFILL_PER_SEC)))
+_CAPACITY = env_float("QUICKENRICH_RATE_LIMIT_BURST", _REFILL_PER_SEC)
 
-_DATASET_RATE_LIMIT_RPM = float(os.getenv("QUICKENRICH_DATASET_RATE_LIMIT_RPM", "280"))
+_DATASET_RATE_LIMIT_RPM = env_float("QUICKENRICH_DATASET_RATE_LIMIT_RPM", "280")
 _DATASET_REFILL_PER_SEC = _DATASET_RATE_LIMIT_RPM / 60.0
 _DATASET_CAPACITY = float(
     os.getenv("QUICKENRICH_DATASET_RATE_LIMIT_BURST", str(_DATASET_REFILL_PER_SEC))
