@@ -58,7 +58,7 @@ DB changes (`everything-claude-code:database-reviewer`), security (`everything-c
 │   │   ├── call_tracker.py      # provider_call_log + email ledger + email-quality counters + blitz FUP meter observability
 │   │   ├── blitz_client.py      # Blitz API wrapper (50 RPS/endpoint legacy plan; per-lane caps BLITZ_RPS[,_EMAIL,_DISCOVERY,_SEARCH])
 │   │   ├── smartprospect_client.py  # SmartLead Find Emails (shared 1900 RPM limiter, batch ≤10)
-│   │   ├── quickenrich_client.py    # QuickEnrich (shared 900/280 RPM lanes; person email + domain DMs)
+│   │   ├── quickenrich_client.py    # QuickEnrich (shared 5800/5800 RPM lanes, GTM Unlimited; person email + domain DMs)
 │   │   ├── contacts_client.py   # Contacts DB wrapper (75 RPS) + business upsert
 │   │   ├── wizleads_client.py   # WizLeads (10 RPS)
 │   │   ├── better_enrich_client.py  # BetterEnrich (10/5 RPS)
@@ -146,7 +146,7 @@ Each enrichment source has different cost/quality tradeoffs. Cascade order (set 
 |-----|------------|----------|---------|
 | **Contacts DB** | 75 RPS | 1st (free) | Domain → company → contacts with emails |
 | **smartprospect** | shared cross-process 1900 RPM (`SMARTPROSPECT_RATE_LIMIT_RPM`, acct 2000/min) | 2nd | Person-email finder, batch up to 10, self-verifying |
-| **QuickEnrich** | two SHARED cross-process lanes: `QUICKENRICH_RATE_LIMIT_RPM` default 900 (Standard plan cap 1000/min) + `QUICKENRICH_DATASET_RATE_LIMIT_RPM` default 280 (cap 300/min); GTM Unlimited = 6000/min (raise both); kill switch `ENABLE_QUICKENRICH` | 3rd | Person email (GET `/api/employees/search` by `linkedin_url` OR `company_url`+`first_name`+`last_name`; credit on match only) + domain decision-makers (GET `/api/employees/dataset-search` by `company_url`+`titles`+`has_email`, 20/page, page-capped; credit per returned employee-with-email, empty page free). Source strings `quickenrich_email` / `quickenrich_contacts` |
+| **QuickEnrich** | two SHARED cross-process lanes: `QUICKENRICH_RATE_LIMIT_RPM` + `QUICKENRICH_DATASET_RATE_LIMIT_RPM` — prod **5800/5800** since 2026-10-13 (GTM Unlimited/max plan: 6000 RPM cap is GLOBAL across endpoints, both lanes share it; code defaults 900/280 = Standard-safe); kill switch `ENABLE_QUICKENRICH` | 3rd | Person email (GET `/api/employees/search` by `linkedin_url` OR `company_url`+`first_name`+`last_name`; credit on match only) + domain decision-makers (GET `/api/employees/dataset-search` by `company_url`+`titles`+`has_email`, 20/page, page-capped; credit per returned employee-with-email, empty page free). Source strings `quickenrich_email` / `quickenrich_contacts` |
 | **GetLeads** | batch 100 (~10k/min) | 4th | Verified DM emails + bonus phones (batch of 100, unlimited plan); from-linkedin fallback in the LinkedIn-only arm (after QuickEnrich); decision-makers domain fallback when contacts_db + QuickEnrich + Blitz waterfall all find nobody (`lookup_decision_makers`, C-Team/VP/Director, 1 credit/record vs fair use) |
 | **Blitz** | 50 RPS per endpoint (legacy plan 2026-09; per-lane caps `BLITZ_RPS` default + `BLITZ_RPS_EMAIL/_DISCOVERY/_SEARCH`; FUP 15M records/mo, metered live in `blitz_fair_use`) | 5th | LinkedIn-based enrichment with title cascade. Summer release (2026-09-16): find-people batch prepass (`/v2/search/people`, 50 companies/call, jobs with >5 domains), TAM-by-People flow (`/flows/tam`, 1 record/company), 30-day domain-miss negative cache (`blitz_domain_miss`, definitive misses only), optional DM phone bundle (`include_phone`, 1 record/call, US-only). **Billing truths:** search endpoints bill 1 record per returned result (empty = free); `/v2/enrichment/email` + `/v2/enrichment/phone` bill 1 record per CALL (miss still bills); `/v2/enrichment/person` + domain-to-linkedin bill on success only; errors never bill |
 | **WizLeads** | 10 RPS | 6th | Catch-all verified email enrichment (last active tier) |
@@ -230,8 +230,8 @@ ENABLE_GETLEADS=true
 SMARTPROSPECT_API_KEY=<smartprospect-key>
 QUICKENRICH_API_KEY=<quickenrich-key>
 ENABLE_QUICKENRICH=true                 # QuickEnrich kill switch
-QUICKENRICH_RATE_LIMIT_RPM=900          # person-search lane, SHARED cross-process (Standard plan cap 1000/min)
-QUICKENRICH_DATASET_RATE_LIMIT_RPM=280  # dataset-search lane (Standard plan cap 300/min); GTM Unlimited = 6000/min (raise both)
+QUICKENRICH_RATE_LIMIT_RPM=5800         # person-search lane, SHARED cross-process; GTM Unlimited (max plan, unlimited leads) since 2026-10-13 — plan cap 6000/min is GLOBAL across endpoints, both lanes share it
+QUICKENRICH_DATASET_RATE_LIMIT_RPM=5800 # dataset-search lane (same global 6000/min cap; code defaults 900/280 = Standard-safe)
 CONTACTS_API_TOKEN=<contacts-token>
 BETTER_ENRICH_API_KEY=<betterenrich-key>
 PROSPEO_API_KEY=<prospeo-key>
@@ -459,9 +459,13 @@ This project changes often; do not rely on a frozen snapshot here. For current s
   `~/.claude/projects/-var-www-lead-generation-platform/memory/`.
 - **Live health:** `curl -s http://localhost:8765/api/health` and `./monitor.sh`.
 - **Canonical API contract:** `docs/ListBuilding_Platform_Full_API_Reference_2026-07-16.md`.
+- **2026-10-13 shipped:** QuickEnrich upgraded to GTM Unlimited (max plan, unlimited leads) —
+  both shared lanes raised 900/280 → **5800/5800 RPM** (plan cap is 6000/min GLOBAL across
+  endpoints; code defaults stay 900/280 Standard-safe). Labels in `/flows/help` + MCP oracle now
+  read live values from the client. Workflow-skill cascade tables refreshed to the 2026-10-10 order.
 - **2026-10-10 shipped:** QuickEnrich provider + cascade reorder. New provider `quickenrich`
   (app.quickenrich.io; `enrichment/quickenrich_client.py`; person email via employee-search +
-  domain decision-makers via dataset-search; shared 900/280 RPM lanes, kill switch
+  domain decision-makers via dataset-search; shared RPM lanes, kill switch
   `ENABLE_QUICKENRICH`). Cascade reordered: contacts_db → smartprospect → quickenrich → getleads →
   blitz → wizleads (Blitz demoted from 2nd for FUP 15M records/mo relief; smartprospect promoted to
   2nd; wizleads last active tier). Also: better_enrich kill-switch bypass fix (global disable now

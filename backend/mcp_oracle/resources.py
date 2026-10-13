@@ -144,11 +144,16 @@ def providers_status() -> str:
     The cascade stops at the first provider that returns a valid email.
     """
     from enrichment import providers as prov
+    from enrichment import quickenrich_client as _qe
+
+    _qe_rate = (
+        f"{int(_qe._RATE_LIMIT_RPM)}/{int(_qe._DATASET_RATE_LIMIT_RPM)} RPM*"
+    )
 
     cascade = [
         (1, "contacts_db", "75 RPS", "Free — internal database"),
         (2, "smartprospect", "1900 RPM shared*", "Paid — SmartLead Find Emails (self-verifying, batch ≤10)"),
-        (3, "quickenrich", "900/280 RPM*", "Paid — QuickEnrich person email (employee-search) + domain decision-makers (dataset-search)"),
+        (3, "quickenrich", _qe_rate, "Paid — QuickEnrich person email (employee-search) + domain decision-makers (dataset-search)"),
         (4, "getleads", "100/min*", "Paid — verified DM emails + bonus phones (batch 100)"),
         (5, "blitz", "50 RPS/endpoint*", "Paid — LinkedIn enrichment (title waterfall)"),
         (6, "wizleads", "10 RPS", "Paid — verified email"),
@@ -182,10 +187,11 @@ def providers_status() -> str:
         "~10k/min on the unlimited plan. Blitz: 50 RPS per endpoint (legacy plan, "
         "2026-09) + 15M records/month fair use; our client caps below plan via "
         "`BLITZ_RPS` (per-process limiter). QuickEnrich (app.quickenrich.io): two "
-        "SHARED cross-process lanes — `QUICKENRICH_RATE_LIMIT_RPM` default 900 "
-        "(Standard plan cap 1000/min) for person email and "
-        "`QUICKENRICH_DATASET_RATE_LIMIT_RPM` default 280 (cap 300/min) for "
-        "domain decision-makers; GTM Unlimited plan = 6000/min (raise both); kill "
+        "SHARED cross-process lanes — `QUICKENRICH_RATE_LIMIT_RPM` (code default "
+        "900 = Standard-safe; prod 5800 since 2026-10-13) for person email and "
+        "`QUICKENRICH_DATASET_RATE_LIMIT_RPM` (code default 280; prod 5800) for "
+        "domain decision-makers; GTM Unlimited plan cap 6000/min is GLOBAL across "
+        "endpoints (both lanes share it); kill "
         "switch `ENABLE_QUICKENRICH`. Domain-only DM discovery arm: Contacts DB → "
         "QuickEnrich (dataset-search) → Blitz (waterfall) → GetLeads "
         "(decision-makers fallback).",

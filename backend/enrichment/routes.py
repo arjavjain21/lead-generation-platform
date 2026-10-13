@@ -923,7 +923,7 @@ _LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
         "cascade_order": [
             {"name": "contacts_db", "rate": "75 RPS", "role": "Internal PostgreSQL DB, always first, free"},
             {"name": "smartprospect", "rate": "1900 RPM shared cross-process (account cap 2000/min)", "role": "SmartLead Find Emails — self-verifying person-email finder, batch up to 10. Gates on firstName+lastName+domain."},
-            {"name": "quickenrich", "rate": "900/280 RPM (two shared lanes: person-search / dataset-search)", "role": "QuickEnrich — person email via employee-search + domain decision-makers via dataset-search (added 2026-10-10)."},
+            {"name": "quickenrich", "rate": f"{int(quickenrich_client._RATE_LIMIT_RPM)}/{int(quickenrich_client._DATASET_RATE_LIMIT_RPM)} RPM (two shared lanes: person-search / dataset-search; GTM Unlimited global cap 6000/min shared by both)", "role": "QuickEnrich — person email via employee-search + domain decision-makers via dataset-search (added 2026-10-10)."},
             {"name": "getleads", "rate": "batch 100 (plan ~10k/min, fair-use metered)", "role": "Verified DM emails + bonus phones; from-linkedin fallback in the LinkedIn arm; decision-makers domain fallback when the whole arm misses."},
             {"name": "blitz", "rate": "50 RPS per endpoint (per-lane caps BLITZ_RPS family; FUP 15M records/mo)", "role": "LinkedIn-based enrichment with title waterfall. Billing: search bills per returned result; email/phone bill per call; person/domain-to-linkedin success-only."},
             {"name": "wizleads", "rate": "10 RPS", "role": "Catch-all verified email enrichment (last active tier)"},

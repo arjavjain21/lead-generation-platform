@@ -32,11 +32,14 @@ Env vars:
     ENABLE_QUICKENRICH                  kill switch ("false" = disabled)
     QUICKENRICH_RATE_LIMIT_RPM          employee-search lane, SHARED
                                         cross-process token bucket (default
-                                        900; Standard plan cap 1000/min,
-                                        GTM Unlimited 6000/min)
+                                        900 = Standard-safe; prod GTM
+                                        Unlimited 5800 — plan cap is 6000/min
+                                        GLOBAL across endpoints, both lanes
+                                        share it)
     QUICKENRICH_RATE_LIMIT_BURST        optional burst tokens (default ~1s)
-    QUICKENRICH_DATASET_RATE_LIMIT_RPM  dataset-search lane (default 280;
-                                        Standard plan cap 300/min)
+    QUICKENRICH_DATASET_RATE_LIMIT_RPM  dataset-search lane (default 280 =
+                                        Standard-safe; prod GTM Unlimited
+                                        5800, same global 6000/min cap)
     QUICKENRICH_DATASET_RATE_LIMIT_BURST optional burst tokens
     QUICKENRICH_DATASET_MAX_PAGES       page cap per domain (default 2 —
                                         bounds credits: 20 contacts/page)
@@ -77,11 +80,11 @@ logger = logging.getLogger(__name__)
 BASE_URL = os.getenv("QUICKENRICH_BASE_URL", "https://app.quickenrich.io")
 API_KEY = os.getenv("QUICKENRICH_API_KEY", "")
 
-# Two documented rate families on the Standard ($99/mo) plan: employee search
-# 1,000 req/min, domain search 300 req/min. Defaults leave headroom under
-# both. GTM Unlimited (6,000 req/min across endpoints) = raise both envs.
-# Buckets are SHARED across gunicorn workers via shared/rate_limiter.py
-# (SQLite-backed), so 4 workers draw from ONE bucket per lane.
+# Plan caps: Standard $99/mo = 1,000 RPM search / 300 RPM domain (code defaults
+# leave headroom under both). GTM Unlimited (live since 2026-10-13) = 6,000 RPM
+# GLOBAL across endpoints — both lanes share the cap, prod envs run each lane
+# at 5,800 for headroom. Buckets are SHARED across gunicorn workers via
+# shared/rate_limiter.py (SQLite-backed), so 4 workers draw from ONE bucket per lane.
 _RATE_LIMIT_RPM = env_float("QUICKENRICH_RATE_LIMIT_RPM", "900")
 _REFILL_PER_SEC = _RATE_LIMIT_RPM / 60.0
 _CAPACITY = env_float("QUICKENRICH_RATE_LIMIT_BURST", _REFILL_PER_SEC)

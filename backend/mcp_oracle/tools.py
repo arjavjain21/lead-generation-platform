@@ -510,11 +510,16 @@ def list_current_providers() -> str:
     the current running state, not cached documentation.
     """
     from enrichment import providers as prov
+    from enrichment import quickenrich_client as _qe
+
+    _qe_rate = (
+        f"{int(_qe._RATE_LIMIT_RPM)}/{int(_qe._DATASET_RATE_LIMIT_RPM)} RPM*"
+    )
 
     cascade = [
         (1, "contacts_db", "75 RPS", "Free"),
         (2, "smartprospect", "1900 RPM shared*", "Paid"),
-        (3, "quickenrich", "900/280 RPM*", "Paid"),
+        (3, "quickenrich", _qe_rate, "Paid"),
         (4, "getleads", "100/min*", "Paid"),
         (5, "blitz", "50 RPS/endpoint*", "Paid"),
         (6, "wizleads", "10 RPS", "Paid"),
@@ -546,11 +551,12 @@ def list_current_providers() -> str:
         "GetLeads (decision-makers fallback).",
         "",
         "*QuickEnrich (app.quickenrich.io): two SHARED cross-process lanes — "
-        "`QUICKENRICH_RATE_LIMIT_RPM` default 900 (Standard plan cap 1000/min) "
-        "for person email via employee-search, and "
-        "`QUICKENRICH_DATASET_RATE_LIMIT_RPM` default 280 (cap 300/min) for "
-        "domain decision-makers via dataset-search. GTM Unlimited plan = 6000/min "
-        "(raise both). Kill switch: `ENABLE_QUICKENRICH`.",
+        "`QUICKENRICH_RATE_LIMIT_RPM` (code default 900 = Standard-safe; prod "
+        "5800 since 2026-10-13) for person email via employee-search, and "
+        "`QUICKENRICH_DATASET_RATE_LIMIT_RPM` (code default 280; prod 5800) for "
+        "domain decision-makers via dataset-search. GTM Unlimited plan cap is "
+        "6000/min GLOBAL across endpoints — both lanes share it. Kill switch: "
+        "`ENABLE_QUICKENRICH`.",
         "",
         "*Blitz legacy plan (2026-09): 50 RPS per endpoint (separate buckets per "
         "endpoint, not shared) + fair use of 15M records/month. Our client caps "

@@ -148,7 +148,7 @@ def choose_providers_for_budget(budget: str = "minimize cost") -> str:
         "|----------|------|------|----------|\n"
         "| Contacts DB | **Free** | 75 RPS | Internal DB — always check first |\n"
         "| SmartProspect | Paid | 1900 RPM shared | Self-verifying, batch-capable |\n"
-        "| QuickEnrich | Paid | 900/280 RPM shared | Person email (LinkedIn URL or name+company) + domain decision-makers |\n"
+        "| QuickEnrich | Paid | 5800/5800 RPM shared (GTM Unlimited; 6000/min global cap across both lanes) | Person email (LinkedIn URL or name+company) + domain decision-makers |\n"
         "| GetLeads | Paid | batch 100 (~10k/min) | Verified DM emails + bonus phones |\n"
         "| Blitz | Paid | 50 RPS/endpoint | LinkedIn-based enrichment (legacy plan; 15M records/mo fair use) |\n"
         "| WizLeads | Paid | 10 RPS | Catch-all verified |\n"

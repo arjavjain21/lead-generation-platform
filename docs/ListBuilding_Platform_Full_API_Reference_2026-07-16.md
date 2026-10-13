@@ -262,7 +262,7 @@ When resolving emails, the system queries providers in this order, stopping at t
 | --- | --- | --- | --- | --- |
 | 1 | Contacts DB | 75 RPS | Free | Internal database lookup |
 | 2 | SmartProspect | shared cross-process 1900 RPM (`SMARTPROSPECT_RATE_LIMIT_RPM`; account cap 2000/min) | Paid | Self-verifying person-email finder (batch ≤10) |
-| 3 | QuickEnrich | two SHARED cross-process lanes: `QUICKENRICH_RATE_LIMIT_RPM` default 900 (Standard plan cap 1000/min) for person email + `QUICKENRICH_DATASET_RATE_LIMIT_RPM` default 280 (cap 300/min) for dataset-search; GTM Unlimited plan = 6000/min (raise both) | Paid | Person email via `GET /api/employees/search` (by `linkedin_url` OR `company_url` + `first_name` + `last_name`; credit on match only, clean miss free) + domain decision-makers via `GET /api/employees/dataset-search` (`company_url` + `titles` + `has_email`, 20/page, page-capped; 1 credit per returned employee-with-email, empty page free). Kill switch `ENABLE_QUICKENRICH`; source strings `quickenrich_email` / `quickenrich_contacts` |
+| 3 | QuickEnrich | two SHARED cross-process lanes: `QUICKENRICH_RATE_LIMIT_RPM` + `QUICKENRICH_DATASET_RATE_LIMIT_RPM` — prod **5800/5800** since 2026-10-13 (GTM Unlimited/max plan: 6000 RPM cap is GLOBAL across endpoints, both lanes share it; code defaults 900/280 = Standard-safe) | Paid | Person email via `GET /api/employees/search` (by `linkedin_url` OR `company_url` + `first_name` + `last_name`; credit on match only, clean miss free) + domain decision-makers via `GET /api/employees/dataset-search` (`company_url` + `titles` + `has_email`, 20/page, page-capped; 1 credit per returned employee-with-email, empty page free). Kill switch `ENABLE_QUICKENRICH`; source strings `quickenrich_email` / `quickenrich_contacts` |
 | 4 | GetLeads | batch 100 (~10k/min amortized on the unlimited plan) | Paid | Verified DM emails + bonus phones; from-linkedin fallback in the LinkedIn-only arm; decision-makers domain fallback |
 | 5 | Blitz | 50 RPS per endpoint (legacy plan 2026-09; fair use 15M records/mo; client caps at 40 via `BLITZ_RPS`) | Paid | LinkedIn-based enrichment with title cascade |
 | 6 | WizLeads | 10 RPS | Paid | Catch-all verified email (last active tier) |
@@ -1029,7 +1029,7 @@ These are the per-provider ceilings the platform respects when calling upstream 
 | --- | --- | --- |
 | Contacts DB | 75 requests/sec | 25 concurrent domain lookups |
 | SmartProspect | 1900 req/min shared cross-process (`SMARTPROSPECT_RATE_LIMIT_RPM`; account cap 2000/min) | batch up to 10 per call |
-| QuickEnrich | 900 req/min person-search + 280 req/min dataset-search, both SHARED cross-process (`QUICKENRICH_RATE_LIMIT_RPM` / `QUICKENRICH_DATASET_RATE_LIMIT_RPM`; Standard plan caps 1000/300 per min, GTM Unlimited 6000/min) | circuit breaker (10 failures / 60s recovery) |
+| QuickEnrich | 5800 req/min person-search + 5800 req/min dataset-search since 2026-10-13, both SHARED cross-process (`QUICKENRICH_RATE_LIMIT_RPM` / `QUICKENRICH_DATASET_RATE_LIMIT_RPM`; GTM Unlimited/max plan — 6000 RPM cap is GLOBAL across endpoints, both lanes share it; code defaults 900/280 = Standard-safe) | circuit breaker (10 failures / 60s recovery) |
 | GetLeads | batch 100 (~10k/min amortized on the unlimited plan) | batch of 100 per call |
 | Blitz | per-lane `BLITZ_RPS` default 40 (legacy plan 50 RPS/endpoint; fair use 15M records/mo) | 25 concurrent |
 | WizLeads | 10 requests/sec | 15 concurrent email lookups |
