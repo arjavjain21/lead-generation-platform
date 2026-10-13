@@ -309,7 +309,7 @@ def test_validate_catch_all_kept_only_when_allowed(client, hermetic):
         assert body["validation"]["dropped_policy_rejected"] == 1
         hermetic.mark_invalid.assert_not_awaited()
 
-        # allow_catch_all: kept with mb code annotated
+        # allow_catch_all: kept with mb code annotated, status NOT "invalid"
         resp = client.post(
             "/api/enrichment/quickenrich",
             json={**base_kwargs, "allow_catch_all": True},
@@ -318,7 +318,31 @@ def test_validate_catch_all_kept_only_when_allowed(client, hermetic):
         body = resp.json()
         assert body["contact_count"] == 1
         assert body["contacts"][0]["mailtester_code"] == "mb"
+        assert body["contacts"][0]["validation_status"] == "valid_catch_all"
         assert body["validation"]["accepted"] == 1
+
+
+def test_response_dedupes_repeated_emails(client, hermetic):
+    hermetic.qe_page = _qe_domain_page(
+        [
+            _qe_employee(full_name="Dup One", email="dup@example.com", title="CEO"),
+            _qe_employee(full_name="Dup Again", email="DUP@example.com", title="CEO"),
+            _qe_employee(full_name="Unique", email="uniq@example.com", title="CTO"),
+        ]
+    )
+    with patch.object(
+        routes_mod.quickenrich_client,
+        "domain_search",
+        AsyncMock(return_value=hermetic.qe_page),
+    ):
+        resp = client.post(
+            "/api/enrichment/quickenrich", json={"domain": "example.com"}
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    emails = [c.get("email") for c in body["contacts"]]
+    assert len(emails) == len(set(e.lower() for e in emails))
+    assert body["contact_count"] == len(emails)
 
 
 def test_validate_fails_open_when_mailtester_unavailable(client, hermetic):

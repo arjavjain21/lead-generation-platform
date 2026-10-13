@@ -4162,7 +4162,11 @@ async def _quickenrich_validate_contacts(
                 counts["accepted"] += 1
                 kept.append({
                     **contact,
-                    "validation_status": _map_validation_status(code),
+                    # kept-catch-all must not read as "invalid" — the map
+                    # exists for the DROP path; here the email was accepted.
+                    "validation_status": (
+                        "valid_ok" if result.get("valid") else "valid_catch_all"
+                    ),
                     "mailtester_code": code,
                     "mailtester_message": result.get("message", ""),
                 })
@@ -4234,6 +4238,19 @@ async def quickenrich_direct(
         # QuickEnrich dataset-search discovery wired (GET parity is a known
         # open gap — G10).
         result = await unified_enrich(sub, False, current_user)
+        # QE dataset rows can repeat a person; the DB dedupes on upsert but
+        # the response should not show duplicate emails.
+        _seen_emails: set = set()
+        _deduped: list = []
+        for _c in result.get("contacts") or []:
+            _e = ((_c or {}).get("email") or "").strip().lower()
+            if _e and _e in _seen_emails:
+                continue
+            if _e:
+                _seen_emails.add(_e)
+            _deduped.append(_c)
+        if len(_deduped) != len(result.get("contacts") or []):
+            result = {**result, "contacts": _deduped, "contact_count": len(_deduped)}
         if req.validate_emails:
             kept, summary = await _quickenrich_validate_contacts(
                 result.get("contacts") or [], item_domain,
