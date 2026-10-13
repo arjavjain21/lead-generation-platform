@@ -8,6 +8,12 @@ description: Complete lead-generation toolkit for the ListBuilding platform (lis
 One skill for the whole agency pipeline: **scrape local businesses → enrich their
 websites → decision-maker emails → optional phones**, from any machine, with one API key.
 
+> **Copy-paste requests live in `requests/`** (next to this file): `requests/api/`
+> holds one ready-to-run script per **UI page** (scrape / domains / linkedin /
+> people / TAM / single lookup / jobs), and `requests/mcp/` holds MCP setup +
+> oracle/tool examples. Start at `requests/README.md` — it maps every web-app
+> page to its API/MCP equivalent.
+
 > **State verified against live platform code + config: 2026-10-13** (post
 > QuickEnrich cascade reorder of 2026-10-10). When live endpoints disagree with this
 > doc, **live wins** — see "Live truth sources" at the bottom.
