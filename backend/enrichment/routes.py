@@ -1034,7 +1034,7 @@ _LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
             "method": "POST",
             "path": "/api/enrichment/quickenrich",
             "auth": "jwt or api key",
-            "summary": "QuickEnrich-only fast path (added 2026-10-13): unified /enrich executor with force_provider=quickenrich — internal contacts_db NOT consulted, every result fresh from QE (QE-verified). Normalized contacts + contacts_writer sync. Single lookup or batch of <=25 domains.",
+            "summary": "QuickEnrich-only fast path (added 2026-10-13; GET + POST): unified /enrich executor with force_provider=quickenrich — internal contacts_db NOT consulted, every result fresh from QE (QE-verified). Normalized contacts + contacts_writer sync. POST: single lookup or batch of <=25 domains (standard envelope). GET: query params + FLAT Clay-friendly output (emails array, primary object) for spreadsheet/Clay column mapping.",
             "body_fields": [
                 {"name": "domain", "type": "string", "required": "exactly one of domain|linkedin_url|domains"},
                 {"name": "linkedin_url", "type": "string", "required": "exactly one of domain|linkedin_url|domains"},
@@ -4188,6 +4188,63 @@ async def _quickenrich_validate_contacts(
     return kept, _quickenrich_validation_summary(counts)
 
 
+async def _quickenrich_single(
+    *,
+    domain: Optional[str] = None,
+    linkedin_url: Optional[str] = None,
+    full_name: Optional[str] = None,
+    titles: Optional[str] = None,
+    max_results: int = 5,
+    validate_emails: bool = False,
+    allow_catch_all: bool = False,
+    current_user: dict = None,
+) -> dict:
+    """Shared single-lookup core for POST and GET /quickenrich.
+
+    Runs the unified /enrich executor with force_provider="quickenrich",
+    dedupes repeated QE emails, applies the optional MailTester pass, and
+    returns the standard /enrich envelope (+ "validation" when requested).
+    """
+    sub = UnifiedEnrichRequest(
+        domain=domain,
+        linkedin_url=linkedin_url,
+        full_name=full_name,
+        titles=titles,
+        max_results=max_results,
+        force_provider="quickenrich",
+    )
+    # Delegate to the POST /enrich executor (unified_enrich): unlike the
+    # GET-shared _unified_enrich_logic, its domain_only arm has the full
+    # QuickEnrich dataset-search discovery wired (GET parity is a known
+    # open gap — G10).
+    result = await unified_enrich(sub, False, current_user)
+    # QE dataset rows can repeat a person; the DB dedupes on upsert but
+    # the response should not show duplicate emails.
+    _seen_emails: set = set()
+    _deduped: list = []
+    for _c in result.get("contacts") or []:
+        _e = ((_c or {}).get("email") or "").strip().lower()
+        if _e and _e in _seen_emails:
+            continue
+        if _e:
+            _seen_emails.add(_e)
+        _deduped.append(_c)
+    if len(_deduped) != len(result.get("contacts") or []):
+        result = {**result, "contacts": _deduped, "contact_count": len(_deduped)}
+    if validate_emails:
+        kept, summary = await _quickenrich_validate_contacts(
+            result.get("contacts") or [], domain,
+            allow_catch_all=allow_catch_all,
+        )
+        result = {
+            **result,
+            "contacts": kept,
+            "contact_count": len(kept),
+            "validation": summary,
+        }
+    return result
+
+
 @router.post("/quickenrich")
 async def quickenrich_direct(
     req: QuickEnrichDirectRequest,
@@ -4218,54 +4275,21 @@ async def quickenrich_direct(
             detail="'full_name' requires 'domain' (person lookup by name + company).",
         )
 
-    def _sub_request(**overrides) -> UnifiedEnrichRequest:
-        return UnifiedEnrichRequest(
-            force_provider="quickenrich",
-            titles=req.titles,
-            max_results=req.max_results,
-            **overrides,
-        )
-
-    async def _run_one(item_domain: Optional[str], linkedin_url: Optional[str],
-                       full_name: Optional[str]) -> dict:
-        sub = _sub_request(
-            domain=item_domain,
-            linkedin_url=linkedin_url,
-            full_name=full_name,
-        )
-        # Delegate to the POST /enrich executor (unified_enrich): unlike the
-        # GET-shared _unified_enrich_logic, its domain_only arm has the full
-        # QuickEnrich dataset-search discovery wired (GET parity is a known
-        # open gap — G10).
-        result = await unified_enrich(sub, False, current_user)
-        # QE dataset rows can repeat a person; the DB dedupes on upsert but
-        # the response should not show duplicate emails.
-        _seen_emails: set = set()
-        _deduped: list = []
-        for _c in result.get("contacts") or []:
-            _e = ((_c or {}).get("email") or "").strip().lower()
-            if _e and _e in _seen_emails:
-                continue
-            if _e:
-                _seen_emails.add(_e)
-            _deduped.append(_c)
-        if len(_deduped) != len(result.get("contacts") or []):
-            result = {**result, "contacts": _deduped, "contact_count": len(_deduped)}
-        if req.validate_emails:
-            kept, summary = await _quickenrich_validate_contacts(
-                result.get("contacts") or [], item_domain,
-                allow_catch_all=req.allow_catch_all,
-            )
-            result = {
-                **result,
-                "contacts": kept,
-                "contact_count": len(kept),
-                "validation": summary,
-            }
-        return result
+    single_kwargs = {
+        "titles": req.titles,
+        "max_results": req.max_results,
+        "validate_emails": req.validate_emails,
+        "allow_catch_all": req.allow_catch_all,
+        "current_user": current_user,
+    }
 
     if not req.domains:
-        return await _run_one(req.domain, req.linkedin_url, req.full_name)
+        return await _quickenrich_single(
+            domain=req.domain,
+            linkedin_url=req.linkedin_url,
+            full_name=req.full_name,
+            **single_kwargs,
+        )
 
     # Batch mode: dedupe preserving order, cap, fan out bounded.
     cleaned: list[str] = []
@@ -4293,7 +4317,9 @@ async def quickenrich_direct(
     async def _run_batch_item(item_domain: str) -> dict:
         async with semaphore:
             try:
-                result = await _run_one(item_domain, None, None)
+                result = await _quickenrich_single(
+                    domain=item_domain, **single_kwargs
+                )
                 return {"domain": item_domain, **result}
             except HTTPException as exc:
                 return {
@@ -4330,6 +4356,66 @@ async def quickenrich_direct(
         },
         "results": safe_results,
     }
+
+
+@router.get("/quickenrich")
+async def quickenrich_direct_get(
+    domain: Optional[str] = Query(None, description="Company domain, e.g. stripe.com"),
+    full_name: Optional[str] = Query(None, description="Specific person (requires domain)"),
+    linkedin_url: Optional[str] = Query(None, description="Person LinkedIn profile URL"),
+    titles: Optional[str] = Query(None, description="Comma-separated DM titles (default tiers apply when omitted)"),
+    max_results: int = Query(5, ge=1, le=25, description="Max contacts to return"),
+    validate_emails: bool = Query(False, description="MailTester pass; non-accepted codes dropped"),
+    allow_catch_all: bool = Query(False, description="Keep catch-all (mb) emails with validate_emails"),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """Clay-friendly single-lookup GET variant of POST /quickenrich.
+
+    Same QuickEnrich-only semantics and contacts_writer sync, but returns a
+    FLAT shape for easy spreadsheet/Clay column mapping:
+      - emails: flat array of every verified email found
+      - primary: the top contact as one flat object (primary.email etc.)
+      - contacts: the full per-contact list (also flat objects)
+    No batch on GET — use POST /quickenrich with 'domains' for batches.
+    """
+    if not _quickenrich_endpoint_available():
+        raise HTTPException(
+            status_code=503,
+            detail="QuickEnrich is disabled (kill switch or missing API key).",
+        )
+    if not domain and not linkedin_url:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide 'domain' or 'linkedin_url' as a query parameter.",
+        )
+    if full_name and not domain:
+        raise HTTPException(
+            status_code=400,
+            detail="'full_name' requires 'domain'.",
+        )
+
+    result = await _quickenrich_single(
+        domain=domain,
+        linkedin_url=linkedin_url,
+        full_name=full_name,
+        titles=titles,
+        max_results=max_results,
+        validate_emails=validate_emails,
+        allow_catch_all=allow_catch_all,
+        current_user=current_user,
+    )
+    contacts = result.get("contacts") or []
+    response = {
+        "domain": result.get("domain") or domain,
+        "contacts_found": len(contacts),
+        "emails": [c.get("email") for c in contacts if c.get("email")],
+        "primary": contacts[0] if contacts else None,
+        "contacts": contacts,
+        "sync_to_contacts_db": result.get("sync_to_contacts_db"),
+    }
+    if "validation" in result:
+        response["validation"] = result["validation"]
+    return response
 
 
 @router.post("/upload")

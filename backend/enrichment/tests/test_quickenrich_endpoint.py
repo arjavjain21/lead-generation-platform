@@ -322,6 +322,56 @@ def test_validate_catch_all_kept_only_when_allowed(client, hermetic):
         assert body["validation"]["accepted"] == 1
 
 
+# ---------------------------------------------------------------------------
+# GET variant (Clay-friendly flat output)
+# ---------------------------------------------------------------------------
+
+
+def test_get_single_domain_flat_output(client, hermetic):
+    resp = client.get("/api/enrichment/quickenrich", params={"domain": "example.com"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["contacts_found"] == 1
+    assert body["emails"] == ["jane@example.com"]
+    assert body["primary"]["email"] == "jane@example.com"
+    assert body["primary"]["full_name"] == "Jane Founder"
+    assert len(body["contacts"]) == 1
+    assert "sync_to_contacts_db" in body
+
+
+def test_get_validation_params_pass_through(client, hermetic):
+    async def fake_verify(http, email):
+        return {"valid": False, "code": "mb", "message": "Catch-All", "email": email}
+
+    with patch.object(routes_mod.mailtester_client, "verify_email", fake_verify):
+        resp = client.get(
+            "/api/enrichment/quickenrich",
+            params={
+                "domain": "example.com",
+                "validate_emails": "true",
+                "allow_catch_all": "true",
+            },
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["contacts_found"] == 1
+    assert body["primary"]["validation_status"] == "valid_catch_all"
+    assert body["validation"]["accepted"] == 1
+
+
+def test_get_400_when_no_input(client, hermetic):
+    resp = client.get("/api/enrichment/quickenrich")
+    assert resp.status_code == 400
+
+
+def test_get_503_when_disabled(client):
+    with patch.object(
+        routes_mod, "_quickenrich_endpoint_available", MagicMock(return_value=False)
+    ):
+        resp = client.get("/api/enrichment/quickenrich", params={"domain": "x.com"})
+    assert resp.status_code == 503
+
+
 def test_response_dedupes_repeated_emails(client, hermetic):
     hermetic.qe_page = _qe_domain_page(
         [

@@ -416,11 +416,21 @@ curl -s -X POST $BASE/api/enrichment/enrich -H "X-API-Key: $KEY" -H 'Content-Typ
 # (c) dedicated endpoint — batch of <=25 domains with MailTester validation
 curl -s -X POST $BASE/api/enrichment/quickenrich -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
   -d '{"domains":["acme.com","stripe.com","linear.app"],"validate_emails":true}'
+
+# (d) GET variant — query params + FLAT output; THE Clay/spreadsheet shape
+#     (map primary.email / primary.full_name / emails straight to columns)
+curl -s -G "$BASE/api/enrichment/quickenrich" -H "X-API-Key: $KEY" \
+  --data-urlencode "domain=acme.com" \
+  --data-urlencode "validate_emails=true" --data-urlencode "allow_catch_all=true"
 ```
 
-**For fresh verified DMs use (a) or (c).** Batch ≤25 domains per call (422 above that;
-fan-out capped at 5 concurrent). `titles`/`max_results` work on all three; the local
+**For fresh verified DMs use (a), (c), or (d).** Batch ≤25 domains per call (422 above that;
+fan-out capped at 5 concurrent). `titles`/`max_results` work on all of them; the local
 strict-title gate still filters domain-mode results. 503 = QE kill switch or missing key.
+GET (d) is single-lookup only (no `domains` param) and returns
+`{domain, contacts_found, emails[], primary{}, contacts[], sync_to_contacts_db}` — one row
+per Clay cell, zero JSON digging. `allow_catch_all:true` keeps catch-all ("mb") emails when
+validating — many Google-Workspace-style domains are catch-all; without it those are dropped.
 
 ## Job lifecycle (all flows)
 

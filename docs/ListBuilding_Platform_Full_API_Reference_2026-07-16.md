@@ -301,6 +301,33 @@ curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/quickenric
 
 The standard `/enrich` envelope (see A.1): `contacts`, `contact_count`, `data_sources`, `routing`, `sync_to_contacts_db` — plus the optional `validation` block when `validate_emails=true`. `email_source` is `quickenrich_email` (person) or `quickenrich_contacts` (domain decision makers).
 
+#### GET variant — Clay/spreadsheet-friendly flat output (added 2026-10-13)
+
+Same QuickEnrich-only semantics and Contacts DB sync, but inputs arrive as **query parameters** and the response is **flat** for one-click column mapping (`emails` array, `primary` object). This is the recommended shape for Clay HTTP columns and simple scripts — no JSON body needed:
+
+```bash
+curl -G "https://listbuilding.eagleinfoservice.com/api/enrichment/quickenrich" \
+  -H "X-API-Key: $KEY" \
+  --data-urlencode "domain=stripe.com" \
+  --data-urlencode "validate_emails=true" \
+  --data-urlencode "allow_catch_all=true"
+```
+
+Query params: `domain` | `linkedin_url` (one required; `full_name` optional with `domain`), `titles`, `max_results` (1-25), `validate_emails`, `allow_catch_all`. No batch on GET — use POST `domains` for batches.
+
+```json
+{
+  "domain": "stripe.com",
+  "contacts_found": 3,
+  "emails": ["karri@linear.app", "tuomas@linear.app"],
+  "primary": {"full_name": "Karri Saarinen", "title": "CEO", "email": "karri@linear.app", "linkedin_url": "https://www.linkedin.com/in/...", "email_verified": "yes", "...": "..."},
+  "contacts": [{"...": "same flat contact objects as POST"}],
+  "sync_to_contacts_db": {"status": "success", "records_synced": 3}
+}
+```
+
+Clay mapping tips: `primary.email` → email column, `primary.full_name` / `primary.title` → name/role columns, `emails` → list column for multi-contact rows.
+
 #### Response shape — batch
 
 ```json

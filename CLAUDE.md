@@ -179,6 +179,7 @@ Both accept request-time cascade restrictors (mutually exclusive): `force_provid
 
 **POST** `/api/enrichment/quickenrich` - QuickEnrich-only fast path (2026-10-13): internally the unified `/enrich` executor with `force_provider="quickenrich"` — internal contacts_db NOT consulted (every result fresh from QE) — with `contacts_writer` sync receipt.
 Single (`domain` | `linkedin_url` | `domain`+`full_name`) or batch (`domains` list, deduped, max 25 via `QUICKENRICH_ENDPOINT_MAX_DOMAINS`; fan-out ≤5 concurrent); `titles` / `max_results` / `validate_emails` (MailTester: non-accepted codes dropped, `ko` also marked invalid in the Contacts DB, validator outage fails open).
+**GET** variant (same path, query params): Clay/spreadsheet-friendly **flat** output — `{domain, contacts_found, emails[], primary{}, contacts[], sync_to_contacts_db}`; single lookup only.
 Errors: 503 disabled, 400 bad input combos, 422 batch >25. Full contract: API reference §A.4 (`docs/ListBuilding_Platform_Full_API_Reference_2026-07-16.md`).
 
 ### List Building Tool (`enrichment/list_builder.py`)
