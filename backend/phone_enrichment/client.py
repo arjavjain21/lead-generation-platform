@@ -23,7 +23,7 @@ _MAX_BACKOFF = 60.0
 # from the email lanes). The old docs claim of 5 RPS was stale; default 25
 # leaves 2x headroom under the observed 50. Override with BLITZ_RPS_PHONE
 # (follows the BLITZ_RPS / _EMAIL / _DISCOVERY / _SEARCH lane convention).
-_RATE_LIMIT_RPS = float(os.getenv("BLITZ_RPS_PHONE", "25"))
+_RATE_LIMIT_RPS = float(os.getenv("BLITZ_RPS_PHONE", "50"))
 _MIN_REQUEST_INTERVAL = 1.0 / _RATE_LIMIT_RPS
 
 # Rate limiter state
