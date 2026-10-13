@@ -177,6 +177,10 @@ Both accept request-time cascade restrictors (mutually exclusive): `force_provid
 
 **Enhanced mode:** Looks for SPECIFIC person only. Returns 0 contacts if not found (no fallback to domain cascade).
 
+**POST** `/api/enrichment/quickenrich` - QuickEnrich-only fast path (2026-10-13): internally the unified `/enrich` executor with `force_provider="quickenrich"` — internal contacts_db NOT consulted (every result fresh from QE) — with `contacts_writer` sync receipt.
+Single (`domain` | `linkedin_url` | `domain`+`full_name`) or batch (`domains` list, deduped, max 25 via `QUICKENRICH_ENDPOINT_MAX_DOMAINS`; fan-out ≤5 concurrent); `titles` / `max_results` / `validate_emails` (MailTester: non-accepted codes dropped, `ko` also marked invalid in the Contacts DB, validator outage fails open).
+Errors: 503 disabled, 400 bad input combos, 422 batch >25. Full contract: API reference §A.4 (`docs/ListBuilding_Platform_Full_API_Reference_2026-07-16.md`).
+
 ### List Building Tool (`enrichment/list_builder.py`)
 
 **Flow 1:** `POST /api/enrichment/flows/domain-enrich` - Domain CSV → decision makers
@@ -463,6 +467,12 @@ This project changes often; do not rely on a frozen snapshot here. For current s
   both shared lanes raised 900/280 → **5800/5800 RPM** (plan cap is 6000/min GLOBAL across
   endpoints; code defaults stay 900/280 Standard-safe). Labels in `/flows/help` + MCP oracle now
   read live values from the client. Workflow-skill cascade tables refreshed to the 2026-10-10 order.
+- **2026-10-13 shipped (2):** QuickEnrich direct endpoint — `POST /api/enrichment/quickenrich`
+  (`routes.py` `quickenrich_direct`): single lookup (`domain` / `linkedin_url` / `domain`+`full_name`)
+  or batch (`domains` ≤25, deduplicated, fan-out `QUICKENRICH_BATCH_CONCURRENCY`=5, per-row errors
+  isolated); reuses the unified executor with `force_provider="quickenrich"` (no internal contacts_db
+  consult) and `contacts_writer` sync; optional `validate_emails` MailTester pass (non-accepted codes
+  dropped, `ko` marked invalid in the Contacts DB, validator outage fails open).
 - **2026-10-10 shipped:** QuickEnrich provider + cascade reorder. New provider `quickenrich`
   (app.quickenrich.io; `enrichment/quickenrich_client.py`; person email via employee-search +
   domain decision-makers via dataset-search; shared RPM lanes, kill switch

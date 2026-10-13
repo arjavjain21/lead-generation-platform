@@ -255,6 +255,7 @@ LIMIT 10;"
 | `GET` | `/api/enrichment/flows/help` | Self-documentation JSON (no auth; its cascade section may lag — trust Part 1) |
 | `GET` | `/api/enrichment/default-cascade` | Default 3-tier titles (no auth) |
 | `POST` | `/api/enrichment/enrich` | Single lookup (mode auto-detection) |
+| `POST` | `/api/enrichment/quickenrich` | **QE-only fast path** — single/batch (≤25 domains), fresh verified DMs |
 | `GET` | `/api/enrichment/enrich/{domain}` | Quick single-domain lookup |
 | `POST` | `/api/enrichment/upload` | Upload CSV → `upload_id` |
 | `POST` | `/api/enrichment/flows/domain-enrich` | **Flow 1** — bulk domain enrichment (+ company-LI via padding) |
@@ -386,6 +387,40 @@ verification_message}], contact_count, data_sources{...}, sync_to_contacts_db{st
 `email_source`: `contacts_db_*`, `smartprospect_email`, `quickenrich_email`, `getleads_email`,
 `blitz_*`, `wizleads_email`, `not_found`. **Every successful call syncs to the platform
 contacts DB** — don't re-enrich what's synced.
+
+## QuickEnrich fast path — fresh verified DMs, QE only
+
+Three ways to go straight to QuickEnrich (fastest paid tier, 5800/5800 RPM):
+
+- **(a)** `force_provider:"quickenrich"` on `POST /enrich` — **QE ONLY**: internal contacts_db
+  NOT consulted, every result fresh from QE (QE-verified via `email_verification_date`).
+- **(b)** `selected_providers:["quickenrich"]` on `POST /enrich` — free internal contacts_db
+  FIRST, QE as fallback. Cheaper, but DB rows can be stale/mixed-quality.
+- **(c)** `POST /api/enrichment/quickenrich` (2026-10-13) — dedicated endpoint, same QE-only
+  semantics as (a), plus batch (`domains` list ≤25, deduplicated, per-row errors isolated —
+  one bad domain never fails the batch) and `validate_emails:true` (MailTester pass:
+  non-accepted codes dropped from the response, hard-invalid `ko` also marked invalid in the
+  contacts DB, validator outage fails open). Response = the `/enrich` envelope +
+  `sync_to_contacts_db` (+ a `validation` summary block when validating); batch wraps
+  per-domain envelopes in `{success, batch:{total,succeeded,failed,contacts_found}, results:[…]}`.
+
+```bash
+# (a) QE-only single lookup
+curl -s -X POST $BASE/api/enrichment/enrich -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
+  -d '{"domain":"acme.com","force_provider":"quickenrich","titles":"CEO,Founder"}'
+
+# (b) free DB first, QE fallback
+curl -s -X POST $BASE/api/enrichment/enrich -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
+  -d '{"domain":"acme.com","selected_providers":["quickenrich"]}'
+
+# (c) dedicated endpoint — batch of <=25 domains with MailTester validation
+curl -s -X POST $BASE/api/enrichment/quickenrich -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
+  -d '{"domains":["acme.com","stripe.com","linear.app"],"validate_emails":true}'
+```
+
+**For fresh verified DMs use (a) or (c).** Batch ≤25 domains per call (422 above that;
+fan-out capped at 5 concurrent). `titles`/`max_results` work on all three; the local
+strict-title gate still filters domain-mode results. 503 = QE kill switch or missing key.
 
 ## Job lifecycle (all flows)
 

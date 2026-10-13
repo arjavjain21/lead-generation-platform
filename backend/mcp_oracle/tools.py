@@ -39,8 +39,12 @@ _INTENT_KEYWORDS: dict[str, list[str]] = {
     "bulk": ["/api/enrichment/flows/domain-enrich", "/api/enrichment/by-linkedin-v2"],
     "csv": ["/api/enrichment/upload", "/api/enrichment/flows/domain-enrich"],
     "upload": ["/api/enrichment/upload"],
-    "batch": ["/api/enrichment/flows/domain-enrich"],
+    "batch": ["/api/enrichment/flows/domain-enrich", "/api/enrichment/quickenrich"],
     "list": ["/api/enrichment/flows/domain-enrich"],
+
+    # QuickEnrich-only fast path (2026-10-13)
+    "quickenrich": ["/api/enrichment/quickenrich"],
+    "fast path": ["/api/enrichment/quickenrich"],
 
     # Phone enrichment
     "phone": ["/api/phone-enrichment/jobs"],
@@ -671,6 +675,7 @@ def validate_request(endpoint: str, payload_json: str) -> str:
 
     schema_map = {
         "/api/enrichment/enrich": enr.UnifiedEnrichRequest,
+        "/api/enrichment/quickenrich": enr.QuickEnrichDirectRequest,
         "/api/enrichment/jobs": enr.StartJobRequest,
         "/api/enrichment/flows/domain-enrich": enr.ProviderToggleRequest,
         "/api/enrichment/flows/tam": tam_routes.TamRequest,

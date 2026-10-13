@@ -1032,6 +1032,28 @@ _LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
         },
         {
             "method": "POST",
+            "path": "/api/enrichment/quickenrich",
+            "auth": "jwt or api key",
+            "summary": "QuickEnrich-only fast path (added 2026-10-13): unified /enrich executor with force_provider=quickenrich — internal contacts_db NOT consulted, every result fresh from QE (QE-verified). Normalized contacts + contacts_writer sync. Single lookup or batch of <=25 domains.",
+            "body_fields": [
+                {"name": "domain", "type": "string", "required": "exactly one of domain|linkedin_url|domains"},
+                {"name": "linkedin_url", "type": "string", "required": "exactly one of domain|linkedin_url|domains"},
+                {"name": "domains", "type": "array<string>", "notes": "batch mode — deduplicated, max 25 (QUICKENRICH_ENDPOINT_MAX_DOMAINS); cannot combine with domain/linkedin_url"},
+                {"name": "full_name", "type": "string", "notes": "with domain only — specific person"},
+                {"name": "titles", "type": "string", "notes": "comma-separated DM titles (domain mode); default cascade tiers apply; local strict-title gate filters results"},
+                {"name": "max_results", "type": "int", "default": "5"},
+                {"name": "validate_emails", "type": "bool", "default": "false", "notes": "MailTester on every email; non-accepted codes dropped, 'ko' also marked invalid in the Contacts DB; fails open on validator outage"},
+            ],
+            "response_shape": 'single: /enrich envelope {contacts, contact_count, data_sources, routing, sync_to_contacts_db} + optional validation block · batch: {success, batch:{total,succeeded,failed,contacts_found}, results:[per-domain envelope | {domain,error,error_status}]}',
+            "concurrency": "batch fan-out bounded at QUICKENRICH_BATCH_CONCURRENCY=5 concurrent domains",
+            "errors": [
+                "503 — QuickEnrich disabled (kill switch) or missing API key.",
+                "400 — 'domains' combined with 'domain'/'linkedin_url'; 'full_name' without 'domain'; no input.",
+                "422 — batch larger than 25 domains.",
+            ],
+        },
+        {
+            "method": "POST",
             "path": "/api/enrichment/upload",
             "auth": "jwt or api key",
             "summary": "Upload CSV, returns upload_id + column preview.",
@@ -1250,6 +1272,8 @@ _LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
         "flow1_minimal": 'curl -X POST <base>/api/enrichment/flows/domain-enrich -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d \'{"upload_id":"<uuid>","domain_col":"domain"}\'',
         "flow1_dental": 'curl -X POST <base>/api/enrichment/flows/domain-enrich -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d \'{"upload_id":"<uuid>","domain_col":"domain","titles":"dentist,orthodontist,dmd,dds","max_results":3,"providers":["blitz","better_enrich"]}\'',
         "single_enrich": 'curl -X POST <base>/api/enrichment/enrich -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d \'{"domain":"google.com","titles":"CEO,CTO"}\'',
+        "quickenrich_single": 'curl -X POST <base>/api/enrichment/quickenrich -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d \'{"domain":"google.com","titles":"CEO,CTO","validate_emails":true}\'',
+        "quickenrich_batch": 'curl -X POST <base>/api/enrichment/quickenrich -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d \'{"domains":["google.com","stripe.com","linear.app"]}\'',
         "poll_status": "curl <base>/api/enrichment/jobs/$JOB_ID -H \"Authorization: Bearer $TOKEN\"",
         "download": "curl <base>/api/enrichment/jobs/$JOB_ID/download -H \"Authorization: Bearer $TOKEN\" -o enriched.csv",
         "sse_stream": "curl -N <base>/api/enrichment/jobs/$JOB_ID/stream -H \"Authorization: Bearer $TOKEN\"",
@@ -4053,6 +4077,9 @@ class QuickEnrichDirectRequest(BaseModel):
         codes (default policy accepts "ok" only) are dropped from the
         response, hard-invalid ("ko") emails are marked invalid in the
         Contacts DB.
+    allow_catch_all: with validate_emails, keep "mb" (catch-all) emails
+        instead of dropping them — many deliverable business inboxes are
+        catch-all; "ko" is still always dropped and poisoned.
     """
 
     domain: Optional[str] = None
@@ -4062,6 +4089,7 @@ class QuickEnrichDirectRequest(BaseModel):
     titles: Optional[str] = None
     max_results: int = 5
     validate_emails: bool = False
+    allow_catch_all: bool = False
 
     class Config:
         schema_extra = {
@@ -4072,6 +4100,7 @@ class QuickEnrichDirectRequest(BaseModel):
                 {"domains": ["stripe.com", "linear.app", "vercel.com"]},
                 {"domain": "stripe.com", "titles": "CEO,CTO,Founder"},
                 {"domain": "stripe.com", "validate_emails": True},
+                {"domain": "vercel.com", "validate_emails": True, "allow_catch_all": True},
             ]
         }
 
@@ -4097,14 +4126,16 @@ def _quickenrich_validation_summary(counts: dict) -> dict:
 
 
 async def _quickenrich_validate_contacts(
-    contacts: list, domain: Optional[str]
+    contacts: list, domain: Optional[str], *, allow_catch_all: bool = False
 ) -> tuple[list, dict]:
     """MailTester-validate QuickEnrich contacts.
 
     Returns (kept_contacts, summary). Contacts whose email codes outside the
     accepted set are dropped; "ko" emails are additionally poisoned in the
-    Contacts DB (mark_email_invalid). MailTester unavailability fails OPEN
-    (contact kept, validation_status "unknown") — same policy as the cascade.
+    Contacts DB (mark_email_invalid). "mb" (catch-all) is policy-rejected
+    unless allow_catch_all=True — many deliverable business inboxes are
+    catch-all. MailTester unavailability fails OPEN (contact kept,
+    validation_status "unknown") — same policy as the cascade.
     """
     kept: list = []
     counts = {"validated": 0, "accepted": 0, "mb": 0, "ko": 0, "unavailable": 0}
@@ -4127,7 +4158,7 @@ async def _quickenrich_validate_contacts(
                 continue
             code = result.get("code", "")
             counts["validated"] += 1
-            if result.get("valid"):
+            if result.get("valid") or (allow_catch_all and code == "mb"):
                 counts["accepted"] += 1
                 kept.append({
                     **contact,
@@ -4205,7 +4236,8 @@ async def quickenrich_direct(
         result = await unified_enrich(sub, False, current_user)
         if req.validate_emails:
             kept, summary = await _quickenrich_validate_contacts(
-                result.get("contacts") or [], item_domain
+                result.get("contacts") or [], item_domain,
+                allow_catch_all=req.allow_catch_all,
             )
             result = {
                 **result,

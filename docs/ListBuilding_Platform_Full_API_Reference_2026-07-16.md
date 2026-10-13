@@ -1,6 +1,6 @@
 # ListBuilding Platform — Full API Reference
 
-- **Updated on:** 2026-09-16
+- **Updated on:** 2026-10-13
 - **Updated by:** @Arjav Jain
 - **Scope:** Every user-facing endpoint on https://listbuilding.eagleinfoservice.com/
 - **Base URL:** `https://listbuilding.eagleinfoservice.com`
@@ -110,7 +110,7 @@ The primary endpoint for finding contact data for one company or person.
 | `existing_email` | string | No | — | Existing email hint (skips email resolution). |
 | `max_results` | integer | No | 5 | Max contacts to return (1–10). |
 | `titles` | string | No | — | Comma-separated titles filter (e.g., `"CEO,CTO,VP"`). Max 50. |
-| `strict_titles` | boolean | No | true | Strict local title gate: drop contacts that don't match `titles`/`cascade` after provider matching (see A.6). `false` = keep provider fuzzy matches. |
+| `strict_titles` | boolean | No | true | Strict local title gate: drop contacts that don't match `titles`/`cascade` after provider matching (see A.7). `false` = keep provider fuzzy matches. |
 | `cascade` | array of objects | No | — | Advanced: list of title-filter dicts (see A.7). |
 | `force_provider` | string | No | — | Force a single provider. One of: `contacts_db`, `smartprospect`, `quickenrich`, `getleads`, `blitz`, `wizleads`, `better_enrich`. Mutually exclusive with `selected_providers`. |
 | `selected_providers` | array of strings | No | — | Restrict cascade to a subset (see A.6). Mutually exclusive with `force_provider`. |
@@ -254,7 +254,77 @@ Older path-style single-domain lookup. Accepts `max_results`, `cascade_json`, `f
 
 **Phase 3 (2026-07-22) — crash-safe jobs (`ENABLE_INCREMENTAL_PERSISTENCE`):** when this flag is on, a cancelled or crashed enrichment job persists its partial results — a partial CSV at `data/outputs/<job_id>.csv` plus a collector drain to the Contacts DB — and ends with `status="partial"` instead of losing all in-memory data. The partial CSV is downloadable via the usual `/jobs/{id}/download`. Default off; enabled in production via the `enable-incremental-persistence.conf` systemd drop-in.
 
-### A.4 Provider cascade order
+### A.4 QuickEnrich-only fast path: `POST /api/enrichment/quickenrich` (added 2026-10-13)
+
+Single-call QuickEnrich lookup — the fastest paid path on the platform (GTM Unlimited 5800/5800 RPM shared lanes). Internally runs the unified `/enrich` executor with `force_provider="quickenrich"`: **QuickEnrich ONLY** — the internal Contacts DB is *not* consulted, so every result is fresh from QE and QE-verified (`email_verification_date` on each contact). Returns normalized contacts AND syncs them to the Contacts DB via `contacts_writer` (standard `sync_to_contacts_db` receipt in the response).
+
+#### Request body parameters
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `domain` | string | Yes* | — | Single company domain (decision makers via dataset-search). |
+| `linkedin_url` | string | Yes* | — | Person LinkedIn URL (email via employee-search). |
+| `domains` | array of strings | Yes* | — | Batch mode: company domains (deduplicated, max 25 via `QUICKENRICH_ENDPOINT_MAX_DOMAINS`). Cannot be combined with `domain`/`linkedin_url`. |
+| `full_name` | string | No | — | Specific person — only valid WITH `domain`. |
+| `titles` | string | No | — | Comma-separated DM titles (domain mode). Default cascade title tiers apply when omitted; the local strict-title gate filters results. |
+| `max_results` | integer | No | 5 | Max contacts to return. |
+| `validate_emails` | boolean | No | false | Run MailTester (validation.hyperke.org) on every returned email. |
+
+\*Exactly one of `domain`, `linkedin_url`, or `domains` (batch).
+
+#### `validate_emails=true` semantics
+
+- Emails whose MailTester code is not accepted (default policy accepts `ok` only) are **dropped** from the response.
+- Hard-invalid (`ko`) emails are additionally **marked invalid in the Contacts DB** (mark-not-delete).
+- MailTester unavailability **fails open** — the contact is kept with `validation_status: "unknown"`.
+- The response gains a `validation` summary block: `{validator, validated, accepted, dropped_policy_rejected, dropped_invalid, unavailable}`.
+
+#### Example: single domain with validation
+
+```bash
+curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/quickenrich \
+  -H "X-API-Key: lgp_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"domain": "stripe.com", "titles": "CEO,CTO,Founder", "validate_emails": true}'
+```
+
+#### Example: batch (≤25 domains)
+
+```bash
+curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/quickenrich \
+  -H "X-API-Key: lgp_YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"domains": ["stripe.com", "linear.app", "vercel.com"]}'
+```
+
+#### Response shape — single
+
+The standard `/enrich` envelope (see A.1): `contacts`, `contact_count`, `data_sources`, `routing`, `sync_to_contacts_db` — plus the optional `validation` block when `validate_emails=true`. `email_source` is `quickenrich_email` (person) or `quickenrich_contacts` (domain decision makers).
+
+#### Response shape — batch
+
+```json
+{
+  "success": true,
+  "batch": {"total": 3, "succeeded": 2, "failed": 1, "contacts_found": 7},
+  "results": [
+    {"domain": "stripe.com", "contacts": ["..."], "contact_count": 4, "sync_to_contacts_db": {"...": "..."}},
+    {"domain": "not-a-domain", "error": "...", "error_status": 400}
+  ]
+}
+```
+
+Each element of `results` is either a full per-domain envelope or an isolated `{domain, error, error_status}` — one bad domain never fails the batch. Batch fan-out is bounded at `QUICKENRICH_BATCH_CONCURRENCY` (5) concurrent domains.
+
+#### Errors
+
+| Status | When |
+| --- | --- |
+| 503 | QuickEnrich disabled (kill switch) or missing API key |
+| 400 | `domains` combined with `domain`/`linkedin_url`; `full_name` without `domain`; no input provided |
+| 422 | Batch larger than 25 domains (`QUICKENRICH_ENDPOINT_MAX_DOMAINS`) |
+
+### A.5 Provider cascade order
 
 When resolving emails, the system queries providers in this order, stopping at the first one that returns a valid email (order set **2026-10-10**):
 
@@ -272,7 +342,7 @@ When resolving emails, the system queries providers in this order, stopping at t
 
 > **SEG classification is not a cascade provider.** It is a side-channel DNS-over-HTTPS (MX) domain lookup that runs alongside the cascade; it does not count as a provider call for job counters and never affects which cascade step wins. Its DoH lookups do appear in `provider_call_log` under the `seg` provider key for observability.
 
-### A.5 `selected_providers` (new 2026-07-13)
+### A.6 `selected_providers` (new 2026-07-13)
 
 Restricts the cascade to a subset of providers.
 
@@ -300,7 +370,7 @@ curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/enrich \
   -d '{"domain": "acme.com", "selected_providers": ["contacts_db", "smartprospect"]}'
 ```
 
-### A.6 Title filtering
+### A.7 Title filtering
 
 #### Simple titles filter
 ```
@@ -453,7 +523,7 @@ curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/flows/doma
 | `company_name_col` | string | No | — | Column with company names. |
 | `existing_email_col` | string | No | — | Column with existing emails. |
 | `titles` | string | No | — | Comma-separated titles filter. |
-| `strict_titles` | boolean | No | true | Strict local title gate: drop contacts that don't match `titles` after provider matching (see A.6). `false` = keep provider fuzzy matches (higher volume, lower precision). |
+| `strict_titles` | boolean | No | true | Strict local title gate: drop contacts that don't match `titles` after provider matching (see A.7). `false` = keep provider fuzzy matches (higher volume, lower precision). |
 | `max_results` | integer | No | 5 | Max contacts per domain. |
 | `providers` | array of strings | No | all enabled | Provider allowlist (same semantics as `selected_providers` on the single-row endpoint). |
 | `normalize_domains` | boolean | No | true | Normalize raw URLs to bare domains. |
@@ -1604,6 +1674,7 @@ Plain-text message about daily quota. No `Retry-After` header.
 
 | Date | Change |
 | --- | --- |
+| 2026-10-13 | **`POST /api/enrichment/quickenrich` added — QuickEnrich-only fast path** (documented as A.4; cascade-order/selected_providers/title sections renumbered A.5–A.7). Single (`domain`, `linkedin_url`, or `domain`+`full_name`) or batch (`domains`, deduplicated, max 25 via `QUICKENRICH_ENDPOINT_MAX_DOMAINS`, fan-out bounded at `QUICKENRICH_BATCH_CONCURRENCY`=5, per-row errors isolated — one bad domain never fails the batch). Internally the unified `/enrich` executor with `force_provider="quickenrich"`: internal contacts_db NOT consulted, every result fresh from QE and QE-verified. Returns the standard `/enrich` envelope with the `sync_to_contacts_db` receipt; `validate_emails=true` adds a MailTester pass (non-accepted codes dropped from the response, hard-invalid `ko` additionally marked invalid in the Contacts DB, validator unavailability fails open) plus a `validation` summary block. Errors: 503 disabled/missing key, 400 bad input combos, 422 batch >25. **Same day:** QuickEnrich upgraded to the GTM Unlimited plan — both shared lanes raised 900/280 → **5800/5800 RPM** (plan cap 6000/min is GLOBAL across endpoints, both lanes share it; code defaults stay 900/280 Standard-safe); A.5 cascade table, `/flows/help`, and MCP oracle labels updated to the live values. |
 | 2026-10-10 | **QuickEnrich provider added + cascade reordered.** New provider `quickenrich` (app.quickenrich.io, Bearer auth; `enrichment/quickenrich_client.py`, kill switch `ENABLE_QUICKENRICH`, env `QUICKENRICH_API_KEY`): person email via `GET /api/employees/search` (by `linkedin_url` OR `company_url`+`first_name`+`last_name`; credit on match only) and domain decision-makers via `GET /api/employees/dataset-search` (`company_url`+`titles`+`has_email`, 20/page, page-capped; credit per returned employee-with-email, empty page free). Shared cross-process rate lanes `QUICKENRICH_RATE_LIMIT_RPM` (default 900, Standard cap 1000/min) + `QUICKENRICH_DATASET_RATE_LIMIT_RPM` (default 280, cap 300/min); GTM Unlimited = 6000/min. New source strings `quickenrich_email` / `quickenrich_contacts`; `force_provider=quickenrich` and `selected_providers` incl. `quickenrich` valid. Cascade reordered (owner decision): contacts_db → smartprospect → quickenrich → getleads → blitz → wizleads → better_enrich (Blitz demoted from 2nd for FUP 15M records/mo relief; SmartProspect promoted to 2nd; WizLeads last active tier). Domain DM discovery arm: contacts_db → quickenrich (dataset-search) → blitz (waterfall) → getleads (decision-makers fallback). Also: better_enrich kill-switch bypass fixed (global disable now beats force_provider/selected_providers in `list_builder`). |
 | 2026-10-06 | **Section K added — Data Explorer BFF** (`/api/explorer/*`, JWT-only, disabled by default): read-only people search/count/facets, person detail, saved-view CRUD, and export create/list/status/download, proxied over HTTPS to the Contacts API `/v1/data/*` + `/v1/exports` surface with a server-side token (`CONTACTS_API_EXPLORER_TOKEN`). Enable with `DATA_EXPLORER_ENABLED=true`; downloads stream with upstream Content-Type/Content-Disposition passed through. |
 | 2026-09-29 | **Slack notifications added** (independent of SMTP): job completions and website-email followups now also post directly to Slack via the workspace bot (`enrichment/slack_notifier.py`, `SLACK_BOT_TOKEN`/`SLACK_CHANNEL`, kill-switch `SLACK_NOTIFY_ENABLED`). Followup webhook path declared permanently dormant (no inbound webhook secrets by owner decision) — the 30s poller is the only completion path. |

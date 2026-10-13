@@ -213,6 +213,7 @@ def get_schema(model_name: str) -> str:
 
     Available models:
     - ``UnifiedEnrichRequest`` — POST /api/enrichment/enrich
+    - ``QuickEnrichDirectRequest`` — POST /api/enrichment/quickenrich (QE-only fast path, 2026-10-13; single or batch of ≤25 domains)
     - ``StartJobRequest`` — POST /api/enrichment/jobs (legacy)
     - ``ProviderToggleRequest`` — POST /api/enrichment/flows/domain-enrich
     - ``LinkedInV2Request`` — POST /api/enrichment/by-linkedin-v2
@@ -230,6 +231,7 @@ def get_schema(model_name: str) -> str:
 
     model_map = {
         "UnifiedEnrichRequest": enr.UnifiedEnrichRequest,
+        "QuickEnrichDirectRequest": enr.QuickEnrichDirectRequest,
         "StartJobRequest": enr.StartJobRequest,
         "ProviderToggleRequest": enr.ProviderToggleRequest,
         "LinkedInV2Request": enr.LinkedInV2Request,

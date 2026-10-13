@@ -288,6 +288,39 @@ def test_validate_drops_ko_and_poisons_only_ko(client, hermetic):
     assert call_kwargs.get("email") == "dead@example.com"
 
 
+def test_validate_catch_all_kept_only_when_allowed(client, hermetic):
+    hermetic.qe_page = _qe_domain_page(
+        [_qe_employee(full_name="Catch All", email="catchall@example.com", title="CEO")]
+    )
+
+    async def fake_verify(http, email):
+        # Catch-all server: accepted mailbox unknown
+        return {"valid": False, "code": "mb", "message": "Catch-All", "email": email}
+
+    base_kwargs = {"domain": "example.com", "validate_emails": True}
+    with patch.object(
+        routes_mod.quickenrich_client, "domain_search", AsyncMock(return_value=hermetic.qe_page)
+    ), patch.object(routes_mod.mailtester_client, "verify_email", fake_verify):
+        # Default policy: catch-all dropped (not poisoned)
+        resp = client.post("/api/enrichment/quickenrich", json=base_kwargs)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["contact_count"] == 0
+        assert body["validation"]["dropped_policy_rejected"] == 1
+        hermetic.mark_invalid.assert_not_awaited()
+
+        # allow_catch_all: kept with mb code annotated
+        resp = client.post(
+            "/api/enrichment/quickenrich",
+            json={**base_kwargs, "allow_catch_all": True},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["contact_count"] == 1
+        assert body["contacts"][0]["mailtester_code"] == "mb"
+        assert body["validation"]["accepted"] == 1
+
+
 def test_validate_fails_open_when_mailtester_unavailable(client, hermetic):
     with patch.object(
         routes_mod.mailtester_client,
