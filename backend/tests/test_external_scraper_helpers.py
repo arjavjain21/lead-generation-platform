@@ -549,6 +549,10 @@ class TestImplCreateJob:
             job_id = out.get("job_id")
             assert out["status"] == "queued"
             assert out["display_name"].startswith("[API] ")
+            row = conn.execute(
+                "SELECT group_name FROM jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+            assert row and row[0] == "API", "API creates must folder as group_name='API'"
             assert out["suggested_poll_seconds"] in (10, 30, 60)
             assert "links" in out and "quota" in out
         finally:
@@ -607,6 +611,10 @@ class TestImplCreateJob:
             assert out["created"] is True
             job_id = out["job_id"]
             assert out["display_name"].startswith("[MCP] ")
+            row = conn.execute(
+                "SELECT group_name FROM jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+            assert row and row[0] == "MCP", "MCP creates must folder as group_name='MCP'"
         finally:
             if job_id:
                 _cleanup(conn, job_id, user_ids=(uid,))

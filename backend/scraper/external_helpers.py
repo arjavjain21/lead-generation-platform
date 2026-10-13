@@ -704,6 +704,10 @@ def impl_create_job(
             regions=regions_payload,
             total_tasks=est["task_count"],
             display_name=f"[{source}] {req.query.strip()[:60]}",
+            # API/MCP creates folder together in the jobs UI so regular
+            # UI submissions stay findable (2026-10-13). The UI renders
+            # same-group_name jobs as one collapsed folder card.
+            group_name=source,
         )
     except sqlite3.OperationalError:
         raise ExternalError(

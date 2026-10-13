@@ -7267,8 +7267,14 @@ example.org,Jane Doe</pre>
 
             const htmlParts = [];
 
-            Object.keys(grouped).sort().forEach(groupName => {
+            // Campaign folders alphabetical first; API/MCP system folders sink to
+            // the bottom of the folder stack, just above the ungrouped UI cards.
+            Object.keys(grouped).sort((a, b) => ((a === 'API' || a === 'MCP') ? 1 : 0) - ((b === 'API' || b === 'MCP') ? 1 : 0) || a.localeCompare(b)).forEach(groupName => {
                 const members = grouped[groupName];
+                // System folders (API/MCP auto-created jobs, 2026-10-13): no
+                // combined-CSV button — merging hundreds of unrelated one-off
+                // jobs is meaningless and can stream a giant file.
+                const isSystemFolder = groupName === 'API' || groupName === 'MCP';
                 const totalMembers = allScraperJobs.filter(j => j.group_name === groupName).length;
                 const sumDone = members.reduce((a, j) => a + (j.done_tasks || 0), 0);
                 const sumTotal = members.reduce((a, j) => a + (j.total_tasks || 0), 0);
@@ -7297,7 +7303,7 @@ example.org,Jane Doe</pre>
                     + '<div class="job-meta" style="margin-top:4px">' + chips + (filterNote ? ' ' + filterNote : '') + '</div>'
                     + '</div>'
                     + '<div class="actions">'
-                    + ' <button class="btn btn-success btn-sm" onclick="downloadScraperGroup(\'' + groupName.replace(/'/g, "\\'") + '\', this)">↓ Download combined CSV</button>'
+                    + (isSystemFolder ? '' : ' <button class="btn btn-success btn-sm" onclick="downloadScraperGroup(\'' + groupName.replace(/'/g, "\\'") + '\', this)">↓ Download combined CSV</button>')
                     + ' <button class="btn btn-secondary btn-sm" onclick="toggleScraperGroup(\'' + groupName.replace(/'/g, "\\'") + '\')">' + (collapsed ? '▸ Show jobs' : '▾ Hide jobs') + '</button>'
                     + '</div>'
                     + '</div>'
