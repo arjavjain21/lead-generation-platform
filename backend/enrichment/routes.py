@@ -2539,7 +2539,6 @@ async def unified_enrich(
             # Domain-only: Use existing pipeline (Contacts DB → Blitz)
             # Use custom cascade if provided, otherwise use default
             # Skip Contacts DB contacts if custom cascade is provided
-            logger.info("DEBUG domain_only: force_provider=%s", req.force_provider, req.selected_providers)
             has_custom_cascade = req.cascade is not None and len(req.cascade) > 0
             cascade = req.cascade if has_custom_cascade else blitz_client.DEFAULT_CASCADE
             input_row = {"domain": domain}
