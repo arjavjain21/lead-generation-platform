@@ -1,6 +1,6 @@
 ---
 name: listbuilding
-description: Complete lead-generation toolkit for the ListBuilding platform (listbuilding.eagleinfoservice.com) — the full enrichment waterfall (contacts_db → smartprospect → quickenrich → getleads → blitz → wizleads) for decision-maker emails from ANY input (domains, person/company LinkedIn URLs, company names, business name+address, or a mixed CSV), PLUS the Google Maps scraper for local-business data across 30 countries, PLUS TAM company discovery, ICP people search, and the free website-email rescue. Use when the user wants "emails for these companies", "find decision makers", "enrich this CSV/lead list", "who to contact at X", "scrape Google Maps", "find dentists/plumbers/cafes in X", "local business leads by city/country", or any end-to-end list building (scrape → enrich → emails → phones).
+description: Complete lead-generation toolkit for the ListBuilding platform (listbuilding.eagleinfoservice.com) — the full enrichment waterfall (contacts_db → smartprospect → quickenrich → getleads → blitz → moltsets → better_enrich → wizleads) for decision-maker emails from ANY input (domains, person/company LinkedIn URLs, company names, business name+address, or a mixed CSV), PLUS the Google Maps scraper for local-business data across 30 countries, PLUS TAM company discovery, ICP people search, and the free website-email rescue. Use when the user wants "emails for these companies", "find decision makers", "enrich this CSV/lead list", "who to contact at X", "scrape Google Maps", "find dentists/plumbers/cafes in X", "local business leads by city/country", or any end-to-end list building (scrape → enrich → emails → phones).
 ---
 
 # ListBuilding — Complete Lead Generation & Enrichment Skill
@@ -15,7 +15,7 @@ websites → decision-maker emails → optional phones**, from any machine, with
 > page to its API/MCP equivalent.
 
 > **State verified against live platform code + config: 2026-10-13** (post
-> QuickEnrich cascade reorder of 2026-10-10). When live endpoints disagree with this
+> MoltSets tier-6 add + better_enrich re-enable of 2026-10-14). When live endpoints disagree with this
 > doc, **live wins** — see "Live truth sources" at the bottom.
 
 ---
@@ -52,14 +52,14 @@ Every enrichment request walks a cascade of providers. **The cascade stops at th
 provider that returns a usable contact** for a row; later providers are skipped for that row.
 `contacts_db` (the platform's own 30M+ person database) is always first and always free.
 
-## The three arms (order set 2026-10-10, owner-locked)
+## The three arms (order set 2026-10-14, owner-locked)
 
 ```
 PERSON (name + domain, or domain+name hints):
-  contacts_db → smartprospect → quickenrich → getleads → blitz → wizleads
+  contacts_db → smartprospect → quickenrich → getleads → blitz → moltsets → [better_enrich] → wizleads
 
 LINKEDIN URL (person profile):
-  contacts_db → quickenrich(linkedin) → getleads(from-linkedin) → blitz(pe_by_li) → blitz(find_work_email)
+  contacts_db → quickenrich(linkedin) → getleads(from-linkedin) → blitz(pe_by_li) → blitz(find_work_email) → moltsets(best-email, terminal)
 
 DOMAIN ONLY (discover decision makers):
   contacts_db → quickenrich(dataset-search) → blitz(title waterfall) → getleads(decision-makers)
@@ -81,8 +81,9 @@ DOMAIN ONLY (discover decision makers):
 | 3 | `quickenrich` | Two SHARED cross-process lanes: person-search 5800 RPM + dataset-search 5800 RPM since 2026-10-13 (GTM Unlimited/max plan, unlimited leads — 6000 RPM cap is GLOBAL across endpoints, both lanes share it; code defaults 900/280 = Standard-safe) | Paid; employee-search credits on match only; dataset-search credits per returned employee-with-email (empty page free) | Newest provider (2026-10-10). Person email via LinkedIn URL or name+company URL. Domain DMs via dataset-search (title-filtered, has_email). Provider-side quirks (title param ≤255 chars, boolean flags `1`/`0`) are handled by the platform client — don't work around them. |
 | 4 | `getleads` | batch 100 (plan ~10k/min); unlimited-plan fair-use budget (UTC calendar-day + monthly reset) | Paid credits per record; from-linkedin fallback in the LinkedIn arm; `lookup_decision_makers` domain fallback (C-Team/VP/Director) when the whole domain arm finds nobody | Batch pre-pass of 100/chunk on Flow-3. Decision-makers fallback costs 1 credit/record — fires only after contacts_db + QE + Blitz all miss. |
 | 5 | `blitz` | 50 RPS per endpoint (legacy plan), per-lane client caps; **FUP 15M records/month** — check `GET /api/enrichment/blitz/fair-use` before big runs | **Search endpoints bill 1 record per RETURNED result (empty = free); `/v2/enrichment/email` + `/v2/enrichment/phone` bill per CALL (miss still bills); `/v2/enrichment/person` + domain-to-linkedin bill on success only; errors never bill** | LinkedIn-based enrichment with the 3-tier title waterfall. `/person` endpoint is plan-dead. >5-domain Flow-1 jobs get a free-ish batch prepass (`/v2/search/people`, 50 companies/call). 30-day domain-miss negative cache — definitive misses skip Blitz on replay. Phone bundle (`include_phone`) = its own 50-RPS lane, **does NOT drain the 15M FUP pool**, miss = $0 but call still bills. |
-| 6 | `wizleads` | 10 RPS | Paid | Last active tier, catch-all verified email. Weakest yield (52% of its calls historically 429) — it's the "one more try" tier. |
-| — | `better_enrich` | — | — | **Disabled 2026-09-29.** Don't select or force it. |
+| 6 | `moltsets` | 30 RPM shared cross-process (plan fair use: 15k records/5h, 75k records/week, 7.5k searches/5h) | $97/mo unlimited tokens — the meter is quota, not per-record cash | Best person email incl. **personal fallback**. ONE request per person per attempt: `linkedin_to_best_email` (LinkedIn arm terminal) / `search_business_email_by_name` (name+domain). Risk-graded A–F: A/B provider-verified, C/F MailTester-gated, D always dropped. Fair-use windows arm a cross-worker cooldown → every worker skips instantly (a spent window reads as a plain miss). Misses negative-cached 14d. Gauge: `GET /api/enrichment/moltsets/usage?live=true`. Source label `moltsets_email`. |
+| 7 | `better_enrich` | 10/5 RPS | Paid per call (~0.1 credit avg per 200) | **Wired but HELD OFF until credits are added** (was disabled 2026-09-29 after a $240/46h burn; re-enabled in code 2026-10-14, env switch `ENABLE_BETTER_ENRICH`). Person email via V3 + generic company-email fallback for no-DM domains. |
+| 8 | `wizleads` | 10 RPS | Paid | Terminal tier, catch-all verified email. Weakest yield (52% of its calls historically 429) — it's the "one more try" tier. |
 | — | `prospeo` | — | — | **Disabled end-to-end.** Not a valid selection. |
 
 ## The title ICP gate (why some contacts disappear)
@@ -385,7 +386,7 @@ Response: `{domain, mode, company_linkedin_url, contacts[{full_name,title,email,
 headline,location_city/country,icp_tier,email_source,validation_status,email_verified,
 verification_message}], contact_count, data_sources{...}, sync_to_contacts_db{status,records_*}}`.
 `email_source`: `contacts_db_*`, `smartprospect_email`, `quickenrich_email`, `getleads_email`,
-`blitz_*`, `wizleads_email`, `not_found`. **Every successful call syncs to the platform
+`blitz_*`, `moltsets_email`, `wizleads_email`, `not_found`. **Every successful call syncs to the platform
 contacts DB** — don't re-enrich what's synced.
 
 ## QuickEnrich fast path — fresh verified DMs, QE only
@@ -602,7 +603,7 @@ Bodies are `{"detail":"…"}` (external surface wraps in `{success,data,error,me
 - Enriching person URLs via Flow 1's `linkedin_url_col` — echoed, not enriched; use Flow 3
 - Creating scraper jobs without cache-check + estimate — identical queries waste real money
 - `mode:"all"` country-wide jobs without an explicit user ask
-- Selecting `better_enrich` or `prospeo` — both disabled; forcing returns `provider_disabled`
+- Selecting `prospeo` — disabled; forcing returns `provider_disabled`. (`better_enrich` is selectable but currently held off pending credits — same provider_disabled signal while off.)
 - Trusting `GET /providers` response order as cascade order — it's membership only (Part 1 = order)
 
 ---
