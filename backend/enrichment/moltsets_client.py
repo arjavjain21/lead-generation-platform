@@ -90,9 +90,15 @@ _USER_AGENT = os.getenv(
 )
 
 # Shared cross-process limiter — one bucket across all gunicorn workers.
+# ⚠ CAPACITY MUST STAY >= 1.0: shared.rate_limiter only GRANTS when the
+# bucket holds a full token (``refilled >= 1.0``) and the refill is capped
+# by ``min(capacity, ...)`` — a sub-1.0 capacity can never accumulate a
+# whole token and _acquire_rate_limit livelocks (found live 2026-10-14:
+# capacity 0.5 at 30 RPM hung every request ~forever). The SUSTAINED rate
+# is still 30/min via refill; capacity 1 just permits a burst of one.
 _RATE_LIMIT_RPM = env_float("MOLTSETS_RATE_LIMIT_RPM", "30")
 _REFILL_PER_SEC = _RATE_LIMIT_RPM / 60.0
-_CAPACITY = env_float("MOLTSETS_RATE_LIMIT_BURST", _REFILL_PER_SEC)
+_CAPACITY = max(1.0, env_float("MOLTSETS_RATE_LIMIT_BURST", "1.0"))
 
 _MAX_RETRIES = 2            # only for rate_limited / internal_error
 _BASE_BACKOFF = 0.5

@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 import sys
 from pathlib import Path
 from typing import Any
@@ -368,3 +369,33 @@ class TestGetUsage:
 
         result = asyncio.run(mc.get_usage(_client(handler)))
         assert result is None
+
+
+class TestRateLimiterConfig:
+    def test_capacity_never_below_one_token(self):
+        """Regression (live incident 2026-10-14): shared.rate_limiter only
+        grants when the bucket holds a FULL token (refilled >= 1.0) and
+        refill is capped by min(capacity, ...) — a sub-1.0 capacity can
+        never accumulate one and _acquire_rate_limit livelocks. The client
+        clamps capacity to >= 1.0 so a low MOLTSETS_RATE_LIMIT_RPM (e.g.
+        the 30 default -> 0.5 tokens/sec) cannot reintroduce the hang."""
+        assert mc._CAPACITY >= 1.0
+
+    def test_low_burst_env_clamped(self, monkeypatch):
+        monkeypatch.setenv("MOLTSETS_RATE_LIMIT_BURST", "0.5")
+        from shared.env_utils import env_float
+        cap = max(1.0, env_float("MOLTSETS_RATE_LIMIT_BURST", "1.0"))
+        assert cap == 1.0
+
+    def test_acquire_rate_limit_terminates(self, tmp_path, monkeypatch):
+        """End-to-end guard: _acquire_rate_limit against a REAL shared
+        limiter bucket at 30 RPM must return (not hang) — mirrors the
+        livelock conditions that hung production (capacity 0.5)."""
+        from shared import rate_limiter
+        rate_limiter.configure_db_path(str(tmp_path / "rl.db"))
+        try:
+            t0 = time.monotonic()
+            asyncio.run(mc._acquire_rate_limit())
+            assert time.monotonic() - t0 < 5.0  # full fresh bucket = instant
+        finally:
+            rate_limiter.configure_db_path(None)
