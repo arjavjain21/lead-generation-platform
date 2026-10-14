@@ -1237,7 +1237,7 @@
         <div class="page active" id="page-home">
             <div class="welcome-card">
                 <h2>Find Decision Makers with Verified Emails</h2>
-                <p>Build targeted lead lists by uploading domains, searching companies, or enriching LinkedIn profiles. Get emails using our 6-source cascade: Contacts DB, smartprospect, QuickEnrich, GetLeads, Blitz API, and WizLeads.</p>
+                <p>Build targeted lead lists by uploading domains, searching companies, or enriching LinkedIn profiles. Get emails using our 8-source cascade: Contacts DB, smartprospect, QuickEnrich, GetLeads, Blitz API, MoltSets, Better Enrich, and WizLeads.</p>
             </div>
             
             <div class="info-grid">
@@ -1499,14 +1499,19 @@
                                 <span style="font-size:0.75rem;color:#64748b;margin-left:auto;">LinkedIn-based</span>
                             </label>
                             <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+                                <input type="checkbox" id="chain_provider_moltsets" checked style="width:18px;height:18px;">
+                                <span style="font-weight:500;">MoltSets</span>
+                                <span style="font-size:0.75rem;color:#64748b;margin-left:auto;">Best email + personal · skips when quota window spent</span>
+                            </label>
+                            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+                                <input type="checkbox" id="chain_provider_better_enrich" checked style="width:18px;height:18px;">
+                                <span style="font-weight:500;">Better Enrich</span>
+                                <span style="font-size:0.75rem;color:#64748b;margin-left:auto;">Verified fallback</span>
+                            </label>
+                            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
                                 <input type="checkbox" id="chain_provider_wizleads" checked style="width:18px;height:18px;">
                                 <span style="font-weight:500;">WizLeads</span>
                                 <span style="font-size:0.75rem;color:#64748b;margin-left:auto;">Catchall verified</span>
-                            </label>
-                            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
-                                <input type="checkbox" id="chain_provider_better_enrich" title="Disabled 2026-09-29 — credits exhausted, not renewed" style="width:18px;height:18px;">
-                                <span style="font-weight:500;">Better Enrich</span>
-                                <span style="font-size:0.75rem;color:#64748b;margin-left:auto;">Fallback</span>
                             </label>
                         </div>
                     </div>
@@ -1775,14 +1780,19 @@
                             <span style="font-size:0.75rem;color:#64748b;">Runs if GetLeads has no data</span>
                         </div>
                         <div style="display:flex;align-items:center;gap:8px;">
-                            <input type="checkbox" id="provider_wizleads" checked style="width:16px;height:16px;cursor:pointer;">
-                            <label style="font-weight:600;cursor:pointer;">WizLeads</label>
-                            <span style="font-size:0.75rem;color:#64748b;">Runs if Blitz has no data</span>
+                            <input type="checkbox" id="provider_moltsets" checked style="width:16px;height:16px;cursor:pointer;">
+                            <label style="font-weight:600;cursor:pointer;">MoltSets</label>
+                            <span style="font-size:0.75rem;color:#64748b;">Best email (personal fallback) · skips when quota window spent</span>
                         </div>
                         <div style="display:flex;align-items:center;gap:8px;">
-                            <input type="checkbox" id="provider_better_enrich" title="Disabled 2026-09-29 — credits exhausted, not renewed" style="width:16px;height:16px;cursor:pointer;">
+                            <input type="checkbox" id="provider_better_enrich" checked style="width:16px;height:16px;cursor:pointer;">
                             <label style="font-weight:600;cursor:pointer;">Better Enrich</label>
-                            <span style="font-size:0.75rem;color:#64748b;">Runs if WizLeads has no data</span>
+                            <span style="font-size:0.75rem;color:#64748b;">Runs if MoltSets has no data</span>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <input type="checkbox" id="provider_wizleads" checked style="width:16px;height:16px;cursor:pointer;">
+                            <label style="font-weight:600;cursor:pointer;">WizLeads</label>
+                            <span style="font-size:0.75rem;color:#64748b;">Runs if Better Enrich has no data</span>
                         </div>
                         <div style="display:flex;align-items:center;gap:8px; margin-top:10px; padding-top:10px; border-top:1px dashed #e2e8f0;">
                             <input type="checkbox" id="provider_outscraper" checked style="width:16px;height:16px;cursor:pointer;">
@@ -1823,6 +1833,8 @@
                         <div class="cascade-step" data-provider="quickenrich">QuickEnrich</div>
                         <div class="cascade-step" data-provider="getleads">GetLeads</div>
                         <div class="cascade-step" data-provider="blitz">Blitz API</div>
+                        <div class="cascade-step" data-provider="moltsets">MoltSets</div>
+                        <div class="cascade-step" data-provider="better_enrich">Better Enrich</div>
                         <div class="cascade-step" data-provider="wizleads">WizLeads</div>
                         <div class="cascade-step" data-provider="complete">Complete</div>
                     </div>
@@ -3157,7 +3169,7 @@ example.org,Jane Doe</pre>
 
             const providerBoxes = [
                 'provider_blitz', 'provider_getleads', 'provider_smartprospect', 'provider_quickenrich',
-                'provider_wizleads', 'provider_better_enrich', 'provider_outscraper',
+                'provider_moltsets', 'provider_wizleads', 'provider_better_enrich', 'provider_outscraper',
             ].map(id => document.getElementById(id)).filter(Boolean);
 
             function applyGrey() {
@@ -3653,6 +3665,7 @@ example.org,Jane Doe</pre>
             if (document.getElementById('provider_quickenrich').checked) providers.push('quickenrich');
             if (document.getElementById('provider_getleads').checked) providers.push('getleads');
             if (document.getElementById('provider_blitz').checked) providers.push('blitz');
+            if (document.getElementById('provider_moltsets').checked) providers.push('moltsets');
             if (document.getElementById('provider_wizleads').checked) providers.push('wizleads');
             if (document.getElementById('provider_better_enrich').checked) providers.push('better_enrich');
 
@@ -4795,6 +4808,7 @@ example.org,Jane Doe</pre>
             if (document.getElementById('chain_provider_quickenrich').checked) providers.push('quickenrich');
             if (document.getElementById('chain_provider_getleads').checked) providers.push('getleads');
             if (document.getElementById('chain_provider_blitz').checked) providers.push('blitz');
+            if (document.getElementById('chain_provider_moltsets').checked) providers.push('moltsets');
             if (document.getElementById('chain_provider_wizleads').checked) providers.push('wizleads');
             if (document.getElementById('chain_provider_better_enrich').checked) providers.push('better_enrich');
 
@@ -5843,7 +5857,7 @@ example.org,Jane Doe</pre>
         // Update cascade step indicator
         function updateCascadeStep(activeProvider) {
             const steps = document.querySelectorAll('#enrichmentCascadeSteps .cascade-step');
-            const providerOrder = ['contacts_db', 'smartprospect', 'quickenrich', 'getleads', 'blitz', 'wizleads', 'complete'];
+            const providerOrder = ['contacts_db', 'smartprospect', 'quickenrich', 'getleads', 'blitz', 'moltsets', 'better_enrich', 'wizleads', 'complete'];
             const activeIndex = providerOrder.indexOf(activeProvider);
 
             steps.forEach((step, i) => {

@@ -1,7 +1,7 @@
 """UI tests for the QuickEnrich provider + cascade reorder (2026-10-10).
 
 New cascade order: contacts_db -> smartprospect -> quickenrich -> getleads
--> blitz -> wizleads (better_enrich disabled/unchecked, prospeo not shown).
+-> blitz -> moltsets -> better_enrich -> wizleads (2026-10-14 order; prospeo not shown).
 
 Validates against the served single-file app (frontend/index.html):
 - QuickEnrich checkboxes exist + are checked in BOTH provider sets
@@ -30,6 +30,8 @@ NEW_CHIP_ORDER = [
     "quickenrich",
     "getleads",
     "blitz",
+    "moltsets",
+    "better_enrich",
     "wizleads",
     "complete",
 ]
@@ -141,7 +143,8 @@ class TestProviderIdListAndResults:
 
 class TestMarketingCopyUpdated:
     def test_home_copy_lists_new_order(self, html_content):
-        assert "6-source cascade: Contacts DB, smartprospect, QuickEnrich, GetLeads, Blitz API, and WizLeads" in html_content
+        # 2026-10-14: moltsets added 6th + better_enrich re-enabled 7th.
+        assert "8-source cascade: Contacts DB, smartprospect, QuickEnrich, GetLeads, Blitz API, MoltSets, Better Enrich, and WizLeads" in html_content
 
     def test_old_home_order_copy_gone(self, html_content):
         assert "Contacts DB, Blitz API, GetLeads, smartprospect, WizLeads, and BetterEnrich" not in html_content
