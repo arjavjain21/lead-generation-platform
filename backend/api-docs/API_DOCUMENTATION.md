@@ -345,7 +345,7 @@ curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/enrich \
 | location_city | string | City |
 | location_country | string | Country |
 | icp_tier | integer | ICP tier (1 = highest priority) |
-| email_source | string | Source of email: `contacts_db`, `smartprospect`, `quickenrich`, `getleads`, `blitz`, `wizleads`, `better_enrich` |
+| email_source | string | Source of email: `contacts_db`, `smartprospect`, `quickenrich`, `getleads`, `blitz`, `moltsets`, `better_enrich`, `wizleads` |
 
 ---
 
@@ -360,7 +360,9 @@ The `data_sources` field indicates where the data came from:
 | `quickenrich` | QuickEnrich — person email (employee-search) + domain decision-makers (dataset-search); shared rate buckets 900/280 RPM |
 | `getleads` | GetLeads (verified decision-maker emails) |
 | `blitz` | Blitz API |
-| `wizleads` | WizLeads (catch-all verified email) |
+| `moltsets` | MoltSets (best email incl. personal fallback) |
+| `better_enrich` | BetterEnrich (person + company email; re-enabled 2026-10-14) |
+| `wizleads` | WizLeads (catch-all verified email; terminal tier) |
 | `better_enrich` | BetterEnrich V2 (fallback; disabled since 2026-09-29) |
 
 ---
@@ -474,6 +476,7 @@ curl -X GET "https://listbuilding.eagleinfoservice.com/api/enrichment/enrich/goo
 | `quickenrich_email` | Email found via QuickEnrich employee-search |
 | `getleads_email` | Email found via GetLeads |
 | `wizleads_email` | Email found via WizLeads |
+| `moltsets_email` | Email found via MoltSets (risk-graded A–F) |
 | `better_enrich` | Email found via BetterEnrich |
 | `not_found` | No email found |
 
@@ -485,7 +488,7 @@ The `data_sources` object shows where each piece of data came from:
 |-------|--------|-------------|
 | company_linkedin | `contacts_db`, `blitz`, `not_found` | Source of company LinkedIn URL |
 | contacts | `contacts_db`, `quickenrich`, `blitz`, `getleads`, `not_found` | Source of decision-maker contacts |
-| emails | `contacts_db`, `smartprospect`, `quickenrich`, `getleads`, `blitz`, `wizleads`, `better_enrich`, `not_found` | Source of email addresses |
+| emails | `contacts_db`, `smartprospect`, `quickenrich`, `getleads`, `blitz`, `moltsets`, `better_enrich`, `wizleads`, `not_found` | Source of email addresses |
 
 ### Sync Status
 

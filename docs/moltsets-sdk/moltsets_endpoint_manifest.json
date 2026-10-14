@@ -1,0 +1,285 @@
+{
+  "snapshot_date": "2026-10-14",
+  "base_url": "https://api.moltsets.com/api/v1/tools",
+  "authentication": "Authorization: Bearer <API_KEY>",
+  "required_headers": [
+    "Authorization",
+    "Content-Type: application/json",
+    "User-Agent"
+  ],
+  "current_endpoint_count": 20,
+  "legacy_route_count": 2,
+  "endpoints": [
+    {
+      "name": "search_people",
+      "method": "POST",
+      "category": "search",
+      "docs": "https://developer.moltsets.com/api-reference/search/search-for-people",
+      "params": {
+        "query": "string",
+        "title": "string|string[]",
+        "company": "string|string[]",
+        "company_domain": "string|string[]",
+        "country": "string|string[]",
+        "state": "string|string[]",
+        "city": "string|string[]",
+        "seniority": "string|string[]",
+        "industry": "string|string[]",
+        "department": "string|string[]",
+        "functional_area": "string|string[]",
+        "employee_range": "string|string[]",
+        "revenue_range": "string|string[]",
+        "naics_code": "string|string[]",
+        "linkedin_industry": "string|string[]",
+        "exclude_company_domain": "string[]",
+        "exclude_country": "string[]",
+        "exclude_state": "string[]",
+        "exclude_industry": "string[]",
+        "exclude_seniority": "string[]",
+        "exclude_employee_range": "string[]",
+        "limit": "integer 1..25 (default 10)",
+        "offset": "integer (default 0)"
+      },
+      "url": "https://api.moltsets.com/api/v1/tools/search_people"
+    },
+    {
+      "name": "search_companies",
+      "method": "POST",
+      "category": "search",
+      "docs": "https://developer.moltsets.com/api-reference/search/search-for-companies",
+      "params": {
+        "query": "string",
+        "domain": "string|string[]",
+        "industry": "string|string[]",
+        "employee_range": "string|string[]",
+        "revenue_range": "string|string[]",
+        "naics_code": "string|string[]",
+        "linkedin_industry": "string|string[]",
+        "country": "string|string[]",
+        "state": "string|string[]",
+        "exclude_domain": "string[]",
+        "exclude_industry": "string[]",
+        "exclude_employee_range": "string[]",
+        "exclude_revenue_range": "string[]",
+        "limit": "integer 1..25 (default 10)",
+        "offset": "integer (default 0)"
+      },
+      "url": "https://api.moltsets.com/api/v1/tools/search_companies"
+    },
+    {
+      "name": "search_linkedin_profile",
+      "method": "POST",
+      "category": "search",
+      "docs": "https://developer.moltsets.com/api-reference/search/search-for-linkedin-profile",
+      "params": {
+        "name": "string",
+        "first_name": "string",
+        "last_name": "string",
+        "company": "string",
+        "company_domain": "string",
+        "count_only": "boolean (default false)"
+      },
+      "url": "https://api.moltsets.com/api/v1/tools/search_linkedin_profile"
+    },
+    {
+      "name": "search_business_email_by_name",
+      "method": "POST",
+      "category": "search",
+      "docs": "https://developer.moltsets.com/api-reference/search/search-business-email-by-name",
+      "params": {
+        "name": "string",
+        "first_name": "string",
+        "last_name": "string",
+        "company": "string",
+        "company_domain": "string"
+      },
+      "url": "https://api.moltsets.com/api/v1/tools/search_business_email_by_name"
+    },
+    {
+      "name": "search_business_profile_by_name",
+      "method": "POST",
+      "category": "search",
+      "docs": "https://developer.moltsets.com/api-reference/search/search-business-profile-by-name",
+      "params": {
+        "name": "string",
+        "first_name": "string",
+        "last_name": "string",
+        "company": "string",
+        "company_domain": "string"
+      },
+      "url": "https://api.moltsets.com/api/v1/tools/search_business_profile_by_name"
+    },
+    {
+      "name": "linkedin_to_best_email",
+      "method": "POST",
+      "category": "email",
+      "docs": "https://developer.moltsets.com/api-reference/get-valid-emails/linkedin-to-best-email",
+      "params": {
+        "linkedin_url": "string",
+        "linkedin_urls": "string[] max 100"
+      },
+      "url": "https://api.moltsets.com/api/v1/tools/linkedin_to_best_email"
+    },
+    {
+      "name": "linkedin_to_business_email",
+      "method": "POST",
+      "category": "email",
+      "docs": "https://developer.moltsets.com/api-reference/get-valid-emails/linkedin-to-business-email",
+      "params": {
+        "linkedin_url": "string",
+        "linkedin_urls": "string[] max 100"
+      },
+      "url": "https://api.moltsets.com/api/v1/tools/linkedin_to_business_email"
+    },
+    {
+      "name": "linkedin_to_personal_email_usa",
+      "method": "POST",
+      "category": "email",
+      "docs": "https://developer.moltsets.com/api-reference/get-valid-emails/linkedin-to-personal-email-us-only",
+      "params": {
+        "linkedin_url": "string",
+        "linkedin_urls": "string[] max 100"
+      },
+      "notes": "US-only; plan-restricted on some accounts",
+      "url": "https://api.moltsets.com/api/v1/tools/linkedin_to_personal_email_usa"
+    },
+    {
+      "name": "linkedin_to_best_personal_email_usa",
+      "method": "POST",
+      "category": "email",
+      "docs": "https://developer.moltsets.com/api-reference/get-valid-emails/linkedin-to-best-personal-email-us-only",
+      "params": {
+        "linkedin_url": "string",
+        "linkedin_urls": "string[] max 100"
+      },
+      "notes": "US-only; plan-restricted on some accounts",
+      "url": "https://api.moltsets.com/api/v1/tools/linkedin_to_best_personal_email_usa"
+    },
+    {
+      "name": "linkedin_to_mobile_phone",
+      "method": "POST",
+      "category": "phone",
+      "docs": "https://developer.moltsets.com/api-reference/get-carrier-verified-mobile-phones/linkedin-to-mobile-phone",
+      "params": {
+        "linkedin_url": "string",
+        "linkedin_urls": "string[] max 100"
+      },
+      "notes": "Consumes separate phone tokens per returned result",
+      "url": "https://api.moltsets.com/api/v1/tools/linkedin_to_mobile_phone"
+    },
+    {
+      "name": "reverse_email_lookup",
+      "method": "POST",
+      "category": "reverse_lookup",
+      "docs": "https://developer.moltsets.com/api-reference/reverse-lookups/reverse-email-lookup",
+      "params": {
+        "email": "string"
+      },
+      "url": "https://api.moltsets.com/api/v1/tools/reverse_email_lookup"
+    },
+    {
+      "name": "reverse_linkedin_lookup",
+      "method": "POST",
+      "category": "reverse_lookup",
+      "docs": "https://developer.moltsets.com/api-reference/reverse-lookups/reverse-linkedin-lookup",
+      "params": {
+        "linkedin_url": "string"
+      },
+      "url": "https://api.moltsets.com/api/v1/tools/reverse_linkedin_lookup"
+    },
+    {
+      "name": "email_to_maid",
+      "method": "POST",
+      "category": "ad_audience",
+      "docs": "https://developer.moltsets.com/api-reference/get-ad-audience/email-to-maid",
+      "params": {
+        "email": "string"
+      },
+      "url": "https://api.moltsets.com/api/v1/tools/email_to_maid"
+    },
+    {
+      "name": "business_email_to_sha256",
+      "method": "POST",
+      "category": "ad_audience",
+      "docs": "https://developer.moltsets.com/api-reference/get-ad-audience/business-email-to-sha256",
+      "params": {
+        "email": "string"
+      },
+      "notes": "Plan restrictions documented for some higher tiers",
+      "url": "https://api.moltsets.com/api/v1/tools/business_email_to_sha256"
+    },
+    {
+      "name": "linkedin_to_sha256",
+      "method": "POST",
+      "category": "ad_audience",
+      "docs": "https://developer.moltsets.com/api-reference/get-ad-audience/linkedin-to-sha256",
+      "params": {
+        "linkedin_url": "string"
+      },
+      "notes": "Plan restrictions documented for some higher tiers",
+      "url": "https://api.moltsets.com/api/v1/tools/linkedin_to_sha256"
+    },
+    {
+      "name": "email_to_linkedin",
+      "method": "POST",
+      "category": "linkedin",
+      "docs": "https://developer.moltsets.com/api-reference/get-linkedin/email-to-linkedin",
+      "params": {
+        "email": "string"
+      },
+      "url": "https://api.moltsets.com/api/v1/tools/email_to_linkedin"
+    },
+    {
+      "name": "ip_to_company",
+      "method": "POST",
+      "category": "company",
+      "docs": "https://developer.moltsets.com/api-reference/get-company/ip-to-company",
+      "params": {
+        "ip_address": "string IPv4"
+      },
+      "url": "https://api.moltsets.com/api/v1/tools/ip_to_company"
+    },
+    {
+      "name": "get_account",
+      "method": "POST",
+      "category": "account",
+      "docs": "https://developer.moltsets.com/api-reference/account/get-account",
+      "params": {},
+      "url": "https://api.moltsets.com/api/v1/tools/get_account"
+    },
+    {
+      "name": "get_billing",
+      "method": "POST",
+      "category": "account",
+      "docs": "https://developer.moltsets.com/api-reference/account/get-billing",
+      "params": {},
+      "url": "https://api.moltsets.com/api/v1/tools/get_billing"
+    },
+    {
+      "name": "get_usage",
+      "method": "POST",
+      "category": "account",
+      "docs": "https://developer.moltsets.com/api-reference/account/get-usage",
+      "params": {
+        "period": "today|week|month|billing_cycle (default today)"
+      },
+      "url": "https://api.moltsets.com/api/v1/tools/get_usage"
+    }
+  ],
+  "legacy_routes": [
+    {
+      "name": "linkedin_to_personal_email",
+      "method": "POST",
+      "replacement": "linkedin_to_personal_email_usa",
+      "status": "deprecated but documented as temporarily working",
+      "url": "https://api.moltsets.com/api/v1/tools/linkedin_to_personal_email"
+    },
+    {
+      "name": "linkedin_to_best_personal_email",
+      "method": "POST",
+      "replacement": "linkedin_to_best_personal_email_usa",
+      "status": "deprecated but documented as temporarily working",
+      "url": "https://api.moltsets.com/api/v1/tools/linkedin_to_best_personal_email"
+    }
+  ]
+}

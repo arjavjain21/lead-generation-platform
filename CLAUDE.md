@@ -140,7 +140,7 @@ sqlite3 data/jobs.db "PRAGMA wal_checkpoint(TRUNCATE);"  # Fix locks
 
 ## API Integrations (Enrichment Cascade)
 
-Each enrichment source has different cost/quality tradeoffs. Cascade order (set **2026-10-10**): `contacts_db → smartprospect → quickenrich → getleads → blitz → wizleads → better_enrich (disabled since 2026-09-29) → prospeo (disabled)`. Domain-only decision-maker discovery arm: `contacts_db → quickenrich (dataset-search) → blitz (waterfall) → getleads (decision-makers fallback)`.
+Each enrichment source has different cost/quality tradeoffs. Cascade order (set **2026-10-14**): `contacts_db → smartprospect → quickenrich → getleads → blitz → moltsets → better_enrich → wizleads → prospeo (disabled)`. Domain-only decision-maker discovery arm: `contacts_db → quickenrich (dataset-search) → blitz (waterfall) → getleads (decision-makers fallback)` (moltsets does NOT join the domain arm — its search quota is the scarcest resource).
 
 | API | Rate Limit | Priority | Purpose |
 |-----|------------|----------|---------|
@@ -149,8 +149,9 @@ Each enrichment source has different cost/quality tradeoffs. Cascade order (set 
 | **QuickEnrich** | two SHARED cross-process lanes: `QUICKENRICH_RATE_LIMIT_RPM` + `QUICKENRICH_DATASET_RATE_LIMIT_RPM` — prod **5800/5800** since 2026-10-13 (GTM Unlimited/max plan: 6000 RPM cap is GLOBAL across endpoints, both lanes share it; code defaults 900/280 = Standard-safe); kill switch `ENABLE_QUICKENRICH` | 3rd | Person email (GET `/api/employees/search` by `linkedin_url` OR `company_url`+`first_name`+`last_name`; credit on match only) + domain decision-makers (GET `/api/employees/dataset-search` by `company_url`+`titles`+`has_email`, 20/page, page-capped; credit per returned employee-with-email, empty page free). Source strings `quickenrich_email` / `quickenrich_contacts` |
 | **GetLeads** | batch 100 (~10k/min) | 4th | Verified DM emails + bonus phones (batch of 100, unlimited plan); from-linkedin fallback in the LinkedIn-only arm (after QuickEnrich); decision-makers domain fallback when contacts_db + QuickEnrich + Blitz waterfall all find nobody (`lookup_decision_makers`, C-Team/VP/Director, 1 credit/record vs fair use) |
 | **Blitz** | 50 RPS per endpoint (legacy plan 2026-09; per-lane caps `BLITZ_RPS` default + `BLITZ_RPS_EMAIL/_DISCOVERY/_SEARCH`; FUP 15M records/mo, metered live in `blitz_fair_use`) | 5th | LinkedIn-based enrichment with title cascade. Summer release (2026-09-16): find-people batch prepass (`/v2/search/people`, 50 companies/call, jobs with >5 domains), TAM-by-People flow (`/flows/tam`, 1 record/company), 30-day domain-miss negative cache (`blitz_domain_miss`, definitive misses only), optional DM phone bundle (`include_phone`, 1 record/call, US-only). **Billing truths:** search endpoints bill 1 record per returned result (empty = free); `/v2/enrichment/email` + `/v2/enrichment/phone` bill 1 record per CALL (miss still bills); `/v2/enrichment/person` + domain-to-linkedin bill on success only; errors never bill |
-| **WizLeads** | 10 RPS | 6th | Catch-all verified email enrichment (last active tier) |
-| **BetterEnrich** | 10 RPS | 7th (disabled since 2026-09-29) | Person email, company email |
+| **MoltSets** | 30 RPM shared cross-process (`MOLTSETS_RATE_LIMIT_RPM`; plan: 15k records/5h, 75k/week, 7.5k searches/5h) | 6th | Best person email incl. personal fallback (`linkedin_to_best_email` by URL — terminal step of the LinkedIn-only arm — / `search_business_email_by_name` for name+domain); risk-graded A–F (D dropped); fair-use windows arm a cross-worker cooldown (`moltsets_guards.py`) so a spent window = instant skip, zero latency; misses negative-cached 14d. Kill switch `ENABLE_MOLTSETS`. Observability: `GET /api/enrichment/moltsets/usage` |
+| **BetterEnrich** | 10 RPS | 7th (re-enabled 2026-10-14; env kill switch `ENABLE_BETTER_ENRICH`) | Person email, company email |
+| **WizLeads** | 10 RPS | 8th (terminal tier) | Catch-all verified email enrichment |
 
 > **Prospeo** is implemented in `backend/enrichment/prospeo_client.py` but **disabled end-to-end via a 4-layer belt-and-suspenders**: (1) `ENABLED_PROVIDERS["prospeo"]=False` in `providers.py`; (2) `ENABLE_PROSPEO=false` in `backend/.env`; (3) a hard guard at `pipeline.py` (~L294) that reads `ENABLE_PROSPEO` and skips *before* the global check; (4) `prospeo_client` is imported but **never called** anywhere in the cascade. **To re-enable requires all of:** `ENABLE_PROSPEO=true` + flip the dict to `True` + wire an actual cascade step (currently absent). Full provider lifecycle in the `lead-generation-platform-workflow` skill → `references/providers.md`.
 
@@ -237,6 +238,12 @@ QUICKENRICH_API_KEY=<quickenrich-key>
 ENABLE_QUICKENRICH=true                 # QuickEnrich kill switch
 QUICKENRICH_RATE_LIMIT_RPM=5800         # person-search lane, SHARED cross-process; GTM Unlimited (max plan, unlimited leads) since 2026-10-13 — plan cap 6000/min is GLOBAL across endpoints, both lanes share it
 QUICKENRICH_DATASET_RATE_LIMIT_RPM=5800 # dataset-search lane (same global 6000/min cap; code defaults 900/280 = Standard-safe)
+MOLTSETS_API_KEY=<moltsets-key>
+ENABLE_MOLTSETS=true                  # MoltSets kill switch (tier 6)
+MOLTSETS_RATE_LIMIT_RPM=30            # shared cross-process limiter
+MOLTSETS_MISS_TTL_DAYS=14             # person-miss negative-cache TTL
+MOLTSETS_REJECT_RISK=D                # risk grades never returned (A/B/C/F pass; C/F mailtester-gated)
+ENABLE_BETTER_ENRICH=true             # BetterEnrich env kill switch (added 2026-10-14)
 CONTACTS_API_TOKEN=<contacts-token>
 BETTER_ENRICH_API_KEY=<betterenrich-key>
 PROSPEO_API_KEY=<prospeo-key>
@@ -464,6 +471,7 @@ This project changes often; do not rely on a frozen snapshot here. For current s
   `~/.claude/projects/-var-www-lead-generation-platform/memory/`.
 - **Live health:** `curl -s http://localhost:8765/api/health` and `./monitor.sh`.
 - **Canonical API contract:** `docs/ListBuilding_Platform_Full_API_Reference_2026-07-16.md`.
+- **2026-10-14 shipped:** MoltSets provider added as tier 6 + BetterEnrich re-enabled as tier 7 (cascade: contacts_db → smartprospect → quickenrich → getleads → blitz → moltsets → better_enrich → wizleads). MoltSets = person email only (linkedin_to_best_email / search_business_email_by_name), one request per person per attempt; fair-use windows (15k rec/5h, 75k/wk) arm a cross-worker cooldown for instant skip; person misses negative-cached (`moltsets_miss`, 14d); `moltsets_usage` ledger + `GET /api/enrichment/moltsets/usage`. New env kill switch `ENABLE_BETTER_ENRICH` (BE credits were 0.1 at re-enable — watch before expecting BE hits). WizLeads back to terminal tier.
 - **2026-10-13 shipped:** QuickEnrich upgraded to GTM Unlimited (max plan, unlimited leads) —
   both shared lanes raised 900/280 → **5800/5800 RPM** (plan cap is 6000/min GLOBAL across
   endpoints; code defaults stay 900/280 Standard-safe). Labels in `/flows/help` + MCP oracle now

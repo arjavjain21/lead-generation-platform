@@ -112,7 +112,7 @@ The primary endpoint for finding contact data for one company or person.
 | `titles` | string | No | — | Comma-separated titles filter (e.g., `"CEO,CTO,VP"`). Max 50. |
 | `strict_titles` | boolean | No | true | Strict local title gate: drop contacts that don't match `titles`/`cascade` after provider matching (see A.7). `false` = keep provider fuzzy matches. |
 | `cascade` | array of objects | No | — | Advanced: list of title-filter dicts (see A.7). |
-| `force_provider` | string | No | — | Force a single provider. One of: `contacts_db`, `smartprospect`, `quickenrich`, `getleads`, `blitz`, `wizleads`, `better_enrich`. Mutually exclusive with `selected_providers`. |
+| `force_provider` | string | No | — | Force a single provider. One of: `contacts_db`, `smartprospect`, `quickenrich`, `getleads`, `blitz`, `moltsets`, `better_enrich`, `wizleads`. Mutually exclusive with `selected_providers`. |
 | `selected_providers` | array of strings | No | — | Restrict cascade to a subset (see A.6). Mutually exclusive with `force_provider`. |
 
 \*At least one of `domain`, `linkedin_url`, or `company_linkedin_url` is required.
@@ -213,7 +213,8 @@ The `email_source` field on each contact tells you which provider found the emai
 | `getleads_email` | GetLeads |
 | `blitz_email`, `blitz_linkedin` | Blitz |
 | `wizleads_email` | WizLeads |
-| `better_enrich`, `better_enrich_company_email` | BetterEnrich (disabled since 2026-09-29) |
+| `better_enrich`, `better_enrich_company_email` | BetterEnrich (re-enabled 2026-10-14) |
+| `moltsets_email` | MoltSets (risk-graded best email) |
 | `not_found` | No provider found an email |
 
 ### A.2 Single-row enrichment via GET
@@ -353,7 +354,7 @@ Each element of `results` is either a full per-domain envelope or an isolated `{
 
 ### A.5 Provider cascade order
 
-When resolving emails, the system queries providers in this order, stopping at the first one that returns a valid email (order set **2026-10-10**):
+When resolving emails, the system queries providers in this order, stopping at the first one that returns a valid email (order set **2026-10-14**):
 
 | # | Provider | Rate Limit | Cost | Purpose |
 | --- | --- | --- | --- | --- |
@@ -362,10 +363,11 @@ When resolving emails, the system queries providers in this order, stopping at t
 | 3 | QuickEnrich | two SHARED cross-process lanes: `QUICKENRICH_RATE_LIMIT_RPM` + `QUICKENRICH_DATASET_RATE_LIMIT_RPM` — prod **5800/5800** since 2026-10-13 (GTM Unlimited/max plan: 6000 RPM cap is GLOBAL across endpoints, both lanes share it; code defaults 900/280 = Standard-safe) | Paid | Person email via `GET /api/employees/search` (by `linkedin_url` OR `company_url` + `first_name` + `last_name`; credit on match only, clean miss free) + domain decision-makers via `GET /api/employees/dataset-search` (`company_url` + `titles` + `has_email`, 20/page, page-capped; 1 credit per returned employee-with-email, empty page free). Kill switch `ENABLE_QUICKENRICH`; source strings `quickenrich_email` / `quickenrich_contacts` |
 | 4 | GetLeads | batch 100 (~10k/min amortized on the unlimited plan) | Paid | Verified DM emails + bonus phones; from-linkedin fallback in the LinkedIn-only arm; decision-makers domain fallback |
 | 5 | Blitz | 50 RPS per endpoint (legacy plan 2026-09; fair use 15M records/mo; client caps at 40 via `BLITZ_RPS`) | Paid | LinkedIn-based enrichment with title cascade |
-| 6 | WizLeads | 10 RPS | Paid | Catch-all verified email (last active tier) |
-| 7 | BetterEnrich | 10 RPS | Paid | Person + company email fallback (disabled since 2026-09-29) |
+| 6 | MoltSets | 30 RPM shared cross-process (`MOLTSETS_RATE_LIMIT_RPM`; plan fair use: 15k records/5h, 75k records/week, 7.5k searches/5h) | Paid | Best person email incl. personal fallback — `linkedin_to_best_email` by LinkedIn URL, `search_business_email_by_name` for name+domain; risk-graded A–F (D dropped); self-skips via cross-worker cooldown while a fair-use window is spent. Kill switch `ENABLE_MOLTSETS`; source string `moltsets_email` |
+| 7 | BetterEnrich | 10/5 RPS | Paid | Person + company email fallback (re-enabled 2026-10-14; env kill switch `ENABLE_BETTER_ENRICH`) |
+| 8 | WizLeads | 10 RPS | Paid | Catch-all verified email (terminal tier) |
 
-> **2026-10-10 reorder (owner decision):** SmartProspect promoted to 2nd (self-verifying, shared 1900 RPM bucket); QuickEnrich added 3rd; Blitz demoted from 2nd to 5th (fair-use 15M records/month relief); WizLeads is now the last active tier. BetterEnrich has been disabled since 2026-09-29 and Prospeo is disabled end-to-end. Two arms differ from the linear order: **domain-only decision-maker discovery** runs Contacts DB → QuickEnrich (dataset-search) → Blitz (title waterfall) → GetLeads (decision-makers fallback), and the **`linkedin_only` arm** runs Contacts DB → QuickEnrich (employee-search by LinkedIn URL) → GetLeads from-linkedin fallback → Blitz (SmartProspect/WizLeads need name+domain, so they are not in that arm).
+> **2026-10-14 reorder (owner decision):** MoltSets added 6th (api.moltsets.com; one request per person per attempt; a spent fair-use window arms a cross-worker cooldown and the cascade skips it with zero added latency); BetterEnrich re-enabled 7th (env kill switch `ENABLE_BETTER_ENRICH`); WizLeads is again the terminal catch-all. Prospeo is disabled end-to-end. Two arms differ from the linear order: **domain-only decision-maker discovery** runs Contacts DB → QuickEnrich (dataset-search) → Blitz (title waterfall) → GetLeads (decision-makers fallback) → BetterEnrich company-email fallback (MoltSets does not join the domain-discovery arm — its search quota is the scarcest resource), and the **`linkedin_only` arm** runs Contacts DB → QuickEnrich (employee-search by LinkedIn URL) → GetLeads from-linkedin fallback → Blitz → MoltSets `linkedin_to_best_email`.
 
 > **SEG classification is not a cascade provider.** It is a side-channel DNS-over-HTTPS (MX) domain lookup that runs alongside the cascade; it does not count as a provider call for job counters and never affects which cascade step wins. Its DoH lookups do appear in `provider_call_log` under the `seg` provider key for observability.
 
@@ -373,7 +375,7 @@ When resolving emails, the system queries providers in this order, stopping at t
 
 Restricts the cascade to a subset of providers.
 
-**Valid names:** `contacts_db`, `smartprospect`, `quickenrich`, `getleads`, `blitz`, `wizleads`, `better_enrich`
+**Valid names:** `contacts_db`, `smartprospect`, `quickenrich`, `getleads`, `blitz`, `moltsets`, `better_enrich`, `wizleads`
 
 **Rules:**
 - `contacts_db` is always allowed even if not in your list (mandatory first step)
@@ -1130,7 +1132,8 @@ These are the per-provider ceilings the platform respects when calling upstream 
 | GetLeads | batch 100 (~10k/min amortized on the unlimited plan) | batch of 100 per call |
 | Blitz | per-lane `BLITZ_RPS` default 40 (legacy plan 50 RPS/endpoint; fair use 15M records/mo) | 25 concurrent |
 | WizLeads | 10 requests/sec | 15 concurrent email lookups |
-| BetterEnrich | 10 requests/sec | shared with company-email fallback (disabled since 2026-09-29) |
+| MoltSets | 30 req/min (shared cross-process) | person email tier 6; auto-skip while fair-use window spent |
+| BetterEnrich | 10 requests/sec | shared with company-email fallback (re-enabled 2026-10-14) |
 | Phone Enrichment | 5 requests/sec | 5 concurrent |
 | Scraper | 8 concurrent workers | per-job |
 
@@ -1347,7 +1350,7 @@ The card also gets an orange left-border. The backend now marks such jobs as `fa
 
 On the Upload Domains page, the provider checkboxes let you pick which providers run for that job:
 - **Contacts DB** is always on and locked (mandatory first step)
-- **SmartProspect**, **QuickEnrich**, **GetLeads**, **Blitz**, **WizLeads**, **BetterEnrich** are toggleable (BetterEnrich is disabled since 2026-09-29)
+- **SmartProspect**, **QuickEnrich**, **GetLeads**, **Blitz**, **MoltSets**, **BetterEnrich**, **WizLeads** are toggleable (all enabled as of 2026-10-14)
 
 This UI maps to the `providers` field in `ProviderToggleRequest` (same semantics as `selected_providers` on the single-row endpoint).
 
@@ -1701,6 +1704,7 @@ Plain-text message about daily quota. No `Retry-After` header.
 
 | Date | Change |
 | --- | --- |
+| 2026-10-14 | **MoltSets provider added (6th tier) + BetterEnrich re-enabled (7th) — cascade now `contacts_db → smartprospect → quickenrich → getleads → blitz → moltsets → better_enrich → wizleads`.** MoltSets (api.moltsets.com, Bearer + mandatory User-Agent; `enrichment/moltsets_client.py`, kill switch `ENABLE_MOLTSETS`, env `MOLTSETS_API_KEY`; $97/mo plan: unlimited tokens, 15k records/5h, 75k records/week, 7.5k searches/5h, personal email included): person email only — `linkedin_to_best_email` by LinkedIn URL (terminal step of the `linkedin_only` arm) and `search_business_email_by_name` for name+domain rows. One request per person per attempt. Emails are risk-graded A–F (D dropped via `MOLTSETS_REJECT_RISK`; A/B verified, C/F mailtester-gated). Fair-use errors (`fair_use_limit_exceeded`/`fair_use_requests_exceeded`) arm a **cross-worker cooldown** (`moltsets_cooldown`, jobs.db) — every gunicorn worker skips the provider instantly until the window resets, zero added latency; clean misses are negative-cached (`moltsets_miss`, TTL `MOLTSETS_MISS_TTL_DAYS` default 14d) so repeat jobs never re-burn the weekly record budget. `metadata.fair_use` is ledgered (`moltsets_usage`) and exposed at `GET /api/enrichment/moltsets/usage` (+ `?live=true` account get_usage; `DELETE /api/enrichment/moltsets/cooldown` clears a stuck cooldown). Source string `moltsets_email`; `force_provider=moltsets` valid. Shared cross-process limiter `MOLTSETS_RATE_LIMIT_RPM` (default 30). NOT wired: domain→DM discovery (`search_people`) — search quota is the scarcest resource. BetterEnrich re-enabled at 7th (was disabled 2026-09-29; credits were 0.1 at flip — errors don't bill, cascade continues past them) with a new env kill switch `ENABLE_BETTER_ENRICH`; WizLeads is again the terminal tier. |
 | 2026-10-13 | **`POST /api/enrichment/quickenrich` added — QuickEnrich-only fast path** (documented as A.4; cascade-order/selected_providers/title sections renumbered A.5–A.7). Single (`domain`, `linkedin_url`, or `domain`+`full_name`) or batch (`domains`, deduplicated, max 25 via `QUICKENRICH_ENDPOINT_MAX_DOMAINS`, fan-out bounded at `QUICKENRICH_BATCH_CONCURRENCY`=5, per-row errors isolated — one bad domain never fails the batch). Internally the unified `/enrich` executor with `force_provider="quickenrich"`: internal contacts_db NOT consulted, every result fresh from QE and QE-verified. Returns the standard `/enrich` envelope with the `sync_to_contacts_db` receipt; `validate_emails=true` adds a MailTester pass (non-accepted codes dropped from the response, hard-invalid `ko` additionally marked invalid in the Contacts DB, validator unavailability fails open) plus a `validation` summary block. Errors: 503 disabled/missing key, 400 bad input combos, 422 batch >25. **Same day:** QuickEnrich upgraded to the GTM Unlimited plan — both shared lanes raised 900/280 → **5800/5800 RPM** (plan cap 6000/min is GLOBAL across endpoints, both lanes share it; code defaults stay 900/280 Standard-safe); A.5 cascade table, `/flows/help`, and MCP oracle labels updated to the live values. |
 | 2026-10-10 | **QuickEnrich provider added + cascade reordered.** New provider `quickenrich` (app.quickenrich.io, Bearer auth; `enrichment/quickenrich_client.py`, kill switch `ENABLE_QUICKENRICH`, env `QUICKENRICH_API_KEY`): person email via `GET /api/employees/search` (by `linkedin_url` OR `company_url`+`first_name`+`last_name`; credit on match only) and domain decision-makers via `GET /api/employees/dataset-search` (`company_url`+`titles`+`has_email`, 20/page, page-capped; credit per returned employee-with-email, empty page free). Shared cross-process rate lanes `QUICKENRICH_RATE_LIMIT_RPM` (default 900, Standard cap 1000/min) + `QUICKENRICH_DATASET_RATE_LIMIT_RPM` (default 280, cap 300/min); GTM Unlimited = 6000/min. New source strings `quickenrich_email` / `quickenrich_contacts`; `force_provider=quickenrich` and `selected_providers` incl. `quickenrich` valid. Cascade reordered (owner decision): contacts_db → smartprospect → quickenrich → getleads → blitz → wizleads → better_enrich (Blitz demoted from 2nd for FUP 15M records/mo relief; SmartProspect promoted to 2nd; WizLeads last active tier). Domain DM discovery arm: contacts_db → quickenrich (dataset-search) → blitz (waterfall) → getleads (decision-makers fallback). Also: better_enrich kill-switch bypass fixed (global disable now beats force_provider/selected_providers in `list_builder`). |
 | 2026-10-06 | **Section K added — Data Explorer BFF** (`/api/explorer/*`, JWT-only, disabled by default): read-only people search/count/facets, person detail, saved-view CRUD, and export create/list/status/download, proxied over HTTPS to the Contacts API `/v1/data/*` + `/v1/exports` surface with a server-side token (`CONTACTS_API_EXPLORER_TOKEN`). Enable with `DATA_EXPLORER_ENABLED=true`; downloads stream with upstream Content-Type/Content-Disposition passed through. |

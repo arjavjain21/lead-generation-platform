@@ -1,0 +1,227 @@
+[
+  {
+    "section": "Getting Started",
+    "title": "Overview",
+    "url": "https://developer.moltsets.com/getting-started/overview"
+  },
+  {
+    "section": "Getting Started",
+    "title": "Authentication",
+    "url": "https://developer.moltsets.com/getting-started/authentication"
+  },
+  {
+    "section": "Getting Started",
+    "title": "Rate Limits",
+    "url": "https://developer.moltsets.com/getting-started/rate-limits"
+  },
+  {
+    "section": "Getting Started",
+    "title": "MoltSets App",
+    "url": "https://developer.moltsets.com/getting-started/moltsets-app"
+  },
+  {
+    "section": "MoltSets Data",
+    "title": "Understanding Email Risk Scores",
+    "url": "https://developer.moltsets.com/moltsets-data/email-risk-scores"
+  },
+  {
+    "section": "MoltSets Data",
+    "title": "Understanding Phone Number Validation",
+    "url": "https://developer.moltsets.com/moltsets-data/phone-number-validation"
+  },
+  {
+    "section": "MoltSets Data",
+    "title": "Understanding NAICS Codes",
+    "url": "https://developer.moltsets.com/moltsets-data/understanding-naics-codes"
+  },
+  {
+    "section": "MoltSets Data",
+    "title": "Six-Digit NAICS Codes & Titles",
+    "url": "https://developer.moltsets.com/moltsets-data/six-digit-naics-codes-titles"
+  },
+  {
+    "section": "Use Cases",
+    "title": "I Have X, I Want Y",
+    "url": "https://developer.moltsets.com/use-cases/i-have-x-i-want-y"
+  },
+  {
+    "section": "Use Cases",
+    "title": "Find Companies and Contacts",
+    "url": "https://developer.moltsets.com/use-cases/find-companies-and-contacts"
+  },
+  {
+    "section": "Best Practices",
+    "title": "Searching for People",
+    "url": "https://developer.moltsets.com/best-practices/searching-for-people"
+  },
+  {
+    "section": "Best Practices",
+    "title": "Searching for Companies",
+    "url": "https://developer.moltsets.com/best-practices/searching-for-companies"
+  },
+  {
+    "section": "Best Practices",
+    "title": "Getting Valid Emails",
+    "url": "https://developer.moltsets.com/best-practices/getting-valid-emails"
+  },
+  {
+    "section": "Best Practices",
+    "title": "Getting Carrier-Verified Mobile Phones",
+    "url": "https://developer.moltsets.com/best-practices/getting-carrier-verified-mobile-phones"
+  },
+  {
+    "section": "Best Practices",
+    "title": "Getting Ad Audiences",
+    "url": "https://developer.moltsets.com/best-practices/getting-ad-audiences"
+  },
+  {
+    "section": "Integrations",
+    "title": "MoltSets MCP Server",
+    "url": "https://developer.moltsets.com/integrations/moltsets-mcp"
+  },
+  {
+    "section": "Integrations",
+    "title": "Claude.ai",
+    "url": "https://developer.moltsets.com/integrations/moltsets-mcp/claude-ai"
+  },
+  {
+    "section": "Integrations",
+    "title": "Claude Desktop",
+    "url": "https://developer.moltsets.com/integrations/moltsets-mcp/claude-desktop"
+  },
+  {
+    "section": "Integrations",
+    "title": "Claude Code",
+    "url": "https://developer.moltsets.com/integrations/moltsets-mcp/claude-code"
+  },
+  {
+    "section": "Integrations",
+    "title": "ChatGPT",
+    "url": "https://developer.moltsets.com/integrations/moltsets-mcp/chatgpt"
+  },
+  {
+    "section": "Integrations",
+    "title": "Grok",
+    "url": "https://developer.moltsets.com/integrations/moltsets-mcp/grok"
+  },
+  {
+    "section": "Integrations",
+    "title": "Cursor",
+    "url": "https://developer.moltsets.com/integrations/moltsets-mcp/cursor"
+  },
+  {
+    "section": "Integrations",
+    "title": "Windsurf",
+    "url": "https://developer.moltsets.com/integrations/moltsets-mcp/windsurf"
+  },
+  {
+    "section": "Integrations",
+    "title": "Other MCP Clients",
+    "url": "https://developer.moltsets.com/integrations/moltsets-mcp/other-clients"
+  },
+  {
+    "section": "Integrations",
+    "title": "Clay HTTP API",
+    "url": "https://developer.moltsets.com/integrations/clay"
+  },
+  {
+    "section": "API Reference",
+    "title": "search_people",
+    "url": "https://developer.moltsets.com/api-reference/search/search-for-people"
+  },
+  {
+    "section": "API Reference",
+    "title": "search_companies",
+    "url": "https://developer.moltsets.com/api-reference/search/search-for-companies"
+  },
+  {
+    "section": "API Reference",
+    "title": "search_linkedin_profile",
+    "url": "https://developer.moltsets.com/api-reference/search/search-for-linkedin-profile"
+  },
+  {
+    "section": "API Reference",
+    "title": "search_business_email_by_name",
+    "url": "https://developer.moltsets.com/api-reference/search/search-business-email-by-name"
+  },
+  {
+    "section": "API Reference",
+    "title": "search_business_profile_by_name",
+    "url": "https://developer.moltsets.com/api-reference/search/search-business-profile-by-name"
+  },
+  {
+    "section": "API Reference",
+    "title": "linkedin_to_best_email",
+    "url": "https://developer.moltsets.com/api-reference/get-valid-emails/linkedin-to-best-email"
+  },
+  {
+    "section": "API Reference",
+    "title": "linkedin_to_business_email",
+    "url": "https://developer.moltsets.com/api-reference/get-valid-emails/linkedin-to-business-email"
+  },
+  {
+    "section": "API Reference",
+    "title": "linkedin_to_personal_email_usa",
+    "url": "https://developer.moltsets.com/api-reference/get-valid-emails/linkedin-to-personal-email-us-only"
+  },
+  {
+    "section": "API Reference",
+    "title": "linkedin_to_best_personal_email_usa",
+    "url": "https://developer.moltsets.com/api-reference/get-valid-emails/linkedin-to-best-personal-email-us-only"
+  },
+  {
+    "section": "API Reference",
+    "title": "linkedin_to_mobile_phone",
+    "url": "https://developer.moltsets.com/api-reference/get-carrier-verified-mobile-phones/linkedin-to-mobile-phone"
+  },
+  {
+    "section": "API Reference",
+    "title": "reverse_email_lookup",
+    "url": "https://developer.moltsets.com/api-reference/reverse-lookups/reverse-email-lookup"
+  },
+  {
+    "section": "API Reference",
+    "title": "reverse_linkedin_lookup",
+    "url": "https://developer.moltsets.com/api-reference/reverse-lookups/reverse-linkedin-lookup"
+  },
+  {
+    "section": "API Reference",
+    "title": "email_to_maid",
+    "url": "https://developer.moltsets.com/api-reference/get-ad-audience/email-to-maid"
+  },
+  {
+    "section": "API Reference",
+    "title": "business_email_to_sha256",
+    "url": "https://developer.moltsets.com/api-reference/get-ad-audience/business-email-to-sha256"
+  },
+  {
+    "section": "API Reference",
+    "title": "linkedin_to_sha256",
+    "url": "https://developer.moltsets.com/api-reference/get-ad-audience/linkedin-to-sha256"
+  },
+  {
+    "section": "API Reference",
+    "title": "email_to_linkedin",
+    "url": "https://developer.moltsets.com/api-reference/get-linkedin/email-to-linkedin"
+  },
+  {
+    "section": "API Reference",
+    "title": "ip_to_company",
+    "url": "https://developer.moltsets.com/api-reference/get-company/ip-to-company"
+  },
+  {
+    "section": "API Reference",
+    "title": "get_account",
+    "url": "https://developer.moltsets.com/api-reference/account/get-account"
+  },
+  {
+    "section": "API Reference",
+    "title": "get_billing",
+    "url": "https://developer.moltsets.com/api-reference/account/get-billing"
+  },
+  {
+    "section": "API Reference",
+    "title": "get_usage",
+    "url": "https://developer.moltsets.com/api-reference/account/get-usage"
+  }
+]
