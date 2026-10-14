@@ -61,6 +61,7 @@ import asyncio
 import logging
 import os
 import random
+import time
 from typing import Any, Optional
 
 import httpx
@@ -103,7 +104,14 @@ _CAPACITY = max(1.0, env_float("MOLTSETS_RATE_LIMIT_BURST", "1.0"))
 _MAX_RETRIES = 2            # only for rate_limited / internal_error
 _BASE_BACKOFF = 0.5
 _MAX_BACKOFF = 5.0
-_REQUEST_TIMEOUT = 20.0
+_REQUEST_TIMEOUT = 12.0
+
+# Bounded-wait calling (owner requirement 2026-10-14: MoltSets must never
+# cost the pipeline extra time). When the shared lane's queue is deeper
+# than this many seconds, the row SKIPS MoltSets entirely (no miss marker —
+# a later pass retries when the lane drains) instead of parking on the
+# rate limiter while holding its pipeline semaphore slot.
+_MAX_QUEUE_WAIT = env_float("MOLTSETS_MAX_QUEUE_WAIT", "10.0")
 
 # Error codes that mean a fair-use window (5h records / weekly / 5h
 # searches) is exhausted — arm the cooldown, never retry here.
@@ -129,20 +137,40 @@ def _rejected_risk_grades() -> frozenset[str]:
     return frozenset(grades)
 
 
-async def _acquire_rate_limit() -> None:
+async def _acquire_rate_limit(max_queue_wait: Optional[float] = None) -> bool:
     """Draw from the shared cross-process token bucket.
 
     Loops until a token is GRANTED (SmartProspect pattern): concurrent
     denials compute similar waits and would all proceed together after
     sleeping, bursting past the account limit. Only a grant consumes a
     token.
+
+    Args:
+        max_queue_wait: when set, gives up (returns False) once the
+            remaining queue wait would exceed this budget — the caller
+            skips MoltSets for this row so a saturated lane never
+            back-pressures the pipeline (rows hold their concurrency
+            semaphore slot while waiting). None = wait indefinitely
+            (observability calls only).
+
+    Returns:
+        True if a token was granted; False only in the bounded mode when
+        the wait budget was exceeded (SKIP — never a definitive miss).
     """
+    deadline = time.monotonic() + max_queue_wait if max_queue_wait is not None else None
     while True:
         wait = await asyncio.to_thread(
             rate_limiter.acquire_token, "moltsets", _REFILL_PER_SEC, _CAPACITY
         )
         if wait <= 0:
-            return
+            return True
+        if deadline is not None:
+            now = time.monotonic()
+            if now + wait > deadline:
+                return False
+            wait = min(wait, deadline - now)
+            if wait <= 0:
+                return False
         await asyncio.sleep(wait)
 
 
@@ -245,6 +273,7 @@ async def _post_tool(
     client: httpx.AsyncClient,
     method: str,
     payload: dict[str, Any],
+    max_queue_wait: Optional[float] = None,
 ) -> tuple[bool, Any, dict[str, Any]]:
     """POST {BASE_URL}/{tool} with retries + guard wiring.
 
@@ -256,6 +285,9 @@ async def _post_tool(
         (True, results, metadata)                    -> data found
         (False, results_or_None, metadata)           -> clean not_found
         (_ERROR_MARKER, _ProviderError, {})          -> terminal error
+                                                       (error_type="lane_busy"
+                                                       = bounded-wait SKIP,
+                                                       NOT a definitive miss)
     """
     if not _is_enabled():
         return _ERROR_MARKER, _provider_error(method, "disabled", "kill switch active"), {}
@@ -266,7 +298,13 @@ async def _post_tool(
     last_error: Optional[str] = None
 
     for attempt in range(_MAX_RETRIES + 1):
-        await _acquire_rate_limit()
+        granted = await _acquire_rate_limit(max_queue_wait=max_queue_wait)
+        if not granted:
+            return _ERROR_MARKER, _provider_error(
+                method,
+                "lane_busy",
+                "rate-lane queue exceeded the wait budget — skipping to protect pipeline latency",
+            ), {}
         try:
             resp = await client.post(
                 url, json=payload, headers=_headers(), timeout=_REQUEST_TIMEOUT
@@ -408,8 +446,14 @@ async def find_person_email(
             "company_domain": company_domain,
         }
 
-    found, results, _ = await _post_tool(client, tool, payload)
+    found, results, _ = await _post_tool(client, tool, payload, max_queue_wait=_MAX_QUEUE_WAIT)
     if found is _ERROR_MARKER:
+        if getattr(results, "error_type", "") == "lane_busy":
+            # Bounded-wait SKIP: the shared lane is saturated. This row
+            # moves on instantly — no miss marker (a later pass retries
+            # when the lane drains) and no warning spam per skipped row.
+            logger.debug("moltsets: lane busy — skipping %s this pass", key or "lookup")
+            return None
         return results  # the _ProviderError object
     if not found:
         if key:

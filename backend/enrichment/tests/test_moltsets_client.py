@@ -371,6 +371,55 @@ class TestGetUsage:
         assert result is None
 
 
+class TestBoundedWaitSkip:
+    """Owner requirement 2026-10-14: MoltSets must never cost the pipeline
+    extra time. When the shared rate lane's queue is deeper than the wait
+    budget, the row SKIPS MoltSets instantly — no HTTP, no miss marker (a
+    later pass retries), no per-row warning spam."""
+
+    def test_deep_queue_skips_without_http_or_marker(self, monkeypatch):
+        monkeypatch.setattr(
+            mc.rate_limiter,
+            "acquire_token",
+            lambda *a, **k: 30.0,  # every check says "30s until a token"
+            raising=False,
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("lane-busy skip must not reach HTTP")
+
+        t0 = time.monotonic()
+        result = asyncio.run(mc.find_person_email(
+            _client(handler), linkedin_url="https://www.linkedin.com/in/janedoe",
+        ))
+        assert result is None
+        assert time.monotonic() - t0 < 3.0  # skipped fast, not 30s
+        key = moltsets_guards.person_key(linkedin_url="https://www.linkedin.com/in/janedoe")
+        assert moltsets_guards.is_recent_person_miss(key) is False  # retryable later
+
+    def test_shallow_queue_waits_then_calls(self, monkeypatch):
+        waits = iter([1.5, 0.0])  # one short wait, then a grant
+        monkeypatch.setattr(
+            mc.rate_limiter,
+            "acquire_token",
+            lambda *a, **k: next(waits),
+            raising=False,
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _json({"status": "ok", "results": _ok_results()})
+
+        result = asyncio.run(mc.find_person_email(
+            _client(handler), linkedin_url="https://www.linkedin.com/in/janedoe",
+        ))
+        assert result is not None and result["found"] is True
+
+    def test_queue_budget_env(self, monkeypatch):
+        monkeypatch.setenv("MOLTSETS_MAX_QUEUE_WAIT", "5")
+        from shared.env_utils import env_float
+        assert env_float("MOLTSETS_MAX_QUEUE_WAIT", "10.0") == 5.0
+
+
 class TestRateLimiterConfig:
     def test_capacity_never_below_one_token(self):
         """Regression (live incident 2026-10-14): shared.rate_limiter only
