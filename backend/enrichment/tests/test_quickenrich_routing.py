@@ -3,13 +3,14 @@ Route-order + capability-gate tests for the 2026-10-10 cascade reorder and
 the QuickEnrich provider (pipeline.route_enrichment — the pure router used by
 GET /enrich and CSV-job routed rows).
 
-Canonical order (owner decision 2026-10-10):
+Canonical order (owner decision 2026-10-14):
   name_domain arm : contacts_db -> smartprospect -> quickenrich -> getleads
-                    -> blitz -> wizleads -> better_enrich
+                    -> blitz -> moltsets -> better_enrich -> wizleads
   linkedin arm    : contacts_db -> quickenrich -> getleads -> blitz(person_enrich_by_linkedin)
-                    -> blitz(find_work_email)
+                    -> blitz(find_work_email) -> moltsets(best_email_linkedin)
   domain DM discovery (in _enrich_domain, not route_enrichment):
                     contacts_db -> quickenrich -> blitz -> getleads
+                    (moltsets does NOT join the domain arm — search quota)
 
 Run:
     cd backend && python -m pytest enrichment/tests/test_quickenrich_routing.py -v
@@ -31,6 +32,7 @@ S = pipeline.ROUTE_PROVIDER_SMARTPROSPECT
 Q = pipeline.ROUTE_PROVIDER_QUICKENRICH
 W = pipeline.ROUTE_PROVIDER_WIZLEADS
 BE = pipeline.ROUTE_PROVIDER_BETTER_ENRICH
+M = pipeline.ROUTE_PROVIDER_MOLTSETS
 
 
 def _providers(route: dict, identifier: str | None = None) -> list[str]:
@@ -46,8 +48,8 @@ class TestNameDomainOrder:
             full_name="Jane Doe", first_name="Jane", last_name="Doe", domain="acme.com"
         )
         assert route["mode"] == "name_domain"
-        # better_enrich is globally disabled — filtered from routes.
-        assert _providers(route) == [P, S, Q, G, B, W]
+        # 2026-10-14: moltsets 6th, better_enrich re-enabled 7th, wizleads terminal.
+        assert _providers(route) == [P, S, Q, G, B, M, BE, W]
 
     def test_contacts_db_always_first(self):
         route = pipeline.route_enrichment(
@@ -76,17 +78,20 @@ class TestNameDomainOrder:
         assert _providers(route)[4] == B
         assert _providers(route).index(B) > _providers(route).index(G)
 
-    def test_wizleads_last_active(self):
+    def test_tail_tiers_moltsets_be_wizleads(self):
         route = pipeline.route_enrichment(
             full_name="Jane Doe", first_name="Jane", last_name="Doe", domain="acme.com"
         )
-        assert _providers(route)[5] == W
+        seq = _providers(route)
+        assert seq[5] == M
+        assert seq[6] == BE
+        assert seq[7] == W  # wizleads is again the terminal tier
 
     def test_single_token_name_drops_first_last_providers(self):
-        # "Plato" -> first_name="Plato", last_name="" -> SP/QE/GL/WizLeads
+        # "Plato" -> first_name="Plato", last_name="" -> SP/QE/GL/moltsets/WizLeads
         # capability-dropped; blitz (full_name+domain) + BE remain.
         route = pipeline.route_enrichment(full_name="Plato", domain="acme.com")
-        assert _providers(route) == [P, B]
+        assert _providers(route) == [P, B, BE]
 
 
 class TestLinkedInOrder:
@@ -95,7 +100,7 @@ class TestLinkedInOrder:
             linkedin_url="https://www.linkedin.com/in/janedoe"
         )
         assert route["mode"] == "linkedin_only"
-        assert _providers(route) == [P, Q, G, B, B]
+        assert _providers(route) == [P, Q, G, B, B, M]
 
     def test_quickenrich_before_getleads_and_blitz(self):
         route = pipeline.route_enrichment(
@@ -115,9 +120,10 @@ class TestLinkedInOrder:
         assert route["mode"] == "linkedin_first"
         li = _providers(route, identifier=pipeline.ROUTE_IDENTIFIER_LINKEDIN)
         nd = _providers(route, identifier=pipeline.ROUTE_IDENTIFIER_NAME_DOMAIN)
-        assert li == [P, Q, G, B, B]
-        # WizLeads now present in the name-domain fallback arm (G16 fix).
-        assert nd == [P, S, Q, G, B, W]
+        assert li == [P, Q, G, B, B, M]
+        # WizLeads present in the name-domain fallback arm (G16 fix); full
+        # 2026-10-14 tail order applies there too.
+        assert nd == [P, S, Q, G, B, M, BE, W]
 
 
 class TestQuickEnrichCapabilityGates:
@@ -131,7 +137,7 @@ class TestQuickEnrichCapabilityGates:
             linkedin_url="https://www.linkedin.com/in/janedoe", domain="acme.com"
         )
         # No full_name -> no name_domain arm at all; linkedin arm only.
-        assert _providers(route) == [P, Q, G, B, B]
+        assert _providers(route) == [P, Q, G, B, B, M]
 
     def test_qe_by_linkedin_present_with_linkedin_only(self):
         route = pipeline.route_enrichment(
@@ -169,11 +175,13 @@ class TestQuickEnrichRestrictors:
         route2 = pipeline.route_enrichment(phone="+15550001111", force_provider="quickenrich")
         assert route2["no_email_reason"] == pipeline.NO_EMAIL_REASON_FORCED_PROVIDER_CANNOT_USE_INPUT
 
-    def test_force_provider_globally_disabled_rejected(self):
-        """Forcing a globally-disabled provider (better_enrich since
-        2026-09-29) returns zero steps with the DISTINCT provider_disabled
-        reason — not the input-shape reason (route-surface analog of
-        test_global_killswitch_precedence.py)."""
+    def test_force_provider_globally_disabled_rejected(self, monkeypatch):
+        """Forcing a globally-disabled provider returns zero steps with the
+        DISTINCT provider_disabled reason — not the input-shape reason
+        (route-surface analog of test_global_killswitch_precedence.py).
+        Since 2026-10-14 every family_map provider is enabled, so the
+        disable is simulated via the ENABLED_PROVIDERS dict."""
+        monkeypatch.setitem(pipeline.providers.ENABLED_PROVIDERS, "better_enrich", False)
         route = pipeline.route_enrichment(
             full_name="Jane Doe",
             first_name="Jane",
@@ -212,7 +220,7 @@ class TestInputHardening:
             first_name="Jane", last_name="Doe", domain="acme.com"
         )
         assert route["mode"] == "name_domain"
-        assert _providers(route) == [P, S, Q, G, B, W]
+        assert _providers(route) == [P, S, Q, G, B, M, BE, W]
 
     def test_whitespace_only_full_name_is_invalid(self):
         route = pipeline.route_enrichment(full_name="   ", domain="acme.com")
@@ -256,3 +264,14 @@ class TestRegistries:
     def test_method_is_paid(self):
         assert pipeline._method_is_paid(pipeline.ROUTE_METHOD_EMPLOYEE_SEARCH_QUICKENRICH)
         assert pipeline._method_is_free(pipeline.ROUTE_METHOD_PERSON_BY_NAME_DOMAIN)
+
+    def test_moltsets_registry(self):
+        assert "moltsets" in pipeline.VALID_PROVIDERS
+        assert (
+            pipeline._provider_label(pipeline.ROUTE_METHOD_BEST_EMAIL_LINKEDIN_MOLTSETS) == M
+        )
+        assert (
+            pipeline._provider_label(pipeline.ROUTE_METHOD_SEARCH_EMAIL_NAME_MOLTSETS) == M
+        )
+        assert pipeline._method_is_paid(pipeline.ROUTE_METHOD_BEST_EMAIL_LINKEDIN_MOLTSETS)
+        assert pipeline._normalize_source("moltsets_email") == "moltsets"

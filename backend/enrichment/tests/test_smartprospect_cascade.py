@@ -191,10 +191,11 @@ class TestMethodHelpers:
 
 class TestRoutePlanning:
     def test_name_domain_cascade_has_smartprospect_between_blitz_and_wizleads(self):
-        """CRITICAL (2026-10-10 reorder): smartprospect now runs BEFORE blitz
-        (promoted to the first paid tier); blitz is demoted to 5th, wizleads
-        stays last-active. Full order: contacts_db -> smartprospect ->
-        quickenrich -> getleads -> blitz -> wizleads -> better_enrich.
+        """CRITICAL (2026-10-14 order): smartprospect runs BEFORE blitz
+        (promoted to the first paid tier); blitz is 5th; moltsets 6th,
+        better_enrich re-enabled 7th, wizleads terminal. Full order:
+        contacts_db -> smartprospect -> quickenrich -> getleads -> blitz ->
+        moltsets -> better_enrich -> wizleads.
         """
         result = pipeline.route_enrichment(
             full_name="John Doe",
@@ -203,13 +204,14 @@ class TestRoutePlanning:
             domain="example.com",
         )
         providers_in_order = [step["provider"] for step in result["steps"]]
-        # better_enrich globally disabled -> filtered from routes.
         assert providers_in_order == [
             "contacts_db",
             "smartprospect",
             "quickenrich",
             "getleads",
             "blitz",
+            "moltsets",
+            "better_enrich",
             "wizleads",
         ]
         blitz_idx = providers_in_order.index("blitz")
@@ -295,8 +297,9 @@ class TestRouteEnrichmentAutoDerivesNames:
 
     def test_full_name_only_produces_all_six_providers_in_correct_order(self):
         """End-to-end check: enhanced-mode style call produces the full cascade
-        in the documented order (2026-10-10: contacts_db -> smartprospect ->
-        quickenrich -> getleads -> blitz -> wizleads -> better_enrich)."""
+        in the documented order (2026-10-14: contacts_db -> smartprospect ->
+        quickenrich -> getleads -> blitz -> moltsets -> better_enrich ->
+        wizleads)."""
         result = pipeline.route_enrichment(
             full_name="Connor Gillivan",
             domain="ecombalance.com",
@@ -308,6 +311,8 @@ class TestRouteEnrichmentAutoDerivesNames:
             "quickenrich",
             "getleads",
             "blitz",
+            "moltsets",
+            "better_enrich",
             "wizleads",
         ]
 

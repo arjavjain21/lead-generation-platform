@@ -32,20 +32,24 @@ from enrichment import blitz_client as bc  # noqa: E402
 from enrichment import wizleads_client as wc  # noqa: E402
 from enrichment import better_enrich_client as bec  # noqa: E402
 from enrichment import mailtester_client as mt  # noqa: E402
+from enrichment import moltsets_client as mc  # noqa: E402
 from shared import db as shared_db  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# Acceptance 1: Direct API enhanced mode uses Contacts DB -> Blitz -> WizLeads
-# -> BetterEnrich. When WizLeads returns a hit, BetterEnrich is NOT called.
+# Acceptance 1: Direct API enhanced mode uses Contacts DB -> ... -> Blitz ->
+# MoltSets -> BetterEnrich -> WizLeads (2026-10-14 order). When BetterEnrich
+# returns a hit, WizLeads is NOT called.
 # ---------------------------------------------------------------------------
 
 
-class TestAcceptance1WizLeadsBeforeBetterEnrich(unittest.IsolatedAsyncioTestCase):
-    """In enhanced mode (full_name + domain), when Contacts DB and Blitz return
-    no email and WizLeads returns an email, BetterEnrich MUST NOT be called."""
+class TestAcceptance1BetterEnrichBeforeWizLeads(unittest.IsolatedAsyncioTestCase):
+    """In enhanced mode (full_name + domain), when Contacts DB, Blitz, and
+    MoltSets return no email and BetterEnrich returns an email, the terminal
+    WizLeads tier MUST NOT be called (2026-10-14 order: BE runs 7th, WizLeads
+    8th)."""
 
-    async def test_enhanced_route_calls_wizleads_then_skips_better_enrich(self):
+    async def test_enhanced_route_calls_better_enrich_then_skips_wizleads(self):
         # Track which providers were called.
         called_providers: list[str] = []
         recorded_providers: list[str] = []
@@ -57,6 +61,10 @@ class TestAcceptance1WizLeadsBeforeBetterEnrich(unittest.IsolatedAsyncioTestCase
         async def fake_blitz_person_enrich(http, full_name, domain, include_phone):
             called_providers.append("blitz")
             return {"found": False, "person": {}}
+
+        async def fake_moltsets(*args, **kwargs):
+            called_providers.append("moltsets")
+            return None  # clean miss
 
         async def fake_wizleads(http, first_name, last_name, website):
             called_providers.append("wizleads")
@@ -70,6 +78,7 @@ class TestAcceptance1WizLeadsBeforeBetterEnrich(unittest.IsolatedAsyncioTestCase
              patch.object(cc, "extract_email_from_contacts_response", MagicMock(return_value=None)), \
              patch.object(bc, "person_enrich", fake_blitz_person_enrich), \
              patch.object(bc, "find_work_email", AsyncMock(return_value={"found": False, "email": ""})), \
+             patch.object(mc, "find_person_email", fake_moltsets), \
              patch.object(wc, "find_email", fake_wizleads), \
              patch.object(bec, "find_work_email_v3", fake_better_enrich):
             route = pipeline_mod.route_enrichment(
@@ -94,42 +103,36 @@ class TestAcceptance1WizLeadsBeforeBetterEnrich(unittest.IsolatedAsyncioTestCase
                 record_provider_use=record,
             )
 
-        # The cascade order must include contacts_db, blitz, wizleads.
+        # The cascade order must include contacts_db, blitz, moltsets, BE.
         self.assertIn("contacts_db", called_providers)
         self.assertIn("blitz", called_providers)
-        self.assertIn("wizleads", called_providers)
-        # BetterEnrich must NOT be called because WizLeads returned a hit.
-        self.assertNotIn("better_enrich", called_providers)
-        # Email came from WizLeads.
-        self.assertEqual(result["email"], "jane@acme.com")
-        self.assertEqual(result["source"], pipeline_mod.SOURCE_WIZLEADS)
-        # record_provider_use saw contacts_db, blitz, wizleads (in that order).
+        self.assertIn("moltsets", called_providers)
+        self.assertIn("better_enrich", called_providers)
+        # WizLeads must NOT be called because BetterEnrich returned a hit.
+        self.assertNotIn("wizleads", called_providers)
+        # Email came from BetterEnrich.
+        self.assertEqual(result["email"], "jane-be@acme.com")
+        self.assertEqual(result["source"], pipeline_mod.SOURCE_BETTER_ENRICH_PERSON)
+        # record_provider_use saw every tier up to better_enrich.
         self.assertIn("contacts_db", recorded_providers)
         self.assertIn("blitz", recorded_providers)
-        self.assertIn("wizleads", recorded_providers)
-        # BetterEnrich never recorded.
-        self.assertNotIn("better_enrich", recorded_providers)
+        self.assertIn("moltsets", recorded_providers)
+        self.assertIn("better_enrich", recorded_providers)
+        # WizLeads never recorded.
+        self.assertNotIn("wizleads", recorded_providers)
 
 
 # ---------------------------------------------------------------------------
-# Acceptance 2: BetterEnrich fallback after WizLeads. When Contacts DB, Blitz,
-# and WizLeads all miss, BetterEnrich is called.
+# Acceptance 2: terminal WizLeads fallback. When Contacts DB, Blitz, MoltSets,
+# and BetterEnrich all miss, WizLeads is called (2026-10-14 order).
 # ---------------------------------------------------------------------------
 
 
-class TestAcceptance2BetterEnrichAfterWizLeads(unittest.IsolatedAsyncioTestCase):
-    """When Contacts DB, Blitz, and WizLeads all miss, BetterEnrich MUST be
-    called and the email it returns must be the final answer."""
+class TestAcceptance2WizLeadsTerminalFallback(unittest.IsolatedAsyncioTestCase):
+    """When Contacts DB, Blitz, MoltSets, and BetterEnrich all miss, WizLeads
+    MUST be called (terminal tier) and the email it returns is final."""
 
-    async def test_enhanced_route_falls_through_to_better_enrich(self):
-        from enrichment import providers as _providers_mod
-        # better_enrich is globally disabled (2026-09-29) and filtered from
-        # routes since 2026-10-10 — this test drives the BE cascade tier, so
-        # enable the switch for its duration (same fixture pattern as
-        # test_company_fallbacks / test_pattern_ac).
-        self.enterContext(
-            patch.dict(_providers_mod.ENABLED_PROVIDERS, {"better_enrich": True})
-        )
+    async def test_enhanced_route_falls_through_to_wizleads(self):
         called_providers: list[str] = []
 
         async def fake_cc_name_domain(http, full_name, domain):
@@ -140,18 +143,23 @@ class TestAcceptance2BetterEnrichAfterWizLeads(unittest.IsolatedAsyncioTestCase)
             called_providers.append("blitz")
             return {"found": False, "person": {}}
 
+        async def fake_moltsets(*args, **kwargs):
+            called_providers.append("moltsets")
+            return None  # clean miss
+
         async def fake_wizleads(http, first_name, last_name, website):
             called_providers.append("wizleads")
-            return {"email": "", "catchall": False}
+            return {"email": "jane@acme.com", "catchall": True}
 
         async def fake_better_enrich(http, full_name, company_domain, linkedin_url):
             called_providers.append("better_enrich")
-            return {"email": "jane@acme.com", "email_status": "verified"}
+            return {"email": "", "email_status": "verified"}  # miss
 
         with patch.object(cc, "person_by_name_and_domain", fake_cc_name_domain), \
              patch.object(cc, "extract_email_from_contacts_response", MagicMock(return_value=None)), \
              patch.object(bc, "person_enrich", fake_blitz_person_enrich), \
              patch.object(bc, "find_work_email", AsyncMock(return_value={"found": False, "email": ""})), \
+             patch.object(mc, "find_person_email", fake_moltsets), \
              patch.object(wc, "find_email", fake_wizleads), \
              patch.object(bec, "find_work_email_v3", fake_better_enrich):
             route = pipeline_mod.route_enrichment(
@@ -172,14 +180,14 @@ class TestAcceptance2BetterEnrichAfterWizLeads(unittest.IsolatedAsyncioTestCase)
                 record_provider_use=lambda p: None,
             )
 
-        # All four providers were called in order.
+        # All five providers were called in the 2026-10-14 order.
         self.assertEqual(
             called_providers,
-            ["contacts_db", "blitz", "wizleads", "better_enrich"],
+            ["contacts_db", "blitz", "moltsets", "better_enrich", "wizleads"],
         )
-        # Email came from BetterEnrich.
+        # Email came from WizLeads (terminal tier).
         self.assertEqual(result["email"], "jane@acme.com")
-        self.assertEqual(result["source"], pipeline_mod.SOURCE_BETTER_ENRICH_PERSON)
+        self.assertEqual(result["source"], pipeline_mod.SOURCE_WIZLEADS)
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +226,7 @@ class TestAcceptance3UnverifiedBlitzDoesNotStop(unittest.IsolatedAsyncioTestCase
 
         async def fake_better_enrich(http, full_name, company_domain, linkedin_url):
             better_enrich_called["count"] += 1
-            return {"email": "jane-be@acme.com", "email_status": "verified"}
+            return {"email": "", "email_status": "verified"}  # miss
 
         async def fake_mailtester_reject(http, email):
             # Reject everything — the Blitz unverified email must fall through.
@@ -228,6 +236,7 @@ class TestAcceptance3UnverifiedBlitzDoesNotStop(unittest.IsolatedAsyncioTestCase
              patch.object(cc, "extract_email_from_contacts_response", MagicMock(return_value=None)), \
              patch.object(bc, "person_enrich", fake_blitz_person_enrich), \
              patch.object(bc, "find_work_email", AsyncMock(return_value={"found": False, "email": ""})), \
+             patch.object(mc, "find_person_email", AsyncMock(return_value=None)), \
              patch.object(wc, "find_email", fake_wizleads), \
              patch.object(bec, "find_work_email_v3", fake_better_enrich), \
              patch.object(mt, "verify_email", fake_mailtester_reject):
@@ -250,10 +259,10 @@ class TestAcceptance3UnverifiedBlitzDoesNotStop(unittest.IsolatedAsyncioTestCase
 
         # Blitz was called (returned a candidate).
         self.assertEqual(blitz_called["count"], 1)
-        # WizLeads was called because Mailtester rejected the Blitz candidate.
+        # BetterEnrich ran and missed (2026-10-14 order — before WizLeads).
+        self.assertEqual(better_enrich_called["count"], 1)
+        # WizLeads was called because every earlier tier missed/rejected.
         self.assertEqual(wizleads_called["count"], 1)
-        # BetterEnrich was NOT called (WizLeads succeeded).
-        self.assertEqual(better_enrich_called["count"], 0)
         # Final email is from WizLeads, not the rejected Blitz candidate.
         self.assertEqual(result["email"], "jane@acme.com")
         self.assertEqual(result["source"], pipeline_mod.SOURCE_WIZLEADS)

@@ -156,8 +156,9 @@ def providers_status() -> str:
         (3, "quickenrich", _qe_rate, "Paid — QuickEnrich person email (employee-search) + domain decision-makers (dataset-search)"),
         (4, "getleads", "100/min*", "Paid — verified DM emails + bonus phones (batch 100)"),
         (5, "blitz", "50 RPS/endpoint*", "Paid — LinkedIn enrichment (title waterfall)"),
-        (6, "wizleads", "10 RPS", "Paid — verified email"),
-        (7, "better_enrich", "10 RPS", "Paid — person + company email (disabled since 2026-09-29)"),
+        (6, "moltsets", "30 RPM (fair-use windows*)", "Paid — best email incl. personal fallback; auto-skips when quota window spent"),
+        (7, "better_enrich", "10/5 RPS", "Paid — person + company email (re-enabled 2026-10-14)"),
+        (8, "wizleads", "10 RPS", "Paid — verified email"),
     ]
 
     lines = [
@@ -175,7 +176,7 @@ def providers_status() -> str:
         "",
         "**Valid provider names for `selected_providers`:** "
         "`contacts_db`, `smartprospect`, `quickenrich`, `getleads`, `blitz`, "
-        "`wizleads`, `better_enrich`",
+        "`moltsets`, `better_enrich`, `wizleads`",
         "",
         "**Note:** `contacts_db` is always allowed even when not explicitly "
         "listed in `selected_providers` (mandatory first step).",

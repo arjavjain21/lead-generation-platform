@@ -92,16 +92,17 @@ class TestRouteEnrichmentPure(unittest.TestCase):
         route = pipeline_mod.route_enrichment(full_name="John Doe", domain="acme.com")
         self.assertEqual(route["mode"], "name_domain")
         methods = [s["method"] for s in route["steps"]]
-        # 2026-10-10 order: contacts_db -> smartprospect -> quickenrich ->
-        # getleads -> blitz -> wizleads -> better_enrich.
+        # 2026-10-14 order: contacts_db -> smartprospect -> quickenrich ->
+        # getleads -> blitz -> moltsets -> better_enrich -> wizleads.
         self.assertEqual(methods[0], pipeline_mod.ROUTE_METHOD_PERSON_BY_NAME_DOMAIN)
         self.assertEqual(methods[1], pipeline_mod.ROUTE_METHOD_FIND_EMAIL_SMARTPROSPECT)
         self.assertEqual(methods[2], pipeline_mod.ROUTE_METHOD_EMPLOYEE_SEARCH_QUICKENRICH)
         self.assertEqual(methods[3], pipeline_mod.ROUTE_METHOD_FIND_EMAIL_GETLEADS)
         self.assertEqual(methods[4], pipeline_mod.ROUTE_METHOD_PERSON_ENRICH)
-        # better_enrich is globally disabled (2026-09-29) and filtered
-        # from routes since 2026-10-10.
-        self.assertNotIn(pipeline_mod.ROUTE_METHOD_FIND_WORK_EMAIL_V3, methods)
+        self.assertEqual(methods[5], pipeline_mod.ROUTE_METHOD_SEARCH_EMAIL_NAME_MOLTSETS)
+        # better_enrich re-enabled 2026-10-14 (7th), wizleads terminal.
+        self.assertEqual(methods[6], pipeline_mod.ROUTE_METHOD_FIND_WORK_EMAIL_V3)
+        self.assertEqual(methods[7], pipeline_mod.ROUTE_METHOD_FIND_EMAIL)
 
     def test_domain_only_returns_empty_steps(self):
         route = pipeline_mod.route_enrichment(domain="acme.com")

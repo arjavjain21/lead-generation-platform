@@ -35,6 +35,7 @@ if _BACKEND_DIR not in sys.path:
 from enrichment import routes as routes_mod  # noqa: E402
 from enrichment import contacts_client as cc  # noqa: E402
 from enrichment import blitz_client as bc  # noqa: E402
+from enrichment import moltsets_client as mc  # noqa: E402
 from enrichment import wizleads_client as wc  # noqa: E402
 from enrichment import better_enrich_client as bec  # noqa: E402
 from enrichment import mailtester_client as mt  # noqa: E402
@@ -111,6 +112,7 @@ def _patch_all_providers(mocks: dict[str, Any]):
             "bc": bc,
             "wc": wc,
             "bec": bec,
+            "mc": mc,
             "mt": mt,
             "contacts_writer_mod": contacts_writer_mod,
         }[mod_name]
@@ -128,24 +130,19 @@ class TestDomainOnlyCallsAllFourProviders(unittest.IsolatedAsyncioTestCase):
     Contacts DB, Blitz, WizLeads, and BetterEnrich when the per-person
     loop runs with name splits."""
 
-    async def test_domain_only_falls_through_to_wizleads_and_better_enrich(self):
-        from enrichment import providers as _providers_mod
+    async def test_domain_only_falls_through_to_all_tail_tiers(self):
         from unittest.mock import patch as _patch
-        # better_enrich is globally disabled (2026-09-29) and filtered from
-        # routes since 2026-10-10 — enable for the test (fixture pattern from
-        # test_company_fallbacks).
-        self.enterContext(
-            _patch.dict(_providers_mod.ENABLED_PROVIDERS, {"better_enrich": True})
-        )
         called_providers: list[str] = []
 
         def make_recorder(name):
             async def _fn(*args, **kwargs):
                 called_providers.append(name)
-                if name == "wizleads__find_email":
-                    return {"email": "", "catchall": False}
+                if name == "moltsets__find_person_email":
+                    return None  # clean miss
                 if name == "better_enrich__find_work_email_v3":
-                    return {"email": "jane@acme.com", "email_status": "verified"}
+                    return {"email": "", "email_status": "verified"}  # miss
+                if name == "wizleads__find_email":
+                    return {"email": "jane@acme.com", "catchall": True}
                 if name.startswith("blitz__person_enrich") or name == "blitz__person_enrich":
                     return {"found": False, "person": {}}
                 if name == "blitz__waterfall":
@@ -173,6 +170,7 @@ class TestDomainOnlyCallsAllFourProviders(unittest.IsolatedAsyncioTestCase):
             "bc.person_enrich": make_recorder("blitz__person_enrich"),
             "bc.person_enrich_by_linkedin": make_recorder("blitz__person_enrich_by_linkedin"),
             "bc.find_work_email": make_recorder("blitz__find_work_email"),
+            "mc.find_person_email": make_recorder("moltsets__find_person_email"),
             "wc.find_email": make_recorder("wizleads__find_email"),
             "bec.find_work_email_v3": make_recorder("better_enrich__find_work_email_v3"),
             "bec.find_company_email": make_recorder("better_enrich__company_email"),
@@ -205,25 +203,43 @@ class TestDomainOnlyCallsAllFourProviders(unittest.IsolatedAsyncioTestCase):
             for p in patches:
                 p.stop()
 
-        # WizLeads and BetterEnrich must have been called in the
-        # per-person email loop.
-        self.assertIn("wizleads__find_email", called_providers,
-                      f"wizleads not called. called: {called_providers}")
+        # All three tail tiers must have been called in the per-person
+        # email loop, in the 2026-10-14 order: moltsets -> better_enrich ->
+        # wizleads (wizleads terminal, wins the email).
+        self.assertIn("moltsets__find_person_email", called_providers,
+                      f"moltsets not called. called: {called_providers}")
         self.assertIn("better_enrich__find_work_email_v3", called_providers,
                       f"better_enrich not called. called: {called_providers}")
-        # Final email must come from BetterEnrich.
+        self.assertIn("wizleads__find_email", called_providers,
+                      f"wizleads not called. called: {called_providers}")
+        self.assertLess(
+            called_providers.index("moltsets__find_person_email"),
+            called_providers.index("better_enrich__find_work_email_v3"),
+            "moltsets must run before better_enrich",
+        )
+        self.assertLess(
+            called_providers.index("better_enrich__find_work_email_v3"),
+            called_providers.index("wizleads__find_email"),
+            "better_enrich must run before wizleads (2026-10-14 reorder)",
+        )
+        # Final email must come from WizLeads (terminal tier). The
+        # delegated route returns the pipeline SOURCE constant.
         self.assertEqual(response["contacts"][0]["email"], "jane@acme.com")
-        self.assertEqual(response["contacts"][0]["email_source"], "better_enrich_person")
-        # The routing block must show all 4 providers were considered.
+        self.assertEqual(response["contacts"][0]["email_source"], "wizleads_email")
+        # The routing block must show all providers were considered.
         called = response["routing"]["providers_called"]
-        for p in ("contacts_db", "blitz", "wizleads", "better_enrich"):
+        for p in ("contacts_db", "blitz", "moltsets", "better_enrich", "wizleads"):
             self.assertIn(p, called, f"{p} missing from providers_called: {called}")
 
     async def test_domain_only_uses_wizleads_when_others_miss(self):
-        """When Contacts DB and Blitz miss, but WizLeads finds an email,
-        BetterEnrich must NOT be called."""
+        """When Contacts DB / Blitz / MoltSets / BetterEnrich miss but
+        WizLeads finds an email, nothing runs after WizLeads (terminal)."""
 
         called_providers: list[str] = []
+
+        async def fake_moltsets(*args, **kwargs):
+            called_providers.append("moltsets")
+            return None  # clean miss
 
         async def fake_company_by_domain(http, dom):
             return {"linkedin_url": "https://linkedin.com/company/acme"}
@@ -237,7 +253,7 @@ class TestDomainOnlyCallsAllFourProviders(unittest.IsolatedAsyncioTestCase):
 
         async def fake_better_enrich(*args, **kwargs):
             called_providers.append("better_enrich")
-            return {"email": "should-not-be-used@acme.com", "email_status": "verified"}
+            return {"email": "", "email_status": "verified"}  # miss
 
         mocks = {
             "cc.company_by_domain": fake_company_by_domain,
@@ -249,6 +265,7 @@ class TestDomainOnlyCallsAllFourProviders(unittest.IsolatedAsyncioTestCase):
             "bc.person_enrich": _flex_async({"found": False, "person": {}}),
             "bc.person_enrich_by_linkedin": _flex_async({"found": False, "email": ""}),
             "bc.find_work_email": _flex_async({"found": False, "email": ""}),
+            "mc.find_person_email": fake_moltsets,
             "wc.find_email": fake_wizleads,
             "bec.find_work_email_v3": fake_better_enrich,
             "bec.find_company_email": _flex_async({"email": ""}),
@@ -271,10 +288,13 @@ class TestDomainOnlyCallsAllFourProviders(unittest.IsolatedAsyncioTestCase):
             for p in patches:
                 p.stop()
 
-        # WizLeads reached; BetterEnrich not reached.
+        # MoltSets + BetterEnrich ran (and missed); WizLeads hit last.
+        self.assertIn("moltsets", called_providers)
+        self.assertIn("better_enrich", called_providers)
         self.assertIn("wizleads", called_providers)
-        self.assertNotIn("better_enrich", called_providers)
-        # Final email came from WizLeads.
+        self.assertLess(called_providers.index("better_enrich"),
+                        called_providers.index("wizleads"))
+        # Final email came from WizLeads (pipeline SOURCE constant).
         self.assertEqual(response["contacts"][0]["email"], "jane@acme.com")
         self.assertEqual(response["contacts"][0]["email_source"], "wizleads_email")
 
@@ -304,7 +324,11 @@ class TestDomainOnlyForceProviderContactsDb(unittest.IsolatedAsyncioTestCase):
 
         async def fake_better_enrich(*args, **kwargs):
             called_providers.append("better_enrich")
-            return {"email": "should-not-be-used@acme.com", "email_status": "verified"}
+            return {"email": "", "email_status": "verified"}  # miss
+
+        async def fake_moltsets(*args, **kwargs):
+            called_providers.append("moltsets")
+            return None  # clean miss
 
         mocks = {
             "cc.company_by_domain": fake_company_by_domain,
@@ -316,6 +340,7 @@ class TestDomainOnlyForceProviderContactsDb(unittest.IsolatedAsyncioTestCase):
             "bc.person_enrich": fake_blitz,
             "bc.person_enrich_by_linkedin": _flex_async({"found": False, "email": ""}),
             "bc.find_work_email": _flex_async({"found": False, "email": ""}),
+            "mc.find_person_email": fake_moltsets,
             "wc.find_email": fake_wizleads,
             "bec.find_work_email_v3": fake_better_enrich,
             "bec.find_company_email": _flex_async({"email": ""}),
@@ -377,7 +402,7 @@ class TestPerPersonRouteEnrichmentHonorsForceProvider(unittest.IsolatedAsyncioTe
 
         async def fake_better_enrich(*args, **kwargs):
             called_providers.append("better_enrich")
-            return {"email": "should-not-be-used@acme.com", "email_status": "verified"}
+            return {"email": "", "email_status": "verified"}  # miss
 
         async def fake_blitz(*args, **kwargs):
             called_providers.append("blitz")

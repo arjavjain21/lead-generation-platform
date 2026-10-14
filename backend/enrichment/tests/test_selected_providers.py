@@ -122,34 +122,36 @@ class TestRouteEnrichmentSelectedProviders:
             selected_providers=["blitz", "better_enrich"],
         )
         providers = [s["provider"] for s in result["steps"]]
-        # contacts_db always present, plus blitz. better_enrich is globally
-        # disabled (2026-09-29) and filtered from routes (2026-10-10) even
-        # when explicitly selected — the kill switch beats the allowlist.
+        # contacts_db always present, plus the two selected paid tiers
+        # (better_enrich re-enabled 2026-10-14, so selecting it works).
         assert "contacts_db" in providers
         assert "blitz" in providers
-        assert "better_enrich" not in providers
-        # smartprospect and wizleads filtered out.
+        assert "better_enrich" in providers
+        # smartprospect / quickenrich / getleads / moltsets / wizleads filtered out.
         assert "smartprospect" not in providers
+        assert "quickenrich" not in providers
+        assert "moltsets" not in providers
         assert "wizleads" not in providers
 
     def test_selected_providers_none_returns_full_cascade(self):
-        """A5: selected_providers=None (baseline) → all 7 providers in cascade."""
+        """A5: selected_providers=None (baseline) → all 8 providers in cascade."""
         result = pipeline_mod.route_enrichment(
             full_name="Jane Doe",
             domain="acme.com",
             selected_providers=None,
         )
         providers = [s["provider"] for s in result["steps"]]
-        # Full cascade (2026-10-10 reorder; better_enrich disabled ->
-        # filtered):
+        # Full cascade (2026-10-14 order):
         # contacts_db -> smartprospect -> quickenrich -> getleads -> blitz
-        # -> wizleads
+        # -> moltsets -> better_enrich -> wizleads
         assert providers == [
             "contacts_db",
             "smartprospect",
             "quickenrich",
             "getleads",
             "blitz",
+            "moltsets",
+            "better_enrich",
             "wizleads",
         ]
 
