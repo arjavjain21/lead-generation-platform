@@ -17,9 +17,10 @@ ENABLED_PROVIDERS: Final[dict[str, bool]] = {
     "blitz": True,
     "smartprospect": True,   # SmartLead Find Emails API (prospect-api.smartlead.ai), 30 RPS, batch up to 10
     "wizleads": True,
-    "better_enrich": False,   # ← disabled 2026-09-29: $240/10K-credit packs burning ~1/day (100K+ calls/day); key re-exhausted (403 storm). No budget to renew — see BETTERENRICH_BILLING_REVIEW_2026-09-27.md
+    "better_enrich": True,   # ← re-enabled 2026-10-14 (owner request, 7th tier after moltsets). Fast kill: ENABLE_BETTER_ENRICH env (added with the moltsets integration — the 2026-09-29 disable needed a code deploy). Watch credits: /api/v1/credits balance was 0.1 at re-enable.
     "getleads": True,   # GetLeads (app.getleads.io), email + decision-makers enrichment
     "quickenrich": True,   # QuickEnrich (app.quickenrich.io), person email + domain decision-makers. Standard plan ($99/mo, 2026-10): 1000 RPM search / 300 RPM domain. Kill switch ENABLE_QUICKENRICH.
+    "moltsets": True,   # MoltSets (api.moltsets.com), person email tier 6th ($97/mo: 15k rec/5h, 75k rec/wk, 7.5k searches/5h). Kill switch ENABLE_MOLTSETS. Cooldown + miss store in moltsets_guards.py
     "prospeo": False,   # ← disable Prospeo (was paid, temporarily disabled)
 }
 
@@ -45,6 +46,12 @@ def is_provider_enabled(provider: str) -> bool:
             return False
     if provider == "quickenrich":
         if os.environ.get("ENABLE_QUICKENRICH", "true").lower() != "true":
+            return False
+    if provider == "better_enrich":
+        if os.environ.get("ENABLE_BETTER_ENRICH", "true").lower() != "true":
+            return False
+    if provider == "moltsets":
+        if os.environ.get("ENABLE_MOLTSETS", "true").lower() != "true":
             return False
     return True
 

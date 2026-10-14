@@ -71,6 +71,10 @@ SOURCE_GROUPS: dict[str, str] = {
     "quickenrich": "quickenrich",
     "quickenrich_email": "quickenrich",
     "quickenrich_contacts": "quickenrich",
+    # MoltSets sources — person email (tier 6, 2026-10-14). Same string in
+    # both pipeline (SOURCE_MOLTSETS) and list_builder (SOURCE_MOLTSETS).
+    "moltsets": "moltsets",
+    "moltsets_email": "moltsets",
     # BetterEnrich sources
     "better_enrich_company": "better_enrich",
     "better_enrich_person": "better_enrich",

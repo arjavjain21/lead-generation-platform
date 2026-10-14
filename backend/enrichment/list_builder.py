@@ -32,6 +32,7 @@ from . import wizleads_client
 from . import smartprospect_client
 from . import getleads_client
 from . import quickenrich_client
+from . import moltsets_client
 from . import providers
 from . import mailtester_client
 from . import job_store
@@ -97,7 +98,7 @@ def _detect_linkedin_url_type(url: str) -> str:
 
 
 # Valid provider values for force_provider parameter
-VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "getleads", "smartprospect", "quickenrich", "wizleads", "better_enrich"})
+VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "getleads", "smartprospect", "quickenrich", "wizleads", "better_enrich", "moltsets"})
 
 
 def _should_skip_provider(
@@ -181,6 +182,7 @@ SOURCE_WIZLEADS = "wizleads_email"
 SOURCE_SMARTPROSPECT = "smartprospect_email"
 SOURCE_GETLEADS = "getleads_email"
 SOURCE_QUICKENRICH = "quickenrich_email"
+SOURCE_MOLTSETS = "moltsets_email"
 SOURCE_BETTER_ENRICH = "better_enrich"
 SOURCE_BLITZ_COMPANY = "blitz_company"
 SOURCE_NOT_FOUND = "not_found"
@@ -906,30 +908,48 @@ async def _resolve_person_email(
         except Exception as e:
             logger.debug("Blitz email lookup failed: %s", e)
 
-    # Strategy 8: WizLeads by name + domain (catchall verified, 10 RPS)
-    # Last ACTIVE tier (2026-10-10 reorder — after the demoted Blitz tiers,
-    # before the disabled BetterEnrich). G1 fix: WizLeads needs a real
-    # first+last split — a single-token full_name used to reach it with an
-    # empty last_name (mirrors pipeline._resolve_email_for_person Step 8).
-    if search_name and domain and not _should_skip_provider("wizleads", force_provider, selected_providers):
-        first_name = search_name.split(" ")[0] if search_name else ""
-        last_name = " ".join(search_name.split(" ")[1:]) if " " in search_name else ""
-        if first_name and last_name:
+    # Strategy 8: MoltSets best email (6th tier, 2026-10-14 add)
+    # Slow API + tight fair-use windows (15k records/5h, 75k/week, 7.5k
+    # searches/5h) — the client checks the cross-worker fair-use cooldown
+    # and the person miss-store BEFORE any HTTP call, so an exhausted
+    # window costs zero latency here. One request per attempt: LinkedIn URL
+    # when held, else search_business_email_by_name.
+    if (linkedin_url or (search_name and domain)) and not _should_skip_provider(
+        "moltsets", force_provider, selected_providers
+    ):
+        mo_first = search_name.split(" ")[0] if search_name else ""
+        mo_last = " ".join(search_name.split(" ")[1:]) if " " in search_name else ""
+        if linkedin_url or (mo_first and mo_last and domain):
             if record_provider_use:
-                record_provider_use("wizleads")
+                record_provider_use("moltsets")
             try:
-                result = await wizleads_client.find_email(blitz_http, first_name=first_name, last_name=last_name, website=domain)
-                if result and result.get("email"):
-                    email = result["email"]
-                    logger.debug("WizLeads found email for %s: %s (catchall: %s)", search_name, email, result.get("catchall"))
-                    return email, "", SOURCE_WIZLEADS, "yes", "", "", {}
+                result = await moltsets_client.find_person_email(
+                    blitz_http,
+                    linkedin_url=linkedin_url,
+                    first_name=mo_first,
+                    last_name=mo_last,
+                    company_domain=domain,
+                )
+                if _is_provider_error(result):
+                    logger.warning(
+                        "MoltSets provider error: %s", getattr(result, "message", "")
+                    )
+                elif result and result.get("email"):
+                    # Risk A/B arrive provider-verified; C/F surface unknown
+                    # (the mailtester gate at the unified-API layer decides,
+                    # same policy as Blitz unverified emails).
+                    verified = result.get("verified_hint") or "unknown"
+                    logger.debug("MoltSets found email for %s: %s (risk: %s)",
+                                 search_name or linkedin_url, result["email"], result.get("risk_score"))
+                    return result["email"], "", SOURCE_MOLTSETS, verified, "", "", {}
             except Exception as e:
-                logger.debug("WizLeads lookup failed: %s", e)
+                logger.debug("MoltSets lookup failed: %s", e)
 
     # Strategy 9: Better Enrich by name + domain (TERTIARY - PAID)
-    # Only try if name is available and Better Enrich is selected. G19 fix:
-    # the paid call now rides the same http client the other paid strategies
-    # use (blitz_http) — contacts_http is the free contacts_db lane.
+    # Re-enabled 2026-10-14 and moved BEFORE wizleads (owner reorder:
+    # blitz -> moltsets -> better_enrich -> wizleads). G19 fix: the paid
+    # call rides the same http client the other paid strategies use
+    # (blitz_http) — contacts_http is the free contacts_db lane.
     if search_name and domain and not _should_skip_provider("better_enrich", force_provider, selected_providers):
         if record_provider_use:
             record_provider_use("better_enrich")
@@ -947,6 +967,26 @@ async def _resolve_person_email(
                 return email, "", SOURCE_BETTER_ENRICH, verified, "", "", {}
         except Exception as e:
             logger.debug("Better Enrich V3 lookup failed: %s", e)
+
+    # Strategy 10: WizLeads by name + domain (catchall verified, 10 RPS)
+    # TERMINAL tier (2026-10-14 reorder — after moltsets and the re-enabled
+    # BetterEnrich). G1 fix: WizLeads needs a real first+last split — a
+    # single-token full_name used to reach it with an empty last_name
+    # (mirrors pipeline._resolve_email_for_person Step 10).
+    if search_name and domain and not _should_skip_provider("wizleads", force_provider, selected_providers):
+        first_name = search_name.split(" ")[0] if search_name else ""
+        last_name = " ".join(search_name.split(" ")[1:]) if " " in search_name else ""
+        if first_name and last_name:
+            if record_provider_use:
+                record_provider_use("wizleads")
+            try:
+                result = await wizleads_client.find_email(blitz_http, first_name=first_name, last_name=last_name, website=domain)
+                if result and result.get("email"):
+                    email = result["email"]
+                    logger.debug("WizLeads found email for %s: %s (catchall: %s)", search_name, email, result.get("catchall"))
+                    return email, "", SOURCE_WIZLEADS, "yes", "", "", {}
+            except Exception as e:
+                logger.debug("WizLeads lookup failed: %s", e)
 
     return "", "", SOURCE_NOT_FOUND, "unknown", "", "", {}
 
@@ -2684,9 +2724,10 @@ async def _enrich_single_linkedin(
     """
     Enrich a single LinkedIn URL with person + company details.
 
-    Cascade (2026-10-10 reorder): Contacts DB (free) -> QuickEnrich
+    Cascade (2026-10-14): Contacts DB (free) -> QuickEnrich
     (employee-search by linkedin_url) -> GetLeads from-linkedin (paid, only
-    needs the URL) -> Blitz (demoted for FUP relief). An EMAILLESS Contacts
+    needs the URL) -> Blitz (demoted for FUP relief) -> MoltSets
+    (linkedin_to_best_email, terminal tier). An EMAILLESS Contacts
     DB hit keeps its free identity fields on the row and falls through to
     the paid tiers (G17) — only a hit with an email returns there; if every
     tier then misses, the row keeps its contacts identity + no_contacts
@@ -2861,6 +2902,35 @@ async def _enrich_single_linkedin(
                     return row
             except Exception as e:
                 logger.debug("Blitz person enrich failed: %s", e)
+
+        # Step 5: MoltSets best email by LinkedIn URL (2026-10-14 add —
+        # terminal tier of the LinkedIn arm). linkedin_to_best_email is
+        # MoltSets' highest-coverage endpoint (personal-email fallback
+        # included in the plan). Client-side guards make an exhausted
+        # fair-use window a zero-latency skip.
+        if not _should_skip_provider("moltsets", force_provider, selected_providers):
+            if record_provider_use:
+                record_provider_use("moltsets")
+            try:
+                mo_result = await moltsets_client.find_person_email(
+                    blitz_http, linkedin_url=linkedin_url,
+                )
+                if _is_provider_error(mo_result):
+                    logger.warning(
+                        "MoltSets provider error: %s", getattr(mo_result, "message", "")
+                    )
+                elif mo_result and mo_result.get("email"):
+                    row["dm_linkedin_url"] = linkedin_url
+                    row["dm_email"] = mo_result["email"]
+                    row["dm_email_verified"] = mo_result.get("verified_hint") or "unknown"
+                    row["dm_email_source"] = SOURCE_MOLTSETS
+                    row["dm_first_name"] = mo_result.get("first_name", "") or row["dm_first_name"]
+                    row["dm_last_name"] = mo_result.get("last_name", "") or row["dm_last_name"]
+                    row["dm_full_name"] = mo_result.get("full_name", "") or row["dm_full_name"]
+                    row["row_status"] = STATUS_ENRICHED
+                    return row
+            except Exception as e:
+                logger.debug("MoltSets lookup failed: %s", e)
 
     # Not found anywhere. An emailless contacts_db identity hit (G17) keeps
     # its no_contacts status + free identity fields instead of not_found.

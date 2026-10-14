@@ -50,6 +50,7 @@ from . import wizleads_client
 from . import smartprospect_client
 from . import getleads_client
 from . import quickenrich_client
+from . import moltsets_client
 from . import identifier_utils
 from . import company_fallback
 from . import seg
@@ -274,7 +275,7 @@ def _compact_attempts_summary(attempts: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 # Valid provider values for force_provider / selected_providers parameter
-VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "getleads", "smartprospect", "quickenrich", "wizleads", "better_enrich"})
+VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "getleads", "smartprospect", "quickenrich", "wizleads", "better_enrich", "moltsets"})
 
 
 def _should_skip_provider(
@@ -351,6 +352,8 @@ def _normalize_source(source: str) -> str:
         return "getleads"
     elif source.startswith("quickenrich"):
         return "quickenrich"
+    elif source.startswith("moltsets"):
+        return "moltsets"
     elif source.startswith("smartprospect"):
         return "smartprospect"
     elif source.startswith("better_enrich"):
@@ -408,6 +411,7 @@ SOURCE_SMARTPROSPECT = "smartprospect_email"              # Person email from Sm
 SOURCE_GETLEADS = "getleads_email"                        # Person email from GetLeads (app.getleads.io)
 SOURCE_QUICKENRICH = "quickenrich_email"                  # Person email from QuickEnrich employee-search (app.quickenrich.io)
 SOURCE_QUICKENRICH_CONTACTS = "quickenrich_contacts"      # Decision makers from QuickEnrich dataset-search
+SOURCE_MOLTSETS = "moltsets_email"                        # Person email from MoltSets (api.moltsets.com, tier 6 since 2026-10-14)
 
 # Routing reasons (no_email_reason values)
 # The full standard enum (per LOOP.md acceptance test 2/8):
@@ -462,6 +466,7 @@ ROUTE_PROVIDER_SMARTPROSPECT = "smartprospect"
 ROUTE_PROVIDER_QUICKENRICH = "quickenrich"
 ROUTE_PROVIDER_WIZLEADS = "wizleads"
 ROUTE_PROVIDER_BETTER_ENRICH = "better_enrich"
+ROUTE_PROVIDER_MOLTSETS = "moltsets"
 
 # Provider methods used in source_path.
 ROUTE_METHOD_PERSON_BY_LINKEDIN = "person_by_linkedin"
@@ -476,6 +481,8 @@ ROUTE_METHOD_FIND_EMAIL_LINKEDIN_GETLEADS = "find_email_linkedin_getleads"
 ROUTE_METHOD_EMPLOYEE_SEARCH_QUICKENRICH = "employee_search_quickenrich"
 ROUTE_METHOD_EMPLOYEE_SEARCH_LINKEDIN_QUICKENRICH = "employee_search_linkedin_quickenrich"
 ROUTE_METHOD_FIND_WORK_EMAIL_V3 = "find_work_email_v3"
+ROUTE_METHOD_BEST_EMAIL_LINKEDIN_MOLTSETS = "best_email_linkedin_moltsets"
+ROUTE_METHOD_SEARCH_EMAIL_NAME_MOLTSETS = "search_email_name_moltsets"
 ROUTE_METHOD_PHONE_REVERSE_LOOKUP = "phone_reverse_lookup"
 
 ENRICHED_COLUMNS = [
@@ -576,6 +583,11 @@ def _provider_label(method: str) -> str:
         return ROUTE_PROVIDER_QUICKENRICH
     if method == ROUTE_METHOD_FIND_WORK_EMAIL_V3:
         return ROUTE_PROVIDER_BETTER_ENRICH
+    if method in (
+        ROUTE_METHOD_BEST_EMAIL_LINKEDIN_MOLTSETS,
+        ROUTE_METHOD_SEARCH_EMAIL_NAME_MOLTSETS,
+    ):
+        return ROUTE_PROVIDER_MOLTSETS
     if method == ROUTE_METHOD_PHONE_REVERSE_LOOKUP:
         return ROUTE_PROVIDER_BLITZ  # phone reverse is a Blitz concept
     return method
@@ -621,6 +633,11 @@ def _can_provider_use_method(method: str, inputs: dict[str, str]) -> bool:
         return bool(first) and bool(last) and bool(dom)
     if method == ROUTE_METHOD_FIND_WORK_EMAIL_V3:
         return bool(fn) and bool(dom)
+    if method == ROUTE_METHOD_BEST_EMAIL_LINKEDIN_MOLTSETS:
+        return bool(li)
+    if method == ROUTE_METHOD_SEARCH_EMAIL_NAME_MOLTSETS:
+        # MoltSets search_business_email_by_name: first + last + company_domain.
+        return bool(first) and bool(last) and bool(dom)
     if method == ROUTE_METHOD_PHONE_REVERSE_LOOKUP:
         return bool(phone)
     return False
@@ -628,7 +645,7 @@ def _can_provider_use_method(method: str, inputs: dict[str, str]) -> bool:
 
 def _method_is_paid(method: str) -> bool:
     """Return True if the method calls a paid provider family."""
-    return _provider_label(method) in (ROUTE_PROVIDER_BLITZ, ROUTE_PROVIDER_BETTER_ENRICH, ROUTE_PROVIDER_WIZLEADS, ROUTE_PROVIDER_SMARTPROSPECT, ROUTE_PROVIDER_QUICKENRICH)
+    return _provider_label(method) in (ROUTE_PROVIDER_BLITZ, ROUTE_PROVIDER_BETTER_ENRICH, ROUTE_PROVIDER_WIZLEADS, ROUTE_PROVIDER_SMARTPROSPECT, ROUTE_PROVIDER_QUICKENRICH, ROUTE_PROVIDER_MOLTSETS)
 
 
 def _method_is_free(method: str) -> bool:
@@ -790,6 +807,14 @@ def route_enrichment(
                 "method": ROUTE_METHOD_FIND_WORK_EMAIL,
                 "provider": ROUTE_PROVIDER_BLITZ,
             },
+            {
+                # MoltSets best-email by LinkedIn URL — last tier of the
+                # LinkedIn arm (2026-10-14 add). Highest-coverage MoltSets
+                # endpoint; personal-email fallback included in the plan.
+                "identifier": ROUTE_IDENTIFIER_LINKEDIN,
+                "method": ROUTE_METHOD_BEST_EMAIL_LINKEDIN_MOLTSETS,
+                "provider": ROUTE_PROVIDER_MOLTSETS,
+            },
         ])
         if has_name_domain:
             raw_steps.extend([
@@ -825,14 +850,20 @@ def route_enrichment(
             if first_name and last_name:
                 raw_steps.append({
                     "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
-                    "method": ROUTE_METHOD_FIND_EMAIL,
-                    "provider": ROUTE_PROVIDER_WIZLEADS,
+                    "method": ROUTE_METHOD_SEARCH_EMAIL_NAME_MOLTSETS,
+                    "provider": ROUTE_PROVIDER_MOLTSETS,
                 })
             raw_steps.append({
                 "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
                 "method": ROUTE_METHOD_FIND_WORK_EMAIL_V3,
                 "provider": ROUTE_PROVIDER_BETTER_ENRICH,
             })
+            if first_name and last_name:
+                raw_steps.append({
+                    "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
+                    "method": ROUTE_METHOD_FIND_EMAIL,
+                    "provider": ROUTE_PROVIDER_WIZLEADS,
+                })
         mode = "linkedin_only" if not has_domain else "linkedin_first"
     elif has_phone:
         # Phone -> LinkedIn cascade. The phone reverse step is a stub for now
@@ -846,11 +877,12 @@ def route_enrichment(
         })
         mode = "phone_then_linkedin"
     elif has_name_domain:
-        # Name+domain cascade. Order (2026-10-10):
+        # Name+domain cascade. Order (2026-10-14):
         # contacts_db -> smartprospect -> quickenrich -> getleads -> blitz
-        # -> wizleads -> better_enrich(disabled). Blitz demoted from 2nd to
-        # 5th (FUP relief); smartprospect promoted to 2nd (self-verifying,
-        # shared 1900 RPM bucket); wizleads last active catch-all.
+        # -> moltsets -> better_enrich -> wizleads. Blitz demoted from 2nd
+        # to 5th (2026-10-10 FUP relief); moltsets added 6th (2026-10-14);
+        # better_enrich re-enabled 7th and wizleads now the terminal
+        # catch-all.
         raw_steps.extend([
             {
                 "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
@@ -859,8 +891,8 @@ def route_enrichment(
             },
         ])
         if first_name and last_name:
-            # smartprospect/quickenrich/getleads/wizleads all gate on
-            # first+last+domain; blitz person_enrich + better_enrich v3
+            # smartprospect/quickenrich/getleads/moltsets/wizleads all gate
+            # on first+last+domain; blitz person_enrich + better_enrich v3
             # accept full_name+domain.
             raw_steps.append({
                 "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
@@ -885,14 +917,20 @@ def route_enrichment(
         if first_name and last_name:
             raw_steps.append({
                 "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
-                "method": ROUTE_METHOD_FIND_EMAIL,
-                "provider": ROUTE_PROVIDER_WIZLEADS,
+                "method": ROUTE_METHOD_SEARCH_EMAIL_NAME_MOLTSETS,
+                "provider": ROUTE_PROVIDER_MOLTSETS,
             })
         raw_steps.append({
             "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
             "method": ROUTE_METHOD_FIND_WORK_EMAIL_V3,
             "provider": ROUTE_PROVIDER_BETTER_ENRICH,
         })
+        if first_name and last_name:
+            raw_steps.append({
+                "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
+                "method": ROUTE_METHOD_FIND_EMAIL,
+                "provider": ROUTE_PROVIDER_WIZLEADS,
+            })
         mode = "name_domain"
     elif has_domain:
         # Domain-only cascade. The decision-maker cascade is handled
@@ -925,6 +963,7 @@ def route_enrichment(
             "quickenrich": ROUTE_PROVIDER_QUICKENRICH,
             "wizleads": ROUTE_PROVIDER_WIZLEADS,
             "better_enrich": ROUTE_PROVIDER_BETTER_ENRICH,
+            "moltsets": ROUTE_PROVIDER_MOLTSETS,
         }
         forced = family_map.get(force_provider)
         if not forced:
@@ -1052,6 +1091,7 @@ async def _run_route_step(
     from . import wizleads_client as _wl
     from . import better_enrich_client as _be
     from . import smartprospect_client as _sp
+    from . import moltsets_client as _mo
 
     verification: dict[str, Any] = {
         "dm_email_verified": "unknown",
@@ -1471,6 +1511,47 @@ async def _run_route_step(
             if result and result.get("email"):
                 verification["dm_email_verified"] = "yes"
                 return {"email": result["email"], "source": SOURCE_WIZLEADS, "verification": verification}
+            return {"email": "", "source": SOURCE_NOT_FOUND}
+
+        if method in (
+            ROUTE_METHOD_BEST_EMAIL_LINKEDIN_MOLTSETS,
+            ROUTE_METHOD_SEARCH_EMAIL_NAME_MOLTSETS,
+        ):
+            _record("moltsets")
+            try:
+                result = await _mo.find_person_email(
+                    blitz_http,
+                    linkedin_url=inputs.get("linkedin_url") or "",
+                    first_name=inputs.get("first_name") or "",
+                    last_name=inputs.get("last_name") or "",
+                    company_domain=inputs.get("domain") or "",
+                )
+            except Exception as e:
+                logger.warning("MoltSets find_person_email failed: %s", e)
+                return {"email": "", "source": SOURCE_NOT_FOUND}
+            if _is_provider_error(result):
+                return result  # Return the error object directly
+            if result and result.get("email"):
+                # Risk A/B arrive provider-verified; C/F are unverified —
+                # gate those with Mailtester when validation is on (same
+                # policy as Blitz unverified emails).
+                verified_hint = result.get("verified_hint") or "unknown"
+                if verified_hint == "yes" or not validate_email:
+                    verification["dm_email_verified"] = verified_hint
+                    return {"email": result["email"], "source": SOURCE_MOLTSETS, "verification": verification}
+                try:
+                    result_mt = await _mt.verify_email(blitz_http, result["email"])
+                    verification["dm_email_verified"] = "yes" if result_mt["valid"] else "no"
+                    verification["mailtester_code"] = result_mt["code"]
+                    verification["mailtester_message"] = result_mt["message"]
+                    if result_mt["valid"]:
+                        return {"email": result["email"], "source": SOURCE_MOLTSETS, "verification": verification}
+                    return {"email": "", "source": SOURCE_NOT_FOUND}
+                except RuntimeError:
+                    # Mailtester unavailable — FAIL OPEN (Blitz policy).
+                    verification["mailtester_code"] = "unavailable"
+                    verification["dm_email_verified"] = "unknown"
+                    return {"email": result["email"], "source": SOURCE_MOLTSETS, "verification": verification}
             return {"email": "", "source": SOURCE_NOT_FOUND}
 
         if method == ROUTE_METHOD_FIND_WORK_EMAIL_V3:
@@ -2822,9 +2903,108 @@ async def _resolve_email_for_person(
                 _record_error("blitz", "find_work_email", e)
                 logger.warning("Blitz email lookup failed for %s: %s", linkedin_url, e)
 
-        # Step 8: WizLeads person email (catchall verified, 10 RPS)
-        # Last ACTIVE tier (2026-10-10 reorder — after blitz, before the
-        # disabled better_enrich). G1 fix: WizLeads needs a real first+last
+        # Step 8: MoltSets person email (6th tier, 2026-10-14 add)
+        # Slow API + tight fair-use windows (15k records/5h, 75k/week) —
+        # the client checks the cross-worker fair-use cooldown and the
+        # person miss-store BEFORE any HTTP call, so an exhausted window
+        # costs zero latency here and falls straight through. One request
+        # per person per attempt: linkedin_to_best_email when we hold the
+        # URL, else search_business_email_by_name.
+        if not _should_skip_provider("moltsets", force_provider):
+            _mo_first = person.get("first_name", "") or (full_name.split(" ")[0] if full_name else "")
+            _mo_last = person.get("last_name", "") or (" ".join(full_name.split(" ")[1:]) if " " in full_name else "")
+            if linkedin_url or (_mo_first and _mo_last and domain):
+                _record("moltsets")
+                try:
+                    result = await moltsets_client.find_person_email(
+                        blitz_client_inst,
+                        linkedin_url=linkedin_url,
+                        first_name=_mo_first,
+                        last_name=_mo_last,
+                        company_domain=domain,
+                    )
+                    if _is_provider_error(result):
+                        logger.warning(
+                            "MoltSets provider error: %s", getattr(result, "message", "")
+                        )
+                    elif result and result.get("email"):
+                        email = result["email"]
+                        # Phase 2a: capture the MoltSets response (already
+                        # includes email + risk_score; stitch identity).
+                        _capture("moltsets", {
+                            **result,
+                            "full_name": full_name,
+                            "first_name": _mo_first,
+                            "last_name": _mo_last,
+                            "linkedin_url": linkedin_url,
+                            "email": email,
+                        })
+                        # Risk A/B arrive provider-verified; C/F are unverified
+                        # — gate those with Mailtester when validation is on
+                        # (same policy as Blitz unverified emails).
+                        if result.get("verified_hint") == "yes" or not validate_email:
+                            verification_info["dm_email_verified"] = (
+                                result.get("verified_hint") or "unknown"
+                            )
+                            logger.info("MoltSets found email for %s: %s (risk: %s)",
+                                        full_name, email, result.get("risk_score"))
+                            return email, SOURCE_MOLTSETS, verification_info
+                        try:
+                            result_mt = await mailtester_client.verify_email(
+                                blitz_client_inst, email
+                            )
+                            verification_info["dm_email_verified"] = "yes" if result_mt["valid"] else "no"
+                            verification_info["mailtester_code"] = result_mt["code"]
+                            verification_info["mailtester_message"] = result_mt["message"]
+                            if result_mt["valid"]:
+                                return email, SOURCE_MOLTSETS, verification_info
+                            logger.info("MoltSets risk-%s email rejected by Mailtester: %s - falling through",
+                                        result.get("risk_score"), email)
+                        except RuntimeError:
+                            # Mailtester unavailable — FAIL OPEN (Blitz policy).
+                            verification_info["mailtester_code"] = "unavailable"
+                            verification_info["dm_email_verified"] = "unknown"
+                            return email, SOURCE_MOLTSETS, verification_info
+                except Exception as e:
+                    _record_error("moltsets", "find_person_email", e)
+                    logger.warning("MoltSets lookup failed for %s / %s: %s", full_name, domain, e)
+
+        # Step 9: BetterEnrich person email (V3 with built-in verification)
+        # Re-enabled 2026-10-14 and moved BEFORE wizleads (owner reorder:
+        # blitz -> moltsets -> better_enrich -> wizleads).
+        if full_name and domain and not _should_skip_provider("better_enrich", force_provider):
+            _record("better_enrich")
+            try:
+                result = await better_enrich_client.find_work_email_v3(
+                    blitz_client_inst, full_name, domain, linkedin_url
+                )
+                if result and result.get("email"):
+                    email = result["email"]
+                    # Phase 2a: capture the BetterEnrich V3 person-email
+                    # response. Stitch identity for lineage.
+                    _capture("better_enrich", {
+                        **result,
+                        "full_name": full_name,
+                        "first_name": first_name,
+                        "last_name": last_name,
+                        "linkedin_url": linkedin_url,
+                        "email": email,
+                    })
+                    # V3 provides email_status - map to dm_email_verified
+                    email_status = result.get("email_status", "verified")
+                    if email_status in ("verified", "valid"):
+                        verification_info["dm_email_verified"] = "yes"
+                    else:
+                        verification_info["dm_email_verified"] = "unknown"
+                    logger.info("BetterEnrich V3 found email for %s: %s (status: %s)", full_name, email, email_status)
+                    return email, SOURCE_BETTER_ENRICH_PERSON, verification_info
+            except Exception as e:
+                _record_error("better_enrich", "find_work_email_v3", e)
+                logger.warning("BetterEnrich V3 person lookup failed for %s / %s: %s", full_name, domain, e)
+
+        # Step 10: WizLeads person email (catchall verified, 10 RPS)
+        # TERMINAL tier (2026-10-14 reorder — after moltsets and the
+        # re-enabled better_enrich). G1 fix: WizLeads needs a real first+last
         # split — a single-token full_name used to reach it with an empty
         # last_name (the route gate has always required both).
         if full_name and domain and not _should_skip_provider("wizleads", force_provider):
@@ -2859,38 +3039,7 @@ async def _resolve_email_for_person(
                     _record_error("wizleads", "find_email", e)
                     logger.warning("WizLeads lookup failed for %s / %s: %s", full_name, domain, e)
 
-        # Step 9: BetterEnrich person email (V3 with built-in verification)
-        if full_name and domain and not _should_skip_provider("better_enrich", force_provider):
-            _record("better_enrich")
-            try:
-                result = await better_enrich_client.find_work_email_v3(
-                    blitz_client_inst, full_name, domain, linkedin_url
-                )
-                if result and result.get("email"):
-                    email = result["email"]
-                    # Phase 2a: capture the BetterEnrich V3 person-email
-                    # response. Stitch identity for lineage.
-                    _capture("better_enrich", {
-                        **result,
-                        "full_name": full_name,
-                        "first_name": first_name,
-                        "last_name": last_name,
-                        "linkedin_url": linkedin_url,
-                        "email": email,
-                    })
-                    # V3 provides email_status - map to dm_email_verified
-                    email_status = result.get("email_status", "verified")
-                    if email_status in ("verified", "valid"):
-                        verification_info["dm_email_verified"] = "yes"
-                    else:
-                        verification_info["dm_email_verified"] = "unknown"
-                    logger.info("BetterEnrich V3 found email for %s: %s (status: %s)", full_name, email, email_status)
-                    return email, SOURCE_BETTER_ENRICH_PERSON, verification_info
-            except Exception as e:
-                _record_error("better_enrich", "find_work_email_v3", e)
-                logger.warning("BetterEnrich V3 person lookup failed for %s / %s: %s", full_name, domain, e)
-
-        # Step 10: Contacts DB by input row name + domain (if different from person name)
+        # Step 11: Contacts DB by input row name + domain (if different from person name)
         # This handles edge cases where the input name differs from the person's current name
         if input_full_name and input_full_name != full_name and domain and not _should_skip_provider("contacts_db", force_provider):
             _record("contacts_db")

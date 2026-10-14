@@ -944,6 +944,49 @@ def normalize_quickenrich_contact(raw: dict) -> Optional[dict[str, str]]:
     )
 
 
+def normalize_moltsets_contact(raw: dict) -> Optional[dict[str, str]]:
+    """Normalize a MoltSets contact dict.
+
+    Per ``moltsets_client.find_person_email`` (2026-10-14), the captured
+    payload is::
+
+        {
+            "found": True,
+            "email": "jane@example.com",
+            "risk_score": "A",        # A|B|C|D|F — D dropped by policy
+            "email_type": "business" | "personal" | "",
+            "first_name": "Jane",
+            "last_name": "Doe",
+            "full_name": "Jane Doe",
+            "linkedin_url": "https://linkedin.com/in/jane",
+            "verified_hint": "yes" | "unknown",   # A/B -> yes, C/F -> unknown
+            "source_endpoint": "linkedin_to_best_email"
+                              | "search_business_email_by_name",
+        }
+
+    plus identity (``domain`` / ``full_name`` / ``linkedin_url``) stitched
+    by the cascade call site. The risk grade and endpoint ride along via
+    ``extra`` — they are MoltSets' own deliverability signals.
+    """
+    if not isinstance(raw, dict):
+        return None
+    return _build_record(
+        source="moltsets",
+        email=raw.get("email"),
+        first_name=raw.get("first_name"),
+        last_name=raw.get("last_name"),
+        full_name=raw.get("full_name"),
+        linkedin_url=raw.get("linkedin_url"),
+        domain=raw.get("domain") or raw.get("company_domain"),
+        extra={
+            "risk_score": str(raw.get("risk_score", "") or ""),
+            "email_type": str(raw.get("email_type", "") or ""),
+            "verified_hint": str(raw.get("verified_hint", "") or ""),
+            "source_endpoint": str(raw.get("source_endpoint", "") or ""),
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Generic dispatcher
 # ---------------------------------------------------------------------------
@@ -970,6 +1013,10 @@ _PROVIDER_DISPATCH: dict[str, Callable[[dict], Optional[dict[str, str]]]] = {
     "quick_enrich": normalize_quickenrich_contact,
     "quick-enrich": normalize_quickenrich_contact,
     "qe": normalize_quickenrich_contact,
+    "moltsets": normalize_moltsets_contact,
+    "moltsets_email": normalize_moltsets_contact,
+    "molt_sets": normalize_moltsets_contact,
+    "molt-sets": normalize_moltsets_contact,
 }
 
 
@@ -1013,6 +1060,7 @@ __all__ = [
     "normalize_wizleads_contact",
     "normalize_getleads_contact",
     "normalize_quickenrich_contact",
+    "normalize_moltsets_contact",
     "normalize_provider_contact",
     "previous_companies_titles",
 ]

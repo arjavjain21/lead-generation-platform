@@ -46,6 +46,7 @@ from . import wizleads_client
 from . import getleads_client
 from . import smartprospect_client
 from . import quickenrich_client
+from . import moltsets_client
 from . import mailtester_client
 from . import providers
 from . import identifier_utils
@@ -208,7 +209,7 @@ async def _run_contacts_writer_v2(
 
 
 # Valid provider values for force_provider / selected_providers parameter
-VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "getleads", "smartprospect", "quickenrich", "wizleads", "better_enrich"})
+VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "getleads", "smartprospect", "quickenrich", "wizleads", "better_enrich", "moltsets"})
 
 
 def _should_skip_provider(
@@ -2964,57 +2965,56 @@ async def unified_enrich(
                 except Exception as e:
                     logger.debug("Blitz person enrichment failed: %s", e)
 
-            # Step 2.5: If Blitz returned an unverified email, try WizLeads as
-            # the next provider in the cascade (after Blitz per the 2026-10-10
-            # order). WizLeads is eligible when full_name (or first_name) +
-            # domain are present. Skip if force_provider is set and it's not
-            # "wizleads".
-            wizleads_tried = False
-            has_email_now = any(c.get("email") for c in contacts)
-            should_try_wizleads = (not has_email_now or blitz_fall_through) and (
-                (full_name or req.first_name) and domain
-            ) and not _should_skip_provider("wizleads", req.force_provider, req.selected_providers)
-            if should_try_wizleads:
-                wizleads_tried = True
-                first_name_wz = (req.first_name or "").strip() or (full_name.split(" ")[0] if full_name else "")
-                last_name_wz = (req.last_name or "").strip() or (" ".join(full_name.split(" ")[1:]) if full_name and " " in full_name else "")
-                # G3 (2026-10-10): single-token names must not reach WizLeads —
-                # the API requires BOTH a first and a last name; an empty
-                # last name burns a call on a guaranteed-bad lookup shape.
-                if first_name_wz and last_name_wz:
+            # Step 2.5: MoltSets best email (6th tier, 2026-10-14 order —
+            # after blitz, before better_enrich/wizleads). The client checks
+            # the cross-worker fair-use cooldown and the person miss-store
+            # BEFORE any HTTP call, so a spent window costs zero latency.
+            if (req.linkedin_url or ((full_name or req.first_name) and domain)) and not _should_skip_provider(
+                "moltsets", req.force_provider, req.selected_providers
+            ):
+                first_name_mo = (req.first_name or "").strip() or (full_name.split(" ")[0] if full_name else "")
+                last_name_mo = (req.last_name or "").strip() or (" ".join(full_name.split(" ")[1:]) if full_name and " " in full_name else "")
+                if req.linkedin_url or (first_name_mo and last_name_mo and domain):
                     try:
-                        wl_result = await wizleads_client.find_email(
+                        mo_result = await moltsets_client.find_person_email(
                             blitz_http,
-                            first_name=first_name_wz,
-                            last_name=last_name_wz,
-                            website=domain,
+                            linkedin_url=req.linkedin_url or "",
+                            first_name=first_name_mo,
+                            last_name=last_name_mo,
+                            company_domain=domain,
                         )
-                        if wl_result and wl_result.get("email"):
-                            wz_email = wl_result["email"]
+                        if mo_result is not None and not isinstance(mo_result, dict):
+                            logger.warning(
+                                "MoltSets provider error: %s", getattr(mo_result, "message", "")
+                            )
+                        elif isinstance(mo_result, dict) and mo_result.get("email"):
+                            mo_email = mo_result["email"]
                             if contacts:
-                                contacts[0]["email"] = wz_email
-                                contacts[0]["email_source"] = "wizleads"
+                                contacts[0]["email"] = mo_email
+                                contacts[0]["email_source"] = "moltsets"
                             else:
                                 contacts.append({
                                     "full_name": full_name or "",
-                                    "first_name": first_name_wz,
-                                    "last_name": last_name_wz,
+                                    "first_name": first_name_mo,
+                                    "last_name": last_name_mo,
                                     "title": "",
-                                    "email": wz_email,
+                                    "email": mo_email,
                                     "linkedin_url": req.linkedin_url or "",
                                     "headline": "",
                                     "location_city": "",
                                     "location_country": "",
                                     "icp_tier": 1,
-                                    "email_source": "wizleads",
+                                    "email_source": "moltsets",
                                 })
-                            sources["contacts"] = "wizleads"
-                            sources["emails"] = "wizleads"
-                            logger.info("WizLeads found email in enhanced mode: %s", wz_email)
+                            sources["contacts"] = "moltsets"
+                            sources["emails"] = "moltsets"
+                            logger.info("MoltSets found email in enhanced mode: %s (risk %s)",
+                                        mo_email, mo_result.get("risk_score"))
                     except Exception as e:
-                        logger.debug("WizLeads lookup failed in enhanced mode: %s", e)
+                        logger.debug("MoltSets lookup failed in enhanced mode: %s", e)
 
-            # Step 3: If still no email, try BetterEnrich V3 as final fallback
+            # Step 3: If still no email, try BetterEnrich V3 (7th tier since
+            # the 2026-10-14 reorder — after moltsets, before wizleads).
             # BetterEnrich V3 requires both full_name and domain
             # Skip if force_provider is set and it's not "better_enrich"
             if full_name and domain and not _should_skip_provider("better_enrich", req.force_provider, req.selected_providers):
@@ -3064,6 +3064,56 @@ async def unified_enrich(
                                 logger.info("BetterEnrich V3 found email for %s: %s", full_name, be_result.get("email"))
                         except Exception as e:
                             logger.debug("BetterEnrich V3 lookup failed: %s", e)
+
+            # Step 3.5: WizLeads catch-all (TERMINAL tier since 2026-10-14 —
+            # after moltsets and better_enrich). WizLeads is eligible when
+            # full_name (or first_name) + domain are present and the email is
+            # still missing or only an unverified blitz/moltsets result is on
+            # the row. Skip if force_provider is set and it's not "wizleads".
+            wizleads_tried = False
+            has_email_now = any(c.get("email") for c in contacts)
+            should_try_wizleads = (not has_email_now or blitz_fall_through) and (
+                (full_name or req.first_name) and domain
+            ) and not _should_skip_provider("wizleads", req.force_provider, req.selected_providers)
+            if should_try_wizleads:
+                wizleads_tried = True
+                first_name_wz = (req.first_name or "").strip() or (full_name.split(" ")[0] if full_name else "")
+                last_name_wz = (req.last_name or "").strip() or (" ".join(full_name.split(" ")[1:]) if full_name and " " in full_name else "")
+                # G3 (2026-10-10): single-token names must not reach WizLeads —
+                # the API requires BOTH a first and a last name; an empty
+                # last name burns a call on a guaranteed-bad lookup shape.
+                if first_name_wz and last_name_wz:
+                    try:
+                        wl_result = await wizleads_client.find_email(
+                            blitz_http,
+                            first_name=first_name_wz,
+                            last_name=last_name_wz,
+                            website=domain,
+                        )
+                        if wl_result and wl_result.get("email"):
+                            wz_email = wl_result["email"]
+                            if contacts:
+                                contacts[0]["email"] = wz_email
+                                contacts[0]["email_source"] = "wizleads"
+                            else:
+                                contacts.append({
+                                    "full_name": full_name or "",
+                                    "first_name": first_name_wz,
+                                    "last_name": last_name_wz,
+                                    "title": "",
+                                    "email": wz_email,
+                                    "linkedin_url": req.linkedin_url or "",
+                                    "headline": "",
+                                    "location_city": "",
+                                    "location_country": "",
+                                    "icp_tier": 1,
+                                    "email_source": "wizleads",
+                                })
+                            sources["contacts"] = "wizleads"
+                            sources["emails"] = "wizleads"
+                            logger.info("WizLeads found email in enhanced mode: %s", wz_email)
+                    except Exception as e:
+                        logger.debug("WizLeads lookup failed in enhanced mode: %s", e)
 
     finally:
         # Shared cascade clients are reused across requests — do NOT close here.
@@ -3688,9 +3738,10 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
 
             Delegates to `pipeline.route_enrichment` /
             `pipeline.run_enrichment_route` so the per-person cascade is
-            Contacts DB -> Blitz -> WizLeads -> BetterEnrich, with the
-            same eligibility rules and `force_provider` semantics as the
-            `linkedin_only` and `enhanced` modes in this function.
+            Contacts DB -> ... -> Blitz -> MoltSets -> BetterEnrich ->
+            WizLeads (2026-10-14 order), with the same eligibility rules
+            and `force_provider` semantics as the `linkedin_only` and
+            `enhanced` modes in this function.
 
             When the contact has both name splits and a domain (the
             normal case for a decision maker returned by
@@ -8069,6 +8120,69 @@ async def get_blitz_fair_use(
             for row in history
         ],
     }
+
+
+@router.get("/moltsets/usage")
+async def get_moltsets_usage(
+    live: bool = Query(False, description="Also call MoltSets get_usage (account endpoint) for a fresh snapshot"),
+    period: str = Query("today", pattern="^(today|week|month|billing_cycle)$"),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """
+    MoltSets quota gauge — cooldown state, miss-store stats, usage ledger.
+
+    MoltSets runs on tight fair-use windows ($97/mo plan: 15k records/5h,
+    75k records/week, 7.5k searches/5h). When a window is exhausted the
+    provider arms a cross-worker cooldown and the cascade skips it with
+    zero added latency — this endpoint shows whether that is happening and
+    how much quota has been burned (``metadata.fair_use`` blocks captured
+    passively from 2xx responses).
+
+    ``?live=true`` additionally calls the account ``get_usage`` endpoint
+    for a fresh authoritative snapshot (no enrichment quota consumed).
+    """
+    from . import moltsets_client
+    from . import moltsets_guards
+
+    payload: dict = {
+        "enabled": moltsets_client._is_enabled(),
+        "api_key_configured": bool(moltsets_client.API_KEY),
+        **moltsets_guards.usage_status(),
+    }
+
+    if live:
+        if not moltsets_client.API_KEY:
+            raise HTTPException(status_code=400, detail="MOLTSETS_API_KEY not configured")
+        try:
+            async with httpx.AsyncClient() as client:
+                snapshot = await moltsets_client.get_usage(client, period=period)
+            if isinstance(snapshot, dict):
+                payload["live_usage"] = snapshot
+            else:
+                payload["live_usage"] = {
+                    "error": getattr(snapshot, "message", None) or "no data returned",
+                    "error_type": getattr(snapshot, "error_type", None),
+                }
+        except Exception as exc:
+            payload["live_usage"] = {"error": str(exc)}
+
+    return payload
+
+
+@router.delete("/moltsets/cooldown")
+async def clear_moltsets_cooldown(
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """
+    Operator escape hatch — manually clear an armed MoltSets fair-use
+    cooldown (e.g. after a plan upgrade raised the caps). The cooldown
+    re-arms automatically on the next fair-use error if quotas are still
+    exhausted.
+    """
+    from . import moltsets_guards
+
+    moltsets_guards.clear_cooldown()
+    return {"cleared": True}
 
 
 @router.get("/stats/email-quality")
