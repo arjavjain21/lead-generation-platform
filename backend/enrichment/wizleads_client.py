@@ -201,6 +201,14 @@ async def find_email(
     last_exc: Optional[Exception] = None
 
     for attempt in range(_MAX_RETRIES + 1):
+        # Interactive budget check between attempts too — the deadline gates
+        # tier STARTS in _should_skip_provider; without this check a retry
+        # loop started inside the budget could still sleep past it.
+        from . import request_budget as _request_budget
+
+        if _request_budget.budget_expired():
+            logger.debug("WizLeads: request budget expired, aborting retries")
+            return None
         await _acquire_rate_limit()
         try:
             resp = await client.get(
