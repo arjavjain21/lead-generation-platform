@@ -151,7 +151,7 @@ Each enrichment source has different cost/quality tradeoffs. Cascade order (set 
 | **Blitz** | 50 RPS per endpoint (legacy plan 2026-09; per-lane caps `BLITZ_RPS` default + `BLITZ_RPS_EMAIL/_DISCOVERY/_SEARCH`; FUP 15M records/mo, metered live in `blitz_fair_use`) | 5th | LinkedIn-based enrichment with title cascade. Summer release (2026-09-16): find-people batch prepass (`/v2/search/people`, 50 companies/call, jobs with >5 domains), TAM-by-People flow (`/flows/tam`, 1 record/company), 30-day domain-miss negative cache (`blitz_domain_miss`, definitive misses only), optional DM phone bundle (`include_phone`, 1 record/call, US-only). **Billing truths:** search endpoints bill 1 record per returned result (empty = free); `/v2/enrichment/email` + `/v2/enrichment/phone` bill 1 record per CALL (miss still bills); `/v2/enrichment/person` + domain-to-linkedin bill on success only; errors never bill |
 | **MoltSets** | 30 RPM shared cross-process (`MOLTSETS_RATE_LIMIT_RPM`; plan: 15k records/5h, 75k/week, 7.5k searches/5h) | 6th | Best person email incl. personal fallback (`linkedin_to_best_email` by URL — terminal step of the LinkedIn-only arm — / `search_business_email_by_name` for name+domain); risk-graded A–F (D dropped); fair-use windows arm a cross-worker cooldown (`moltsets_guards.py`) so a spent window = instant skip, zero latency; misses negative-cached 14d. Kill switch `ENABLE_MOLTSETS`. Observability: `GET /api/enrichment/moltsets/usage` |
 | **BetterEnrich** | 10 RPS | 7th (re-enabled 2026-10-14; env kill switch `ENABLE_BETTER_ENRICH`) | Person email, company email |
-| **WizLeads** | 10 RPS | 8th (terminal tier) | Catch-all verified email enrichment |
+| **WizLeads** | shared cross-process 10 RPS (`WIZLEADS_RATE_LIMIT_RPS`); circuit breaker; 429 = skip tier, no in-request sleep | 8th (terminal tier) | Catch-all verified email enrichment |
 
 > **Prospeo** is implemented in `backend/enrichment/prospeo_client.py` but **disabled end-to-end via a 4-layer belt-and-suspenders**: (1) `ENABLED_PROVIDERS["prospeo"]=False` in `providers.py`; (2) `ENABLE_PROSPEO=false` in `backend/.env`; (3) a hard guard at `pipeline.py` (~L294) that reads `ENABLE_PROSPEO` and skips *before* the global check; (4) `prospeo_client` is imported but **never called** anywhere in the cascade. **To re-enable requires all of:** `ENABLE_PROSPEO=true` + flip the dict to `True` + wire an actual cascade step (currently absent). Full provider lifecycle in the `lead-generation-platform-workflow` skill → `references/providers.md`.
 
@@ -242,6 +242,8 @@ MOLTSETS_API_KEY=<moltsets-key>
 ENABLE_MOLTSETS=true                  # MoltSets kill switch (tier 6)
 MOLTSETS_RATE_LIMIT_RPM=30            # shared cross-process limiter
 MOLTSETS_MISS_TTL_DAYS=14             # person-miss negative-cache TTL
+ENRICH_REQUEST_BUDGET_S=20            # interactive /enrich cascade deadline (2026-10-15; 0 disables)
+WIZLEADS_RATE_LIMIT_RPS=10            # shared cross-process limiter (was per-process; 2026-10-15)
 MOLTSETS_REJECT_RISK=D                # risk grades never returned (A/B/C/F pass; C/F mailtester-gated)
 ENABLE_BETTER_ENRICH=true             # BetterEnrich env kill switch (added 2026-10-14)
 CONTACTS_API_TOKEN=<contacts-token>
