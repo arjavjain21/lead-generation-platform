@@ -312,6 +312,16 @@ def _should_skip_provider(
         logger.debug("_should_skip_provider: prospeo skipped (ENABLE_PROSPEO=false)")
         return True
 
+    # Interactive request budget exhausted (2026-10-15 RCA): stop cascading
+    # and let the executor return partial results. Background jobs never arm
+    # a budget (enrichment/request_budget.py), so their deep cascades are
+    # unaffected.
+    from . import request_budget as _request_budget
+
+    if _request_budget.budget_expired():
+        logger.debug("_should_skip_provider: %s skipped (request budget expired)", provider)
+        return True
+
     # Global enablement check — beats force_provider and selected_providers.
     # If a provider is globally disabled, no per-request override re-enables it.
     if not providers.is_provider_enabled(provider):

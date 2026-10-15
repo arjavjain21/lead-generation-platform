@@ -242,6 +242,16 @@ def _should_skip_provider(
         logger.debug("_should_skip_provider: %s disabled in ENABLED_PROVIDERS", provider)
         return True
 
+    # Interactive request budget exhausted (2026-10-15 RCA): stop cascading
+    # and let the executor return partial results. Background jobs never arm
+    # a budget (enrichment/request_budget.py), so their deep cascades are
+    # unaffected.
+    from . import request_budget as _request_budget
+
+    if _request_budget.budget_expired():
+        logger.debug("_should_skip_provider: %s skipped (request budget expired)", provider)
+        return True
+
     # force_provider takes precedence over selected_providers - if set, only
     # use that provider.
     if force_provider:
@@ -2199,6 +2209,14 @@ async def unified_enrich(
     # Validate inputs - must have domain OR linkedin_url
     req.validate_inputs()
 
+    # Arm the interactive cascade budget (2026-10-15 RCA: cold domains measured
+    # 56s-132s with clients aborting). Re-armed at every executor entry so
+    # sequential batch rows never inherit a stale deadline. Background jobs
+    # never route through here. ENRICH_REQUEST_BUDGET_S=0 disables.
+    from . import request_budget as _request_budget
+
+    _request_budget.start_request_budget()
+
     # Validate selected_providers (allowlist). Mutually exclusive with
     # force_provider, must reference real provider names, cannot be empty.
     if req.selected_providers is not None:
@@ -3353,6 +3371,14 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
 
     # Validate inputs - must have domain OR linkedin_url
     req.validate_inputs()
+
+    # Arm the interactive cascade budget (2026-10-15 RCA: cold domains measured
+    # 56s-132s with clients aborting). Re-armed at every executor entry so
+    # sequential batch rows never inherit a stale deadline. Background jobs
+    # never route through here. ENRICH_REQUEST_BUDGET_S=0 disables.
+    from . import request_budget as _request_budget
+
+    _request_budget.start_request_budget()
 
     # Validate selected_providers (allowlist). Mutually exclusive with
     # force_provider, must reference real provider names, cannot be empty.

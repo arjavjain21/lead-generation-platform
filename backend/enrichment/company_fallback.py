@@ -84,7 +84,11 @@ def better_enrich_allowed(selected_providers: Optional[list[str]]) -> bool:
     try:
         from . import providers as _providers
 
-        if not _providers.ENABLED_PROVIDERS.get("better_enrich", False):
+        # 2026-10-15 RCA: the dict-only check here missed the ENABLE_BETTER_ENRICH
+        # env kill switch (added 2026-10-14 with the moltsets integration) and kept
+        # firing the dead key — 9.6K 403s/day with ENABLE_BETTER_ENRICH=false.
+        # is_provider_enabled consults BOTH the dict and the env switch.
+        if not _providers.is_provider_enabled("better_enrich"):
             return False
     except Exception:  # pragma: no cover - defensive: never block on import
         pass

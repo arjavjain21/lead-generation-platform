@@ -21,40 +21,65 @@ import asyncio
 import logging
 import os
 import random
-import time
 from typing import Any, Optional
 
 import httpx
 
 from . import pipeline  # Import for _ProviderError and _classify_http_error
+from shared.circuit_breaker import get_circuit_breaker
+from shared.env_utils import env_float
 
 logger = logging.getLogger(__name__)
 
 # Configuration
 BASE_URL = os.getenv("WIZLEADS_BASE_URL", "https://api.wizleads.io")
 API_KEY = os.getenv("WIZLEADS_API_KEY", "")
-RATE_LIMIT_RPS = 10  # WizLeads rate limit: 10 calls per second
+# Plan limit is 10 calls/second SHARED by every process (gunicorn workers +
+# runner + list-builder fan-out). 2026-10-15 RCA: the old in-process limiter
+# let each process offer 10 RPS alone (~60-80 RPS aggregate) -> 40% 429s.
+RATE_LIMIT_RPS = env_float("WIZLEADS_RATE_LIMIT_RPS", "10")
+_BURST_CAPACITY = env_float("WIZLEADS_RATE_LIMIT_BURST", str(RATE_LIMIT_RPS))
 
-# Retry config: up to 3 retries (4 attempts total), exponential backoff with jitter
+# Retry config: up to 3 retries (4 attempts total), exponential backoff with jitter.
+# 2026-10-15: _MAX_BACKOFF 30 -> 8 — a terminal-tier lookup must never sit in
+# backoff sleeps for up to ~90s inside a single interactive request.
 _MAX_RETRIES = 3
 _BASE_BACKOFF = 2.0
-_MAX_BACKOFF = 30.0
+_MAX_BACKOFF = 8.0
 _REQUEST_TIMEOUT = 20.0
 
-# Rate limiting
-_rate_limiter_lock = asyncio.Lock()
-_last_request_time = 0.0
+# ---------------------------------------------------------------------------
+# Circuit breaker — fail fast when the upstream is consistently erroring.
+# ---------------------------------------------------------------------------
+
+_wizleads_circuit = get_circuit_breaker(
+    "wizleads_api",
+    failure_threshold=10,
+    recovery_timeout=60.0,
+    half_open_max_calls=3,
+)
+
+# ---------------------------------------------------------------------------
+# Rate limiter (shared cross-process token bucket — see shared/rate_limiter.py).
+# ---------------------------------------------------------------------------
+
+from shared import rate_limiter  # noqa: E402  (import kept local to the section)
 
 
 async def _acquire_rate_limit() -> None:
-    """Ensure we don't exceed the 10 RPS rate limit."""
-    global _last_request_time
-    async with _rate_limiter_lock:
-        now = time.monotonic()
-        interval = 1.0 / RATE_LIMIT_RPS
-        if now - _last_request_time < interval:
-            await asyncio.sleep(interval - (now - _last_request_time))
-        _last_request_time = time.monotonic()
+    """Take a token from the SHARED cross-process bucket (10 RPS plan limit).
+
+    Loops until a token is actually GRANTED (same over-admission guard as
+    smartprospect_client): concurrent denials that merely sleep would all
+    proceed together and burst past the account limit.
+    """
+    while True:
+        wait = await asyncio.to_thread(
+            rate_limiter.acquire_token, "wizleads", RATE_LIMIT_RPS, _BURST_CAPACITY
+        )
+        if wait <= 0:
+            return
+        await asyncio.sleep(wait)
 
 
 def _headers() -> dict[str, str]:
@@ -72,14 +97,18 @@ def _should_retry(status_code: int) -> bool:
     Determine if a request should be retried based on status code.
 
     Retry logic:
-    - 429 (Too Many Requests): Retry with backoff
     - 500+ (Server errors): Retry with backoff
+    - 429 (Too Many Requests): DO NOT retry — the shared cross-process
+      limiter already paces us to the plan limit, so a 429 means
+      account-level pressure that will not clear within one request.
+      Sleeping up to 30s inside a user-facing cascade step was the #2
+      latency source in the 2026-10-15 RCA. Skip the tier instead.
     - 402 (Insufficient Credits): DO NOT retry - no credits available
     - 422 (Validation Error): DO NOT retry - bad data
     - 404 (Not found): DO NOT retry - resource doesn't exist
     - 4xx (Client errors): DO NOT retry - bad request
     """
-    return status_code == 429 or (status_code >= 500 and status_code < 600)
+    return status_code >= 500 and status_code < 600
 
 
 def _backoff_delay(attempt: int, retry_after: Optional[float] = None) -> float:
@@ -153,7 +182,10 @@ async def find_email(
         logger.debug("WizLeads requires first_name and website")
         return None
 
-    await _acquire_rate_limit()
+    # Circuit breaker — fail fast if upstream is broken.
+    if not await _wizleads_circuit.can_proceed():
+        logger.warning("WizLeads API circuit breaker OPEN, failing fast")
+        return None
 
     # Normalize website
     normalized_website = _normalize_website(website)
@@ -169,6 +201,7 @@ async def find_email(
     last_exc: Optional[Exception] = None
 
     for attempt in range(_MAX_RETRIES + 1):
+        await _acquire_rate_limit()
         try:
             resp = await client.get(
                 f"{BASE_URL}/email/find-email",
@@ -192,8 +225,19 @@ async def find_email(
                 logger.debug("WizLeads validation error (422) - bad data format: %s", resp.text[:200])
                 return None
 
-            # Check if we should retry this error
+            # 429 — rate limit, NOT a provider failure. Do not trip the breaker
+            # and do NOT sleep-retry inside this request (2026-10-15 RCA): skip
+            # the tier; the shared limiter keeps these rare in the first place.
+            if resp.status_code == 429:
+                logger.info(
+                    "WizLeads 429 for %s — skipping tier (shared limiter paces the account)",
+                    normalized_website,
+                )
+                return None
+
+            # Retryable status (5xx only).
             if _should_retry(resp.status_code):
+                await _wizleads_circuit.record_failure()
                 retry_after_raw = resp.headers.get("Retry-After")
                 retry_after = float(retry_after_raw) if retry_after_raw else None
                 delay = _backoff_delay(attempt, retry_after)
@@ -212,6 +256,7 @@ async def find_email(
 
             # Success
             resp.raise_for_status()
+            await _wizleads_circuit.record_success()
             data = resp.json()
 
             # Check if email was found
@@ -230,8 +275,9 @@ async def find_email(
             return result
 
         except httpx.HTTPStatusError as e:
+            status = e.response.status_code if e.response is not None else 0
             # Handle known status codes
-            if e.response.status_code == 402:
+            if status == 402:
                 logger.warning("WizLeads: Insufficient credits")
                 return pipeline._ProviderError(
                     provider="wizleads",
@@ -239,34 +285,42 @@ async def find_email(
                     error_type="insufficient_credits",
                     message="Wizleads: Insufficient credits. Please top up to continue.",
                 )
-            if e.response.status_code == 422:
+            if status == 422:
                 logger.debug("WizLeads validation error (422): %s", e.response.text[:200])
+                return None
+            if status == 429:
+                # Rate limit — not a provider failure; skip the tier, no sleep.
+                logger.info("WizLeads 429 (%s) — skipping tier", normalized_website)
                 return None
 
             # For other errors, retry if appropriate
             last_exc = e
-            if attempt < _MAX_RETRIES and _should_retry(e.response.status_code):
+            await _wizleads_circuit.record_failure()
+            if attempt < _MAX_RETRIES and _should_retry(status):
                 delay = _backoff_delay(attempt)
                 logger.warning(
-                    "WizLeads HTTP error (attempt %d/%d): %s - retrying in %.1fs",
+                    "WizLeads HTTP error (attempt %d/%d): %r - retrying in %.1fs",
                     attempt + 1, _MAX_RETRIES, e, delay,
                 )
                 await asyncio.sleep(delay)
             else:
-                logger.error("WizLeads HTTP error, exhausted retries: %s", e)
+                logger.error("WizLeads HTTP error, exhausted retries: %r", e)
                 return None
 
         except Exception as exc:
             last_exc = exc
+            await _wizleads_circuit.record_failure()
             if attempt < _MAX_RETRIES:
                 delay = _backoff_delay(attempt)
                 logger.warning(
-                    "WizLeads error (attempt %d/%d): %s - retrying in %.1fs",
+                    "WizLeads error (attempt %d/%d): %r - retrying in %.1fs",
                     attempt + 1, _MAX_RETRIES, exc, delay,
                 )
                 await asyncio.sleep(delay)
             else:
-                logger.error("WizLeads error, exhausted retries: %s", exc)
+                # %r: httpx timeouts render with an EMPTY str() — the log used
+                # to read "WizLeads error: - retrying" with no cause at all.
+                logger.error("WizLeads error, exhausted retries: %r", exc)
                 return None
 
     logger.error("WizLeads lookup failed for %s / %s after all retries", first_name, normalized_website)
