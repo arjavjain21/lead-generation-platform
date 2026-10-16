@@ -437,15 +437,23 @@ class ChainJobRequest(BaseModel):
 
 
 async def _call_tracker_purge_loop() -> None:
-    """Daily purge of provider_call_log rows older than 30 days.
+    """Daily purge of raw provider-call rows older than RETENTION_DAYS.
 
-    Best-effort: any failure is logged and the loop continues. Runs every
-    24h, so steady-state disk usage stays bounded regardless of uptime.
+    The lifetime rollups (provider_call_log_daily /
+    provider_email_quality_daily) are never purged — raw rows roll off the
+    window once their per-day counts are captured. Best-effort: failures are
+    logged and the loop continues.
     """
+    # One-time catch-up per process: make sure the lifetime rollup holds every
+    # day still present in the raw log BEFORE the first purge discards it.
+    try:
+        call_tracker.backfill_call_log_daily()
+    except Exception as e:
+        logger.warning("call_log_daily backfill failed: %s", e)
     while True:
         await asyncio.sleep(86400)  # 24h
         try:
-            call_tracker.purge_old(days=30)
+            call_tracker.purge_old()
         except Exception as e:
             logger.warning("call_tracker purge failed: %s", e)
 

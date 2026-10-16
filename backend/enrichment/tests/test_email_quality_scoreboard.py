@@ -160,7 +160,12 @@ def test_email_quality_endpoint_aggregates(tmp_path, monkeypatch) -> None:
     shared_db.init_db()
     conn = shared_db.get_db()
     try:
-        today = "2026-09-13"
+        # Dynamic date: the endpoint aggregates over a `days` lookback window
+        # (default 30). A hardcoded date ages out of the window and time-bombs
+        # the test (this exact failure appeared ~2026-10-13).
+        from datetime import datetime, timedelta
+
+        today = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
         rows = [
             (today, "getleads", "/from-person", "VALID", 10, 10),
             (today, "getleads", "/from-person", "CATCH_ALL", 5, 5),

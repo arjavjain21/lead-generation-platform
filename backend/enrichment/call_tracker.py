@@ -36,6 +36,8 @@ from typing import Any, Optional
 
 import httpx
 
+from shared.env_utils import env_float
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -43,7 +45,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DB_PATH: Path = Path(__file__).resolve().parent.parent / "data" / "jobs.db"
-RETENTION_DAYS: int = 30
+# Rolling retention for the RAW call/ledger rows. The lifetime usage rollups
+# (provider_call_log_daily, provider_email_quality_daily) are kept FOREVER —
+# purging never touches them.
+RETENTION_DAYS: int = max(1, int(env_float("PROVIDER_LOG_RETENTION_DAYS", "30")))
 
 # Cap response body size for email extraction. Bodies larger than this are
 # skipped (the provider's primary payload should be small; huge bodies are
@@ -163,6 +168,21 @@ CREATE TABLE IF NOT EXISTS provider_email_quality_daily (
     updated_at   TEXT    NOT NULL,
     PRIMARY KEY (day, provider, endpoint, email_status)
 );
+
+-- Lifetime provider-usage rollup (2026-10-16): one row per (day, provider,
+-- endpoint, status) with the call count. Raw provider_call_log rows are purged
+-- on the RETENTION_DAYS rolling window, but this summary is kept FOREVER so
+-- lifetime per-provider usage stays queryable ("how many API calls have we
+-- ever made to provider X" = SUM(calls) WHERE provider = X).
+CREATE TABLE IF NOT EXISTS provider_call_log_daily (
+    day        TEXT    NOT NULL,
+    provider   TEXT    NOT NULL,
+    endpoint   TEXT    NOT NULL,
+    status     INTEGER NOT NULL DEFAULT 0,
+    calls      INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT    NOT NULL,
+    PRIMARY KEY (day, provider, endpoint, status)
+);
 """
 
 # ---------------------------------------------------------------------------
@@ -251,13 +271,29 @@ def _upsert_blitz_fair_usage(endpoint: str, fair_usage: dict) -> None:
 def _insert_call_log(
     provider: str, endpoint: str, method: str, status: Optional[int]
 ) -> None:
-    """Best-effort INSERT into provider_call_log. Never raises into the caller."""
+    """Best-effort INSERT into provider_call_log. Never raises into the caller.
+
+    Also increments the lifetime provider_call_log_daily rollup in the same
+    transaction, so per-provider usage history survives the raw-row purge.
+    """
     try:
+        now = _now_iso()
         with _connect() as conn:
             conn.execute(
                 "INSERT INTO provider_call_log (ts, provider, endpoint, method, status) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (_now_iso(), provider, endpoint, method, status),
+                (now, provider, endpoint, method, status),
+            )
+            conn.execute(
+                """
+                INSERT INTO provider_call_log_daily
+                    (day, provider, endpoint, status, calls, updated_at)
+                VALUES (?, ?, ?, ?, 1, ?)
+                ON CONFLICT(day, provider, endpoint, status) DO UPDATE SET
+                    calls = calls + 1,
+                    updated_at = excluded.updated_at
+                """,
+                (now[:10], provider, endpoint, status if status is not None else 0, now),
             )
     except Exception:
         logger.warning("call_tracker insert failed", exc_info=True)
@@ -620,9 +656,59 @@ def init_schema() -> None:
         logger.error("call_tracker schema init failed", exc_info=True)
 
 
+def backfill_call_log_daily() -> dict[str, int]:
+    """Idempotent catch-up backfill of provider_call_log_daily from raw rows.
+
+    Aggregates one day at a time (small transactions, safe on the live DB).
+    Days whose raw rows were already purged cannot be recovered — this
+    guarantees every day still present in the raw log is counted before the
+    next purge discards it. Re-running recounts the same days (same numbers).
+    """
+    out: dict[str, int] = {"days": 0, "rows": 0}
+    try:
+        with _connect() as conn:
+            days = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT DISTINCT substr(ts,1,10) AS d FROM provider_call_log ORDER BY d"
+                )
+            ]
+        for day in days:
+            with _connect() as conn:
+                cur = conn.execute(
+                    """
+                    INSERT INTO provider_call_log_daily
+                        (day, provider, endpoint, status, calls, updated_at)
+                    SELECT substr(ts,1,10), provider, endpoint, COALESCE(status,0), COUNT(*), ?
+                    FROM provider_call_log
+                    WHERE ts >= ? AND ts < date(?, '+1 day')
+                    GROUP BY 2, 3, 4
+                    ON CONFLICT(day, provider, endpoint, status) DO UPDATE SET
+                        calls = excluded.calls,
+                        updated_at = excluded.updated_at
+                    """,
+                    (_now_iso(), day, day),
+                )
+                out["days"] += 1
+                out["rows"] += cur.rowcount or 0
+        if out["days"]:
+            logger.info("call_log_daily backfill: %d days, %d rows", out["days"], out["rows"])
+    except Exception:
+        logger.warning("call_log_daily backfill failed", exc_info=True)
+    return out
+
+
 def purge_old(days: int = RETENTION_DAYS) -> dict[str, int]:
-    """Delete rows older than `days` from ALL tracker tables. Returns counts. Best-effort."""
-    out: dict[str, int] = {"call_log": 0, "email_ledger": 0, "quality_daily": 0}
+    """Delete RAW rows older than `days`. Returns deleted counts. Best-effort.
+
+    2026-10-16: the rollup tables (provider_call_log_daily,
+    provider_email_quality_daily) are NEVER purged — they are the lifetime
+    usage history. Only the bulky raw rows (provider_call_log,
+    provider_email_ledger) roll off the RETENTION_DAYS window. Before this
+    fix, purge_old also deleted provider_email_quality_daily >30d, silently
+    destroying lifetime email-quality history.
+    """
+    out: dict[str, int] = {"call_log": 0, "email_ledger": 0}
     try:
         with _connect() as conn:
             cur = conn.execute(
@@ -635,11 +721,6 @@ def purge_old(days: int = RETENTION_DAYS) -> dict[str, int]:
                 (f"-{days} days",),
             )
             out["email_ledger"] = cur.rowcount or 0
-            cur = conn.execute(
-                "DELETE FROM provider_email_quality_daily WHERE day < date('now', ?)",
-                (f"-{days} days",),
-            )
-            out["quality_daily"] = cur.rowcount or 0
         if any(out.values()):
             logger.info(
                 "call_tracker purged %d call_log + %d email_ledger rows older than %d days",
