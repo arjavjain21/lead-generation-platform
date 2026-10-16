@@ -5504,6 +5504,7 @@ async def _run_job(
     company_name_col: Optional[str] = None,
     existing_email_col: Optional[str] = None,
     exact_titles: bool = False,  # 2026-09: bracket-exact provider title matching
+    recent_hires_only: bool = False,  # 2026-10-15: Blitz is_recent_hire (<90d job-changers)
     include_phone: bool = False,  # 2026-09: attach provider-returned phones
     phone_for_all: bool = False,  # 2026-09: phones for every contact (extra cost)
 ):
@@ -6855,6 +6856,10 @@ class ProviderToggleRequest(BaseModel):
     # Exact-title mode (2026-09): bracket-wrapped ([CEO]) provider title
     # matching instead of fuzzy substrings. Default False = fuzzy (unchanged).
     exact_titles: bool = False
+    # Recent hires only (2026-10-15): Blitz is_recent_hire — only people who
+    # changed jobs in the last 90 days (waterfall cascades + find-people
+    # prepass). Default False = full coverage (unchanged). NARROWS results.
+    recent_hires_only: bool = False
     # Optional human-readable name shown on the Jobs page (jobs.display_name).
     job_name: Optional[str] = None
     # Phone bundle (2026-09): attach provider-returned phones to output rows.
@@ -7008,6 +7013,7 @@ async def domain_enrich_with_providers(
         source=req.source,
         website_only=req.website_only,
         exact_titles=req.exact_titles,
+        recent_hires_only=req.recent_hires_only,
         include_phone=req.include_phone,
         phone_for_all=req.phone_for_all,
     )
@@ -7039,6 +7045,7 @@ async def _run_domain_enrich_job(
     website_only: bool = False,
     prepend_rows: Optional[list[dict]] = None,
     exact_titles: bool = False,  # 2026-09: bracket-exact provider title matching
+    recent_hires_only: bool = False,  # 2026-10-15: Blitz is_recent_hire (<90d job-changers)
     include_phone: bool = False,  # 2026-09: attach provider-returned phones
     phone_for_all: bool = False,  # 2026-09: phones for every contact (extra cost)
 ):
@@ -7132,6 +7139,7 @@ async def _run_domain_enrich_job(
             **_forward_compat_kwargs(
                 list_builder.run_domain_enrichment,
                 exact_titles=exact_titles,
+                recent_hires_only=recent_hires_only,
                 include_phone=include_phone,
                 phone_for_all=phone_for_all,
             ),

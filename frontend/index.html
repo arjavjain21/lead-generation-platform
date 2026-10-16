@@ -1747,6 +1747,11 @@
                         <span>Strict title match</span>
                         <span style="font-size:0.75rem;color:#64748b;">only keep contacts matching your titles above</span>
                     </label>
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:0.85rem;margin-top:6px;" title="Blitz is_recent_hire: only decision makers who changed jobs in the last 90 days. Fresh-in-role people — highest response, but NARROWS coverage (fewer results).">
+                        <input type="checkbox" id="domain_recent_hires" style="width:16px;height:16px;">
+                        <span>Recent hires only</span>
+                        <span style="font-size:0.75rem;color:#64748b;">changed jobs in last 90 days (Blitz)</span>
+                    </label>
                 </div>
 
                 <!-- Provider Selection -->
@@ -1947,6 +1952,20 @@
                         <select id="searchCountry"><option value="">Any</option></select>
                         <span class="field-helper">Filter by country (optional)</span>
                     </div>
+                    <div class="filter-group">
+                        <label>Email infra (MX provider)</label>
+                        <div id="tamMxProviders" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:6px 0;">
+                            <label style="display:inline-flex;align-items:center;gap:4px;font-size:0.78rem;cursor:pointer;"><input type="checkbox" name="tamMxProvider" value="google"> Google</label>
+                            <label style="display:inline-flex;align-items:center;gap:4px;font-size:0.78rem;cursor:pointer;"><input type="checkbox" name="tamMxProvider" value="microsoft"> Microsoft</label>
+                            <label style="display:inline-flex;align-items:center;gap:4px;font-size:0.78rem;cursor:pointer;"><input type="checkbox" name="tamMxProvider" value="zoho"> Zoho</label>
+                            <label style="display:inline-flex;align-items:center;gap:4px;font-size:0.78rem;cursor:pointer;"><input type="checkbox" name="tamMxProvider" value="proofpoint"> Proofpoint</label>
+                            <label style="display:inline-flex;align-items:center;gap:4px;font-size:0.78rem;cursor:pointer;"><input type="checkbox" name="tamMxProvider" value="mimecast"> Mimecast</label>
+                            <label style="display:inline-flex;align-items:center;gap:4px;font-size:0.78rem;cursor:pointer;"><input type="checkbox" name="tamMxProvider" value="barracuda"> Barracuda</label>
+                            <label style="display:inline-flex;align-items:center;gap:4px;font-size:0.78rem;cursor:pointer;"><input type="checkbox" name="tamMxProvider" value="yahoo"> Yahoo</label>
+                            <label style="display:inline-flex;align-items:center;gap:4px;font-size:0.78rem;cursor:pointer;"><input type="checkbox" name="tamMxProvider" value="godaddy"> GoDaddy</label>
+                        </div>
+                        <span class="field-helper">Only companies whose email runs on the selected MX providers (Blitz-side filter — prunes junk infra before billing). Optional.</span>
+                    </div>
                 </div>
 
                 <h4 style="margin:1.25rem 0 0.25rem;font-size:0.9rem;color:#1a315d;">2. Describe who works there</h4>
@@ -1979,6 +1998,13 @@
                         <label>Min. Matches per Company</label>
                         <input type="number" id="tamMinPerCompany" min="0" max="25" value="0">
                         <span class="field-helper">Only keep companies with at least this many matching people (0 = keep all)</span>
+                    </div>
+                    <div class="filter-group">
+                        <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;">
+                            <input type="checkbox" id="tamRecentHire" style="width:16px;height:16px;">
+                            <span>Recent hires only</span>
+                        </label>
+                        <span class="field-helper">Only people who changed jobs in the last 90 days (Blitz) — fresh-in-role personas, narrows coverage. Optional.</span>
                     </div>
                 </div>
 
@@ -3685,6 +3711,7 @@ example.org,Jane Doe</pre>
             // Strict title gate: drop provider-fuzzy contacts that don't match
             // the titles field. Inert when no titles are entered.
             const strictTitles = document.getElementById('domain_strict_titles').checked;
+            const recentHiresOnly = document.getElementById('domain_recent_hires').checked;
 
             try {
                 const res = await fetch('/api/enrichment/flows/domain-enrich', {
@@ -3706,6 +3733,7 @@ example.org,Jane Doe</pre>
                         dedupe_by_domain: dedupeByDomain,
                         titles: customTitles,
                         strict_titles: strictTitles,
+                        recent_hires_only: recentHiresOnly,
                         job_name: (document.getElementById('jobNameInput')?.value || '').trim() || null,
                         source: outscraperSource,
                         website_only: websiteOnly
@@ -5025,6 +5053,8 @@ example.org,Jane Doe</pre>
             if (searchEmployeeRange) company.employee_range = [searchEmployeeRange];
             if (companyTypes.length) company.type_include = companyTypes;
             if (searchCountry) company.hq_country_code = [searchCountry];
+            const mxProviders = Array.from(document.querySelectorAll('input[name="tamMxProvider"]:checked')).map(cb => cb.value);
+            if (mxProviders.length) company.mx_providers_include = mxProviders;
 
             // 2. People filters — the persona that defines the TAM
             const people = {};
@@ -5036,6 +5066,8 @@ example.org,Jane Doe</pre>
             if (levels.length) people.job_levels = levels;
             const minPer = parseInt(document.getElementById('tamMinPerCompany').value, 10) || 0;
             if (minPer > 0) people.min_per_company = minPer;
+            const recentHireEl = document.getElementById('tamRecentHire');
+            if (recentHireEl && recentHireEl.checked) people.is_recent_hire = true;
 
             if (!Object.keys(company).length && !Object.keys(people).length) {
                 errorContainer.textContent = 'Choose at least one filter — a company detail (industry, size, country…) or a job title to find. An unbounded search would bill the full data budget.';

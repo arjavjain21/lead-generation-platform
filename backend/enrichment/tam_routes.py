@@ -114,6 +114,14 @@ class TamCompanyFilters(BaseModel):
     hq_country_code: Optional[list[str]] = None
     hq_continent: Optional[list[str]] = None
     hq_sales_region: Optional[list[str]] = None
+    # Email-infrastructure (MX provider) include/exclude — Blitz
+    # summer-followup release (live-verified 2026-10-15):
+    # ``company.mx = {"provider": {"include": [...], "exclude": [...]}}``.
+    # Known values (422-probed): google, microsoft, zoho, proofpoint,
+    # mimecast, barracuda, yahoo, godaddy. Deliberately NOT enum-validated —
+    # Blitz's list evolves and its own 422 names the allowed values.
+    mx_providers_include: Optional[list[str]] = None
+    mx_providers_exclude: Optional[list[str]] = None
 
     def to_payload(self) -> dict[str, Any]:
         """Build the Blitz CompanyFilter dict from the whitelisted fields."""
@@ -141,6 +149,9 @@ class TamCompanyFilters(BaseModel):
                 payload[key] = rng
         if self.min_linkedin_followers is not None:
             payload["min_linkedin_followers"] = self.min_linkedin_followers
+        mx = _keyword_payload(self.mx_providers_include, self.mx_providers_exclude)
+        if mx:
+            payload["mx"] = {"provider": mx}
         hq: dict[str, Any] = {}
         if self.hq_country_code:
             hq["country_code"] = list(self.hq_country_code)
@@ -172,6 +183,10 @@ class TamPeopleFilters(BaseModel):
     min_per_company: Optional[int] = Field(None, ge=0, le=25)
     # Person-location country codes (nested under location).
     location_country_code: Optional[list[str]] = None
+    # Only people who changed jobs in the last 90 days — Blitz
+    # summer-followup release (live-verified 2026-10-15, STRICT boolean:
+    # 1/0 integers are rejected). None = filter not sent.
+    is_recent_hire: Optional[bool] = None
 
     @field_validator("job_levels")
     @classmethod
@@ -198,6 +213,8 @@ class TamPeopleFilters(BaseModel):
             payload["min_per_company"] = self.min_per_company
         if self.location_country_code:
             payload["location"] = {"country_code": list(self.location_country_code)}
+        if self.is_recent_hire is not None:
+            payload["is_recent_hire"] = self.is_recent_hire
         return payload
 
 
