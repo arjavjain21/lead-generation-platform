@@ -564,6 +564,10 @@ ENRICHED_COLUMNS = [
     # seg: appended at END — resume carry-over rows from pre-feature partials get blanks via restval=''
     "seg_classification",
     "seg_provider",
+    # mx: Blitz summer-followup release (2026-10-15) returns raw MX records
+    # with every email — classified into our SEG provider vocabulary when
+    # Blitz won the email race. Same resume-compat restval='' reasoning as seg.
+    "dm_mx_provider",
 ]
 
 
@@ -1174,6 +1178,8 @@ async def _run_route_step(
                 return {"email": "", "source": SOURCE_NOT_FOUND}
             if result.get("found") and result.get("email"):
                 verification["dm_email_verified"] = "yes"
+                if result.get("mx_provider"):
+                    verification["dm_mx_provider"] = result["mx_provider"]
                 return {"email": result["email"], "source": SOURCE_BLITZ_EMAIL, "verification": verification}
             return {"email": "", "source": SOURCE_NOT_FOUND}
 
@@ -1195,6 +1201,8 @@ async def _run_route_step(
                 return {"email": "", "source": SOURCE_NOT_FOUND}
             if result.get("found") and result.get("email"):
                 verification["dm_email_verified"] = "yes"
+                if result.get("mx_provider"):
+                    verification["dm_mx_provider"] = result["mx_provider"]
                 return {"email": result["email"], "source": SOURCE_BLITZ_EMAIL, "verification": verification}
             return {"email": "", "source": SOURCE_NOT_FOUND}
 
@@ -2152,10 +2160,12 @@ def _build_person_row(
         row["dm_email_verified"] = verification_info.get("dm_email_verified", "unknown")
         row["mailtester_code"] = verification_info.get("mailtester_code", "")
         row["mailtester_message"] = verification_info.get("mailtester_message", "")
+        row["dm_mx_provider"] = verification_info.get("dm_mx_provider", "")
     else:
         row["dm_email_verified"] = "unknown"
         row["mailtester_code"] = ""
         row["mailtester_message"] = ""
+        row["dm_mx_provider"] = ""
 
     # Phase 2 (full capture): when GetLeads won the email race, overlay its
     # DM attributes onto the Blitz/contacts_db-derived row. ZERO change when
@@ -2876,6 +2886,10 @@ async def _resolve_email_for_person(
             _record("blitz")
             try:
                 result = await blitz_client.find_work_email(blitz_client_inst, linkedin_url)
+                # Summer-followup (2026-10-15): carry the SEG-vocabulary MX
+                # provider label onto the row when Blitz won with it.
+                if result.get("mx_provider"):
+                    verification_info["dm_mx_provider"] = result["mx_provider"]
                 if result.get("found") and result.get("email"):
                     candidate = result["email"]
                     # Phase 2a: capture the Blitz find_work_email response.

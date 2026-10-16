@@ -140,6 +140,7 @@ async def find_people_batch(
     job_title_include: Optional[list[str]] = None,
     job_title_exclude: Optional[list[str]] = None,
     job_levels: Optional[list[str]] = None,
+    is_recent_hire: Optional[bool] = None,
     target_per_company: int = 5,
     max_pages: int = 6,
     stats: Optional[dict[str, Any]] = None,
@@ -216,6 +217,10 @@ async def find_people_batch(
         people_filter["job_title"] = title_filter
     if job_levels:
         people_filter["job_level"] = job_levels
+    if is_recent_hire is not None:
+        # Blitz summer-followup (live-verified 2026-10-15): STRICT boolean —
+        # 1/0 integers are rejected with 422.
+        people_filter["is_recent_hire"] = is_recent_hire
 
     # Late import: keeps blitz_client -> blitz_search one-way AND makes
     # `blitz_client._post_with_retry` monkeypatching govern this function.
@@ -331,9 +336,20 @@ async def company_enrich(
     # Late import: see module docstring (one-way import + patchability).
     from enrichment import blitz_client
 
-    return await blitz_client._post_with_retry(
+    result = await blitz_client._post_with_retry(
         client,
         f"{blitz_client.BLITZ_BASE_URL}/v2/enrichment/company",
         {"company_linkedin_url": company_linkedin_url},
         timeout=30.0,
     )
+    # Summer-followup release (2026-10-15): company.mx carries raw MX records
+    # (live-verified: stripe → aspmx.l.google.com). Stamp a provider label via
+    # the SEG classifier vocabulary; mx-less responses pass through unchanged.
+    if isinstance(result, dict) and isinstance(result.get("company"), dict):
+        provider = blitz_client._mx_provider_from_records(result["company"].get("mx"))
+        if provider:
+            result = {
+                **result,
+                "company": {**result["company"], "mx_provider": provider},
+            }
+    return result

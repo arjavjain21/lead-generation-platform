@@ -262,6 +262,11 @@ async def waterfall_icp_search(
     Cost: 1 credit per result returned.
     Each result has: { icp, ranking, person: { first_name, last_name, full_name,
       headline, linkedin_url, location, experiences, ... } }
+
+    Cascade entries accept the summer-followup people filters (live-verified
+    2026-10-15): ``is_recent_hire`` (strict boolean), ``include_past_jobs``,
+    ``include_active_jobs`` (the two cannot both be false). They ride INSIDE
+    each cascade entry — top-level keys are rejected.
     """
     return await _post_with_retry(
         client,
@@ -273,6 +278,62 @@ async def waterfall_icp_search(
         },
         timeout=60.0,
     )
+
+
+def _mx_provider_from_records(mx_records: Any) -> str:
+    """Classify raw Blitz MX records ``[{priority, host}]`` into a provider
+    label via the SEG classifier (live-verified 2026-10-15: the
+    summer-followup release returns raw MX hosts, top-level + per
+    ``all_emails[]`` entry, on /v2/enrichment/email and /v2/enrichment/company).
+
+    Pure + best-effort: junk input → "". Reuses seg._classify_mx_hosts so
+    Blitz-sourced labels match our own DoH SEG vocabulary exactly.
+    """
+    if not isinstance(mx_records, list):
+        return ""
+    hosts = [
+        str(rec.get("host"))
+        for rec in mx_records
+        if isinstance(rec, dict) and rec.get("host")
+    ]
+    if not hosts:
+        return ""
+    try:
+        from . import seg
+
+        _classification, provider = seg._classify_mx_hosts(hosts)
+        return str(provider)
+    except Exception:
+        return ""
+
+
+def _stamp_mx_fields(result: Any) -> Any:
+    """Return result with ``mx_provider`` (+ ``domain_catch_all`` when Blitz
+    ever sends it — not observed live 2026-10-15, parsed defensively)
+    derived from the response's raw ``mx`` records. New dict, never mutates;
+    non-dict / mx-less results pass through unchanged."""
+    if not isinstance(result, dict):
+        return result
+    stamped: dict[str, Any] = result
+    provider = _mx_provider_from_records(stamped.get("mx"))
+    catch_all: Any = None
+    for candidate in (stamped, *(
+        e for e in (stamped.get("all_emails") or []) if isinstance(e, dict)
+    )):
+        for key in ("is_catch_all", "catch_all"):
+            value = candidate.get(key) if isinstance(candidate, dict) else None
+            if value is not None:
+                catch_all = bool(value)
+                break
+        if catch_all is not None:
+            break
+    if provider or catch_all is not None:
+        stamped = {
+            **stamped,
+            **({"mx_provider": provider} if provider else {}),
+            **({"domain_catch_all": catch_all} if catch_all is not None else {}),
+        }
+    return stamped
 
 
 async def find_work_email(
@@ -291,12 +352,13 @@ async def find_work_email(
         # Log the REASON only — never the URL itself.
         logger.warning("blitz email skipped invalid linkedin url (%s)", reason)
         return {"found": False, "email": None, "all_emails": []}
-    return await _post_with_retry(
+    result = await _post_with_retry(
         client,
         f"{BLITZ_BASE_URL}/v2/enrichment/email",
         {"person_linkedin_url": person_linkedin_url},
         timeout=30.0,
     )
+    return _stamp_mx_fields(result)
 
 
 DEFAULT_CASCADE: list[dict[str, Any]] = [
@@ -637,12 +699,13 @@ async def person_enrich_by_linkedin(
         "person_linkedin_url": linkedin_url,
     }
 
-    return await _post_with_retry(
+    result = await _post_with_retry(
         client,
         f"{BLITZ_BASE_URL}/v2/enrichment/email",
         payload,
         timeout=30.0,
     )
+    return _stamp_mx_fields(result)
 
 
 # =============================================================================

@@ -378,7 +378,7 @@ class TestEnrichedColumnsAppendOnly(unittest.TestCase):
         self.assertEqual(
             cols[-2:], ["dm_previous_companies", "dm_previous_titles"]
         )
-        self.assertEqual(cols[-4:-2], ["seg_classification", "seg_provider"])
+        self.assertEqual(cols[-5:-2], ["seg_classification", "seg_provider", "dm_mx_provider"])
 
     def test_columns_present_exactly_once(self):
         for col in ("dm_previous_companies", "dm_previous_titles"):

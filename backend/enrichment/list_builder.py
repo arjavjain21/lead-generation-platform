@@ -263,6 +263,11 @@ ENRICHED_COLUMNS = [
     # seg: appended at END — resume carry-over rows from pre-feature partials get blanks via restval=''
     "seg_classification",
     "seg_provider",
+    # mx: Blitz summer-followup release (2026-10-15) — SEG-vocabulary
+    # provider label from the raw MX records Blitz now returns with emails.
+    # Sits after seg (matching pipeline's tail) and BEFORE the
+    # past-experiences pair so pipeline remains an exact prefix.
+    "dm_mx_provider",
     # past-experiences (2026-09-16): "|"-joined NON-current companies/titles
     # from Blitz experiences[]. Appended at the VERY END (after seg) for the
     # same resume-compat reason — carry-over rows get blanks via restval=''.
@@ -328,6 +333,7 @@ def _empty_enriched() -> dict[str, Any]:
         "final_email_source_path": "",
         "seg_classification": "",
         "seg_provider": "",
+        "dm_mx_provider": "",
         "dm_previous_companies": "",
         "dm_previous_titles": "",
     }
@@ -914,7 +920,10 @@ async def _resolve_person_email(
                 # Blitz email endpoint - check if there's verification info
                 all_emails = result.get("all_emails", [])
                 verified = "yes" if all_emails and all_emails[0].get("verified") else "unknown"
-                return result.get("email", ""), "", SOURCE_BLITZ_LINKEDIN, verified, "", "", {}
+                mx_extras = (
+                    {"mx_provider": result["mx_provider"]} if result.get("mx_provider") else {}
+                )
+                return result.get("email", ""), "", SOURCE_BLITZ_LINKEDIN, verified, "", "", mx_extras
         except Exception as e:
             logger.debug("Blitz email lookup failed: %s", e)
 
@@ -1046,6 +1055,7 @@ async def _enrich_single_domain(
     blitz_prepass: Optional[dict[str, Any]] = None,  # find-people batch prepass result (2026-09)
     blitz_miss_skip: bool = False,  # arm the miss-marker store wiring (2026-09)
     gate_stats: Optional[dict[str, int]] = None,  # strict-title drop counter bag (2026-10-06)
+    recent_hires_only: bool = False,  # Blitz is_recent_hire on waterfall cascades (2026-10-15)
 ) -> list[OutputRow]:
     """
     Enrich a single domain: get company info, generic emails, and decision makers.
@@ -1464,6 +1474,16 @@ async def _enrich_single_domain(
                         cascade = json.loads(cascade_config)
                     else:
                         cascade = blitz_client.DEFAULT_CASCADE
+                    if recent_hires_only and cascade:
+                        # Blitz summer-followup (live-verified 2026-10-15):
+                        # is_recent_hire rides INSIDE each cascade entry
+                        # (top-level keys are rejected). New dict per entry —
+                        # never mutate the shared DEFAULT_CASCADE.
+                        cascade = [
+                            {**entry, "is_recent_hire": True}
+                            for entry in cascade
+                            if isinstance(entry, dict)
+                        ]
                     icp_result = await blitz_client.waterfall_icp_search(
                         blitz_http, company_linkedin_url, cascade, max_decision_makers
                     )
@@ -1714,6 +1734,8 @@ async def _enrich_single_domain(
         # 7th element (getleads_dm) is defensive-indexed so older 6-tuples
         # (e.g. test mocks) keep working.
         email, phone, source, verified, mailtester_code, mailtester_message = result[:6]
+        # Extras slot: GetLeads DM snapshot AND (2026-10-15) the Blitz
+        # mx_provider label — both are winner attributes, never both set.
         getleads_dm = result[6] if len(result) > 6 else {}
 
         row = {**base_row, **_empty_enriched()}
@@ -1738,6 +1760,7 @@ async def _enrich_single_domain(
         row["dm_email_verified"] = verified
         row["mailtester_code"] = mailtester_code
         row["mailtester_message"] = mailtester_message
+        row["dm_mx_provider"] = getleads_dm.get("mx_provider", "") if isinstance(getleads_dm, dict) else ""
         row["dm_phone"] = phone
         row["dm_headline"] = person.get("headline", "")
         loc = person.get("location", {})
@@ -2033,6 +2056,7 @@ async def run_domain_enrichment(
     return_partial_on_cancel: bool = False,  # Flow 1 runner: cancel returns partial (no raise) so the writer closes cleanly
     dedupe_on: bool = True,  # job's dedupe_by_domain flag: gates domain-keyed checkpoint WRITES
     exact_titles: bool = False,  # 2026-09: wrap cascade include-titles in [...] for server-side exact matching (prepass)
+    recent_hires_only: bool = False,  # 2026-10-15: Blitz is_recent_hire on waterfall cascades + find-people prepass (job-changed <90d)
     include_phone: bool = False,  # 2026-09: attach Blitz Direct Phone to qualifying rows (phone bundle)
     phone_for_all: bool = False,  # 2026-09: phone bundle targets EVERY qualifying row, not just the first
 ) -> list[OutputRow]:
@@ -2198,6 +2222,7 @@ async def run_domain_enrichment(
                     title_include=_prepass_include or [],
                     title_exclude=_prepass_exclude or [],
                     exact_titles=exact_titles,
+                    is_recent_hire=recent_hires_only,
                     target_per_company=_prepass_target,
                     should_cancel=_prepass_should_cancel,
                     on_progress=_prepass_on_progress,
@@ -2319,6 +2344,7 @@ async def run_domain_enrichment(
                 record_provider_use=record_provider_use,
                 collector=collector,
                 gate_stats=gate_stats,
+                recent_hires_only=recent_hires_only,
             )
         elif not domain:
             result = [{**row, **_empty_enriched(), "row_status": STATUS_SKIPPED}]
@@ -2342,6 +2368,7 @@ async def run_domain_enrichment(
                 blitz_prepass=blitz_prepass,
                 blitz_miss_skip=_miss_armed,
                 gate_stats=gate_stats,
+                recent_hires_only=recent_hires_only,
             )
             # Phase 1B (2026-07-21): by-company Contacts DB augment (flag-gated,
             # additive, emails preserved). See _merge_by_company_contacts.
@@ -2907,6 +2934,9 @@ async def _enrich_single_linkedin(
                     row["dm_email"] = result.get("email", "")
                     row["dm_email_verified"] = verified
                     row["dm_email_source"] = SOURCE_BLITZ_LINKEDIN
+                    # Summer-followup (2026-10-15): SEG-vocabulary MX provider
+                    # label from the raw records Blitz now returns.
+                    row["dm_mx_provider"] = result.get("mx_provider", "")
                     # email-only endpoint: name/title/company are not returned here
                     row["row_status"] = STATUS_ENRICHED
                     return row
@@ -3476,6 +3506,7 @@ async def _enrich_by_company_linkedin(
     record_provider_use: Optional[Callable[[str], None]] = None,
     collector: Optional[Any] = None,
     gate_stats: Optional[dict[str, int]] = None,  # strict-title drop counter bag (2026-10-06)
+    recent_hires_only: bool = False,  # Blitz is_recent_hire on waterfall cascades (2026-10-15)
 ) -> list[OutputRow]:
     """Enrich a single company LinkedIn URL → decision makers + emails.
 
@@ -3533,6 +3564,15 @@ async def _enrich_by_company_linkedin(
                 cascade = blitz_client.DEFAULT_CASCADE
         else:
             cascade = blitz_client.DEFAULT_CASCADE
+    if recent_hires_only and cascade:
+        # Same injection as _enrich_single_domain: is_recent_hire rides
+        # INSIDE each cascade entry (verified 2026-10-15); new dicts — never
+        # mutate the shared DEFAULT_CASCADE.
+        cascade = [
+            {**entry, "is_recent_hire": True}
+            for entry in cascade
+            if isinstance(entry, dict)
+        ]
 
     # Run title-waterfall
     persons_raw = await _enrich_by_company_waterfall(
@@ -3597,6 +3637,8 @@ async def _enrich_by_company_linkedin(
         # 7th element (getleads_dm) is defensive-indexed so older 6-tuples
         # (e.g. test mocks) keep working.
         email, phone, source, verified, mailtester_code, mailtester_message = result[:6]
+        # Extras slot: GetLeads DM snapshot AND (2026-10-15) the Blitz
+        # mx_provider label — both are winner attributes, never both set.
         getleads_dm = result[6] if len(result) > 6 else {}
 
         row = {**base_row, **_empty_enriched()}
@@ -3611,6 +3653,7 @@ async def _enrich_by_company_linkedin(
         row["dm_email_verified"] = verified
         row["mailtester_code"] = mailtester_code
         row["mailtester_message"] = mailtester_message
+        row["dm_mx_provider"] = getleads_dm.get("mx_provider", "") if isinstance(getleads_dm, dict) else ""
         row["dm_phone"] = phone
         row["dm_headline"] = person.get("headline", "")
         row["dm_location_city"] = person.get("location_city", "")
