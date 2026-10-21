@@ -23,6 +23,18 @@ _contacts_db_breaker = get_circuit_breaker(
     half_open_max_calls=3,
 )
 
+
+def breaker_state() -> str:
+    """Current contacts_db circuit-breaker state.
+
+    Returns 'closed' | 'open' | 'half_open'. Callers use this to annotate
+    rows when lookups were skipped because the service was unavailable
+    (2026-10-21 RCA: an open breaker made whole jobs return 0 emails that
+    looked like "no data" — a skipped lookup and a 404 are indistinguishable
+    from the return value alone).
+    """
+    return _contacts_db_breaker.get_state()
+
 # Retry config: up to 3 retries (4 attempts total), exponential backoff with jitter.
 _MAX_RETRIES = 3
 _BASE_BACKOFF = 2.0

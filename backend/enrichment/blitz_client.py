@@ -24,6 +24,16 @@ _blitz_circuit = get_circuit_breaker(
     half_open_max_calls=3,
 )
 
+
+def breaker_state() -> str:
+    """Current blitz circuit-breaker state ('closed' | 'open' | 'half_open').
+
+    Callers use this to annotate rows when Blitz was skipped because the
+    API was unavailable (402 FUP exhaustion / sustained failures) — see
+    contacts_client.breaker_state for the 2026-10-21 RCA context.
+    """
+    return _blitz_circuit.get_state()
+
 # Retry config: up to 3 retries (4 attempts total), exponential backoff with jitter.
 _MAX_RETRIES = 3
 _BASE_BACKOFF = 2.0   # seconds before first retry

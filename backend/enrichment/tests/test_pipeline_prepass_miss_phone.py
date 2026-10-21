@@ -708,8 +708,10 @@ class TestMissSkipping:
 
     def test_contacts_miss_without_url_keeps_no_linkedin_path(self, monkeypatch):
         """Degradation path (markers recorded through the URL-less callback
-        seam before a backfill): no URL to inject -> no-LI path, GetLeads
-        DM fallback does NOT run — documented, unchanged semantics."""
+        seam before a backfill): no URL to inject -> no-LI path.
+        2026-10-21 graceful-degradation change: the GetLeads DM no-LI
+        rescue now IS consulted (domain-keyed, needs no company URL) — when
+        it finds nobody the terminal row stays no_linkedin."""
         _wire_no_company(monkeypatch)
         _patch_miss_seams(
             monkeypatch, recent={"kind": "contacts", "company_url": ""},
@@ -727,7 +729,10 @@ class TestMissSkipping:
         rows = _run(go())
         assert d2l_mock.await_count == 0
         assert waterfall_mock.await_count == 0
-        assert dm_mock.await_count == 0, "no URL -> no_linkedin return fires first"
+        assert dm_mock.await_count == 1, (
+            "no URL -> the GetLeads DM no-LI rescue still gets its chance "
+            "(2026-10-21); empty result keeps the no_linkedin row"
+        )
         assert rows[0]["row_status"] == pipeline_mod.STATUS_NO_LINKEDIN
 
     def test_recent_miss_with_full_name_uses_contacts_db_fallback(self, monkeypatch):

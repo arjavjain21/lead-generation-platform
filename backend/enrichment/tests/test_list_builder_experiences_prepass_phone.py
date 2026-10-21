@@ -558,7 +558,10 @@ class TestMissStoreWiring(unittest.TestCase):
     def test_contacts_miss_without_url_keeps_no_linkedin_path(self):
         """Degradation path (URL-less marker, e.g. recorded through the
         2-arg callback seam before a backfill): no URL to inject -> the
-        no-LinkedIn path proceeds — GetLeads DM fallback does NOT run."""
+        no-LinkedIn path proceeds. 2026-10-21 graceful-degradation change:
+        the GetLeads DM no-LI rescue now IS consulted (domain-keyed, needs
+        no company URL) — when it finds nobody the terminal row stays
+        no_linkedin."""
         dm = AsyncMock(return_value=[])
         d2l = AsyncMock(return_value={"found": True, "company_linkedin_url": "https://x"})
         waterfall = AsyncMock(return_value={"results": [_waterfall_person()]})
@@ -583,7 +586,7 @@ class TestMissStoreWiring(unittest.TestCase):
                 p.stop()
         d2l.assert_not_awaited()
         waterfall.assert_not_awaited()
-        dm.assert_not_awaited()
+        dm.assert_awaited_once()
         self.assertEqual(rows[0]["row_status"], lb.STATUS_NO_LINKEDIN)
         self.assertEqual(recorded, [])
 

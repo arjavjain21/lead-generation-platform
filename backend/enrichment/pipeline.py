@@ -38,6 +38,8 @@ from typing import Any, Callable, Optional
 
 import httpx
 
+from shared.circuit_breaker import CircuitBreakerError
+
 from . import blitz_client
 from . import blitz_batch
 from . import blitz_miss_store
@@ -3489,6 +3491,114 @@ async def _attach_dm_phones(
             row["dm_phone"] = str(result["phone"]).strip()
 
 
+async def _getleads_dm_fallback_dm(
+    blitz_http: httpx.AsyncClient,
+    domain: str,
+    *,
+    company_linkedin_url: str = "",
+    force_provider: Optional[str] = None,
+    max_results: int = 25,
+    collector: Optional[Any] = None,
+    include_titles: Optional[list[str]] = None,
+    exclude_titles: Optional[list[str]] = None,
+    title_filter_active: bool = False,
+    record_provider_use: Optional[Any] = None,
+    record_company_error: Optional[Any] = None,
+) -> tuple[list[dict[str, Any]], dict[int, dict[str, Any]]]:
+    """GetLeads decision-makers fallback (Step 2.4, 2026-09-13; extracted
+    2026-10-21 so the no-LinkedIn path can reach it too — mirror of
+    list_builder._getleads_dm_fallback but keyed by person INDEX).
+
+    Ask GetLeads' contact DB by domain (C-Team/VP/Director/Head titles,
+    verified emails) when every LinkedIn-keyed discovery tier came up
+    empty. One call per domain; store-before-filter capture; local title
+    gate applies. Returns ``(persons, pre_resolved_by_index)``. Never
+    raises: provider errors go to ``record_company_error`` (when provided)
+    and return empty.
+    """
+    persons: list[dict[str, Any]] = []
+    pre_resolved: dict[int, dict[str, Any]] = {}
+    dm_limit = max(1, min(max_results if isinstance(max_results, int) and max_results > 0 else 25, 50))
+    if record_provider_use is not None:
+        try:
+            record_provider_use("getleads")
+        except Exception:
+            pass
+    try:
+        dm_contacts = await getleads_client.lookup_decision_makers(
+            blitz_http, domain, limit=dm_limit
+        )
+    except Exception as dm_exc:
+        if record_company_error is not None:
+            record_company_error("getleads", "lookup_decision_makers", str(dm_exc))
+        dm_contacts = []
+    if _is_provider_error(dm_contacts):
+        if record_company_error is not None:
+            record_company_error("getleads", "lookup_decision_makers", "insufficient credits (402)")
+        dm_contacts = []
+    # Store-before-filter (2026-10-06): every PAID decision-makers record
+    # (1 credit each, always-verified emails) is captured to the collector
+    # — which drains to the Contacts DB per batch — BEFORE the title gate.
+    if dm_contacts and collector is not None:
+        for _dm_c in dm_contacts:
+            if isinstance(_dm_c, dict):
+                try:
+                    collector.capture_company_contact(
+                        source="getleads",
+                        domain=domain,
+                        company_linkedin_url=company_linkedin_url,
+                        contact=_dm_c,
+                    )
+                except Exception as _dm_cap_err:
+                    logger.debug(
+                        "collector.capture_company_contact(getleads dm) failed for %s: %s",
+                        domain, _dm_cap_err,
+                    )
+    # LOCAL TITLE GATE (2026-10-06): the decision-makers layer returns
+    # generic C-Team/VP/Director/Head people by design — under a strict
+    # title request they must pass the same gate as every other discovery
+    # path (parity with list_builder; RCA 2026-10-06).
+    if dm_contacts and title_filter_active:
+        _dm_before = len(dm_contacts)
+        dm_contacts = [
+            c for c in dm_contacts
+            if isinstance(c, dict)
+            and title_filter.person_matches_titles(
+                str(c.get("job_title", "")), "", include_titles or [], exclude_titles or [],
+            )
+        ]
+        _dm_dropped = _dm_before - len(dm_contacts)
+        if _dm_dropped:
+            logger.info(
+                "Title gate (getleads dm fallback) %s: dropped %d/%d off-ICP",
+                domain, _dm_dropped, _dm_before,
+            )
+    if dm_contacts:
+        persons = [
+            {
+                "person": {
+                    "full_name": c.get("person_full_name") or "",
+                    "first_name": c.get("first_name", ""),
+                    "last_name": c.get("last_name", ""),
+                    "linkedin_url": c.get("linkedin_url", ""),
+                    "title": c.get("job_title", ""),
+                    "headline": "",
+                },
+                "icp": 0,
+            }
+            for c in dm_contacts
+            if isinstance(c, dict)
+        ]
+        for idx, c in enumerate(dm_contacts):
+            if isinstance(c, dict) and c.get("email"):
+                pre_resolved[idx] = c
+        logger.info(
+            "GetLeads decision-makers fallback for %s: %d persons (%d with email)",
+            domain, len(persons), len(pre_resolved),
+        )
+    return persons, pre_resolved
+
+
 async def _enrich_domain(
     blitz_http: httpx.AsyncClient,
     contacts_http: httpx.AsyncClient,
@@ -3619,6 +3729,7 @@ async def _enrich_domain(
         # Step 1: domain → company LinkedIn URL (Contacts DB FIRST unless force_provider=blitz)
         if not _should_skip_provider("contacts_db", force_provider):
             _record("contacts_db")
+            contacts_company = None
             try:
                 contacts_company = await contacts_client.company_by_domain(contacts_http, domain)
                 if contacts_company:
@@ -3636,6 +3747,14 @@ async def _enrich_domain(
             except Exception as e:
                 _record_company_error("contacts_db", "company_by_domain", str(e))
                 logger.warning("Contacts DB company lookup failed for %s: %s", domain, e)
+            if contacts_company is None and contacts_client.breaker_state() == "open":
+                # 2026-10-21 RCA: the breaker SKIPPED the lookup — a skip is
+                # not a miss. Record it so terminal rows can say so.
+                _record_company_error(
+                    "contacts_db", "company_by_domain",
+                    "circuit breaker OPEN — lookup skipped (service unavailable)",
+                    "breaker_open",
+                )
 
         # Fallback: Blitz API if Contacts DB didn't find it
         if not company_linkedin_url:
@@ -3708,7 +3827,10 @@ async def _enrich_domain(
                             if blitz_miss_skip:
                                 _record_blitz_miss(domain, "company")
                     except Exception as e:
-                        _record_company_error("blitz", "domain_to_linkedin", str(e))
+                        _record_company_error(
+                            "blitz", "domain_to_linkedin", str(e),
+                            "breaker_open" if isinstance(e, CircuitBreakerError) else "unknown",
+                        )
                         logger.warning("Blitz domain_to_linkedin failed for %s: %s", domain, e)
 
     # Pattern A: stamp the company-level fields onto base_row so every row
@@ -3738,6 +3860,9 @@ async def _enrich_domain(
     qe_pre_resolved_by_index: dict[int, dict[str, Any]] = {}
     qe_discovery_met = False
     persons: list[dict[str, Any]] = []  # may be seeded by the QE no-LI rescue below
+    # 2026-10-21: shared with the Step-2.4 fallback — the GetLeads DM no-LI
+    # rescue below may populate it before Step 2.4 runs (which then no-ops).
+    dm_gl_pre_resolved: dict[int, dict[str, Any]] = {}
     if not company_linkedin_url:
         # QuickEnrich no-LI rescue (2026-10-10): dataset-search is domain-keyed
         # (company_url IS the domain) — the one DM-discovery tier that needs NO
@@ -3745,10 +3870,12 @@ async def _enrich_domain(
         # failed previously died on the no_linkedin return below; QuickEnrich
         # now answers them. Success flows into Step 2 (contacts_db DMs may
         # still win — free tier precedence) with the QE pre-resolved emails.
-        if (
-            not use_custom_cascade
-            and not _should_skip_provider("quickenrich", force_provider)
-        ):
+        #
+        # 2026-10-21: the ``not use_custom_cascade`` gate is GONE — a title
+        # cascade must not disable the rescue (dataset-search takes titles
+        # server-side; the local gate re-checks). RCA: with contacts_db down
+        # and Blitz 402-dead, every rescue gated off = whole jobs at 0 emails.
+        if not _should_skip_provider("quickenrich", force_provider):
             qe_persons, qe_pre = await _quickenrich_domain_discovery(
                 blitz_http,
                 domain,
@@ -3798,9 +3925,42 @@ async def _enrich_domain(
                 except Exception as e:
                     _record_company_error("contacts_db", "person_by_name_and_domain_fallback", str(e))
                     logger.warning("Contacts DB fallback for no-linkedin failed: %s", e)
-            no_linkedin_out = _no_linkedin_row(base_row)
-            _stamp_company_errors(no_linkedin_out, company_provider_errors)
-            return [no_linkedin_out]
+            # GetLeads DM no-LI rescue (2026-10-21): the no_linkedin return
+            # below used to fire BEFORE the Step-2.4 GetLeads fallback, so
+            # no-LinkedIn rows could never reach the last live discovery
+            # tier. Mirrors list_builder's rescue.
+            if not persons and not _should_skip_provider("getleads", force_provider):
+                _gl_persons, _gl_pre = await _getleads_dm_fallback_dm(
+                    blitz_http,
+                    domain,
+                    company_linkedin_url="",
+                    force_provider=force_provider,
+                    max_results=max_results,
+                    collector=collector,
+                    include_titles=include_titles,
+                    exclude_titles=exclude_titles,
+                    title_filter_active=title_filter_active,
+                    record_provider_use=record_provider_use,
+                    record_company_error=_record_company_error,
+                )
+                if _gl_persons:
+                    persons = _gl_persons
+                    dm_gl_pre_resolved.update(_gl_pre)
+                    logger.info(
+                        "GetLeads DM no-LI rescue: %d persons for %s",
+                        len(_gl_persons), domain,
+                    )
+            if not persons:
+                no_linkedin_out = _no_linkedin_row(base_row)
+                _stamp_company_errors(no_linkedin_out, company_provider_errors)
+                if not no_linkedin_out.get("no_email_reason") and any(
+                    e.get("error_type") == "breaker_open" and e.get("provider") == "contacts_db"
+                    for e in company_provider_errors
+                ):
+                    # 2026-10-21 RCA: the free tier was SKIPPED (breaker
+                    # open), not empty — say so on the row.
+                    no_linkedin_out["no_email_reason"] = "contacts_db_unavailable"
+                return [no_linkedin_out]
 
     # Step 2: Get decision makers (Contacts DB FIRST, unless custom cascade or force_provider provided)
     # `persons` was initialized above — a QuickEnrich no-LI rescue may already
@@ -3914,7 +4074,6 @@ async def _enrich_domain(
         if (
             not contacts_db_quality_met
             and not qe_discovery_met
-            and not use_custom_cascade
             and not _should_skip_provider("quickenrich", force_provider)
         ):
             # QuickEnrich dataset-search — 2nd DM-discovery tier (2026-10-10
@@ -4052,87 +4211,25 @@ async def _enrich_domain(
     # steps (contacts_db, blitz) still run first, but the from-person call
     # will NOT re-ask for an email already in hand. 1 credit per returned
     # record on the unlimited plan = fair-use budget (4M+ records/mo spare).
-    dm_gl_pre_resolved: dict[int, dict[str, Any]] = {}
+    # 2026-10-21: extracted into ``_getleads_dm_fallback_dm`` — the no-LI
+    # rescue above shares it (``dm_gl_pre_resolved`` initialized up there).
     if not persons and not _should_skip_provider("getleads", force_provider):
-        dm_limit = max(1, min(max_results if isinstance(max_results, int) and max_results > 0 else 25, 50))
-        if record_provider_use is not None:
-            try:
-                record_provider_use("getleads")
-            except Exception:
-                pass
-        try:
-            dm_contacts = await getleads_client.lookup_decision_makers(
-                blitz_http, domain, limit=dm_limit
-            )
-        except Exception as dm_exc:
-            _record_company_error("getleads", "lookup_decision_makers", dm_exc)
-            dm_contacts = []
-        if _is_provider_error(dm_contacts):
-            _record_company_error("getleads", "lookup_decision_makers", "insufficient credits (402)")
-            dm_contacts = []
-        # Store-before-filter (2026-10-06): every PAID decision-makers record
-        # (1 credit each, always-verified emails) is captured to the collector
-        # — which drains to the Contacts DB per batch — BEFORE the title gate.
-        # Retrieval is storage; the gate only decides what reaches the CSV.
-        # (Also closes the pre-existing gap where DM records were never
-        # captured at all.)
-        if dm_contacts and collector is not None:
-            for _dm_c in dm_contacts:
-                if isinstance(_dm_c, dict):
-                    try:
-                        collector.capture_company_contact(
-                            source="getleads",
-                            domain=domain,
-                            company_linkedin_url=company_linkedin_url,
-                            contact=_dm_c,
-                        )
-                    except Exception as _dm_cap_err:
-                        logger.debug(
-                            "collector.capture_company_contact(getleads dm) failed for %s: %s",
-                            domain, _dm_cap_err,
-                        )
-        # LOCAL TITLE GATE (2026-10-06): the decision-makers layer returns
-        # generic C-Team/VP/Director/Head people by design — under a strict
-        # title request they must pass the same gate as every other
-        # discovery path (parity with list_builder Step 2.4; RCA 2026-10-06).
-        if dm_contacts and title_filter_active:
-            _dm_before = len(dm_contacts)
-            dm_contacts = [
-                c for c in dm_contacts
-                if isinstance(c, dict)
-                and title_filter.person_matches_titles(
-                    str(c.get("job_title", "")), "", include_titles, exclude_titles,
-                )
-            ]
-            _dm_dropped = _dm_before - len(dm_contacts)
-            if _dm_dropped:
-                logger.info(
-                    "Title gate (getleads dm fallback) %s: dropped %d/%d off-ICP",
-                    domain, _dm_dropped, _dm_before,
-                )
-        if dm_contacts:
-            persons = [
-                {
-                    "person": {
-                        "full_name": c.get("person_full_name") or "",
-                        "first_name": c.get("first_name", ""),
-                        "last_name": c.get("last_name", ""),
-                        "linkedin_url": c.get("linkedin_url", ""),
-                        "title": c.get("job_title", ""),
-                        "headline": "",
-                    },
-                    "icp": 0,
-                }
-                for c in dm_contacts
-                if isinstance(c, dict)
-            ]
-            for idx, c in enumerate(dm_contacts):
-                if isinstance(c, dict) and c.get("email"):
-                    dm_gl_pre_resolved[idx] = c
-            logger.info(
-                "GetLeads decision-makers fallback for %s: %d persons (%d with email)",
-                domain, len(persons), len(dm_gl_pre_resolved),
-            )
+        _gl_persons, _gl_pre = await _getleads_dm_fallback_dm(
+            blitz_http,
+            domain,
+            company_linkedin_url=company_linkedin_url,
+            force_provider=force_provider,
+            max_results=max_results,
+            collector=collector,
+            include_titles=include_titles,
+            exclude_titles=exclude_titles,
+            title_filter_active=title_filter_active,
+            record_provider_use=record_provider_use,
+            record_company_error=_record_company_error,
+        )
+        if _gl_persons:
+            persons = _gl_persons
+        dm_gl_pre_resolved.update(_gl_pre)
 
     if not persons:
         # No decision makers found — try BetterEnrich for generic company email
