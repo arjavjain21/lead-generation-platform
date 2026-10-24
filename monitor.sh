@@ -99,6 +99,14 @@ log_critical() {
   fi
 }
 
+record() {
+  # Keep the WORST exit code across all checks (a later warning must never
+  # mask an earlier critical).
+  if [ "$1" -gt "$exit_code" ]; then
+    exit_code=$1
+  fi
+}
+
 ###############################################################################
 # Disk Space Monitoring
 ###############################################################################
@@ -272,7 +280,7 @@ check_website_scrape_sync() {
   fi
 
   if [ -z "$last_run" ]; then
-    log_warn "  website-scrape sync timer enabled but NEVER ran"
+    log_warning "  website-scrape sync timer enabled but NEVER ran"
     return 1
   fi
 
@@ -282,11 +290,11 @@ check_website_scrape_sync() {
   log_info "  last run: $last_run (status: ${status:-unknown}, age: ${age_hours}h)"
 
   if echo "$status" | grep -qi "^error"; then
-    log_error "  website-scrape sync last run FAILED: $status"
+    log_critical "  website-scrape sync last run FAILED: $status"
     return 1
   fi
   if [ "$age_hours" -gt 48 ]; then
-    log_warn "  website-scrape sync is STALE (${age_hours}h > 48h) — website-only data outdated"
+    log_warning "  website-scrape sync is STALE (${age_hours}h > 48h) — website-only data outdated"
     return 1
   fi
   return 0
@@ -304,7 +312,7 @@ check_webscrapedash_health() {
     log_info "  webscrapedash /healthz OK"
     return 0
   fi
-  log_warn "  webscrapedash /healthz unreachable/unhealthy (followup submits will retry)"
+  log_warning "  webscrapedash /healthz unreachable/unhealthy (followup submits will retry)"
   return 0
 }
 
@@ -394,42 +402,42 @@ main() {
 
   # Always check service health first
   if [ "$CHECK_JOBS_ONLY" = false ]; then
-    check_service_health || exit_code=$?
+    check_service_health || record $?
   fi
 
   # Check disk space
   if [ "$CHECK_JOBS_ONLY" = false ]; then
-    check_disk_space || exit_code=$?
+    check_disk_space || record $?
   fi
 
   # Check database
   if [ "$CHECK_JOBS_ONLY" = false ]; then
-    check_database || exit_code=$?
+    check_database || record $?
   fi
 
   # Check failed jobs
   if [ "$CHECK_DISK_ONLY" = false ]; then
-    check_failed_jobs || exit_code=$?
+    check_failed_jobs || record $?
   fi
 
   # Check stale jobs
   if [ "$CHECK_DISK_ONLY" = false ]; then
-    check_stale_jobs || exit_code=$?
+    check_stale_jobs || record $?
   fi
 
   # Check API errors
   if [ "$CHECK_DISK_ONLY" = false ]; then
-    check_api_errors || exit_code=$?
+    check_api_errors || record $?
   fi
 
   # Check website-scrape sync freshness
   if [ "$CHECK_DISK_ONLY" = false ]; then
-    check_website_scrape_sync || exit_code=$?
+    check_website_scrape_sync || record $?
   fi
 
   # Check webscrapedash API health (website-email followup dependency)
   if [ "$CHECK_DISK_ONLY" = false ]; then
-    check_webscrapedash_health || exit_code=$?
+    check_webscrapedash_health || record $?
   fi
 
   log_info "=========================================="
@@ -439,7 +447,13 @@ main() {
   if [ "$exit_code" -eq 0 ]; then
     log_info "All checks passed"
   elif [ "$exit_code" -eq 1 ]; then
-    log_warning "Some warnings detected"
+    # Warnings are informational: they go to alerts.log + journal output but must
+    # NOT fail the unit. Until 2026-10-24 this exited 1, marking the unit failed
+    # every 15 min whenever WAL/stale-job warnings existed — pure alert noise.
+    # Criticals (code >= 2) still exit non-zero so systemd + vps-vitals-watch
+    # surface them.
+    log_warning "Some warnings detected (informational — unit stays green)"
+    exit 0
   else
     log_critical "Critical issues detected"
   fi
