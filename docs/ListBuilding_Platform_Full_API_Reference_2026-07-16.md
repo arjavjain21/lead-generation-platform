@@ -1719,8 +1719,55 @@ Plain-text message about daily quota. No `Retry-After` header.
 | 2026-09-07 | **Enrichment API-key surface opened** — every `/api/enrichment/*` endpoint now accepts `X-API-Key` (or key-as-Bearer) in addition to JWT: upload, all job endpoints (create/list/status/download/partial/shards/cancel/restart/resume-info/recover-partial), Flow 1 `/flows/domain-enrich`, Flow 3 `/by-linkedin-v2`, legacy `/by-*` + `/jobs` + `/search/companies/enrich`, `/search/employees`, `/search/companies`, `/search/options`, `/website-scrape/status`, `/stats/sources`. **Exception:** `GET /jobs/{job_id}/stream` (SSE) stays JWT-only — API-key clients poll `GET /jobs/{job_id}`. `/flows/help` auth labels updated; missing `/search/employees` entry added. MCP oracle 401 guidance + quota text corrected (enrichment is not metered by the 50K/day quota). |
 | 2026-08-30 | **Section H added — External Scraper API** (`/api/external/scraper/*`, API-key auth, `{success,data,error,meta}` envelope): estimate, cache (free instant hits), job create/list/status/results (JSON rows)/cancel, quota. 5 MCP **action tools** added to the ListBuilding MCP (Section H.9; `scrape_local_businesses` defaults to dry_run). Scraper shard/partial endpoints added to D.4 table. |
 | 2026-07-24 | Documented crash-safety model + resume/recovery endpoints: `/resume-info` (B.13), `/recover-partial` (B.14), `/shards` (B.15), `/shard/{shard}` (B.16). Updated `/download` (B.9) and `/restart` (B.11) to reflect partial/failed support and true-resume behavior. |
+| 2026-10-28 | Section L: stored-phone retrieval — contacts_db tier surfaces core.phone (4 contacts-api endpoints + all /enrich response paths + Flow 1/3 dm_phone; include_phone becomes fill-only).
 | 2026-07-16 | Full API reference published. Added: phone enrichment, scraper, helper endpoints, auth matrix, rate limits, UI features, error reference. |
 | 2026-07-13 | `selected_providers` parameter added to `/api/enrichment/enrich`. Fail-loud guards prevent silent 0-email jobs. UI warning banner added. |
 | 2026-07-08 | SmartProspect (SmartLead Find Emails) added as 3rd provider. |
 | 2026-07-06 | Prospeo disabled end-to-end. |
 | 2026-04-15 | Original SOP published (Clay step-by-step guide only). |
+
+## Section L — Stored-Phone Retrieval (2026-10-28)
+
+The Contacts DB (`leadsdatabase.cc`) holds ~2.64M person phone numbers in `core.phone`
+(≈432K Blitz-sourced: Direct-Phone backfills + w3 waves). Since 2026-10-28 the free
+`contacts_db` tier surfaces them end-to-end — **zero paid API calls**.
+
+### What changed
+
+**Contacts API (leadsdatabase.cc)** — four read endpoints now return a best stored
+phone per person (`mobile` > `work` > other; `''`/`null` when none, index-backed,
+no row loss for phone-less persons):
+
+| Endpoint | New keys |
+|---|---|
+| `GET /v1/company/contacts/enriched` (+ `.raw`) | `phone` per contact |
+| `GET /v1/person/by-linkedin` | `phone` (best) + `phones[]` (up to 5) |
+| `GET /v1/person/by-name-and-domain` | `phone` |
+| `GET /v1/company/persons/by-domain` | `phone` per contact |
+
+**ListBuilding platform** — every contacts_db-sourced surface carries the phone through:
+
+- `POST`/`GET /api/enrichment/enrich` — every contact dict gains `phone` (`''` when
+  none) in domain_only, linkedin_only, and enhanced modes
+- `GET /api/enrichment/enrich/{domain}` — by-company contacts carry `phone`
+- Flow 1 (`/flows/domain-enrich`) + CSV jobs — `dm_phone` column now fills from
+  stored phones (person-dict fill + cascade-result precedence; GetLeads overlay
+  semantics unchanged)
+- Flow 3 (`/flows/linkedin-enrich`) — `dm_phone` from the by-linkedin lookup
+- Write-back (`contacts_writer`) round-trips the phone (idempotent upsert)
+
+### Interaction with `include_phone` (paid Blitz bundle)
+
+`_attach_dm_phones` is **fill-only**: a row whose `dm_phone` is already set (stored
+phone) is SKIPPED — no paid Blitz Direct-Phone record is spent on it. Effect:
+`include_phone=true` now only pays for rows we have no stored phone for.
+
+### Example
+
+```bash
+curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/enrich \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"domain": "servefed.com", "force_provider": "contacts_db"}'
+# → contacts[0] = {"full_name": "Sanjeev Kumar", "email": "skumar@servefed.com",
+#                  "phone": "+17035178527", "email_source": "contacts_db", ...}
+```
