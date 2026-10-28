@@ -110,6 +110,25 @@ class TestFindPersonPhoneParse(unittest.TestCase):
             result = AsyncMock_runner.run(qe.find_person_phone(_http_stub()))
         self.assertIsNone(result)
 
+    def test_bare_slug_is_wrapped_into_full_url(self):
+        # Contacts DB rows ship linkedin_norm SLUGS as dm_linkedin_url —
+        # the gate must wrap them, not reject them (live Flow-1 finding
+        # 2026-10-28: slug input silently skipped the whole QE tier).
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"success": True, "data": [], "meta": {}}
+        with patch.object(qe, "_is_enabled", return_value=True), \
+             patch.object(qe, "is_configured", return_value=True), \
+             patch.object(qe, "_request_with_retries", AsyncMock(return_value=response)) as req:
+            result = AsyncMock_runner.run(
+                qe.find_person_phone(_http_stub(), linkedin_url="kearia-watson-orr-dha-a47386b0")
+            )
+        self.assertEqual(result, {"found": False, "phone": ""})
+        sent = req.call_args[1]["params"]
+        self.assertEqual(
+            sent["linkedin_url"],
+            "https://www.linkedin.com/in/kearia-watson-orr-dha-a47386b0",
+        )
+
     def test_disabled_returns_none(self):
         with patch.object(qe, "_is_enabled", return_value=False), \
              patch.object(qe, "is_configured", return_value=True):

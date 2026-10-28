@@ -524,6 +524,11 @@ async def find_person_phone(
         from urllib.parse import urlparse as _urlparse
 
         _li = str(linkedin_url).strip()
+        # Contacts DB rows carry dm_linkedin_url as a BARE SLUG (linkedin_norm,
+        # e.g. "kearia-watson-orr-dha-a47386b0") — wrap it into a full profile
+        # URL so the identity gate accepts the phone tier's most common input.
+        if "linkedin.com" not in _li.lower() and "://" not in _li and "/" not in _li:
+            _li = f"https://www.linkedin.com/in/{_li}"
         _parsed = _urlparse(_li if "://" in _li else f"https://{_li}")
         _host = (_parsed.netloc or "").lower()
         if (
