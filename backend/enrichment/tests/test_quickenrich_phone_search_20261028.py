@@ -71,6 +71,24 @@ class TestFindPersonPhoneParse(unittest.TestCase):
         self.assertEqual(result["phone"], "+15550123")
         self.assertEqual(result["phone_type"], "direct")
 
+    def test_hit_bare_10_digit_gets_us_prefix(self):
+        # Live-observed vendor shape 2026-10-28: "757-619-2853" (no country
+        # code) must become +17576192853, not the undialable "+7576192853".
+        response = MagicMock(status_code=200)
+        response.json.return_value = {
+            "success": True,
+            "data": {"employee_phone": "757-619-2853", "employee_phone_type": "mobile"},
+            "meta": {"credits_used": 1, "remaining_credits": 98},
+        }
+        with patch.object(qe, "_is_enabled", return_value=True), \
+             patch.object(qe, "is_configured", return_value=True), \
+             patch.object(qe, "_request_with_retries", AsyncMock(return_value=response)):
+            result = AsyncMock_runner.run(
+                qe.find_person_phone(_http_stub(), linkedin_url="https://linkedin.com/in/x")
+            )
+        self.assertTrue(result["found"])
+        self.assertEqual(result["phone"], "+17576192853")
+
     def test_clean_miss_free(self):
         response = MagicMock(status_code=200)
         response.json.return_value = {

@@ -122,16 +122,20 @@ def _normalize_phone_e164(value: Any) -> str:
     """Coerce a vendor phone ("+1-555-0123", "(555) 0123") to ``+<digits>``.
 
     Empty/missing → "". Letters (vanity numbers) are dropped — the phone
-    bundle needs dialable strings, not display formatting.
+    bundle needs dialable strings, not display formatting. A bare 10-digit
+    number is US local format (observed live 2026-10-28: QE ships
+    "757-619-2853" without the country code) → prefix ``1`` so the result
+    is dialable E.164.
     """
     if not value:
         return ""
     cleaned = re.sub(r"[^\d+]", "", str(value))
     if not cleaned or not any(ch.isdigit() for ch in cleaned):
         return ""
-    if not cleaned.startswith("+"):
-        cleaned = f"+{cleaned}"
-    return cleaned
+    cleaned = cleaned.lstrip("+")
+    if len(cleaned) == 10:
+        cleaned = f"1{cleaned}"
+    return f"+{cleaned}"
 
 _MAX_RETRIES = 3
 _BASE_BACKOFF = 2.0
