@@ -3453,19 +3453,23 @@ async def _attach_dm_phones(
     domain: str,
     phone_for_all: bool = False,
 ) -> None:
-    """Attach ``dm_phone`` to eligible rows via the Blitz Direct Phone endpoint.
+    """Attach ``dm_phone`` to eligible rows via the phone-bundle ladder.
 
-    Cost note: 1 Blitz FUP record per CALL regardless of found — a not-found
-    answer still bills, so eligibility is checked BEFORE the call and the
-    default cap is 1 call per domain (``phone_for_all`` lifts it to one call
-    per eligible row). Coverage is US-only (the Direct Phone endpoint has no
-    international numbers); non-US rows are skipped for free.
+    Ladder (2026-10-28, QE fallback tier added):
+      1. rows whose ``dm_phone`` is already set (stored core.phone fill or a
+         GetLeads/Blitz overlay phone) are skipped for FREE — fill-only.
+      2. QuickEnrich ``/api/employees/phone-search`` — 1 credit ONLY on a
+         hit (a miss is free), NOT US-gated. Kill switch:
+         ``ENABLE_QUICKENRICH_PHONE_SEARCH`` (default on).
+      3. Blitz Direct Phone — 1 FUP record per CALL regardless of found,
+         US-only coverage — last resort.
 
-    Eligibility: a FINAL email (``dm_email``), a dm LinkedIn URL, and a US or
-    empty/unknown location country. Fill-only: rows whose ``dm_phone`` is
-    already set are skipped for free (the GetLeads DM overlay may stamp a
-    phone during row build — a paid lookup must never overwrite it). Never
-    fails the row — every error is swallowed with a debug log.
+    Eligibility: a FINAL email (``dm_email``) and a dm LinkedIn URL (the
+    identity key every tier in the ladder uses). Default cap is 1 resolved
+    row per domain (``phone_for_all`` lifts it to one per eligible row);
+    one budget unit = one row's QE-then-Blitz resolution, preserving the
+    pre-QE cost shape. Never fails the row — every error is swallowed with
+    a debug log.
 
     Lazy import: sibling package (``phone_enrichment.client`` owns its own
     5 RPS limiter and returns ``{found, phone}``). Importing at the call site
@@ -3473,6 +3477,7 @@ async def _attach_dm_phones(
     """
     from phone_enrichment import client as phone_client
 
+    qe_phone_on = quickenrich_client.phone_search_enabled()
     calls_left = len(output_rows) if phone_for_all else 1
     for row in output_rows:
         if calls_left <= 0:
@@ -3483,12 +3488,30 @@ async def _attach_dm_phones(
         linkedin_url = linkedin_value.strip() if isinstance(linkedin_value, str) else ""
         if not linkedin_url:
             continue
-        country = str(row.get("dm_location_country") or "").strip().upper()
-        if country not in ("", "US"):
-            continue
         if row.get("dm_phone"):
-            continue  # cascade/GetLeads already produced a phone — fill-only
+            continue  # stored/GetLeads already produced a phone — fill-only
+        country = str(row.get("dm_location_country") or "").strip().upper()
+        blitz_eligible = country in ("", "US")
+        if not qe_phone_on and not blitz_eligible:
+            continue
         calls_left -= 1
+
+        # Tier 2: QuickEnrich — free on miss, not US-gated.
+        if qe_phone_on:
+            try:
+                qe_result = await quickenrich_client.find_person_phone(
+                    blitz_http, linkedin_url=linkedin_url
+                )
+            except Exception as exc:
+                logger.debug("phone bundle QE find_person_phone failed for %s: %s", domain, exc)
+                qe_result = None
+            if isinstance(qe_result, dict) and qe_result.get("found") and qe_result.get("phone"):
+                row["dm_phone"] = str(qe_result["phone"]).strip()
+                continue
+
+        # Tier 3: Blitz Direct Phone — bills per call, US-only.
+        if not blitz_eligible:
+            continue
         try:
             result = await phone_client.find_phone(blitz_http, linkedin_url)
         except Exception as exc:

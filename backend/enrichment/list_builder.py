@@ -538,17 +538,24 @@ async def _attach_phone_bundle(
     *,
     phone_for_all: bool = False,
 ) -> list[OutputRow]:
-    """Attach Blitz Direct Phone numbers to finished Flow-1 rows in place.
+    """Attach phone numbers to finished Flow-1 rows in place.
 
-    Targets email-bearing rows whose ``dm_linkedin_url`` is set and whose
-    ``dm_location_country`` is US or unknown (the /v2/enrichment/phone lane
-    has no international coverage). Default: only the FIRST target per
-    domain gets a lookup; ``phone_for_all`` targets every one. Phones the
-    cascade already produced are never overwritten (fill-only).
+    Ladder (2026-10-28, QE fallback tier added — mirrors
+    pipeline._attach_dm_phones):
+      1. rows whose ``dm_phone`` is already set (stored core.phone fill or a
+         provider overlay) are skipped for FREE — fill-only, never overwrite.
+      2. QuickEnrich ``/api/employees/phone-search`` — 1 credit ONLY on a
+         hit (miss free), NOT US-gated. Kill switch
+         ``ENABLE_QUICKENRICH_PHONE_SEARCH`` (default on).
+      3. Blitz Direct Phone — 1 FUP record per call regardless of found,
+         US-only (the /v2/enrichment/phone lane has no international
+         coverage) — last resort.
 
-    Cost note: 1 Blitz phone-lane FUP record per call (5 RPS lane, rate
-    limited inside phone_enrichment.client). Per-row failures are swallowed
-    with a debug log — phone is strictly additive and must never fail the
+    Targets email-bearing rows with a ``dm_linkedin_url`` (the identity key
+    every tier uses). Default: only the FIRST target per domain gets a
+    resolution; ``phone_for_all`` targets every one. One attempt unit = one
+    row's QE-then-Blitz resolution. Per-row failures are swallowed with a
+    debug log — phone is strictly additive and must never fail the
     enrichment row. In single-phone mode exactly ONE attempt is made, even
     when it raises (an exception must not cascade into more paid calls).
     """
@@ -557,17 +564,42 @@ async def _attach_phone_bundle(
     # that never use the bundle.
     from phone_enrichment import client as phone_client
 
+    qe_phone_on = quickenrich_client.phone_search_enabled()
     attempted = False
     for row in rows:
         if attempted and not phone_for_all:
             break
         if not row.get("dm_email") or not row.get("dm_linkedin_url"):
             continue
-        if not _is_us_or_unknown_country(row.get("dm_location_country", "")):
-            continue
         if row.get("dm_phone"):
             continue  # cascade already produced a phone — never overwrite
+        blitz_eligible = _is_us_or_unknown_country(row.get("dm_location_country", ""))
+        if not qe_phone_on and not blitz_eligible:
+            continue
         attempted = True
+
+        # Tier 2: QuickEnrich — free on miss, not US-gated.
+        if qe_phone_on:
+            try:
+                qe_result = await quickenrich_client.find_person_phone(
+                    blitz_http, linkedin_url=row["dm_linkedin_url"]
+                )
+                if (
+                    isinstance(qe_result, dict)
+                    and qe_result.get("found")
+                    and qe_result.get("phone")
+                ):
+                    row["dm_phone"] = str(qe_result["phone"]).strip()
+                    continue
+            except Exception as exc:  # noqa: BLE001 — additive, never fatal
+                logger.debug(
+                    "phone bundle QE lookup failed (%s): %s",
+                    type(exc).__name__, exc,
+                )
+
+        # Tier 3: Blitz Direct Phone — bills per call, US-only.
+        if not blitz_eligible:
+            continue
         try:
             result = await phone_client.find_phone(
                 blitz_http, row["dm_linkedin_url"]

@@ -62,6 +62,7 @@ import asyncio
 import logging
 import os
 import random
+import re
 from typing import Any, Optional
 
 import httpx
@@ -102,6 +103,35 @@ _DATASET_MAX_PAGES = int(os.getenv("QUICKENRICH_DATASET_MAX_PAGES", "2"))
 
 _EMPLOYEE_SEARCH_PATH = "/api/employees/search"
 _DATASET_SEARCH_PATH = "/api/employees/dataset-search"
+_PHONE_SEARCH_PATH = "/api/employees/phone-search"
+
+
+def phone_search_enabled() -> bool:
+    """Phone-search fallback tier kill switch (default ON, 2026-10-28).
+
+    ``ENABLE_QUICKENRICH_PHONE_SEARCH=false`` removes the tier from the
+    phone-bundle ladder without touching the email lanes; the master
+    ``ENABLE_QUICKENRICH`` / key checks still apply inside the client call.
+    """
+    return os.getenv("ENABLE_QUICKENRICH_PHONE_SEARCH", "true").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+
+
+def _normalize_phone_e164(value: Any) -> str:
+    """Coerce a vendor phone ("+1-555-0123", "(555) 0123") to ``+<digits>``.
+
+    Empty/missing → "". Letters (vanity numbers) are dropped — the phone
+    bundle needs dialable strings, not display formatting.
+    """
+    if not value:
+        return ""
+    cleaned = re.sub(r"[^\d+]", "", str(value))
+    if not cleaned or not any(ch.isdigit() for ch in cleaned):
+        return ""
+    if not cleaned.startswith("+"):
+        cleaned = f"+{cleaned}"
+    return cleaned
 
 _MAX_RETRIES = 3
 _BASE_BACKOFF = 2.0
@@ -457,6 +487,94 @@ async def find_person_email(
         return {"found": False, "email": ""}
 
     return _terminal_error(response, "find_person_email")
+
+
+async def find_person_phone(
+    client: httpx.AsyncClient,
+    linkedin_url: Optional[str] = None,
+    first_name: Optional[str] = None,
+    last_name: Optional[str] = None,
+    company_url: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """Find one person's phone via GET /api/employees/phone-search (2026-10-28).
+
+    Identity patterns (API contract — same as email search):
+    ``linkedin_url`` alone, OR ``company_url`` + ``first_name`` +
+    ``last_name``. Billing: 1 credit ONLY when a phone is returned; a miss
+    (``data: []`` / PHONE_NOT_FOUND) is free. NOT US-gated — the docs claim
+    no geo restriction, so this tier covers rows the US-only Blitz Direct
+    Phone lane cannot.
+
+    Returns:
+        ``{"found": True, "phone": "+15550123", "phone_type": ...}`` on a hit
+        (phone normalized to ``+<digits>`` — the vendor ships dashed strings),
+        ``{"found": False, "phone": ""}`` on a free miss,
+        ``None`` when disabled/unconfigured/no usable identity inputs,
+        ``_ProviderError`` (falsy) on terminal auth/credit HTTP errors.
+    """
+    if not _is_enabled() or not is_configured():
+        return None
+
+    params: dict[str, Any] = {}
+    if linkedin_url:
+        from urllib.parse import urlparse as _urlparse
+
+        _li = str(linkedin_url).strip()
+        _parsed = _urlparse(_li if "://" in _li else f"https://{_li}")
+        _host = (_parsed.netloc or "").lower()
+        if (
+            (_host == "linkedin.com" or _host.endswith(".linkedin.com"))
+            and "/in/" in (_parsed.path or "")
+        ):
+            params["linkedin_url"] = _li
+    if company_url:
+        params["company_url"] = _bare_domain(company_url)
+    if first_name:
+        params["first_name"] = first_name
+    if last_name:
+        params["last_name"] = last_name
+
+    has_linkedin = bool(params.get("linkedin_url"))
+    has_name_company = all(
+        params.get(k) for k in ("company_url", "first_name", "last_name")
+    )
+    if not has_linkedin and not has_name_company:
+        logger.debug("QuickEnrich find_person_phone: insufficient identity inputs, skipping")
+        return None
+
+    response = await _request_with_retries(
+        client, "GET", _PHONE_SEARCH_PATH, params=params
+    )
+    if response is None:
+        return None
+
+    if response.status_code == 200:
+        try:
+            payload = response.json()
+        except ValueError:
+            logger.warning("QuickEnrich phone search: non-JSON 200 body")
+            return None
+        _record_credits(payload.get("meta"), "phone_search")
+        data = payload.get("data")
+        if isinstance(data, dict):
+            phone = _normalize_phone_e164(
+                data.get("employee_phone") or data.get("phone")
+            )
+            if phone:
+                return {
+                    "found": True,
+                    "phone": phone,
+                    "phone_type": str(
+                        data.get("employee_phone_type") or data.get("phone_type") or ""
+                    ).strip(),
+                    "first_name": _clean(data.get("first_name")),
+                    "last_name": _clean(data.get("last_name")),
+                    "company_name": _clean(data.get("company_name")),
+                }
+        # 200 with data: [] / PHONE_NOT_FOUND = free miss.
+        return {"found": False, "phone": ""}
+
+    return _terminal_error(response, "find_person_phone")
 
 
 async def domain_search(
