@@ -2358,6 +2358,8 @@ async def unified_enrich(
                             "headline": person.get("headline", ""),
                             "location_city": person.get("location_city", ""),
                             "location_country": person.get("location_country", ""),
+                            # Stored phone from core.phone (2026-10-28).
+                            "phone": str(person.get("phone") or "").strip(),
                             "icp_tier": 1,
                             "email_source": "contacts_db_email" if person.get("email") else "",
                         })

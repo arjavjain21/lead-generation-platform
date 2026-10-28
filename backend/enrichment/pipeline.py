@@ -2140,6 +2140,13 @@ def _build_person_row(
     row["dm_location_city"] = loc.get("city", "")
     row["dm_location_country"] = loc.get("country_code", "")
     row["dm_icp_tier"] = icp_tier
+    # Stored-phone fill (2026-10-28): contacts_db discovery persons carry the
+    # best core.phone number from the Contacts DB; stamp it BEFORE the
+    # GetLeads overlay below (overlay still overwrites only on non-empty
+    # values — existing semantics) and before the include_phone Blitz bundle
+    # (fill-only — a stored phone makes the paid lookup skip the row).
+    # Waterfall/QE/GetLeads persons have no "phone" key → "" (unchanged).
+    row["dm_phone"] = str(person.get("phone") or "").strip()
     row["row_status"] = STATUS_ENRICHED if email else STATUS_NO_CONTACTS
 
     # Pattern A: extract seniority / function from the provider person dict.
@@ -4042,6 +4049,9 @@ async def _enrich_domain(
                                         "country_code": contact.get("country_code", ""),
                                     },
                                     "experiences": [],  # Empty - Contacts DB doesn't provide historical data
+                                    # Stored phone from core.phone (2026-10-28) —
+                                    # consumed by _build_person_row's dm_phone fill.
+                                    "phone": str(contact.get("phone") or "").strip(),
                                 },
                                 "icp": 0,  # Contacts DB doesn't provide ICP scoring
                             }

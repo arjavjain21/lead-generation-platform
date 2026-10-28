@@ -1475,6 +1475,8 @@ async def _enrich_single_domain(
                             row["dm_full_name"] = contact.get("full_name", "")
                             row["dm_email"] = email
                             row["dm_email_source"] = SOURCE_CONTACTS_DB_DOMAIN
+                            # Stored phone from core.phone (2026-10-28).
+                            row["dm_phone"] = str(contact.get("phone") or "").strip()
                             row["row_status"] = STATUS_ENRICHED
                             output_rows.append(row)
             except Exception as e:
@@ -1590,6 +1592,9 @@ async def _enrich_single_domain(
                                         "country_code": contact.get("country_code", ""),
                                     },
                                     "experiences": [],  # Empty - Contacts DB doesn't provide historical data
+                                    # Stored phone from core.phone (2026-10-28) —
+                                    # fills dm_phone in the row build below.
+                                    "phone": str(contact.get("phone") or "").strip(),
                                 },
                                 "icp": 0,  # Contacts DB doesn't provide ICP
                             })
@@ -1952,7 +1957,12 @@ async def _enrich_single_domain(
         row["mailtester_code"] = mailtester_code
         row["mailtester_message"] = mailtester_message
         row["dm_mx_provider"] = getleads_dm.get("mx_provider", "") if isinstance(getleads_dm, dict) else ""
-        row["dm_phone"] = phone
+        # Stored-phone precedence (2026-10-28): the cascade-result phone wins
+        # (a contacts_db Strategy-1 winner already carries the same stored
+        # number); otherwise fall back to the discovery person's stored
+        # core.phone fill. GetLeads overlay below still overwrites only on
+        # non-empty values.
+        row["dm_phone"] = phone or str(person.get("phone") or "").strip()
         row["dm_headline"] = person.get("headline", "")
         loc = person.get("location", {})
         row["dm_location_city"] = loc.get("city", "")
@@ -2087,6 +2097,9 @@ async def _merge_by_company_contacts(
         row["dm_title"] = bc.get("title", "") or ""
         row["dm_email"] = em
         row["dm_email_source"] = "contacts_db_by_company"
+        # Stored phone from core.phone (2026-10-28) — by-company rows carry
+        # the person's best stored number.
+        row["dm_phone"] = str(bc.get("phone") or "").strip()
         row["dm_email_verified"] = "unverified"
         row["dm_headline"] = bc.get("headline", "") or ""
         row["dm_location_city"] = bc.get("city", "") or ""
@@ -3887,7 +3900,9 @@ async def _enrich_by_company_linkedin(
         row["mailtester_code"] = mailtester_code
         row["mailtester_message"] = mailtester_message
         row["dm_mx_provider"] = getleads_dm.get("mx_provider", "") if isinstance(getleads_dm, dict) else ""
-        row["dm_phone"] = phone
+        # Stored-phone precedence (2026-10-28): cascade-result phone wins,
+        # else the flat person dict's stored core.phone fill.
+        row["dm_phone"] = phone or str(person.get("phone") or "").strip()
         row["dm_headline"] = person.get("headline", "")
         row["dm_location_city"] = person.get("location_city", "")
         row["dm_location_country"] = person.get("location_country", "")

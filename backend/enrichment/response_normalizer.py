@@ -580,6 +580,11 @@ def normalize_contacts_db_contact(raw: dict) -> Optional[dict[str, str]]:
         headline=raw.get("headline"),
         linkedin_url=raw.get("linkedin_url"),
         domain=raw.get("domain"),
+        # Stored-phone passthrough (2026-10-28): contacts-api read endpoints
+        # now SELECT the best core.phone number per person; carry it into the
+        # canonical record so the collector → contacts_writer round-trip and
+        # the /enrich contact dicts preserve it.
+        phone=raw.get("phone"),
     )
 
 
