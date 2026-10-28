@@ -1713,6 +1713,8 @@ async def _merge_by_company_into_contacts(
             "location_city": bc.get("city", "") or "",
             "location_country": bc.get("country", "") or "",
             "icp_tier": 0,
+            # Stored phone from core.phone (2026-10-28).
+            "phone": bc.get("phone") or "",
             "email_source": "contacts_db",
             "validation_status": "preserved",
             "email_verified": "unverified",
@@ -1850,6 +1852,8 @@ async def enrich_single_domain(
                 "location_country": row.get("dm_location_country", ""),
                 "icp_tier": row.get("dm_icp_tier", 0),
                 "company_industry": row.get("company_industry", ""),
+                # Stored phone (2026-10-28): contacts_db dm_phone fill.
+                "phone": row.get("dm_phone", "") or "",
                 "email_source": _friendly_source(row.get("dm_email_source", "")),
                 "validation_status": _map_validation_status(row.get("mailtester_code", "")),
                 "email_verified": row.get("dm_email_verified", "unknown"),
@@ -2699,6 +2703,8 @@ async def unified_enrich(
                                 "headline": person.get("headline", ""),
                                 "location_city": person.get("location_city", ""),
                                 "location_country": person.get("location_country", ""),
+                                # Stored phone (2026-10-28).
+                                "phone": str(person.get("phone") or "").strip(),
                                 "icp_tier": 1,
                                 "email_source": "contacts_db_email",
                             })
@@ -3506,6 +3512,8 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                             "headline": person.get("headline", ""),
                             "location_city": person.get("location_city", ""),
                             "location_country": person.get("location_country", ""),
+                            # Stored phone (2026-10-28).
+                            "phone": str(person.get("phone") or "").strip(),
                             "icp_tier": 1,
                             "email_source": "contacts_db_email" if person.get("email") else "not_found",
                         })
