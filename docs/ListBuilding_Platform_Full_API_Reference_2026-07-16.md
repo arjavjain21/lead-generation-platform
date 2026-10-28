@@ -1756,11 +1756,17 @@ no row loss for phone-less persons):
 - Flow 3 (`/flows/linkedin-enrich`) — `dm_phone` from the by-linkedin lookup
 - Write-back (`contacts_writer`) round-trips the phone (idempotent upsert)
 
-### Interaction with `include_phone` (paid Blitz bundle)
+### Interaction with `include_phone` (fresh-lookup ladder — QE first, 2026-10-28)
 
-`_attach_dm_phones` is **fill-only**: a row whose `dm_phone` is already set (stored
-phone) is SKIPPED — no paid Blitz Direct-Phone record is spent on it. Effect:
-`include_phone=true` now only pays for rows we have no stored phone for.
+**Phone-bundle ladder (updated 2026-10-28, QE fallback tier):** a row whose `dm_phone`
+is already set (stored phone) is SKIPPED for free; phone-less rows resolve via
+QuickEnrich `/api/employees/phone-search` FIRST (1 credit ONLY on a hit — a miss is
+free; NOT US-gated; bare linkedin_norm slugs accepted; kill switch
+`ENABLE_QUICKENRICH_PHONE_SEARCH`, default on), then Blitz Direct Phone (bills per
+call, US-only) as the last resort. Effect: `include_phone=true` pays nothing for rows
+we already have phones for, and pays QuickEnrich-only-on-hit for the rest.
+
+User-facing SOP: `docs/PHONE_ENRICHMENT_SOP_2026-10-28.md`.
 
 ### Example
 
