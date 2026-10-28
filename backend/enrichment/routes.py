@@ -139,6 +139,9 @@ def _build_contacts_writer_payloads(
             "dm_last_name": (c.get("last_name") or "").strip(),
             "dm_title": (c.get("title") or "").strip(),
             "dm_linkedin_url": (c.get("linkedin_url") or "").strip(),
+            # Stored phone (2026-10-28) — preserves the contacts_db phone on
+            # the idempotent write-back upsert.
+            "dm_phone": (c.get("phone") or "").strip(),
             "domain": domain,
             "company_industry": (c.get("company_industry") or "").strip(),
             "job_id": job_id,
@@ -2014,6 +2017,8 @@ async def enrich_single_domain(
                         "location_city": bc.get("city", "") or "",
                         "location_country": bc.get("country", "") or "",
                         "icp_tier": 0,
+                        # Stored phone from core.phone (2026-10-28).
+                        "phone": bc.get("phone") or "",
                         "email_source": "contacts_db",
                         "validation_status": "preserved",
                         "email_verified": "unverified",
@@ -2575,6 +2580,8 @@ async def unified_enrich(
                         "last_name": row.get("dm_last_name", ""),
                         "first_name": row.get("dm_first_name", ""),
                         "company_industry": row.get("company_industry", ""),
+                        # Stored phone (2026-10-28) — contacts_db dm_phone fill.
+                        "phone": row.get("dm_phone", "") or "",
                         "email_source": row.get("dm_email_source", ""),
                         "linkedin_url": row.get("dm_linkedin_url", ""),
                         "location_city": row.get("dm_location_city", ""),
@@ -2633,6 +2640,8 @@ async def unified_enrich(
                         "location_country": row.get("dm_location_country", ""),
                         "icp_tier": row.get("dm_icp_tier", 0),
                         "company_industry": row.get("company_industry", ""),
+                        # Stored phone (2026-10-28) — contacts_db dm_phone fill.
+                        "phone": row.get("dm_phone", "") or "",
                         "email_source": _friendly_source(row.get("dm_email_source", "")),
                         "validation_status": _map_validation_status(row.get("mailtester_code", "")),
                         "email_verified": row.get("dm_email_verified", "unknown"),
@@ -2727,6 +2736,8 @@ async def unified_enrich(
                                 "headline": person.get("headline", ""),
                                 "location_city": person.get("location_city", ""),
                                 "location_country": person.get("location_country", ""),
+                                # Stored phone (2026-10-28).
+                                "phone": str(person.get("phone") or "").strip(),
                                 "icp_tier": 1,
                                 "email_source": "contacts_db_email",
                             })
@@ -3951,6 +3962,9 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                 "location_city": contact.get("location_city", ""),
                 "location_country": contact.get("location_country", ""),
                 "icp_tier": contact.get("icp_tier", 0),
+                # Stored phone from core.phone (2026-10-28) — the contacts_db
+                # discovery contact carries it straight from the API.
+                "phone": str(contact.get("phone") or "").strip(),
                 "email_source": email_src,
             })
 
