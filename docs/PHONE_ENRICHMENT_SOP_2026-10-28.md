@@ -1,6 +1,6 @@
 # 📞 Phone Numbers SOP — List Building Platform
 
-**Version:** 2026-10-28 · **Status:** LIVE · **Owner:** List Building Platform team
+**Version:** 2026-10-29 (adds /phone endpoint) · **Status:** LIVE · **Owner:** List Building Platform team
 **Works for:** API users, Clay/Make integrations, CSV job users
 
 ---
@@ -78,6 +78,44 @@ shapes as before:
 
 **Free-only mode** (guaranteed zero paid calls — useful for cheap bulk sweeps):
 add `"force_provider": "contacts_db"`.
+
+### A+) The dedicated phone-only endpoint (BEST for Clay / spreadsheets)
+
+When you want **just the phone number** and nothing else, use `/api/enrichment/phone`.
+Give a LinkedIn URL **or** company domain + full name; get one small JSON back.
+
+```bash
+curl -H "X-API-Key: lgp_YOUR_API_KEY" \
+  "https://listbuilding.eagleinfoservice.com/api/enrichment/phone?linkedin_url=https://www.linkedin.com/in/jeff-brown-2b832118"
+```
+
+**Response — this is the WHOLE thing:**
+
+```json
+{
+  "found": true,
+  "phone": "+13033328473",
+  "phone_type": "stored",
+  "phone_source": "stored",
+  "looked_up_by": "linkedin_url",
+  "person_name": "Jeff Brown",
+  "email": "jbrown@globalmachinery.com"
+}
+```
+
+| Parameter | Required | Notes |
+|---|---|---|
+| `linkedin_url` | one of* | full URL **or bare slug** both work |
+| `domain` + `full_name` | one of* | exact-name match, like the cascade's contacts_db tier |
+| `fresh` | no (default `true`) | `false` = stored-phone-only, guaranteed zero paid calls |
+| `use_blitz` | no (default `false`) | Blitz last resort — bills even on a miss, US-only |
+
+`phone_source` tells you where the number came from: `stored` (free),
+`quickenrich` (fresh, 1 credit — only when found), `blitz`. A miss returns
+`{"found": false, "phone": ""}` — never an error. Speed: stored hits are
+instant (~0.1 s); fresh QE lookups add ~1–2 s.
+
+POST variant takes the same fields as a JSON body.
 
 ### B) Maximum phone coverage (fresh lookups for people we don't have)
 
