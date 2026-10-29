@@ -4346,6 +4346,174 @@ async def _quickenrich_single(
     return result
 
 
+class PhoneLookupRequest(BaseModel):
+    """Lean phone-only lookup (2026-10-29) — see GET /phone below."""
+
+    linkedin_url: Optional[str] = None
+    domain: Optional[str] = None
+    full_name: Optional[str] = None
+    # fresh=false → stored-phone-only (guaranteed zero paid calls)
+    fresh: bool = True
+    # Blitz Direct Phone last resort — bills per call even on a miss, US-only.
+    use_blitz: bool = False
+
+
+async def _phone_lookup_core(
+    *,
+    linkedin_url: Optional[str] = None,
+    domain: Optional[str] = None,
+    full_name: Optional[str] = None,
+    fresh: bool = True,
+    use_blitz: bool = False,
+) -> dict[str, Any]:
+    """Resolve ONE phone number for ONE person — nothing else in the payload.
+
+    Ladder: stored core.phone (free, ~1ms) → QuickEnrich phone-search
+    (1 credit only on a hit; ``fresh=false`` skips it) → optional Blitz
+    Direct Phone (``use_blitz=true`` only; bills per call, US-only).
+    Lookup key: ``linkedin_url`` (full URL or bare slug), OR ``domain`` +
+    ``full_name`` (exact match, same semantics as the cascade's contacts_db
+    Strategy 1). Read-only — no contacts-DB write-back (a QE-found phone is
+    not persisted here; run an /enrich job for that).
+    """
+    linkedin_url = (linkedin_url or "").strip()
+    domain = (domain or "").strip()
+    full_name = (full_name or "").strip()
+    if not linkedin_url and not (domain and full_name):
+        raise HTTPException(
+            status_code=400,
+            detail="Provide linkedin_url, or domain + full_name.",
+        )
+
+    def _response(found, phone, phone_type, source, looked_up_by, name, email):
+        return {
+            "found": found,
+            "phone": phone or "",
+            "phone_type": phone_type or "",
+            "phone_source": source or "",
+            "looked_up_by": looked_up_by,
+            "person_name": name or "",
+            "email": email or "",
+        }
+
+    contacts_http = _get_contacts_http()
+    blitz_http = _get_blitz_http()
+
+    # Tier 1: stored phone from the Contacts DB (free).
+    person: Optional[dict[str, Any]] = None
+    if linkedin_url:
+        looked_up_by = "linkedin_url"
+        try:
+            person = await contacts_client.person_by_linkedin(contacts_http, linkedin_url)
+        except Exception as exc:
+            logger.debug("phone lookup person_by_linkedin failed: %s", exc)
+    else:
+        looked_up_by = "name_and_domain"
+        try:
+            person = await contacts_client.person_by_name_and_domain(
+                contacts_http, full_name, domain
+            )
+        except Exception as exc:
+            logger.debug("phone lookup person_by_name_and_domain failed: %s", exc)
+
+    if person:
+        stored_phone = str(person.get("phone") or "").strip()
+        if stored_phone:
+            return _response(
+                True, stored_phone, "stored", "stored", looked_up_by,
+                person.get("full_name"), person.get("email") or (person.get("work_email") or ""),
+            )
+
+    # Tier 2: QuickEnrich phone-search (credit only on a hit).
+    if fresh and quickenrich_client.phone_search_enabled():
+        try:
+            if linkedin_url:
+                qe_result = await quickenrich_client.find_person_phone(
+                    blitz_http, linkedin_url=linkedin_url
+                )
+            else:
+                parts = full_name.split(" ", 1)
+                first = parts[0].strip()
+                last = parts[1].strip() if len(parts) > 1 else ""
+                qe_result = await quickenrich_client.find_person_phone(
+                    blitz_http,
+                    first_name=first or None,
+                    last_name=last or None,
+                    company_url=domain,
+                )
+        except Exception as exc:
+            logger.debug("phone lookup QE find_person_phone failed: %s", exc)
+            qe_result = None
+        if isinstance(qe_result, dict) and qe_result.get("found") and qe_result.get("phone"):
+            return _response(
+                True, qe_result["phone"], qe_result.get("phone_type", ""),
+                "quickenrich", looked_up_by,
+                (person or {}).get("full_name") or qe_result.get("first_name", ""),
+                (person or {}).get("email") or "",
+            )
+
+    # Tier 3 (opt-in): Blitz Direct Phone — bills per call, US-only.
+    if use_blitz and linkedin_url:
+        try:
+            from phone_enrichment import client as phone_client
+
+            b_result = await phone_client.find_phone(blitz_http, linkedin_url)
+        except Exception as exc:
+            logger.debug("phone lookup Blitz find_phone failed: %s", exc)
+            b_result = None
+        if isinstance(b_result, dict) and b_result.get("found") and b_result.get("phone"):
+            return _response(
+                True, b_result["phone"], "", "blitz", looked_up_by,
+                (person or {}).get("full_name") or "", (person or {}).get("email") or "",
+            )
+
+    return _response(
+        False, "", "", "", looked_up_by,
+        (person or {}).get("full_name") or "", (person or {}).get("email") or "",
+    )
+
+
+@router.get(
+    "/phone",
+    summary="Phone-only lookup — LinkedIn URL or name+company → one phone number",
+)
+async def phone_lookup_get(
+    linkedin_url: Optional[str] = Query(None, description="Person LinkedIn URL or bare slug"),
+    domain: Optional[str] = Query(None, description="Company domain (with full_name)"),
+    full_name: Optional[str] = Query(None, description="Person full name (with domain)"),
+    fresh: bool = Query(True, description="false = stored-phone-only, zero paid calls"),
+    use_blitz: bool = Query(False, description="Blitz last resort (bills per call, US-only)"),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """Lean Clay/spreadsheet-friendly surface: returns ONLY the matching
+    phone (``{found, phone, phone_type, phone_source, looked_up_by,
+    person_name, email}``) — stored free first, QuickEnrich fresh on miss
+    (credit only when a number is found)."""
+    return await _phone_lookup_core(
+        linkedin_url=linkedin_url,
+        domain=domain,
+        full_name=full_name,
+        fresh=fresh,
+        use_blitz=use_blitz,
+    )
+
+
+@router.post("/phone", summary="Phone-only lookup (POST variant)")
+async def phone_lookup_post(
+    req: PhoneLookupRequest,
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """Same ladder as GET /phone — POST body variant for integrations that
+    prefer JSON bodies."""
+    return await _phone_lookup_core(
+        linkedin_url=req.linkedin_url,
+        domain=req.domain,
+        full_name=req.full_name,
+        fresh=req.fresh,
+        use_blitz=req.use_blitz,
+    )
+
+
 @router.post("/quickenrich")
 async def quickenrich_direct(
     req: QuickEnrichDirectRequest,
