@@ -4354,8 +4354,15 @@ class PhoneLookupRequest(BaseModel):
     full_name: Optional[str] = None
     # fresh=false → stored-phone-only (guaranteed zero paid calls)
     fresh: bool = True
-    # Blitz Direct Phone last resort — bills per call even on a miss, US-only.
-    use_blitz: bool = False
+
+
+# Concurrency cap (2026-10-29): a bulk client (an OVH VPS ran ~1.6K lookups
+# in 5 min) saturated the contacts-api apollo pool (max 5 conns) → timeouts
+# → the SHARED contacts_db circuit breaker opened → every /phone response
+# became a silent false negative AND the whole platform's contacts_db tier
+# was skipped. A semaphore here serializes lookups to pool-safe concurrency:
+# bulk runs just go slower, nothing errors, breaker stays closed.
+_PHONE_LOOKUP_SEMAPHORE = asyncio.Semaphore(5)
 
 
 async def _phone_lookup_core(
@@ -4364,18 +4371,40 @@ async def _phone_lookup_core(
     domain: Optional[str] = None,
     full_name: Optional[str] = None,
     fresh: bool = True,
-    use_blitz: bool = False,
 ) -> dict[str, Any]:
     """Resolve ONE phone number for ONE person — nothing else in the payload.
 
     Ladder: stored core.phone (free, ~1ms) → QuickEnrich phone-search
-    (1 credit only on a hit; ``fresh=false`` skips it) → optional Blitz
-    Direct Phone (``use_blitz=true`` only; bills per call, US-only).
+    (1 credit only on a hit; ``fresh=false`` skips it). The Blitz Direct
+    Phone tier was removed 2026-10-29 (Blitz plan downgraded — per-call
+    billing with misses billed no longer fits).
     Lookup key: ``linkedin_url`` (full URL or bare slug), OR ``domain`` +
     ``full_name`` (exact match, same semantics as the cascade's contacts_db
     Strategy 1). Read-only — no contacts-DB write-back (a QE-found phone is
     not persisted here; run an /enrich job for that).
+
+    Honesty contract (mirrors the 2026-10-21 graceful-degradation release):
+    when the stored tier errored (breaker open, timeout) and no phone was
+    found, the response carries ``no_phone_reason: "contacts_db_unavailable"``
+    so bulk consumers know to RETRY those rows — a bare ``found: false``
+    would silently conflate "no phone exists" with "lookup tier down".
     """
+    async with _PHONE_LOOKUP_SEMAPHORE:
+        return await _phone_lookup_core_inner(
+            linkedin_url=linkedin_url,
+            domain=domain,
+            full_name=full_name,
+            fresh=fresh,
+        )
+
+
+async def _phone_lookup_core_inner(
+    *,
+    linkedin_url: Optional[str] = None,
+    domain: Optional[str] = None,
+    full_name: Optional[str] = None,
+    fresh: bool = True,
+) -> dict[str, Any]:
     linkedin_url = (linkedin_url or "").strip()
     domain = (domain or "").strip()
     full_name = (full_name or "").strip()
@@ -4385,8 +4414,8 @@ async def _phone_lookup_core(
             detail="Provide linkedin_url, or domain + full_name.",
         )
 
-    def _response(found, phone, phone_type, source, looked_up_by, name, email):
-        return {
+    def _response(found, phone, phone_type, source, looked_up_by, name, email, reason=""):
+        out = {
             "found": found,
             "phone": phone or "",
             "phone_type": phone_type or "",
@@ -4395,17 +4424,22 @@ async def _phone_lookup_core(
             "person_name": name or "",
             "email": email or "",
         }
+        if reason:
+            out["no_phone_reason"] = reason
+        return out
 
     contacts_http = _get_contacts_http()
     blitz_http = _get_blitz_http()
 
     # Tier 1: stored phone from the Contacts DB (free).
     person: Optional[dict[str, Any]] = None
+    stored_unavailable = False
     if linkedin_url:
         looked_up_by = "linkedin_url"
         try:
             person = await contacts_client.person_by_linkedin(contacts_http, linkedin_url)
         except Exception as exc:
+            stored_unavailable = True
             logger.debug("phone lookup person_by_linkedin failed: %s", exc)
     else:
         looked_up_by = "name_and_domain"
@@ -4414,6 +4448,7 @@ async def _phone_lookup_core(
                 contacts_http, full_name, domain
             )
         except Exception as exc:
+            stored_unavailable = True
             logger.debug("phone lookup person_by_name_and_domain failed: %s", exc)
 
     if person:
@@ -4452,24 +4487,14 @@ async def _phone_lookup_core(
                 (person or {}).get("email") or "",
             )
 
-    # Tier 3 (opt-in): Blitz Direct Phone — bills per call, US-only.
-    if use_blitz and linkedin_url:
-        try:
-            from phone_enrichment import client as phone_client
-
-            b_result = await phone_client.find_phone(blitz_http, linkedin_url)
-        except Exception as exc:
-            logger.debug("phone lookup Blitz find_phone failed: %s", exc)
-            b_result = None
-        if isinstance(b_result, dict) and b_result.get("found") and b_result.get("phone"):
-            return _response(
-                True, b_result["phone"], "", "blitz", looked_up_by,
-                (person or {}).get("full_name") or "", (person or {}).get("email") or "",
-            )
+    # Blitz Direct Phone tier REMOVED (2026-10-29): the Blitz plan was
+    # downgraded and its per-call billing (miss still bills) no longer fits.
+    # The /phone ladder is stored → QuickEnrich, full stop.
 
     return _response(
         False, "", "", "", looked_up_by,
         (person or {}).get("full_name") or "", (person or {}).get("email") or "",
+        reason="contacts_db_unavailable" if stored_unavailable else "",
     )
 
 
@@ -4482,19 +4507,17 @@ async def phone_lookup_get(
     domain: Optional[str] = Query(None, description="Company domain (with full_name)"),
     full_name: Optional[str] = Query(None, description="Person full name (with domain)"),
     fresh: bool = Query(True, description="false = stored-phone-only, zero paid calls"),
-    use_blitz: bool = Query(False, description="Blitz last resort (bills per call, US-only)"),
     current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """Lean Clay/spreadsheet-friendly surface: returns ONLY the matching
     phone (``{found, phone, phone_type, phone_source, looked_up_by,
     person_name, email}``) — stored free first, QuickEnrich fresh on miss
-    (credit only when a number is found)."""
+    (credit only when a number is found). Blitz tier removed 2026-10-29."""
     return await _phone_lookup_core(
         linkedin_url=linkedin_url,
         domain=domain,
         full_name=full_name,
         fresh=fresh,
-        use_blitz=use_blitz,
     )
 
 
@@ -4510,7 +4533,6 @@ async def phone_lookup_post(
         domain=req.domain,
         full_name=req.full_name,
         fresh=req.fresh,
-        use_blitz=req.use_blitz,
     )
 
 

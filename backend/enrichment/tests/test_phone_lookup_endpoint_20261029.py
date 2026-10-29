@@ -124,6 +124,27 @@ class TestPhoneLookup(unittest.TestCase):
         self.assertFalse(r["found"])
         self.assertEqual(r["phone"], "")
 
+    def test_stored_tier_down_is_honest_not_silent(self):
+        # Graceful-degradation contract (2026-10-29): breaker-open/timeout on
+        # the stored tier + no QE hit → no_phone_reason tells bulk consumers
+        # to RETRY, instead of a silent false "no phone exists".
+        with patch.object(er.contacts_client, "person_by_linkedin",
+                          AsyncMock(side_effect=Exception("breaker open"))), \
+             patch.object(er.quickenrich_client, "find_person_phone",
+                          AsyncMock(return_value={"found": False, "phone": ""})):
+            r = self._lookup(linkedin_url="https://linkedin.com/in/x")
+        self.assertFalse(r["found"])
+        self.assertEqual(r.get("no_phone_reason"), "contacts_db_unavailable")
+
+    def test_clean_miss_has_no_reason(self):
+        with patch.object(er.contacts_client, "person_by_linkedin",
+                          AsyncMock(return_value=None)), \
+             patch.object(er.quickenrich_client, "find_person_phone",
+                          AsyncMock(return_value={"found": False, "phone": ""})):
+            r = self._lookup(linkedin_url="https://linkedin.com/in/x")
+        self.assertFalse(r["found"])
+        self.assertNotIn("no_phone_reason", r)
+
     def test_response_is_lean(self):
         data = {"full_name": "A", "email": "a@b.com", "phone": "+1"}
         with patch.object(er.contacts_client, "person_by_linkedin",
