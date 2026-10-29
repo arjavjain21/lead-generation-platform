@@ -107,13 +107,22 @@ curl -H "X-API-Key: lgp_YOUR_API_KEY" \
 |---|---|---|
 | `linkedin_url` | one of* | full URL **or bare slug** both work |
 | `domain` + `full_name` | one of* | exact-name match, like the cascade's contacts_db tier |
-| `fresh` | no (default `true`) | `false` = stored-phone-only, guaranteed zero paid calls |
+| `fresh` | no (default `true`) | `false` = skip QuickEnrich (stored-only when `use_blitz` is off, which is the default) |
 | `use_blitz` | no (default `false`) | Blitz last resort — bills even on a miss, US-only |
 
-`phone_source` tells you where the number came from: `stored` (free),
-`quickenrich` (fresh, 1 credit — only when found), `blitz`. A miss returns
-`{"found": false, "phone": ""}` — never an error. Speed: stored hits are
-instant (~0.1 s); fresh QE lookups add ~1–2 s.
+**Which tiers run — the mode matrix:**
+
+| Params | Ladder | Cost guarantee |
+|---|---|---|
+| defaults | stored → QuickEnrich | free unless QE *finds* a number |
+| `fresh=false` | contacts-DB only | zero paid calls |
+| `use_blitz=true` | stored → QuickEnrich → Blitz (full waterfall) | Blitz may bill on a miss |
+| `fresh=false&use_blitz=true` | stored → Blitz | Blitz may bill on a miss |
+
+**Which tier answered:** read `phone_source` in the response — `stored` (free),
+`quickenrich` (fresh, 1 credit — only when found), `blitz`, or `""` when
+`found: false`. A miss returns `{"found": false, "phone": ""}` — never an
+error. Speed: stored hits are instant (~0.1 s); fresh QE lookups add ~1–2 s.
 
 POST variant takes the same fields as a JSON body.
 
