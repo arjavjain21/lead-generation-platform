@@ -42,10 +42,15 @@ Just call `/enrich` the way you always do. Every contact in the response now has
 
 ```bash
 curl -X POST https://listbuilding.eagleinfoservice.com/api/enrichment/enrich \
-  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "X-API-Key: lgp_YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"domain": "acme.com"}'
 ```
+
+> ⚠️ **Auth rule (avoid the "Invalid token" trap):** `lgp_...` API keys go in the
+> **`X-API-Key`** header — NOT in `Authorization: Bearer` (that header is only for
+> login JWTs from `/api/auth/login`; a `lgp_` key there returns 401 "Invalid token.").
+> In Clay/Make/Postman, set the header name to exactly `X-API-Key`.
 
 **Response (trimmed):**
 
