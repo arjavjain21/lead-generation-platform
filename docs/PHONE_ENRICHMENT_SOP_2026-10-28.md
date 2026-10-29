@@ -22,7 +22,7 @@ at the first hit:
 |---|--------|------|-------|-------|
 | 1 | **Our own database** (2.64M numbers: Blitz waves, QuickEnrich imports, outscraper…) | **FREE** | ~1 ms | Automatic — always on, no flag needed |
 | 2 | **QuickEnrich phone-search** (NEW) | 1 credit **only if a phone is found** — a miss costs nothing | ~1–2 s | Automatic when you tick "include phone"; works worldwide |
-| 3 | **Blitz Direct Phone** (old paid option) | 1 record per call **even on a miss**; US-only | ~1 s | Last resort only — almost never needed now |
+
 
 **Why this is good:**
 - If we already own the number → you get it free, instantly.
@@ -107,22 +107,20 @@ curl -H "X-API-Key: lgp_YOUR_API_KEY" \
 |---|---|---|
 | `linkedin_url` | one of* | full URL **or bare slug** both work |
 | `domain` + `full_name` | one of* | exact-name match, like the cascade's contacts_db tier |
-| `fresh` | no (default `true`) | `false` = skip QuickEnrich (stored-only when `use_blitz` is off, which is the default) |
-| `use_blitz` | no (default `false`) | Blitz last resort — bills even on a miss, US-only |
+| `fresh` | no (default `true`) | `false` = contacts-DB only, guaranteed zero paid calls |
 
-**Which tiers run — the mode matrix:**
+**Which tiers run — the mode matrix** (Blitz removed 2026-10-29 — plan
+downgraded; it billed per call even on a miss):
 
 | Params | Ladder | Cost guarantee |
 |---|---|---|
 | defaults | stored → QuickEnrich | free unless QE *finds* a number |
 | `fresh=false` | contacts-DB only | zero paid calls |
-| `use_blitz=true` | stored → QuickEnrich → Blitz (full waterfall) | Blitz may bill on a miss |
-| `fresh=false&use_blitz=true` | stored → Blitz | Blitz may bill on a miss |
 
 **Which tier answered:** read `phone_source` in the response — `stored` (free),
-`quickenrich` (fresh, 1 credit — only when found), `blitz`, or `""` when
-`found: false`. A miss returns `{"found": false, "phone": ""}` — never an
-error. Speed: stored hits are instant (~0.1 s); fresh QE lookups add ~1–2 s.
+`quickenrich` (fresh, 1 credit — only when found), or `""` when `found: false`.
+A miss returns `{"found": false, "phone": ""}` — never an error. Speed: stored
+hits are instant (~0.1 s); fresh QE lookups add ~1–2 s.
 
 POST variant takes the same fields as a JSON body.
 
