@@ -122,6 +122,11 @@ downgraded; it billed per call even on a miss):
 A miss returns `{"found": false, "phone": ""}` — never an error. Speed: stored
 hits are instant (~0.1 s); fresh QE lookups add ~1–2 s.
 
+**Bulk runs:** the endpoint self-throttles to ~5 concurrent lookups (bulk
+clients just run slower — no errors, no timeouts). If a response ever carries
+`"no_phone_reason": "contacts_db_unavailable"`, the free tier was momentarily
+down — **retry those rows later**, don't trust the empty phone.
+
 POST variant takes the same fields as a JSON body.
 
 ### B) Maximum phone coverage (fresh lookups for people we don't have)
