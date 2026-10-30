@@ -441,16 +441,28 @@ async def run_crawl(
                         job_id[:8], task_seq + 1, len(tasks), center["name"], zoom, e,
                     )
 
-                await on_progress({
-                    "task_seq": task_seq,
-                    "total_tasks": len(tasks),
-                    "center_name": center["name"],
-                    "center_state": center["state"],
-                    "zoom": zoom,
-                    "new_results": new_results,
-                    "total_results": len(seen_keys),
-                    "task_done": True,
-                })
+                try:
+                    await on_progress({
+                        "task_seq": task_seq,
+                        "total_tasks": len(tasks),
+                        "center_name": center["name"],
+                        "center_state": center["state"],
+                        "zoom": zoom,
+                        "new_results": new_results,
+                        "total_results": len(seen_keys),
+                        "task_done": True,
+                    })
+                except Exception as e:
+                    # Progress/heartbeat writes must never kill the crawl.
+                    # A transient SQLite "database is locked" here used to
+                    # escape gather(), unwinding the client/CSV context
+                    # managers under the feet of still-running sibling
+                    # tasks (2026-10-30: both scraper jobs stalled 'running'
+                    # with dead heartbeats and were later reaped).
+                    logger.warning(
+                        "[job %s] task %d/%d: on_progress failed (continuing): %s",
+                        job_id[:8], task_seq + 1, len(tasks), e,
+                    )
 
                 return new_results
 
@@ -458,6 +470,17 @@ async def run_crawl(
                 process_task(center, zoom, i)
                 for i, (center, zoom) in enumerate(tasks)
             ]
-            await asyncio.gather(*coros)
+            # Drain every task before unwinding: a bare gather propagates the
+            # first exception immediately, closing the HTTP client and CSV
+            # file while sibling tasks are still in flight (they then fail
+            # with "client has been closed" / "I/O operation on closed file").
+            results = await asyncio.gather(*coros, return_exceptions=True)
+            failures = [r for r in results if isinstance(r, BaseException)]
+            if failures:
+                logger.error(
+                    "[job %s] %d/%d tasks raised after completion",
+                    job_id[:8], len(failures), len(tasks),
+                )
+                raise failures[0]
 
     return len(seen_keys)
