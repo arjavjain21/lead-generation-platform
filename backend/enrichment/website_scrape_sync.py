@@ -68,6 +68,11 @@ DEFAULT_TIMEOUT_S = 300
 #: addition to the forward watermark); pushes are idempotent email-keyed
 #: upserts, so re-pulling is harmless. 0 disables.
 DEFAULT_LOOKBACK_HOURS = 48
+# Hard ceiling on lookback pages per run (500/page → 50K rows re-scan headroom).
+# Bounds the re-scan even if the remote window keeps producing rows faster
+# than we page through them; the systemd unit's TimeoutStartSec is the outer
+# backstop.
+DEFAULT_LOOKBACK_MAX_PAGES = 100
 STATE_TABLE = "website_scrape_sync_state"
 
 _REMOTE_DB = "email_enrichment"
@@ -220,17 +225,30 @@ LIMIT {int(limit)}
 """.strip()
 
 
-def build_lookback_query(hours: int, limit: int) -> str:
+def build_lookback_query(hours: int, limit: int, after: Optional[tuple[str, int]] = None) -> str:
     """Trailing-window safety re-scan — same row shape as build_pull_query,
     but anchored on now()-interval instead of the forward watermark. Catches
     rows whose completed_at was stamped mid-pipeline (browser_queued handoff)
     and whose email only appeared after the watermark passed them. The
     int() casts double as injection guards — garbage input falls back to the
-    default instead of raising (belt-and-suspenders; callers pass ints)."""
+    default instead of raising (belt-and-suspenders; callers pass ints).
+
+    ``after`` is a composite (completed_at, id) keyset cursor for pagination:
+    a fixed trailing window holding >= limit rows used to return the SAME
+    first page on every pull, so the re-scan loop re-pushed those rows
+    forever (2026-10-31: an 18-hour wedge). Ids break bulk-completed
+    tie-groups the same way the forward watermark does."""
     try:
         interval = int(hours)
     except (TypeError, ValueError):
         interval = DEFAULT_LOOKBACK_HOURS
+    predicate = ""
+    if after:
+        ts, row_id = after
+        if not _valid_watermark(ts):
+            raise ValueError(f"invalid lookback cursor shape: {ts!r}")
+        escaped = ts.replace("'", "''")
+        predicate = f"AND (completed_at, id) > ('{escaped}', {int(row_id)})"
     return f"""
 SELECT id, domain, email, email_class, email_type, email_confidence,
        email_shared_nd, status, business_name, page_title, industry,
@@ -239,6 +257,7 @@ FROM email_enrichment
 WHERE status = 'completed'
   AND email IS NOT NULL
   AND completed_at > now() - interval '{interval} hours'
+  {predicate}
 ORDER BY completed_at, id
 LIMIT {int(limit)}
 """.strip()
@@ -422,12 +441,15 @@ def make_ssh_pull(
 
 def make_ssh_lookback_pull(
     host_alias: str = DEFAULT_HOST_ALIAS, timeout_s: int = DEFAULT_TIMEOUT_S
-) -> Callable[[int, int], Any]:
+) -> Callable[..., Any]:
     """Trailing-window pull (see build_lookback_query) with the same phase-2
-    gmaps enrichment. Signature: (hours, limit) -> rows."""
+    gmaps enrichment. Signature: (hours, limit, after=None) -> rows, where
+    ``after`` is the composite keyset cursor for pagination."""
 
-    async def _pull_lookback(hours: int, limit: int) -> list[dict[str, Any]]:
-        main_sql = build_lookback_query(hours, limit)
+    async def _pull_lookback(
+        hours: int, limit: int, after: Optional[tuple[str, int]] = None
+    ) -> list[dict[str, Any]]:
+        main_sql = build_lookback_query(hours, limit, after)
         stdout = await _run_remote_psql(main_sql, timeout_s)
         rows = [parse_pull_row(fields) for fields in parse_csv_output(stdout)]
         return await _attach_gmaps(rows, timeout_s)
@@ -582,14 +604,37 @@ async def run_sync(
     )
     lookback_pulled = 0
     lookback_pushed = 0
+    lookback_pages = 0
+    lookback_max_pages = int(
+        os.environ.get("WEBSITE_SCRAPE_LOOKBACK_MAX_PAGES", DEFAULT_LOOKBACK_MAX_PAGES)
+    )
     if lookback_hours > 0 and _pull_lookback is not None and limit is None:
         if dry_run:
             lookback_rows = await _pull_lookback(lookback_hours, batch_size)
             lookback_pulled = len(lookback_rows)
         else:
-            while True:
-                lookback_rows = await _pull_lookback(lookback_hours, batch_size)
+            # Keyset-paginated by (completed_at, id). The old unpaginated loop
+            # re-pulled the SAME first page whenever the trailing window held
+            # >= batch_size rows — a bulk-completed tie-group larger than the
+            # batch size meant the re-scan re-pushed those rows forever
+            # (2026-10-31: 18-hour wedge holding the jobs.db write lock).
+            cursor: Optional[tuple[str, int]] = None
+            while lookback_pages < lookback_max_pages:
+                lookback_rows = await _pull_lookback(lookback_hours, batch_size, cursor)
                 if not lookback_rows:
+                    break
+                # Non-progress guard BEFORE pushing: if the page's first row
+                # does not keyset-past the cursor, the pull ignored the
+                # cursor (or duplicated a tie-group) — pushing again would
+                # just re-push the same rows.
+                first = lookback_rows[0]
+                first_key = (first.get("completed_at") or "", int(first.get("id") or 0))
+                if cursor is not None and first_key <= cursor:
+                    logger.error(
+                        "lookback page did not advance past (ts=%s, id=%s) — "
+                        "breaking to avoid a re-push loop",
+                        cursor[0], cursor[1],
+                    )
                     break
                 payloads: list[dict[str, Any]] = []
                 for row in lookback_rows:
@@ -599,6 +644,7 @@ async def run_sync(
                     payloads.append(build_company_payload(curated, job_id=job_id))
                     payloads.extend(build_named_contact_payloads(curated, job_id=job_id))
                 lookback_pulled += len(lookback_rows)
+                lookback_pages += 1
                 if payloads:
                     batch_start = time.monotonic()
                     result = await push(payloads, job_id=job_id)
@@ -616,6 +662,17 @@ async def run_sync(
                         await asyncio.sleep(remaining)
                 if len(lookback_rows) < batch_size:
                     break
+                last = lookback_rows[-1]
+                if not last.get("completed_at"):
+                    logger.error("lookback row without completed_at; stopping re-scan")
+                    break
+                cursor = (last["completed_at"], int(last["id"] or 0))
+            if lookback_pages >= lookback_max_pages:
+                logger.warning(
+                    "lookback re-scan hit the page cap (%d pages, %d rows) — "
+                    "trailing window larger than expected; stopping",
+                    lookback_max_pages, lookback_pulled,
+                )
     if lookback_pulled:
         logger.info(
             "lookback re-scan (%dh): %d pulled, %d re-pushed",
@@ -647,6 +704,7 @@ async def run_sync(
         "lookback_hours": lookback_hours,
         "lookback_pulled": lookback_pulled,
         "lookback_pushed": lookback_pushed,
+        "lookback_pages": lookback_pages,
     }
 
 
