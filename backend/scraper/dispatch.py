@@ -270,6 +270,13 @@ async def runtime_guard_loop(interval_seconds: float = GUARD_POLL_SECONDS) -> No
             raise
         except Exception as exc:
             logger.warning("Scraper guard tick failed (non-fatal): %s", exc)
+            # 2026-11-05: a BUSY error here means this thread's conn may be
+            # wedged (holding shm locks for the process lifetime → every
+            # later write fails; on 2026-11-04 the runner stayed wedged 9h
+            # and only a restart fixed it). Recycling gives the runner a
+            # ~2-minute self-heal: the next tick reconnects fresh.
+            if db.is_busy_error(exc):
+                db.recycle_db(f"guard tick busy error: {exc}")
         # Shrink idle bloat every tick so a post-job memory peak can't linger
         # into swap during long idle stretches between jobs.
         _schedule_trim("guard tick")

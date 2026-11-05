@@ -42,10 +42,53 @@ def get_db() -> sqlite3.Connection:
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=30000")
         conn.execute("PRAGMA journal_size_limit=200000000")
-        conn.execute("PRAGMA wal_autocheckpoint=400")
+        # 2000 pages (~8MB): at the old 400 pages, heavy scrape storms tripped
+        # auto-checkpoint on nearly every commit, multiplying the BUSY windows
+        # that wedged connections (2026-11-04 incident). journal_size_limit
+        # above still bounds the post-checkpoint WAL size.
+        conn.execute("PRAGMA wal_autocheckpoint=2000")
         conn.execute("PRAGMA synchronous=NORMAL")
         _local.conn = conn
     return _local.conn
+
+
+def is_busy_error(exc: BaseException) -> bool:
+    """True when an exception is SQLite reporting DB/table/lock contention.
+
+    These are exactly the errors whose swallow-and-continue handling used to
+    wedge the thread's connection (see recycle_db).
+    """
+    msg = str(exc).lower()
+    return "locked" in msg or "busy" in msg
+
+
+def recycle_db(reason: str = "") -> None:
+    """Close this thread's connection; the next get_db() reconnects fresh.
+
+    A connection that hit SQLITE_BUSY mid-commit / mid-auto-checkpoint can
+    keep holding WAL shm locks (CHECKPOINT byte 124 / RECOVER byte 125) for
+    the life of the process. After that, every later write on the thread
+    fails with 'database is locked' — the runner wedged for hours, the WAL
+    bloated to GBs, and only a service restart recovered it (incidents
+    2026-10-24, 10-30, 10-31 and 11-04). Closing the fd releases all held
+    locks at once. In-flight callers still holding the old conn object get a
+    clean ProgrammingError that their existing task-level handlers catch;
+    every store helper re-fetches via get_db(), so the next call reconnects.
+    """
+    conn = getattr(_local, "conn", None)
+    _local.conn = None
+    if conn is None:
+        return
+    try:
+        conn.rollback()
+    except sqlite3.Error:
+        pass
+    try:
+        conn.close()
+    except sqlite3.Error:
+        pass
+    if reason:
+        logger.warning("recycled thread-local DB connection: %s", reason)
 
 
 def init_db() -> None:

@@ -463,6 +463,13 @@ async def run_crawl(
                         "[job %s] task %d/%d: on_progress failed (continuing): %s",
                         job_id[:8], task_seq + 1, len(tasks), e,
                     )
+                    # 2026-11-05: a BUSY error can also leave this thread's
+                    # conn holding shm locks for the process lifetime — every
+                    # later write then fails until restart (9h wedge on
+                    # 2026-11-04). Recycle the conn so the wedge can't start.
+                    from shared.db import is_busy_error, recycle_db
+                    if is_busy_error(e):
+                        recycle_db(f"crawler on_progress busy error: {e}")
 
                 return new_results
 
