@@ -33,6 +33,7 @@ Q = pipeline.ROUTE_PROVIDER_QUICKENRICH
 W = pipeline.ROUTE_PROVIDER_WIZLEADS
 BE = pipeline.ROUTE_PROVIDER_BETTER_ENRICH
 M = pipeline.ROUTE_PROVIDER_MOLTSETS
+L = pipeline.ROUTE_PROVIDER_LEADOCEAN
 
 
 def _providers(route: dict, identifier: str | None = None) -> list[str]:
@@ -100,7 +101,7 @@ class TestLinkedInOrder:
             linkedin_url="https://www.linkedin.com/in/janedoe"
         )
         assert route["mode"] == "linkedin_only"
-        assert _providers(route) == [P, Q, G, B, B, M]
+        assert _providers(route) == [P, Q, L, G, B, B, M]
 
     def test_quickenrich_before_getleads_and_blitz(self):
         route = pipeline.route_enrichment(
@@ -120,10 +121,10 @@ class TestLinkedInOrder:
         assert route["mode"] == "linkedin_first"
         li = _providers(route, identifier=pipeline.ROUTE_IDENTIFIER_LINKEDIN)
         nd = _providers(route, identifier=pipeline.ROUTE_IDENTIFIER_NAME_DOMAIN)
-        assert li == [P, Q, G, B, B, M]
+        assert li == [P, Q, L, G, B, B, M]
         # WizLeads present in the name-domain fallback arm (G16 fix); full
         # 2026-10-14 tail order applies there too.
-        assert nd == [P, S, Q, G, B, M, BE, W]
+        assert nd == [P, S, Q, L, G, B, M, BE, W]
 
 
 class TestQuickEnrichCapabilityGates:
@@ -137,7 +138,7 @@ class TestQuickEnrichCapabilityGates:
             linkedin_url="https://www.linkedin.com/in/janedoe", domain="acme.com"
         )
         # No full_name -> no name_domain arm at all; linkedin arm only.
-        assert _providers(route) == [P, Q, G, B, B, M]
+        assert _providers(route) == [P, Q, L, G, B, B, M]
 
     def test_qe_by_linkedin_present_with_linkedin_only(self):
         route = pipeline.route_enrichment(

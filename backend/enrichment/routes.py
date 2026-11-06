@@ -2846,7 +2846,7 @@ async def unified_enrich(
                     logger.debug("QuickEnrich lookup failed in enhanced mode: %s", e)
 
             # Step 1.5b.5: LeadOcean work email + personal fallback (tier 4,
-            # 2026-11-16 — directly after QuickEnrich; 82% measured yield on
+            # 2026-11-06 — directly after QuickEnrich; 82% measured yield on
             # QE misses). LinkedIn-URL keyed; client guards handle the daily
             # wall + miss cache. Non-verified grades are mailtester-gated in
             # the client's callers only when validate_email — inline here we

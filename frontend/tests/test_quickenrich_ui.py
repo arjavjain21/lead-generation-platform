@@ -28,6 +28,7 @@ NEW_CHIP_ORDER = [
     "contacts_db",
     "smartprospect",
     "quickenrich",
+    "leadocean",
     "getleads",
     "blitz",
     "moltsets",
@@ -144,7 +145,7 @@ class TestProviderIdListAndResults:
 class TestMarketingCopyUpdated:
     def test_home_copy_lists_new_order(self, html_content):
         # 2026-10-14: moltsets added 6th + better_enrich re-enabled 7th.
-        assert "8-source cascade: Contacts DB, smartprospect, QuickEnrich, GetLeads, Blitz API, MoltSets, Better Enrich, and WizLeads" in html_content
+        assert "9-source cascade: Contacts DB, smartprospect, QuickEnrich, LeadOcean, GetLeads, Blitz API, MoltSets, Better Enrich, and WizLeads" in html_content
 
     def test_old_home_order_copy_gone(self, html_content):
         assert "Contacts DB, Blitz API, GetLeads, smartprospect, WizLeads, and BetterEnrich" not in html_content

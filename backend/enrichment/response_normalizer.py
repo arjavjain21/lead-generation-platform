@@ -995,7 +995,7 @@ def normalize_moltsets_contact(raw: dict) -> Optional[dict[str, str]]:
 def normalize_leadocean_contact(raw: dict) -> Optional[dict[str, str]]:
     """Normalize a LeadOcean contact dict.
 
-    Per ``leadocean_client.find_person_email`` (2026-11-16), the captured
+    Per ``leadocean_client.find_person_email`` (2026-11-06), the captured
     payload is::
 
         {

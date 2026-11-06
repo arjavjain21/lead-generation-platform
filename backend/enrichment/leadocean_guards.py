@@ -2,7 +2,7 @@
 LeadOcean quota guards — DB-backed cross-worker cooldown, person miss store,
 and usage ledger (mirrors moltsets_guards; see that module for the rationale).
 
-LeadOcean plan (Agency · UGC, 2026-11-16): $247/mo, 1M enrichments/day,
+LeadOcean plan (Agency · UGC, 2026-11-06): $247/mo, 1M enrichments/day,
 25M search records/month, 200 RPS account-wide. The daily enrichment wall
 does NOT error — the API throttles to ~1/60th of a percent of normal speed
 until midnight UTC (LEADOCEAN_PROVIDER_TEST_REPORT.md §7.7). Past the wall

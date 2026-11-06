@@ -427,7 +427,7 @@ SOURCE_GETLEADS = "getleads_email"                        # Person email from Ge
 SOURCE_QUICKENRICH = "quickenrich_email"                  # Person email from QuickEnrich employee-search (app.quickenrich.io)
 SOURCE_QUICKENRICH_CONTACTS = "quickenrich_contacts"      # Decision makers from QuickEnrich dataset-search
 SOURCE_MOLTSETS = "moltsets_email"                        # Person email from MoltSets (api.moltsets.com, tier 6 since 2026-10-14)
-SOURCE_LEADOCEAN = "leadocean_email"                      # Person email from LeadOcean (api.leadocean.io, tier 4 since 2026-11-16)
+SOURCE_LEADOCEAN = "leadocean_email"                      # Person email from LeadOcean (api.leadocean.io, tier 4 since 2026-11-06)
 
 # Routing reasons (no_email_reason values)
 # The full standard enum (per LOOP.md acceptance test 2/8):
@@ -821,7 +821,7 @@ def route_enrichment(
             },
             {
                 # LeadOcean work-email (+ personal fallback) by LinkedIn URL —
-                # tier 4 since 2026-11-16, directly after QuickEnrich (the
+                # tier 4 since 2026-11-06, directly after QuickEnrich (the
                 # team's own test measured 82% yield on QE misses).
                 "identifier": ROUTE_IDENTIFIER_LINKEDIN,
                 "method": ROUTE_METHOD_LEADOCEAN_WORK_EMAIL,
@@ -2816,7 +2816,7 @@ async def _resolve_email_for_person(
                     logger.warning("QuickEnrich lookup failed for %s / %s: %s", full_name, domain, e)
 
         # Step 4.5: LeadOcean work email + personal fallback (tier 4,
-        # 2026-11-16 add — directly after QuickEnrich; the team's test report
+        # 2026-11-06 add — directly after QuickEnrich; the team's test report
         # measured 82% email yield on the exact cohort this position sees:
         # people QuickEnrich failed on). LinkedIn-URL keyed only. Client-side
         # guards make a spent daily 1M window an instant skip, and misses are

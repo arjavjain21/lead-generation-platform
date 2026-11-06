@@ -1237,7 +1237,7 @@
         <div class="page active" id="page-home">
             <div class="welcome-card">
                 <h2>Find Decision Makers with Verified Emails</h2>
-                <p>Build targeted lead lists by uploading domains, searching companies, or enriching LinkedIn profiles. Get emails using our 8-source cascade: Contacts DB, smartprospect, QuickEnrich, GetLeads, Blitz API, MoltSets, Better Enrich, and WizLeads.</p>
+                <p>Build targeted lead lists by uploading domains, searching companies, or enriching LinkedIn profiles. Get emails using our 9-source cascade: Contacts DB, smartprospect, QuickEnrich, LeadOcean, GetLeads, Blitz API, MoltSets, Better Enrich, and WizLeads.</p>
             </div>
             
             <div class="info-grid">
@@ -1487,6 +1487,11 @@
                                 <input type="checkbox" id="chain_provider_quickenrich" checked style="width:18px;height:18px;">
                                 <span style="font-weight:500;">QuickEnrich</span>
                                 <span style="font-size:0.75rem;color:#64748b;margin-left:auto;">Verified emails + phones</span>
+                            </label>
+                            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+                                <input type="checkbox" id="chain_provider_leadocean" checked style="width:18px;height:18px;">
+                                <span style="font-weight:500;">LeadOcean</span>
+                                <span style="font-size:0.75rem;color:#64748b;margin-left:auto;">Work + personal emails · 693M profiles</span>
                             </label>
                             <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
                                 <input type="checkbox" id="chain_provider_getleads" checked style="width:18px;height:18px;">
@@ -1775,6 +1780,11 @@
                             <span style="font-size:0.75rem;color:#64748b;">Verified emails + phones · 6000 req/min</span>
                         </div>
                         <div style="display:flex;align-items:center;gap:8px;">
+                            <input type="checkbox" id="provider_leadocean" checked style="width:16px;height:16px;cursor:pointer;">
+                            <label style="font-weight:600;cursor:pointer;">LeadOcean</label>
+                            <span style="font-size:0.75rem;color:#64748b;">Runs if QuickEnrich has no data · work + personal emails · auto-skips when daily quota spent</span>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:8px;">
                             <input type="checkbox" id="provider_getleads" checked style="width:16px;height:16px;cursor:pointer;">
                             <label style="font-weight:600;cursor:pointer;">GetLeads</label>
                             <span style="font-size:0.75rem;color:#64748b;">Verified emails + phones · batch 100</span>
@@ -1836,6 +1846,7 @@
                         <div class="cascade-step" data-provider="contacts_db">Contacts DB</div>
                         <div class="cascade-step" data-provider="smartprospect">smartprospect</div>
                         <div class="cascade-step" data-provider="quickenrich">QuickEnrich</div>
+                        <div class="cascade-step" data-provider="leadocean">LeadOcean</div>
                         <div class="cascade-step" data-provider="getleads">GetLeads</div>
                         <div class="cascade-step" data-provider="blitz">Blitz API</div>
                         <div class="cascade-step" data-provider="moltsets">MoltSets</div>
@@ -3194,7 +3205,7 @@ example.org,Jane Doe</pre>
             if (!wsOnly || !statusEl) return;
 
             const providerBoxes = [
-                'provider_blitz', 'provider_getleads', 'provider_smartprospect', 'provider_quickenrich',
+                'provider_blitz', 'provider_getleads', 'provider_smartprospect', 'provider_quickenrich', 'provider_leadocean',
                 'provider_moltsets', 'provider_wizleads', 'provider_better_enrich', 'provider_outscraper',
             ].map(id => document.getElementById(id)).filter(Boolean);
 
@@ -3689,6 +3700,7 @@ example.org,Jane Doe</pre>
             const providers = [];
             if (document.getElementById('provider_smartprospect').checked) providers.push('smartprospect');
             if (document.getElementById('provider_quickenrich').checked) providers.push('quickenrich');
+            if (document.getElementById('provider_leadocean').checked) providers.push('leadocean');
             if (document.getElementById('provider_getleads').checked) providers.push('getleads');
             if (document.getElementById('provider_blitz').checked) providers.push('blitz');
             if (document.getElementById('provider_moltsets').checked) providers.push('moltsets');
@@ -4834,6 +4846,7 @@ example.org,Jane Doe</pre>
             const providers = [];
             if (document.getElementById('chain_provider_smartprospect').checked) providers.push('smartprospect');
             if (document.getElementById('chain_provider_quickenrich').checked) providers.push('quickenrich');
+            if (document.getElementById('chain_provider_leadocean').checked) providers.push('leadocean');
             if (document.getElementById('chain_provider_getleads').checked) providers.push('getleads');
             if (document.getElementById('chain_provider_blitz').checked) providers.push('blitz');
             if (document.getElementById('chain_provider_moltsets').checked) providers.push('moltsets');
@@ -5844,7 +5857,7 @@ example.org,Jane Doe</pre>
                 // Update activity text
                 const activityText = document.getElementById('enrichmentActivityText');
                 if (activityText && data.current_provider) {
-                    const providerNames = { contacts_db: 'Internal Database', smartprospect: 'smartprospect', quickenrich: 'QuickEnrich', getleads: 'GetLeads', blitz: 'Blitz API', wizleads: 'WizLeads', better_enrich: 'BetterEnrich' };
+                    const providerNames = { contacts_db: 'Internal Database', smartprospect: 'smartprospect', quickenrich: 'QuickEnrich', leadocean: 'LeadOcean', getleads: 'GetLeads', blitz: 'Blitz API', wizleads: 'WizLeads', better_enrich: 'BetterEnrich', moltsets: 'MoltSets' };
                     activityText.textContent = 'Checking ' + (providerNames[data.current_provider] || data.current_provider) + '...';
                     updateCascadeStep(data.current_provider);
                 }
@@ -5889,7 +5902,7 @@ example.org,Jane Doe</pre>
         // Update cascade step indicator
         function updateCascadeStep(activeProvider) {
             const steps = document.querySelectorAll('#enrichmentCascadeSteps .cascade-step');
-            const providerOrder = ['contacts_db', 'smartprospect', 'quickenrich', 'getleads', 'blitz', 'moltsets', 'better_enrich', 'wizleads', 'complete'];
+            const providerOrder = ['contacts_db', 'smartprospect', 'quickenrich', 'leadocean', 'getleads', 'blitz', 'moltsets', 'better_enrich', 'wizleads', 'complete'];
             const activeIndex = providerOrder.indexOf(activeProvider);
 
             steps.forEach((step, i) => {
@@ -5951,6 +5964,7 @@ example.org,Jane Doe</pre>
                 'contacts_db': 'Contacts DB',
                 'smartprospect': 'smartprospect',
                 'quickenrich': 'QuickEnrich',
+                'leadocean': 'LeadOcean',
                 'getleads': 'GetLeads',
                 'blitz': 'Blitz',
                 'wizleads': 'WizLeads',
@@ -6752,6 +6766,7 @@ example.org,Jane Doe</pre>
                             if (p === 'contacts_db') return 'Internal Contacts DB';
                             if (p === 'smartprospect') return 'smartprospect';
                             if (p === 'quickenrich') return 'QuickEnrich';
+                            if (p === 'leadocean') return 'LeadOcean';
                             if (p === 'getleads') return 'GetLeads';
                             if (p === 'blitz') return 'Blitz';
                             if (p === 'wizleads') return 'WizLeads';
@@ -7788,6 +7803,7 @@ example.org,Jane Doe</pre>
                 const providers = [];
                 if (document.getElementById('chain_provider_smartprospect').checked) providers.push('smartprospect');
                 if (document.getElementById('chain_provider_quickenrich').checked) providers.push('quickenrich');
+                if (document.getElementById('chain_provider_leadocean').checked) providers.push('leadocean');
                 if (document.getElementById('chain_provider_getleads').checked) providers.push('getleads');
                 if (document.getElementById('chain_provider_blitz').checked) providers.push('blitz');
                 if (document.getElementById('chain_provider_wizleads').checked) providers.push('wizleads');

@@ -898,7 +898,7 @@ async def _resolve_person_email(
                 logger.debug("QuickEnrich lookup failed for %s / %s: %s", search_name, domain, e)
 
     # Strategy 4.5: LeadOcean work email + personal fallback (tier 4,
-    # 2026-11-16 — directly after QuickEnrich; team-tested at 82% yield on
+    # 2026-11-06 — directly after QuickEnrich; team-tested at 82% yield on
     # QE misses). LinkedIn-URL keyed only. The client guards a spent daily
     # 1M window (instant skip), negative-caches misses 7d (enrich lookups
     # bill whether found or not), and returns risk-graded statuses: verified
@@ -3143,7 +3143,7 @@ async def _enrich_single_linkedin(
                 logger.debug("QuickEnrich lookup failed: %s", e)
 
         # Step 2.5: LeadOcean work email + personal fallback (tier 4,
-        # 2026-11-16 — after QuickEnrich, before GetLeads; 82% measured
+        # 2026-11-06 — after QuickEnrich, before GetLeads; 82% measured
         # yield on QE misses). Client-side guards make a spent daily window
         # and known misses zero-latency skips.
         if linkedin_url and not _should_skip_provider(

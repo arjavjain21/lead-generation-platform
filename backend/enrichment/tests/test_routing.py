@@ -43,7 +43,7 @@ from enrichment import providers as providers_mod  # noqa: E402
 class TestRouteEnrichmentPure(unittest.TestCase):
     def test_linkedin_first_cascade_order(self):
         """Criterion 2: LinkedIn URL is present, calls land in this order
-        (2026-10-10 reorder): Contacts DB -> QuickEnrich -> GetLeads ->
+        (2026-11-06): Contacts DB -> QuickEnrich -> LeadOcean -> GetLeads ->
         Blitz LinkedIn -> Blitz find_work_email -> (name/domain fallbacks).
         """
         route = pipeline_mod.route_enrichment(
@@ -53,10 +53,11 @@ class TestRouteEnrichmentPure(unittest.TestCase):
         )
         methods = [s["method"] for s in route["steps"]]
         self.assertEqual(
-            methods[:5],
+            methods[:6],
             [
                 pipeline_mod.ROUTE_METHOD_PERSON_BY_LINKEDIN,
                 pipeline_mod.ROUTE_METHOD_EMPLOYEE_SEARCH_LINKEDIN_QUICKENRICH,
+                pipeline_mod.ROUTE_METHOD_LEADOCEAN_WORK_EMAIL,
                 pipeline_mod.ROUTE_METHOD_FIND_EMAIL_LINKEDIN_GETLEADS,
                 pipeline_mod.ROUTE_METHOD_PERSON_ENRICH_BY_LINKEDIN,
                 pipeline_mod.ROUTE_METHOD_FIND_WORK_EMAIL,

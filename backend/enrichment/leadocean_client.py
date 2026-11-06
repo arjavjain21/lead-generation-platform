@@ -1,13 +1,13 @@
 """
 LeadOcean API client — work-email waterfall tier 4 (api.leadocean.io).
 
-LeadOcean (Agency · UGC plan, 2026-11-16): $247/mo, 1M enrichments/day,
+LeadOcean (Agency · UGC plan, 2026-11-06): $247/mo, 1M enrichments/day,
 25M search records/month, 200 RPS account-wide, 5 keys (one used).
 Position: AFTER quickenrich, BEFORE getleads — the team's own test report
 (docs/LEADOCEAN_PROVIDER_TEST_REPORT.md) measured 82% email yield on the
 exact cohort this position sees (people QuickEnrich failed on).
 
-Live-verified contract (probe session 2026-11-16, ~6 records):
+Live-verified contract (probe session 2026-11-06, ~6 records):
 - Auth: ``x-api-key`` header. Key carries scopes [enrich, search].
 - ``GET /v2/people/email/work?linkedin_url=`` → ``{success, data: V2Email | null}``
   where V2Email = {email, status, verified_batch_date}. ``data: null`` =
@@ -68,7 +68,7 @@ logger = logging.getLogger(__name__)
 BASE_URL = os.getenv("LEADOCEAN_BASE_URL", "https://api.leadocean.io").rstrip("/")
 API_KEY = os.getenv("LEADOCEAN_API_KEY", "")
 
-# 200 RPS is ACCOUNT-wide (owner decision 2026-11-16: single key, assume the
+# 200 RPS is ACCOUNT-wide (owner decision 2026-11-06: single key, assume the
 # cap spans keys). Run at 75% so other consumers of the same account (e.g.
 # the arjav-hermes key seen on /v1/account) keep headroom.
 _RATE_LIMIT_RPS = env_float("LEADOCEAN_RATE_LIMIT_RPS", "150")
@@ -270,7 +270,7 @@ async def find_person_email(
 
     Flow (one or two records per attempt):
       1. ``/v2/people/email/work`` — status-bearing work address.
-      2. Personal fallback (owner decision 2026-11-16): when work is
+      2. Personal fallback (owner decision 2026-11-06): when work is
          absent OR its status is rejected-grade, ``/v2/people/email/personal``
          returns a ranked supplier-asserted list — take the first.
          Live-justified: bill gates → work null + 3 personal addresses.

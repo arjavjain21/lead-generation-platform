@@ -75,7 +75,7 @@ SOURCE_GROUPS: dict[str, str] = {
     # both pipeline (SOURCE_MOLTSETS) and list_builder (SOURCE_MOLTSETS).
     "moltsets": "moltsets",
     "moltsets_email": "moltsets",
-    # LeadOcean sources — person email tier 4 (2026-11-16).
+    # LeadOcean sources — person email tier 4 (2026-11-06).
     "leadocean": "leadocean",
     "leadocean_email": "leadocean",
     # BetterEnrich sources

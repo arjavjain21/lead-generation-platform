@@ -66,6 +66,7 @@ class TestRoutePlanGetLeadsAfterBlitz:
         assert methods == [
             pipeline_mod.ROUTE_METHOD_PERSON_BY_LINKEDIN,
             pipeline_mod.ROUTE_METHOD_EMPLOYEE_SEARCH_LINKEDIN_QUICKENRICH,
+            pipeline_mod.ROUTE_METHOD_LEADOCEAN_WORK_EMAIL,
             pipeline_mod.ROUTE_METHOD_FIND_EMAIL_LINKEDIN_GETLEADS,
             pipeline_mod.ROUTE_METHOD_PERSON_ENRICH_BY_LINKEDIN,
             pipeline_mod.ROUTE_METHOD_FIND_WORK_EMAIL,
@@ -464,7 +465,7 @@ def test_valid_providers_mirror_x3():
     assert set(pipeline_mod.VALID_PROVIDERS) == set(lb.VALID_PROVIDERS)
     assert set(pipeline_mod.VALID_PROVIDERS) == {
         "contacts_db", "blitz", "getleads", "smartprospect", "quickenrich",
-        "wizleads", "better_enrich", "moltsets",
+        "leadocean", "wizleads", "better_enrich", "moltsets",
     }
 
 

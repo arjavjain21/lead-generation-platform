@@ -1,7 +1,7 @@
 """
-Unit tests for ``enrichment.leadocean_client`` (2026-11-16 integration).
+Unit tests for ``enrichment.leadocean_client`` (2026-11-06 integration).
 
-Live-verified contract (probe session 2026-11-16):
+Live-verified contract (probe session 2026-11-06):
 - ``GET /v2/people/email/work?linkedin_url=`` → 200 ``{success, data: V2Email | null}``;
   HTTP 404 = no profile. V2Email = {email, status, verified_batch_date}.
 - ``GET /v2/people/email/personal?linkedin_url=`` → 200 ``{success, data: [{email,
