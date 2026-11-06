@@ -67,6 +67,7 @@ _HOSTS: dict[str, str] = {
     "app.getleads.io": "getleads",
     "app.quickenrich.io": "quickenrich",
     "api.moltsets.com": "moltsets",
+    "api.leadocean.io": "leadocean",
     "validation.hyperke.org": "mailtester",
     "api.scraper.tech": "scraper_tech",
     # SEG MX classification (enrichment/seg.py): Cloudflare DoH. dns.google
@@ -88,6 +89,7 @@ _PROVIDER_OWN_DOMAINS: dict[str, set[str]] = {
     "getleads": {"getleads.io"},
     "quickenrich": {"quickenrich.io"},
     "moltsets": {"moltsets.com"},
+    "leadocean": {"leadocean.io"},
     "mailtester": {"hyperke.org", "validation.hyperke.org"},
     "scraper_tech": {"scraper.tech"},
     # SEG DoH responses are DNS answers, never provider emails. cloudflare.com

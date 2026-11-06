@@ -31,6 +31,7 @@ import os
 os.environ.setdefault("ENABLE_MCP_ORACLE", "false")
 os.environ.setdefault("ENABLE_STARTUP_REAPERS", "false")
 os.environ.setdefault("ENABLE_BLITZ_MISS_SKIP", "false")
+os.environ.setdefault("LEADOCEAN_GUARDS_ARMED", "false")
 
 # 4. Env-leak guard (2026-10-15): several modules run ``load_dotenv()`` at
 #    IMPORT time — ``main`` (endpoint tests) and the root-level
@@ -68,7 +69,7 @@ for _k in [k for k in os.environ if k.startswith("ENABLE_")]:
 for _k in (
     "GETLEADS_API_KEY", "BLITZ_API_KEY", "SMARTPROSPECT_API_KEY",
     "QUICKENRICH_API_KEY", "MOLTSETS_API_KEY", "WIZLEADS_API_KEY",
-    "BETTER_ENRICH_API_KEY",
+    "BETTER_ENRICH_API_KEY", "LEADOCEAN_API_KEY",
 ):
     os.environ.pop(_k, None)
 # Re-apply pytest's own guards AFTER the scrub (they are intentionally
@@ -76,6 +77,7 @@ for _k in (
 os.environ.setdefault("ENABLE_MCP_ORACLE", "false")
 os.environ.setdefault("ENABLE_STARTUP_REAPERS", "false")
 os.environ.setdefault("ENABLE_BLITZ_MISS_SKIP", "false")
+os.environ.setdefault("LEADOCEAN_GUARDS_ARMED", "false")
 
 _SESSION_ENV_START = dict(os.environ)
 

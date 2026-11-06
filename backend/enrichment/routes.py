@@ -46,6 +46,7 @@ from . import wizleads_client
 from . import getleads_client
 from . import smartprospect_client
 from . import quickenrich_client
+from . import leadocean_client
 from . import moltsets_client
 from . import mailtester_client
 from . import providers
@@ -212,7 +213,7 @@ async def _run_contacts_writer_v2(
 
 
 # Valid provider values for force_provider / selected_providers parameter
-VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "getleads", "smartprospect", "quickenrich", "wizleads", "better_enrich", "moltsets"})
+VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "getleads", "smartprospect", "quickenrich", "leadocean", "wizleads", "better_enrich", "moltsets"})
 
 
 def _should_skip_provider(
@@ -2843,6 +2844,74 @@ async def unified_enrich(
                     logger.warning("QuickEnrich employee_search failed: %s (%s)", _qe_msg, _qe_et)
                 except Exception as e:
                     logger.debug("QuickEnrich lookup failed in enhanced mode: %s", e)
+
+            # Step 1.5b.5: LeadOcean work email + personal fallback (tier 4,
+            # 2026-11-16 — directly after QuickEnrich; 82% measured yield on
+            # QE misses). LinkedIn-URL keyed; client guards handle the daily
+            # wall + miss cache. Non-verified grades are mailtester-gated in
+            # the client's callers only when validate_email — inline here we
+            # surface the hint and let the mailtester pass below decide
+            # (mirrors the blitz-unverified handling in this function).
+            if req.linkedin_url and not _should_skip_provider(
+                "leadocean", req.force_provider, req.selected_providers
+            ):
+                try:
+                    lo_result = await leadocean_client.find_person_email(
+                        blitz_http, linkedin_url=req.linkedin_url,
+                    )
+                    if lo_result is not None and not isinstance(lo_result, dict):
+                        logger.warning(
+                            "LeadOcean provider error: %s", getattr(lo_result, "message", "")
+                        )
+                    elif isinstance(lo_result, dict) and lo_result.get("email"):
+                        lo_email = lo_result["email"]
+                        lo_verified = lo_result.get("verified_hint") or "unknown"
+                        if lo_verified == "yes" or not req.validate_email:
+                            contacts.append({
+                                "full_name": full_name or "",
+                                "first_name": req.first_name or "",
+                                "last_name": req.last_name or "",
+                                "title": "",
+                                "email": lo_email,
+                                "linkedin_url": req.linkedin_url or "",
+                                "headline": "",
+                                "location_city": "",
+                                "location_country": "",
+                                "icp_tier": 1,
+                                "email_source": "leadocean",
+                            })
+                            sources["contacts"] = "leadocean"
+                            sources["emails"] = "leadocean"
+                            logger.info("LeadOcean found %s email in enhanced mode: %s",
+                                        lo_result.get("email_type"), lo_email)
+                        else:
+                            # Non-verified grade — MailTester gate, then the
+                            # GetLeads fallback below continues on reject.
+                            try:
+                                lo_mt = await mailtester_client.verify_email(blitz_http, lo_email)
+                                if lo_mt.get("valid"):
+                                    contacts.append({
+                                        "full_name": full_name or "",
+                                        "first_name": req.first_name or "",
+                                        "last_name": req.last_name or "",
+                                        "title": "",
+                                        "email": lo_email,
+                                        "linkedin_url": req.linkedin_url or "",
+                                        "headline": "",
+                                        "location_city": "",
+                                        "location_country": "",
+                                        "icp_tier": 1,
+                                        "email_source": "leadocean",
+                                    })
+                                    sources["contacts"] = "leadocean"
+                                    sources["emails"] = "leadocean"
+                                    logger.info("LeadOcean email passed MailTester in enhanced mode: %s", lo_email)
+                                else:
+                                    logger.info("LeadOcean email rejected by MailTester in enhanced mode: %s", lo_email)
+                            except RuntimeError:
+                                logger.info("MailTester unavailable for LeadOcean email — continuing cascade")
+                except Exception as e:
+                    logger.debug("LeadOcean lookup failed in enhanced mode: %s", e)
 
             # Step 1.5c: GetLeads from-person email finder (first+last+domain;
             # mirrors pipeline's ROUTE_METHOD_FIND_EMAIL_GETLEADS).
@@ -8368,6 +8437,60 @@ async def get_blitz_fair_use(
             for row in history
         ],
     }
+
+
+@router.get("/leadocean/usage")
+async def get_leadocean_usage(
+    live: bool = Query(False, description="Also call LeadOcean /v1/usage (free endpoint) for a fresh snapshot"),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """
+    LeadOcean quota gauge — cooldown state, miss-store stats, usage ledger.
+
+    LeadOcean (Agency UGC): 1M enrichments/day (the daily wall THROTTLES
+    ~400x instead of erroring past it — the cooldown makes that an instant
+    skip until 00:00 UTC), 25M search records/month, 200 RPS account-wide.
+    The vendor's own dashboard under-counts (LEADOCEAN_PROVIDER_TEST_REPORT
+    §7.8) — this endpoint is the source of truth. ``?live=true`` refreshes
+    from the free /v1/usage endpoint (no quota consumed).
+    """
+    from . import leadocean_client
+    from . import leadocean_guards
+
+    payload: dict = {
+        "enabled": leadocean_client._is_enabled(),
+        "api_key_configured": bool(leadocean_client.API_KEY),
+        **leadocean_guards.usage_status(),
+    }
+
+    if live:
+        if not leadocean_client.API_KEY:
+            raise HTTPException(status_code=400, detail="LEADOCEAN_API_KEY not configured")
+        try:
+            async with httpx.AsyncClient() as client:
+                snapshot = await leadocean_client.get_usage(client)
+            if isinstance(snapshot, dict):
+                payload["live_usage"] = snapshot
+            else:
+                payload["live_usage"] = {
+                    "error": getattr(snapshot, "message", None) or "no data returned",
+                    "error_type": getattr(snapshot, "error_type", None),
+                }
+        except Exception as exc:
+            payload["live_usage"] = {"error": str(exc)}
+
+    return payload
+
+
+@router.delete("/leadocean/cooldown")
+async def clear_leadocean_cooldown(
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """Operator escape hatch — clear an armed LeadOcean daily-wall cooldown."""
+    from . import leadocean_guards
+
+    leadocean_guards.clear_cooldown()
+    return {"cleared": True}
 
 
 @router.get("/moltsets/usage")

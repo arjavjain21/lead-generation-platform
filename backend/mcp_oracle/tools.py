@@ -317,6 +317,7 @@ def explain_response_field(field_name: str) -> str:
             "- `smartprospect_email` — found via SmartProspect (paid)\n"
             "- `quickenrich_email` — person email via QuickEnrich employee-search (paid)\n"
             "- `quickenrich_contacts` — decision makers via QuickEnrich dataset-search (paid)\n"
+            "- `leadocean_email` — work + personal email via LeadOcean (tier 4)\n"
             "- `moltsets_email` — best email via MoltSets linkedin-to-best-email / search-by-name (paid)\n"
             "- `wizleads_email` — found via WizLeads (paid)\n"
             "- `better_enrich`, `better_enrich_company_email` — found via BetterEnrich (paid)\n"
@@ -463,7 +464,7 @@ def explain_error_code(error_message: str) -> str:
                 "## Empty selected_providers List\n\n"
                 "`selected_providers` must contain at least one provider.\n\n"
                 "**Valid values:** `contacts_db`, `smartprospect`, `quickenrich`, "
-                "`getleads`, `blitz`, `moltsets`, `wizleads`, `better_enrich`"
+                "`getleads`, `leadocean`, `blitz`, `moltsets`, `wizleads`, `better_enrich`"
             )
         if "invalid" in msg_lower:
             return (
@@ -525,11 +526,12 @@ def list_current_providers() -> str:
         (1, "contacts_db", "75 RPS", "Free"),
         (2, "smartprospect", "1900 RPM shared*", "Paid"),
         (3, "quickenrich", _qe_rate, "Paid"),
-        (4, "getleads", "100/min*", "Paid"),
-        (5, "blitz", "50 RPS/endpoint*", "Paid"),
-        (6, "moltsets", "30 RPM (fair-use windows*)", "Paid"),
-        (7, "better_enrich", "10/5 RPS", "Paid"),
-        (8, "wizleads", "10 RPS", "Paid"),
+        (4, "leadocean", "150 RPS capped (plan 200)*", "Paid"),
+        (5, "getleads", "100/min*", "Paid"),
+        (6, "blitz", "50 RPS/endpoint*", "Paid"),
+        (7, "moltsets", "30 RPM (fair-use windows*)", "Paid"),
+        (8, "better_enrich", "10/5 RPS", "Paid"),
+        (9, "wizleads", "10 RPS", "Paid"),
     ]
 
     lines = [

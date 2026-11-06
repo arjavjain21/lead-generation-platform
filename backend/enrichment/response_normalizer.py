@@ -992,6 +992,45 @@ def normalize_moltsets_contact(raw: dict) -> Optional[dict[str, str]]:
     )
 
 
+def normalize_leadocean_contact(raw: dict) -> Optional[dict[str, str]]:
+    """Normalize a LeadOcean contact dict.
+
+    Per ``leadocean_client.find_person_email`` (2026-11-16), the captured
+    payload is::
+
+        {
+            "found": True,
+            "email": "jane@acme.com",
+            "email_type": "work" | "personal",
+            "status": "verified" | "catch_all" | "untested" | ... | "",   # "" on personal
+            "verified_batch_date": "2026-09-20" | "",
+            "verified_hint": "yes" | "unknown",
+        }
+
+    plus identity (full_name / linkedin_url) stitched at the cascade call
+    site. Status/type/date ride along via ``extra`` — they are LeadOcean's
+    own deliverability provenance (their verifier only probe-sends business
+    addresses; personal is supplier-asserted).
+    """
+    if not isinstance(raw, dict):
+        return None
+    return _build_record(
+        source="leadocean",
+        email=raw.get("email"),
+        first_name=raw.get("first_name"),
+        last_name=raw.get("last_name"),
+        full_name=raw.get("full_name"),
+        linkedin_url=raw.get("linkedin_url"),
+        domain=raw.get("domain") or raw.get("company_domain"),
+        extra={
+            "email_type": str(raw.get("email_type", "") or ""),
+            "status": str(raw.get("status", "") or ""),
+            "verified_hint": str(raw.get("verified_hint", "") or ""),
+            "verified_batch_date": str(raw.get("verified_batch_date", "") or ""),
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Generic dispatcher
 # ---------------------------------------------------------------------------
@@ -1022,6 +1061,11 @@ _PROVIDER_DISPATCH: dict[str, Callable[[dict], Optional[dict[str, str]]]] = {
     "moltsets_email": normalize_moltsets_contact,
     "molt_sets": normalize_moltsets_contact,
     "molt-sets": normalize_moltsets_contact,
+    "leadocean": normalize_leadocean_contact,
+    "leadocean_email": normalize_leadocean_contact,
+    "lead_ocean": normalize_leadocean_contact,
+    "lead-ocean": normalize_leadocean_contact,
+    "lo": normalize_leadocean_contact,
 }
 
 
@@ -1066,6 +1110,7 @@ __all__ = [
     "normalize_getleads_contact",
     "normalize_quickenrich_contact",
     "normalize_moltsets_contact",
+    "normalize_leadocean_contact",
     "normalize_provider_contact",
     "previous_companies_titles",
 ]

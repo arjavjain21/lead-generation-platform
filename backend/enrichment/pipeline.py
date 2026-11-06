@@ -52,6 +52,7 @@ from . import wizleads_client
 from . import smartprospect_client
 from . import getleads_client
 from . import quickenrich_client
+from . import leadocean_client
 from . import moltsets_client
 from . import identifier_utils
 from . import company_fallback
@@ -277,7 +278,7 @@ def _compact_attempts_summary(attempts: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 # Valid provider values for force_provider / selected_providers parameter
-VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "getleads", "smartprospect", "quickenrich", "wizleads", "better_enrich", "moltsets"})
+VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "getleads", "smartprospect", "quickenrich", "leadocean", "wizleads", "better_enrich", "moltsets"})
 
 
 def _should_skip_provider(
@@ -366,6 +367,8 @@ def _normalize_source(source: str) -> str:
         return "quickenrich"
     elif source.startswith("moltsets"):
         return "moltsets"
+    elif source.startswith("leadocean"):
+        return "leadocean"
     elif source.startswith("smartprospect"):
         return "smartprospect"
     elif source.startswith("better_enrich"):
@@ -424,6 +427,7 @@ SOURCE_GETLEADS = "getleads_email"                        # Person email from Ge
 SOURCE_QUICKENRICH = "quickenrich_email"                  # Person email from QuickEnrich employee-search (app.quickenrich.io)
 SOURCE_QUICKENRICH_CONTACTS = "quickenrich_contacts"      # Decision makers from QuickEnrich dataset-search
 SOURCE_MOLTSETS = "moltsets_email"                        # Person email from MoltSets (api.moltsets.com, tier 6 since 2026-10-14)
+SOURCE_LEADOCEAN = "leadocean_email"                      # Person email from LeadOcean (api.leadocean.io, tier 4 since 2026-11-16)
 
 # Routing reasons (no_email_reason values)
 # The full standard enum (per LOOP.md acceptance test 2/8):
@@ -479,6 +483,7 @@ ROUTE_PROVIDER_QUICKENRICH = "quickenrich"
 ROUTE_PROVIDER_WIZLEADS = "wizleads"
 ROUTE_PROVIDER_BETTER_ENRICH = "better_enrich"
 ROUTE_PROVIDER_MOLTSETS = "moltsets"
+ROUTE_PROVIDER_LEADOCEAN = "leadocean"
 
 # Provider methods used in source_path.
 ROUTE_METHOD_PERSON_BY_LINKEDIN = "person_by_linkedin"
@@ -493,6 +498,7 @@ ROUTE_METHOD_FIND_EMAIL_LINKEDIN_GETLEADS = "find_email_linkedin_getleads"
 ROUTE_METHOD_EMPLOYEE_SEARCH_QUICKENRICH = "employee_search_quickenrich"
 ROUTE_METHOD_EMPLOYEE_SEARCH_LINKEDIN_QUICKENRICH = "employee_search_linkedin_quickenrich"
 ROUTE_METHOD_FIND_WORK_EMAIL_V3 = "find_work_email_v3"
+ROUTE_METHOD_LEADOCEAN_WORK_EMAIL = "leadocean_work_email"
 ROUTE_METHOD_BEST_EMAIL_LINKEDIN_MOLTSETS = "best_email_linkedin_moltsets"
 ROUTE_METHOD_SEARCH_EMAIL_NAME_MOLTSETS = "search_email_name_moltsets"
 ROUTE_METHOD_PHONE_REVERSE_LOOKUP = "phone_reverse_lookup"
@@ -604,6 +610,8 @@ def _provider_label(method: str) -> str:
         ROUTE_METHOD_SEARCH_EMAIL_NAME_MOLTSETS,
     ):
         return ROUTE_PROVIDER_MOLTSETS
+    if method == ROUTE_METHOD_LEADOCEAN_WORK_EMAIL:
+        return ROUTE_PROVIDER_LEADOCEAN
     if method == ROUTE_METHOD_PHONE_REVERSE_LOOKUP:
         return ROUTE_PROVIDER_BLITZ  # phone reverse is a Blitz concept
     return method
@@ -651,6 +659,9 @@ def _can_provider_use_method(method: str, inputs: dict[str, str]) -> bool:
         return bool(fn) and bool(dom)
     if method == ROUTE_METHOD_BEST_EMAIL_LINKEDIN_MOLTSETS:
         return bool(li)
+    if method == ROUTE_METHOD_LEADOCEAN_WORK_EMAIL:
+        # LeadOcean is LinkedIn-URL keyed (no name+domain person lookup).
+        return bool(li)
     if method == ROUTE_METHOD_SEARCH_EMAIL_NAME_MOLTSETS:
         # MoltSets search_business_email_by_name: first + last + company_domain.
         return bool(first) and bool(last) and bool(dom)
@@ -661,7 +672,7 @@ def _can_provider_use_method(method: str, inputs: dict[str, str]) -> bool:
 
 def _method_is_paid(method: str) -> bool:
     """Return True if the method calls a paid provider family."""
-    return _provider_label(method) in (ROUTE_PROVIDER_BLITZ, ROUTE_PROVIDER_BETTER_ENRICH, ROUTE_PROVIDER_WIZLEADS, ROUTE_PROVIDER_SMARTPROSPECT, ROUTE_PROVIDER_QUICKENRICH, ROUTE_PROVIDER_MOLTSETS)
+    return _provider_label(method) in (ROUTE_PROVIDER_BLITZ, ROUTE_PROVIDER_BETTER_ENRICH, ROUTE_PROVIDER_WIZLEADS, ROUTE_PROVIDER_SMARTPROSPECT, ROUTE_PROVIDER_QUICKENRICH, ROUTE_PROVIDER_MOLTSETS, ROUTE_PROVIDER_LEADOCEAN)
 
 
 def _method_is_free(method: str) -> bool:
@@ -809,6 +820,14 @@ def route_enrichment(
                 "provider": ROUTE_PROVIDER_QUICKENRICH,
             },
             {
+                # LeadOcean work-email (+ personal fallback) by LinkedIn URL —
+                # tier 4 since 2026-11-16, directly after QuickEnrich (the
+                # team's own test measured 82% yield on QE misses).
+                "identifier": ROUTE_IDENTIFIER_LINKEDIN,
+                "method": ROUTE_METHOD_LEADOCEAN_WORK_EMAIL,
+                "provider": ROUTE_PROVIDER_LEADOCEAN,
+            },
+            {
                 "identifier": ROUTE_IDENTIFIER_LINKEDIN,
                 "method": ROUTE_METHOD_FIND_EMAIL_LINKEDIN_GETLEADS,
                 "provider": ROUTE_PROVIDER_GETLEADS,
@@ -852,6 +871,12 @@ def route_enrichment(
                     "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
                     "method": ROUTE_METHOD_EMPLOYEE_SEARCH_QUICKENRICH,
                     "provider": ROUTE_PROVIDER_QUICKENRICH,
+                })
+                raw_steps.append({
+                    # LeadOcean tier 4 — capability-gated on linkedin_url.
+                    "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
+                    "method": ROUTE_METHOD_LEADOCEAN_WORK_EMAIL,
+                    "provider": ROUTE_PROVIDER_LEADOCEAN,
                 })
                 raw_steps.append({
                     "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
@@ -921,6 +946,12 @@ def route_enrichment(
                 "provider": ROUTE_PROVIDER_QUICKENRICH,
             })
             raw_steps.append({
+                # LeadOcean tier 4 — capability-gated on linkedin_url.
+                "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
+                "method": ROUTE_METHOD_LEADOCEAN_WORK_EMAIL,
+                "provider": ROUTE_PROVIDER_LEADOCEAN,
+            })
+            raw_steps.append({
                 "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
                 "method": ROUTE_METHOD_FIND_EMAIL_GETLEADS,
                 "provider": ROUTE_PROVIDER_GETLEADS,
@@ -980,6 +1011,7 @@ def route_enrichment(
             "wizleads": ROUTE_PROVIDER_WIZLEADS,
             "better_enrich": ROUTE_PROVIDER_BETTER_ENRICH,
             "moltsets": ROUTE_PROVIDER_MOLTSETS,
+            "leadocean": ROUTE_PROVIDER_LEADOCEAN,
         }
         forced = family_map.get(force_provider)
         if not forced:
@@ -1108,6 +1140,7 @@ async def _run_route_step(
     from . import better_enrich_client as _be
     from . import smartprospect_client as _sp
     from . import moltsets_client as _mo
+    from . import leadocean_client as _lo
 
     verification: dict[str, Any] = {
         "dm_email_verified": "unknown",
@@ -1531,6 +1564,36 @@ async def _run_route_step(
             if result and result.get("email"):
                 verification["dm_email_verified"] = "yes"
                 return {"email": result["email"], "source": SOURCE_WIZLEADS, "verification": verification}
+            return {"email": "", "source": SOURCE_NOT_FOUND}
+
+        if method == ROUTE_METHOD_LEADOCEAN_WORK_EMAIL:
+            _record("leadocean")
+            try:
+                result = await _lo.find_person_email(
+                    blitz_http, linkedin_url=inputs["linkedin_url"],
+                )
+            except Exception as e:
+                logger.warning("LeadOcean find_person_email failed: %s", e)
+                return {"email": "", "source": SOURCE_NOT_FOUND}
+            if _is_provider_error(result):
+                return result
+            if result and result.get("email"):
+                verified_hint = result.get("verified_hint") or "unknown"
+                if verified_hint == "yes" or not validate_email:
+                    verification["dm_email_verified"] = verified_hint
+                    return {"email": result["email"], "source": SOURCE_LEADOCEAN, "verification": verification}
+                try:
+                    result_mt = await _mt.verify_email(blitz_http, result["email"])
+                    verification["dm_email_verified"] = "yes" if result_mt["valid"] else "no"
+                    verification["mailtester_code"] = result_mt["code"]
+                    verification["mailtester_message"] = result_mt["message"]
+                    if result_mt["valid"]:
+                        return {"email": result["email"], "source": SOURCE_LEADOCEAN, "verification": verification}
+                    return {"email": "", "source": SOURCE_NOT_FOUND}
+                except RuntimeError:
+                    verification["mailtester_code"] = "unavailable"
+                    verification["dm_email_verified"] = "unknown"
+                    return {"email": result["email"], "source": SOURCE_LEADOCEAN, "verification": verification}
             return {"email": "", "source": SOURCE_NOT_FOUND}
 
         if method in (
@@ -2751,6 +2814,61 @@ async def _resolve_email_for_person(
                 except Exception as e:
                     _record_error("quickenrich", "find_person_email", e)
                     logger.warning("QuickEnrich lookup failed for %s / %s: %s", full_name, domain, e)
+
+        # Step 4.5: LeadOcean work email + personal fallback (tier 4,
+        # 2026-11-16 add — directly after QuickEnrich; the team's test report
+        # measured 82% email yield on the exact cohort this position sees:
+        # people QuickEnrich failed on). LinkedIn-URL keyed only. Client-side
+        # guards make a spent daily 1M window an instant skip, and misses are
+        # negative-cached 7d (enrich lookups bill 1 record whether found or
+        # not — unlike QE). Status policy: 'verified' (their own probe-sent
+        # verifier) accepted directly; other grades MailTester-gated;
+        # personal addresses always MailTester-gated (no status published).
+        if linkedin_url and not _should_skip_provider("leadocean", force_provider):
+            _record("leadocean")
+            try:
+                result = await leadocean_client.find_person_email(
+                    blitz_client_inst, linkedin_url=linkedin_url,
+                )
+                if _is_provider_error(result):
+                    _record_error("leadocean", "find_person_email", result.message,
+                                  result.error_type)
+                elif result and result.get("email"):
+                    email = result["email"]
+                    _capture("leadocean", {
+                        **result,
+                        "full_name": full_name,
+                        "first_name": first_name,
+                        "last_name": last_name,
+                        "linkedin_url": linkedin_url,
+                        "email": email,
+                    })
+                    if result.get("verified_hint") == "yes" or not validate_email:
+                        verification_info["dm_email_verified"] = (
+                            result.get("verified_hint") or "unknown"
+                        )
+                        logger.info("LeadOcean found %s email for %s: %s",
+                                    result.get("email_type"), full_name, email)
+                        return email, SOURCE_LEADOCEAN, verification_info
+                    # Non-verified grade — MailTester gate (Blitz policy).
+                    try:
+                        result_mt = await mailtester_client.verify_email(
+                            blitz_client_inst, email
+                        )
+                        verification_info["dm_email_verified"] = "yes" if result_mt["valid"] else "no"
+                        verification_info["mailtester_code"] = result_mt["code"]
+                        verification_info["mailtester_message"] = result_mt["message"]
+                        if result_mt["valid"]:
+                            return email, SOURCE_LEADOCEAN, verification_info
+                        logger.info("LeadOcean %s-grade email rejected by MailTester: %s - falling through",
+                                    result.get("status"), email)
+                    except RuntimeError:
+                        verification_info["mailtester_code"] = "unavailable"
+                        verification_info["dm_email_verified"] = "unknown"
+                        return email, SOURCE_LEADOCEAN, verification_info
+            except Exception as e:
+                _record_error("leadocean", "find_person_email", e)
+                logger.warning("LeadOcean lookup failed for %s: %s", linkedin_url, e)
 
         # Step 5: GetLeads person email (first + last + domain, batch-capable)
         # Runs after SmartProspect + QuickEnrich. Gates on firstName + lastName +

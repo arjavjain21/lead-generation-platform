@@ -32,6 +32,7 @@ from . import wizleads_client
 from . import smartprospect_client
 from . import getleads_client
 from . import quickenrich_client
+from . import leadocean_client
 from . import moltsets_client
 from . import providers
 from . import mailtester_client
@@ -99,7 +100,7 @@ def _detect_linkedin_url_type(url: str) -> str:
 
 
 # Valid provider values for force_provider parameter
-VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "getleads", "smartprospect", "quickenrich", "wizleads", "better_enrich", "moltsets"})
+VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "getleads", "smartprospect", "quickenrich", "leadocean", "wizleads", "better_enrich", "moltsets"})
 
 
 def _should_skip_provider(
@@ -225,6 +226,7 @@ SOURCE_SMARTPROSPECT = "smartprospect_email"
 SOURCE_GETLEADS = "getleads_email"
 SOURCE_QUICKENRICH = "quickenrich_email"
 SOURCE_MOLTSETS = "moltsets_email"
+SOURCE_LEADOCEAN = "leadocean_email"
 SOURCE_BETTER_ENRICH = "better_enrich"
 SOURCE_BLITZ_COMPANY = "blitz_company"
 SOURCE_NOT_FOUND = "not_found"
@@ -894,6 +896,34 @@ async def _resolve_person_email(
                     return _qe_result["email"], "", SOURCE_QUICKENRICH, verified, "", "", {}
             except Exception as e:
                 logger.debug("QuickEnrich lookup failed for %s / %s: %s", search_name, domain, e)
+
+    # Strategy 4.5: LeadOcean work email + personal fallback (tier 4,
+    # 2026-11-16 — directly after QuickEnrich; team-tested at 82% yield on
+    # QE misses). LinkedIn-URL keyed only. The client guards a spent daily
+    # 1M window (instant skip), negative-caches misses 7d (enrich lookups
+    # bill whether found or not), and returns risk-graded statuses: verified
+    # accepted directly, everything else mailtester-gated by callers.
+    if linkedin_url and not _should_skip_provider(
+        "leadocean", force_provider, selected_providers
+    ):
+        if record_provider_use:
+            record_provider_use("leadocean")
+        try:
+            lo_result = await leadocean_client.find_person_email(
+                blitz_http, linkedin_url=linkedin_url,
+            )
+            if _is_provider_error(lo_result):
+                logger.warning(
+                    "LeadOcean provider error: %s", getattr(lo_result, "message", "")
+                )
+            elif lo_result and lo_result.get("email"):
+                verified = lo_result.get("verified_hint") or "unknown"
+                logger.debug("LeadOcean found %s email for %s: %s",
+                             lo_result.get("email_type"), search_name or linkedin_url,
+                             lo_result["email"])
+                return lo_result["email"], "", SOURCE_LEADOCEAN, verified, "", "", {}
+        except Exception as e:
+            logger.debug("LeadOcean lookup failed: %s", e)
 
     # Strategy 5: GetLeads by first + last + domain (batch-capable)
     # Runs after SmartProspect + QuickEnrich, before the demoted Blitz tiers
@@ -3111,6 +3141,33 @@ async def _enrich_single_linkedin(
                     return row
             except Exception as e:
                 logger.debug("QuickEnrich lookup failed: %s", e)
+
+        # Step 2.5: LeadOcean work email + personal fallback (tier 4,
+        # 2026-11-16 — after QuickEnrich, before GetLeads; 82% measured
+        # yield on QE misses). Client-side guards make a spent daily window
+        # and known misses zero-latency skips.
+        if linkedin_url and not _should_skip_provider(
+            "leadocean", force_provider, selected_providers
+        ):
+            if record_provider_use:
+                record_provider_use("leadocean")
+            try:
+                lo_result = await leadocean_client.find_person_email(
+                    blitz_http, linkedin_url=linkedin_url,
+                )
+                if _is_provider_error(lo_result):
+                    logger.warning(
+                        "LeadOcean provider error: %s", getattr(lo_result, "message", "")
+                    )
+                elif lo_result and lo_result.get("email"):
+                    row["dm_linkedin_url"] = linkedin_url
+                    row["dm_email"] = lo_result["email"]
+                    row["dm_email_verified"] = lo_result.get("verified_hint") or "unknown"
+                    row["dm_email_source"] = SOURCE_LEADOCEAN
+                    row["row_status"] = STATUS_ENRICHED
+                    return row
+            except Exception as e:
+                logger.debug("LeadOcean lookup failed: %s", e)
 
         # Step 3: GetLeads from-linkedin fallback (PAID). Reached when
         # Contacts DB and QuickEnrich both missed (G17: also on an emailless

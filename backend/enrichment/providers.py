@@ -21,6 +21,7 @@ ENABLED_PROVIDERS: Final[dict[str, bool]] = {
     "getleads": True,   # GetLeads (app.getleads.io), email + decision-makers enrichment
     "quickenrich": True,   # QuickEnrich (app.quickenrich.io), person email + domain decision-makers. Standard plan ($99/mo, 2026-10): 1000 RPM search / 300 RPM domain. Kill switch ENABLE_QUICKENRICH.
     "moltsets": True,   # MoltSets (api.moltsets.com), person email tier 6th ($97/mo: 15k rec/5h, 75k rec/wk, 7.5k searches/5h). Kill switch ENABLE_MOLTSETS. Cooldown + miss store in moltsets_guards.py
+    "leadocean": True,   # LeadOcean (api.leadocean.io), person email tier 4 — directly after quickenrich (Agency UGC $247/mo: 1M enrich/day, 25M search/mo, 200 RPS). Kill switch ENABLE_LEADOCEAN. Daily-wall cooldown + miss store in leadocean_guards.py
     "prospeo": False,   # ← disable Prospeo (was paid, temporarily disabled)
 }
 
@@ -52,6 +53,9 @@ def is_provider_enabled(provider: str) -> bool:
             return False
     if provider == "moltsets":
         if os.environ.get("ENABLE_MOLTSETS", "true").lower() != "true":
+            return False
+    if provider == "leadocean":
+        if os.environ.get("ENABLE_LEADOCEAN", "true").lower() != "true":
             return False
     return True
 
