@@ -3899,16 +3899,20 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
             Returns (email, source, route_result) so the caller can also
             surface the routing block in the response.
             """
-            # Prefer the name+domain cascade when we have name splits,
-            # because `route_enrichment` only includes the WizLeads and
-            # BetterEnrich person-email steps in that mode. The
-            # LinkedIn-first cascade (used when only linkedin_url is
-            # available) stops at BetterEnrich via `find_work_email_v3`
-            # and is the right fallback for contacts that have no name.
-            has_name_domain = bool(person_first_name and person_last_name and domain)
-            route_linkedin = person_linkedin if not has_name_domain else ""
+            # Pass the person's LinkedIn URL THROUGH when present (phase 2,
+            # 2026-11-07). With URL + name splits + domain, route_enrichment
+            # builds the linkedin_first SUPERSET: LinkedIn-keyed steps first
+            # (contacts_db-by-li, QE, LeadOcean, GetLeads, blitz, moltsets),
+            # then the full name+domain fallback arm (incl. WizLeads +
+            # BetterEnrich — the old "name+domain only" comment was stale:
+            # both appear in the linkedin_first fallback too). Without this,
+            # LeadOcean's own email tier was unreachable for the people its
+            # domain→people discovery found (they always carry a LinkedIn
+            # URL), and any other LinkedIn-bearing discovered person skipped
+            # the LinkedIn-keyed tiers this surface's sibling (the CSV
+            # pipeline's _resolve_email_for_person) already runs.
             route = pipeline.route_enrichment(
-                linkedin_url=route_linkedin or "",
+                linkedin_url=person_linkedin or "",
                 full_name=person_name or "",
                 first_name=person_first_name or "",
                 last_name=person_last_name or "",
