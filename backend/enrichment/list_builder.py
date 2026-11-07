@@ -43,7 +43,7 @@ from . import fallback_config as fb_cfg
 from . import seg
 from . import title_filter
 from .env_flags import env_flag
-from .pipeline import _getleads_dm_snapshot, _is_provider_error, _quickenrich_domain_discovery
+from .pipeline import _getleads_dm_snapshot, _is_provider_error, _leadocean_domain_discovery, _quickenrich_domain_discovery
 from shared.circuit_breaker import CircuitBreakerError
 from .response_normalizer import previous_companies_titles as _previous_companies_titles
 
@@ -1587,6 +1587,33 @@ async def _enrich_single_domain(
                     len(_gl_persons), domain,
                 )
 
+        # LeadOcean domain-people no-LI rescue (phase 2, 2026-11-07): last
+        # resort before the no_linkedin return. Domain-keyed — no company
+        # LinkedIn URL needed — and bills the (untouched) 25M/mo search
+        # window, not the 1M/day enrich wall. Mirrors the GetLeads rescue
+        # seeding above.
+        if len(output_rows) == 1 and not no_li_gl_persons and not _should_skip_provider(
+            "leadocean", force_provider, selected_providers
+        ):
+            _lo_persons = await _leadocean_domain_discovery(
+                blitz_http,
+                domain,
+                include_titles=include_titles,
+                exclude_titles=exclude_titles,
+                title_filter_active=title_filter_active,
+                max_results=max_decision_makers,
+                collector=collector,
+                company_linkedin_url="",
+                record_provider_use=record_provider_use,
+            )
+            if _lo_persons:
+                no_li_gl_persons = _lo_persons
+                output_rows = []
+                logger.info(
+                    "LeadOcean domain-people no-LI rescue: %d persons for %s",
+                    len(_lo_persons), domain,
+                )
+
         if not no_li_gl_persons:
             for _terminal in output_rows:
                 _stamp_unavailability(_terminal, company_errors)
@@ -1881,6 +1908,23 @@ async def _enrich_single_domain(
             record_error=_record_company_error,
         )
         dm_gl_pre_resolved.update(_gl_pre)
+
+    # Step 2.4b (phase 2, 2026-11-07): LeadOcean domain→people discovery —
+    # TERMINAL discovery tier (search quota, 25M/mo; mirrors pipeline
+    # _enrich_domain Step 2.4b). Only when every other discovery tier found
+    # nobody; persons enter the per-person cascade empty-handed.
+    if not persons and not _should_skip_provider("leadocean", force_provider, selected_providers):
+        persons = await _leadocean_domain_discovery(
+            blitz_http,
+            domain,
+            include_titles=include_titles,
+            exclude_titles=exclude_titles,
+            title_filter_active=title_filter_active,
+            max_results=max_decision_makers,
+            collector=collector,
+            company_linkedin_url=company_linkedin_url,
+            record_provider_use=record_provider_use,
+        )
 
     if not persons:
         row = {**base_row, **_empty_enriched()}

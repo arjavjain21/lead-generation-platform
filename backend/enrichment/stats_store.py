@@ -78,6 +78,8 @@ SOURCE_GROUPS: dict[str, str] = {
     # LeadOcean sources — person email tier 4 (2026-11-06).
     "leadocean": "leadocean",
     "leadocean_email": "leadocean",
+    "leadocean_people": "leadocean",
+    "leadocean_discovery": "leadocean",
     # BetterEnrich sources
     "better_enrich_company": "better_enrich",
     "better_enrich_person": "better_enrich",

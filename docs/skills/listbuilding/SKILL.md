@@ -56,13 +56,13 @@ provider that returns a usable contact** for a row; later providers are skipped 
 
 ```
 PERSON (name + domain, or domain+name hints):
-  contacts_db → smartprospect → quickenrich → getleads → blitz → moltsets → [better_enrich] → wizleads
+  contacts_db → smartprospect → quickenrich → [leadocean*] → getleads → blitz → moltsets → [better_enrich] → wizleads
 
 LINKEDIN URL (person profile):
-  contacts_db → quickenrich(linkedin) → getleads(from-linkedin) → blitz(pe_by_li) → blitz(find_work_email) → moltsets(best-email, terminal)
+  contacts_db → quickenrich(linkedin) → leadocean(work+personal) → getleads(from-linkedin) → blitz(pe_by_li) → blitz(find_work_email) → moltsets(best-email, terminal)
 
 DOMAIN ONLY (discover decision makers):
-  contacts_db → quickenrich(dataset-search) → blitz(title waterfall) → getleads(decision-makers)
+  contacts_db → quickenrich(dataset-search) → blitz(title waterfall) → getleads(decision-makers) → leadocean(domain→people, terminal, has_email rows only; emails then flow through the PERSON cascade)
   └─ misses can continue to: website-email rescue (free, automatic) on qualifying jobs
 ```
 

@@ -154,7 +154,7 @@ def providers_status() -> str:
         (1, "contacts_db", "75 RPS", "Free — internal database"),
         (2, "smartprospect", "1900 RPM shared*", "Paid — SmartLead Find Emails (self-verifying, batch ≤10)"),
         (3, "quickenrich", _qe_rate, "Paid — QuickEnrich person email (employee-search) + domain decision-makers (dataset-search)"),
-        (4, "leadocean", "150 RPS capped*", "Paid — work + personal emails by LinkedIn URL (1M enrich/day; auto-skips when spent)"),
+        (4, "leadocean", "150 RPS capped*", "Paid — work + personal emails by LinkedIn URL (1M enrich/day; auto-skips when spent); also terminal domain→people discovery (25M/mo search window; free industry counts via GET /api/enrichment/leadocean/count)"),
         (5, "getleads", "100/min*", "Paid — verified DM emails + bonus phones (batch 100)"),
         (6, "blitz", "50 RPS/endpoint*", "Paid — LinkedIn enrichment (title waterfall)"),
         (7, "moltsets", "30 RPM (fair-use windows*)", "Paid — best email incl. personal fallback; auto-skips when quota window spent"),

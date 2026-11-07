@@ -3437,6 +3437,112 @@ async def _quickenrich_domain_discovery(
     return persons, pre_resolved
 
 
+async def _leadocean_domain_discovery(
+    blitz_http: httpx.AsyncClient,
+    domain: str,
+    *,
+    include_titles: list[str],
+    exclude_titles: list[str],
+    title_filter_active: bool,
+    max_results: int,
+    collector: Optional[Any] = None,
+    company_linkedin_url: str = "",
+    record_provider_use: Optional[Callable[[str], None]] = None,
+) -> list[dict[str, Any]]:
+    """LeadOcean domain→people discovery -> waterfall-item persons.
+
+    Phase 2 (2026-11-07), TERMINAL discovery tier — called only when
+    contacts_db, QuickEnrich dataset-search, the Blitz waterfall AND the
+    GetLeads DM fallback all found nobody (mirrors the tier-4 email position:
+    LeadOcean's measured strength is the 78% of people nobody else has).
+    Bills 1 search record per returned row on the 25M/month window — NOT the
+    1M/day enrich wall; rows carry no addresses (has_email flags only), so
+    the returned persons enter the per-person email cascade empty-handed and
+    every tier (including LeadOcean's own email step) gets a shot.
+
+    Returns waterfall items ``[{"person": {...}, "icp": 0}]`` (empty pre-
+    resolved map by construction — the caller ignores it). Empty list =
+    clean miss / provider off / cooldown / error (never raises out). Same
+    store-before-filter discipline as the QE helper: collector capture BEFORE
+    the local strict-titles gate and max_results truncation.
+    """
+    if record_provider_use is not None:
+        try:
+            record_provider_use("leadocean")
+        except Exception:
+            pass
+    try:
+        result = await leadocean_client.search_company_people(
+            blitz_http,
+            domain,
+            max_people=max_results,
+        )
+    except Exception as e:
+        logger.warning("LeadOcean company-people discovery failed for %s: %s", domain, e)
+        return []
+    if result is None or _is_provider_error(result):
+        if result is not None:
+            logger.warning(
+                "LeadOcean company-people discovery error for %s: %s",
+                domain, getattr(result, "message", ""),
+            )
+        return []
+
+    rows = result.get("people") or []
+    if not rows:
+        return []
+
+    # Collector capture BEFORE the title gate / truncation (parity with the
+    # QE + contacts_db + blitz discovery paths). Source key is the DISCOVERY
+    # variant ("leadocean_people") so the normalizer dispatch picks the
+    # person-row shape, not the email-waterfall shape.
+    if collector is not None:
+        for row in rows:
+            try:
+                collector.capture_company_contact(
+                    source="leadocean_people",
+                    domain=domain,
+                    company_linkedin_url=company_linkedin_url,
+                    contact=row,
+                )
+            except Exception as cap_err:
+                logger.debug(
+                    "collector.capture_company_contact(leadocean) failed for %s: %s",
+                    domain, cap_err,
+                )
+
+    persons: list[dict[str, Any]] = []
+    for row in rows:
+        title = row.get("title", "")
+        if title_filter_active and not title_filter.person_matches_titles(
+            title, "", include_titles, exclude_titles, "", "",
+        ):
+            continue
+        if len(persons) >= max_results:
+            break
+        persons.append({
+            "person": {
+                "title": title,
+                "first_name": row.get("first_name", ""),
+                "last_name": row.get("last_name", ""),
+                "full_name": row.get("full_name", ""),
+                "headline": row.get("headline", ""),
+                "linkedin_url": row.get("linkedin_url", ""),
+                # Rows carry no addresses by design — the per-person cascade
+                # fills these (every tier, incl. LeadOcean's own email step).
+                "email": "",
+                "phone": "",
+                "location": {
+                    "city": row.get("city", ""),
+                    "country_code": row.get("country_code", ""),
+                },
+                "experiences": [],
+            },
+            "icp": 0,
+        })
+    return persons
+
+
 def _prepass_flat_to_waterfall_item(flat: dict[str, Any]) -> dict[str, Any]:
     """Map one find-people prepass flat row -> a waterfall result item.
 
@@ -4098,6 +4204,28 @@ async def _enrich_domain(
                         "GetLeads DM no-LI rescue: %d persons for %s",
                         len(_gl_persons), domain,
                     )
+            # LeadOcean domain-people no-LI rescue (phase 2, 2026-11-07):
+            # domain-keyed (no company LinkedIn URL needed — unlike the Blitz
+            # waterfall), terminal discovery tier. Local-business domains
+            # (the platform's core universe) frequently have no company page.
+            if not persons and not _should_skip_provider("leadocean", force_provider):
+                _lo_persons = await _leadocean_domain_discovery(
+                    blitz_http,
+                    domain,
+                    include_titles=include_titles,
+                    exclude_titles=exclude_titles,
+                    title_filter_active=title_filter_active,
+                    max_results=max_results,
+                    collector=collector,
+                    company_linkedin_url="",
+                    record_provider_use=record_provider_use,
+                )
+                if _lo_persons:
+                    persons = _lo_persons
+                    logger.info(
+                        "LeadOcean domain-people no-LI rescue: %d persons for %s",
+                        len(_lo_persons), domain,
+                    )
             if not persons:
                 no_linkedin_out = _no_linkedin_row(base_row)
                 _stamp_company_errors(no_linkedin_out, company_provider_errors)
@@ -4381,6 +4509,24 @@ async def _enrich_domain(
         if _gl_persons:
             persons = _gl_persons
         dm_gl_pre_resolved.update(_gl_pre)
+
+    # Step 2.4b (phase 2, 2026-11-07): LeadOcean domain→people discovery —
+    # TERMINAL discovery tier (search quota, 25M/mo). Runs only when
+    # contacts_db + QuickEnrich dataset-search + Blitz waterfall + GetLeads
+    # DM fallback ALL found nobody; discovered persons enter the per-person
+    # email cascade empty-handed (rows carry has_email flags, no addresses).
+    if not persons and not _should_skip_provider("leadocean", force_provider):
+        persons = await _leadocean_domain_discovery(
+            blitz_http,
+            domain,
+            include_titles=include_titles,
+            exclude_titles=exclude_titles,
+            title_filter_active=title_filter_active,
+            max_results=max_results,
+            collector=collector,
+            company_linkedin_url=company_linkedin_url,
+            record_provider_use=record_provider_use,
+        )
 
     if not persons:
         # No decision makers found — try BetterEnrich for generic company email

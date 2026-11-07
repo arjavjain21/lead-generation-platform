@@ -41,7 +41,7 @@ from shared.env_utils import env_float
 
 logger = logging.getLogger(__name__)
 
-VALID_MISS_KINDS: tuple[str, ...] = ("email",)
+VALID_MISS_KINDS: tuple[str, ...] = ("email", "discovery")
 
 DEFAULT_MISS_TTL_DAYS: float = 7
 DEFAULT_COOLDOWN_SECONDS: float = 900.0
@@ -238,6 +238,33 @@ def set_daily_exhausted_cooldown(resets_at: Optional[str] = None) -> None:
         )
 
 
+def set_search_exhausted_cooldown(resets_at: Optional[str] = None) -> None:
+    """Arm the cooldown for the 25M/month SEARCH window being spent.
+
+    Phase 2 (2026-11-07): the domain→people discovery lane bills search
+    records. The window resets at the billing-month boundary (resetsAt from
+    /v1/usage pace.search) — without a resetsAt we only know "vendor said
+    spent", so fall back to the env cooldown seconds rather than a month-long
+    guess; the next lazy usage check re-arms with the true reset once known.
+
+    NOTE: this blocks BOTH lanes (discovery + email) — the singleton cooldown
+    is account-wide by design; past a window the vendor throttles everything
+    on the key (~400x), so pausing all LeadOcean traffic is the safe read.
+    """
+    if resets_at:
+        set_cooldown(
+            "search_exhausted",
+            "25M/month search window spent — discovery blocked until reset",
+            until_ts=resets_at,
+        )
+    else:
+        set_cooldown(
+            "search_exhausted",
+            "25M/month search window spent — retrying after fallback window",
+            retry_after=None,
+        )
+
+
 def clear_cooldown() -> None:
     try:
         conn = db.get_db()
@@ -256,6 +283,16 @@ def clear_cooldown() -> None:
 def person_key(linkedin_url: str) -> str:
     li = (linkedin_url or "").strip().lower().rstrip("/")
     return f"li:{li}" if li else ""
+
+
+def domain_key(domain: str) -> str:
+    """Normalize a bare/URL-ish domain to the miss-store key form."""
+    d = (domain or "").strip().lower()
+    for prefix in ("https://", "http://", "www."):
+        if d.startswith(prefix):
+            d = d[len(prefix):]
+    d = d.split("/")[0].split(":")[0].strip()
+    return f"domain:{d}" if d else ""
 
 
 def record_person_miss(key: str, kind: str = "email") -> None:

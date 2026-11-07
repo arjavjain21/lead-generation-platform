@@ -3841,6 +3841,36 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                 except Exception as e:
                     logger.warning("Blitz waterfall ICP failed: %s", e)
 
+            # LeadOcean domain→people discovery (phase 2, 2026-11-07):
+            # TERMINAL discovery tier — domain-keyed (works when no company
+            # LinkedIn URL resolved, unlike the Blitz waterfall above) and
+            # billed on the untouched 25M/month search window, not the
+            # 1M/day enrich wall. Rows carry no addresses (has_email flags
+            # only) — the per-person cascade below resolves every email.
+            if not _should_skip_provider("leadocean", req.force_provider, req.selected_providers):
+                try:
+                    _lo_result = await leadocean_client.search_company_people(
+                        blitz_http, domain, max_people=req.max_results or 25,
+                    )
+                    if _lo_result and _lo_result.get("people"):
+                        return [
+                            {
+                                "full_name": p.get("full_name", ""),
+                                "first_name": p.get("first_name", ""),
+                                "last_name": p.get("last_name", ""),
+                                "title": p.get("title", ""),
+                                "headline": p.get("headline", ""),
+                                "linkedin_url": p.get("linkedin_url", ""),
+                                "location": {
+                                    "city": p.get("city", ""),
+                                    "country_code": p.get("country_code", ""),
+                                },
+                            }
+                            for p in _lo_result["people"]
+                        ], "leadocean"
+                except Exception as e:
+                    logger.warning("LeadOcean domain-people discovery failed: %s", e)
+
             return [], "not_found"
 
         async def find_email_for_person(
@@ -8491,6 +8521,84 @@ async def clear_leadocean_cooldown(
 
     leadocean_guards.clear_cooldown()
     return {"cleared": True}
+
+
+@router.get("/leadocean/count")
+async def leadocean_company_count(
+    industry: Optional[list[str]] = Query(
+        None,
+        description="Exact LeadOcean industry value(s); repeatable, OR-combined "
+        "(?industry=Dentists&industry=Construction). Enum via GET /leadocean/industries",
+    ),
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """
+    FREE company count by industry (LeadOcean GET /v1/companies/count — no
+    quota lane consumed, live-verified 2026-11-07). Zero-cost TAM sizing:
+    returns the exact company total plus industry and employee_range facets.
+
+    Industries are validated against the stored 532-value enum before the
+    vendor is hit — invalid values 422 with near-miss suggestions.
+    """
+    from . import leadocean_client
+    from . import leadocean_industries
+
+    wanted = [i.strip() for i in (industry or []) if i and i.strip()]
+    if not wanted:
+        raise HTTPException(
+            status_code=400,
+            detail="Pass one or more industry values: ?industry=Dentists&industry=Construction "
+            "(valid values: GET /api/enrichment/leadocean/industries)",
+        )
+    invalid = [i for i in wanted if not leadocean_industries.is_valid_industry(i)]
+    if invalid:
+        pool = sorted(leadocean_industries.LEADOCEAN_INDUSTRIES)
+        suggestions = sorted(
+            pool,
+            key=lambda v: sum(1 for c in invalid[0].lower() if c in v.lower()),
+            reverse=True,
+        )[:10]
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "Not valid LeadOcean industry values (case-sensitive, exact)",
+                "invalid": invalid[:5],
+                "suggestions": suggestions,
+                "hint": "GET /api/enrichment/leadocean/industries lists all "
+                f"{leadocean_industries.LEADOCEAN_INDUSTRY_COUNT} values",
+            },
+        )
+
+    async with httpx.AsyncClient() as client:
+        result = await leadocean_client.count_companies(client, wanted)
+    if isinstance(result, dict):
+        return {
+            "success": True,
+            "data": result,
+            "meta": {
+                "industries_queried": wanted,
+                "or_semantics": True,
+                "free": True,
+            },
+        }
+    raise HTTPException(
+        status_code=502,
+        detail=getattr(result, "message", None) or "LeadOcean count returned no data",
+    )
+
+
+@router.get("/leadocean/industries")
+async def leadocean_industry_values(
+    current_user: dict = Depends(auth.get_current_user_with_api_key),
+):
+    """The 532 exact industry values LeadOcean's count endpoint accepts."""
+    from . import leadocean_industries
+
+    return {
+        "count": leadocean_industries.LEADOCEAN_INDUSTRY_COUNT,
+        "values": sorted(leadocean_industries.LEADOCEAN_INDUSTRIES),
+        "usage": "GET /api/enrichment/leadocean/count?industry=<value> (repeatable, OR-combined, free)",
+    }
 
 
 @router.get("/moltsets/usage")

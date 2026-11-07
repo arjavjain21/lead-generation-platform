@@ -1031,6 +1031,44 @@ def normalize_leadocean_contact(raw: dict) -> Optional[dict[str, str]]:
     )
 
 
+def normalize_leadocean_person(raw: dict) -> Optional[dict[str, Any]]:
+    """Normalize a LeadOcean domain→people DISCOVERY row.
+
+    Phase 2 (2026-11-07). ``leadocean_client.search_company_people`` /
+    ``_parse_person_row`` flatten one ``leadocean.person.v1`` row; rows
+    carry identity + title + the vendor's has_email/email_status flags but
+    NO address by design (the per-person email cascade resolves it). Unlike
+    the quickenrich/getleads discovery normalizers there is deliberately NO
+    email-required gate — an identity-only record is the point here (junk
+    filter still applies: name or LinkedIn URL must survive).
+    """
+    if not isinstance(raw, dict):
+        return None
+    return _build_record(
+        source="leadocean",
+        email="",  # discovery rows carry no address, by design
+        first_name=raw.get("first_name"),
+        last_name=raw.get("last_name"),
+        full_name=raw.get("full_name"),
+        title=raw.get("title"),
+        headline=raw.get("headline"),
+        linkedin_url=raw.get("linkedin_url"),
+        domain=raw.get("company_domain") or raw.get("domain"),
+        city=raw.get("city"),
+        country=raw.get("country_code"),
+        company_name=raw.get("company_name"),
+        company_industry=raw.get("company_industry"),
+        job_level=raw.get("job_level"),
+        extra={
+            "has_email": bool(raw.get("has_email")),
+            "email_status": str(raw.get("email_status", "") or ""),
+            "email_types": list(raw.get("email_types") or []),
+            "has_phone": bool(raw.get("has_phone")),
+            "person_id": str(raw.get("person_id", "") or ""),
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Generic dispatcher
 # ---------------------------------------------------------------------------
@@ -1066,6 +1104,9 @@ _PROVIDER_DISPATCH: dict[str, Callable[[dict], Optional[dict[str, str]]]] = {
     "lead_ocean": normalize_leadocean_contact,
     "lead-ocean": normalize_leadocean_contact,
     "lo": normalize_leadocean_contact,
+    "leadocean_people": normalize_leadocean_person,
+    "leadocean_discovery": normalize_leadocean_person,
+    "leadocean_person": normalize_leadocean_person,
 }
 
 
@@ -1111,6 +1152,7 @@ __all__ = [
     "normalize_quickenrich_contact",
     "normalize_moltsets_contact",
     "normalize_leadocean_contact",
+    "normalize_leadocean_person",
     "normalize_provider_contact",
     "previous_companies_titles",
 ]

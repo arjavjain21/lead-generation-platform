@@ -306,3 +306,208 @@ class TestUsage:
         lo._last_usage_check = 0.0
         asyncio.run(lo.maybe_check_usage(_client(handler)))
         assert leadocean_guards.get_active_cooldown() is None
+
+    def test_maybe_check_usage_arms_search_cooldown(self):
+        """Phase 2: a spent 25M/mo search window arms search_exhausted."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _json(200, {"success": True, "data": {
+                "pace": {
+                    "enrich": [{"window": "d", "limit": 1000000, "used": 5}],
+                    "search": [{"window": "p", "limit": 25000000, "used": 25000000,
+                                "resetsAt": "2099-01-01T00:00:00.000Z"}],
+                },
+            }})
+
+        lo._last_usage_check = 0.0
+        asyncio.run(lo.maybe_check_usage(_client(handler)))
+        cooldown = leadocean_guards.get_active_cooldown()
+        assert cooldown is not None and cooldown["code"] == "search_exhausted"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — domain→people discovery + free counts (2026-11-07)
+# ---------------------------------------------------------------------------
+
+_DOMAIN = "stripe.com"
+
+
+def _person_row(
+    slug: str = "aakash-sasikumar",
+    *,
+    has_email: bool = True,
+    title: str = "Engineering, Ml Infra",
+) -> dict[str, Any]:
+    """One live-probed leadocean.person.v1 row (stripe.com, 2026-11-07)."""
+    return {
+        "profile_data": {
+            "profile_url": f"https://www.linkedin.com/in/{slug}",
+            "profile_full_name": "Aakash Sasikumar",
+            "profile_first_name": "Aakash",
+            "profile_last_name": "Sasikumar",
+            "profile_headline": "ML @ Stripe",
+            "profile_address": {"city": "Edmonton", "country_code": "CA"},
+        },
+        "contact_data": {
+            "contact_current_experiences": [{
+                "company_name": "Stripe", "company_domain": "stripe.com",
+                "job_title": title,
+                "job_seniority": {"job_level": "Other", "score": None},
+                "current": True,
+            }],
+            "has_email": has_email, "email_status": "catch_all",
+            "email_type": "work", "email_types": ["work"], "has_phone": False,
+        },
+        "meta": {"key": f"https://www.linkedin.com/in/{slug}",
+                 "source_ids": {"person_id": "25615657", "company_id": "55330212"}},
+    }
+
+
+class TestDiscovery:
+    def test_two_pages_via_cursor(self):
+        calls = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append((request.url.path, str(request.url.params.get("cursor") or "")))
+            if len(calls) == 1:
+                return _json(200, {"success": True,
+                                   "data": [_person_row("p1"), _person_row("p2")],
+                                   "meta": {"nextCursor": "CUR1", "records": 2}})
+            return _json(200, {"success": True, "data": [_person_row("p3")], "meta": {"records": 1}})
+
+        result = asyncio.run(lo.search_company_people(_client(handler), _DOMAIN, max_people=5))
+        assert result is not None
+        assert len(result["people"]) == 3
+        assert result["pages"] == 2 and result["rows_seen"] == 3
+        assert calls[0][1] == "" and calls[1][1] == "CUR1"  # cursor threaded
+        first = result["people"][0]
+        assert first["linkedin_url"] == "https://www.linkedin.com/in/p1"
+        assert first["title"] == "Engineering, Ml Infra"
+        assert first["company_domain"] == "stripe.com"
+
+    def test_early_stop_at_max_people(self):
+        calls = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request.url.path)
+            return _json(200, {"success": True, "data": [_person_row("a"), _person_row("b")],
+                               "meta": {"nextCursor": "CUR1", "records": 2}})
+
+        result = asyncio.run(lo.search_company_people(_client(handler), _DOMAIN, max_people=2))
+        assert result is not None and len(result["people"]) == 2
+        assert calls == ["/v1/companies/stripe.com/people"]  # target met → no page 2
+
+    def test_has_email_false_rows_dropped(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _json(200, {"success": True,
+                               "data": [_person_row("noemail", has_email=False), _person_row("yes")],
+                               "meta": {"records": 2}})
+
+        result = asyncio.run(lo.search_company_people(_client(handler), _DOMAIN))
+        assert result is not None
+        assert [p["linkedin_url"].rsplit("/", 1)[-1] for p in result["people"]] == ["yes"]
+
+    def test_all_rows_without_email_marks_domain_miss(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _json(200, {"success": True, "data": [_person_row("x", has_email=False)],
+                               "meta": {"records": 1}})
+
+        assert asyncio.run(lo.search_company_people(_client(handler), _DOMAIN)) is None
+        assert leadocean_guards.is_recent_person_miss(leadocean_guards.domain_key(_DOMAIN)) is True
+
+    def test_404_marks_domain_miss_and_replays_skip(self):
+        calls = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request.url.path)
+            return _json(404, {"success": False, "error": {"message": "No people for this company"}})
+
+        assert asyncio.run(lo.search_company_people(_client(handler), _DOMAIN)) is None
+        assert leadocean_guards.is_recent_person_miss(leadocean_guards.domain_key(_DOMAIN)) is True
+        # Replay: miss store short-circuits — zero new HTTP.
+        assert asyncio.run(lo.search_company_people(_client(handler), _DOMAIN)) is None
+        assert len(calls) == 1
+
+    def test_row_cap_stops_paging(self, monkeypatch):
+        monkeypatch.setattr(lo, "_DISCOVERY_MAX_ROWS", 2, raising=False)
+        monkeypatch.setattr(lo, "_DISCOVERY_PAGE_SIZE", 2, raising=False)
+        monkeypatch.setattr(lo, "_DISCOVERY_MAX_PAGES", 2, raising=False)
+        calls = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request.url.path)
+            return _json(200, {"success": True,
+                               "data": [_person_row("a", has_email=False), _person_row("b", has_email=False)],
+                               "meta": {"nextCursor": "MORE", "records": 2}})
+
+        result = asyncio.run(lo.search_company_people(_client(handler), _DOMAIN))
+        assert result is None  # no has_email rows within the cap
+        assert calls == ["/v1/companies/stripe.com/people"]  # cap stops page 2
+        # Row-cap truncation is NOT a definitive miss — no marker written.
+        assert leadocean_guards.is_recent_person_miss(leadocean_guards.domain_key(_DOMAIN)) is False
+
+    def test_search_cooldown_skips_http(self):
+        leadocean_guards.set_search_exhausted_cooldown(resets_at="2099-01-01T00:00:00.000Z")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("search cooldown must skip HTTP entirely")
+
+        assert asyncio.run(lo.search_company_people(_client(handler), _DOMAIN)) is None
+
+    def test_402_arms_search_cooldown(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _json(402, {"success": False})
+
+        result = asyncio.run(lo.search_company_people(_client(handler), _DOMAIN))
+        assert _is_provider_error(result) is True
+        cooldown = leadocean_guards.get_active_cooldown()
+        assert cooldown is not None and cooldown["code"] == "search_exhausted"
+
+    def test_discovery_lane_kill_switch_silent(self, monkeypatch):
+        monkeypatch.setenv("ENABLE_LEADOCEAN_DISCOVERY", "false")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("lane off must not reach HTTP")
+
+        assert asyncio.run(lo.search_company_people(_client(handler), _DOMAIN)) is None
+
+    def test_global_kill_switch_errors(self, monkeypatch):
+        monkeypatch.setenv("ENABLE_LEADOCEAN", "false")
+        result = asyncio.run(lo.search_company_people(_client(lambda r: _json(200, {})), _DOMAIN))
+        assert _is_provider_error(result) is True
+        assert getattr(result, "error_type", "") == "disabled"
+
+    def test_empty_domain_returns_none(self):
+        assert asyncio.run(lo.search_company_people(_client(lambda r: _json(200, {})), "")) is None
+
+
+class TestCountCompanies:
+    def test_count_passthrough_repeated_industry_params(self):
+        calls = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request.url.params.get_list("industry"))
+            return _json(200, {"success": True, "data": {
+                "total": 2253898, "totalIsExact": True,
+                "facets": {"industry": [{"value": "Dentists", "count": 11304}]},
+            }})
+
+        result = asyncio.run(lo.count_companies(_client(handler), ["Dentists", "Construction"]))
+        assert result is not None and result["total"] == 2253898
+        assert calls == [["Dentists", "Construction"]]  # repeatable OR params
+
+    def test_invalid_industry_never_reaches_http(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("invalid industry must not reach HTTP")
+
+        result = asyncio.run(lo.count_companies(_client(handler), ["Not A Real Industry"]))
+        assert _is_provider_error(result) is True
+        assert getattr(result, "error_type", "") == "invalid_industry"
+
+    def test_empty_industries_error(self):
+        result = asyncio.run(lo.count_companies(_client(lambda r: _json(200, {})), []))
+        assert _is_provider_error(result) is True
+
+    def test_disabled_kill_switch(self, monkeypatch):
+        monkeypatch.setenv("ENABLE_LEADOCEAN", "false")
+        result = asyncio.run(lo.count_companies(_client(lambda r: _json(200, {})), ["Dentists"]))
+        assert _is_provider_error(result) is True

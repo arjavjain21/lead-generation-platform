@@ -317,7 +317,7 @@ def explain_response_field(field_name: str) -> str:
             "- `smartprospect_email` — found via SmartProspect (paid)\n"
             "- `quickenrich_email` — person email via QuickEnrich employee-search (paid)\n"
             "- `quickenrich_contacts` — decision makers via QuickEnrich dataset-search (paid)\n"
-            "- `leadocean_email` — work + personal email via LeadOcean (tier 4)\n"
+            "- `leadocean_email` — work + personal email via LeadOcean (tier 4)\n- `leadocean_people` — LeadOcean domain→people DISCOVERY rows (no emails; terminal discovery tier)\n"
             "- `moltsets_email` — best email via MoltSets linkedin-to-best-email / search-by-name (paid)\n"
             "- `wizleads_email` — found via WizLeads (paid)\n"
             "- `better_enrich`, `better_enrich_company_email` — found via BetterEnrich (paid)\n"
@@ -526,7 +526,7 @@ def list_current_providers() -> str:
         (1, "contacts_db", "75 RPS", "Free"),
         (2, "smartprospect", "1900 RPM shared*", "Paid"),
         (3, "quickenrich", _qe_rate, "Paid"),
-        (4, "leadocean", "150 RPS capped (plan 200)*", "Paid"),
+        (4, "leadocean", "150 RPS capped (plan 200)*", "Paid — email waterfall tier 4 + terminal domain→people discovery (search quota)"),
         (5, "getleads", "100/min*", "Paid"),
         (6, "blitz", "50 RPS/endpoint*", "Paid"),
         (7, "moltsets", "30 RPM (fair-use windows*)", "Paid"),
