@@ -2096,6 +2096,13 @@ class UnifiedEnrichRequest(BaseModel):
             winning one — may trigger extra phone lookups. Default False.
             Requires include_phone semantics (ignored when include_phone
             is False).
+        validate_email: Run the MailTester gate on provider emails that are
+            not vendor-verified (verified_hint "unknown"). Default True: a
+            non-accepted code (e.g. "mb" catch-all) drops the email and the
+            cascade continues. False accepts unknown-grade emails as-is —
+            same semantics as the LinkedIn-mode handler (parity 2026-11-07;
+            previously the domain-only executor hard-coded True and ignored
+            this flag).
     """
     domain: Optional[str] = None
     full_name: Optional[str] = None
@@ -2136,6 +2143,7 @@ class UnifiedEnrichRequest(BaseModel):
     # Phone for ALL contacts (not just the winning one); may trigger extra
     # paid phone lookups. Default False. No effect when include_phone is off.
     phone_for_all: bool = False
+    validate_email: bool = True
 
     class Config:
         schema_extra = {
@@ -3620,7 +3628,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                 blitz_http,
                 contacts_http,
                 email_semaphore,
-                validate_email=True,
+                validate_email=req.validate_email,
                 job_id=f"api_{current_user.get('id', 'anon')}_{uuid.uuid4().hex[:8]}",
                 row_index=0,
                 emit_logs=True,
@@ -3925,7 +3933,7 @@ async def _unified_enrich_logic(req: UnifiedEnrichRequest, current_user: dict, *
                 blitz_http,
                 contacts_http,
                 email_semaphore,
-                validate_email=True,
+                validate_email=req.validate_email,
                 job_id=f"api_{current_user.get('id', 'anon')}_{uuid.uuid4().hex[:8]}",
                 row_index=0,
                 emit_logs=True,
