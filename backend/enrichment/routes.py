@@ -1806,6 +1806,7 @@ async def enrich_single_domain(
             domain_semaphore,
             email_semaphore,
             force_provider=force_provider,
+            validate_email=req.validate_email,
         )
     finally:
         # Shared cascade clients are reused across requests — do NOT close here.
@@ -2622,6 +2623,7 @@ async def unified_enrich(
                 email_semaphore,
                 skip_contacts_db=has_custom_cascade,
                 force_provider=req.force_provider,
+                validate_email=req.validate_email,
             )
 
             # Build response
