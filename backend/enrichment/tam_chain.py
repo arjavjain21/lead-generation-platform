@@ -14,10 +14,12 @@ endpoint does.
 from __future__ import annotations
 
 import asyncio
+import csv
 import json
 import logging
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 from enrichment import identifier_utils
@@ -199,6 +201,40 @@ def create_chained_enrichment_job(
     # cancel endpoints work for the chained job.
     enrichment_routes._job_signals[chained_job_id] = asyncio.Event()
     enrichment_routes._active_jobs.add(chained_job_id)
+
+    # Restart parity (PR-2.3 review, 2026-11-10): /restart reconstructs a
+    # job's input rows from ``UPLOAD_DIR/<filename>.csv`` FIRST, falling back
+    # to the parent TAM output CSV when that file is absent. The parent CSV
+    # is in TAM row order and includes identifier-less rows, so its index
+    # space does not match this job's row space — blank-domain (LinkedIn-
+    # only) rows would be matched against misaligned index checkpoints (the
+    # M1 path in routes._resume_remaining_rows), re-enriching already-done
+    # rows or dropping not-yet-done ones, and cross-deduped duplicates would
+    # be re-admitted. Persisting the exact chain rows (same order, same
+    # deduped set) makes the upload file the restart source, so resumed
+    # totals equal chained_total minus done rows. Best-effort: on a write
+    # failure the chain still runs and /restart falls back to the
+    # pre-PR-2.3-review parent-walk behavior.
+    try:
+        _upload_path = (
+            Path(enrichment_routes.UPLOAD_DIR)
+            / f"find_companies_contacts_{chain_stamp}.csv"
+        )
+        with open(_upload_path, "w", newline="", encoding="utf-8") as _f:
+            _writer = csv.DictWriter(
+                _f,
+                fieldnames=["domain", CHAIN_LINKEDIN_COL, "company_name"],
+                restval="",
+                extrasaction="ignore",
+            )
+            _writer.writeheader()
+            _writer.writerows(deduped_rows)
+    except Exception as write_err:
+        logger.warning(
+            "TAM job %s: could not persist chain input CSV for restart parity "
+            "(%s); /restart will fall back to the parent TAM CSV",
+            tam_job_id, write_err,
+        )
 
     task = asyncio.create_task(
         enrichment_routes._run_domain_enrich_job(
