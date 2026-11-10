@@ -1285,26 +1285,122 @@ class TestChainRestartParity(_TempDbTestCase):
         )
         self.assertEqual(len(remaining), self.EXPECTED_CHAIN_TOTAL)
 
-    def test_upload_csv_write_failure_does_not_break_the_chain(self):
-        """A failed parity-file write degrades to the legacy parent-walk
-        restart path — the chain job itself must still be created."""
+    def test_persistence_failure_fails_closed_no_job_no_runner(self):
+        """Fail-closed contract (hardening, 2026-11-10): if the restart-parity
+        CSV cannot be persisted, NO chain job is created and NO runner starts
+        — a chain job must never exist without its restart input. The raise
+        is what tam_flow converts to chain_skipped="chain_error: …"."""
         from enrichment import routes as enrichment_routes
         self._create_tam_job()
         blocker = Path(self._tmpdir.name) / "not-a-dir"
         blocker.write_text("file where a directory is expected")
         orig = enrichment_routes.UPLOAD_DIR
         enrichment_routes.UPLOAD_DIR = blocker / "uploads"
+        recorder = AsyncMock()
         try:
-            recorder = AsyncMock()
             with patch("enrichment.routes._run_domain_enrich_job", new=recorder):
-                result = asyncio.run(self._chain([
-                    {"name": "A", "domain": "a.example"},
-                ]))
+                # Exception type varies with the failure mode (here
+                # NotADirectoryError, an OSError); tam_flow catches broadly,
+                # so the CONTRACT is "raises, no job, no runner".
+                with self.assertRaises(Exception):
+                    asyncio.run(self._chain([{"name": "A", "domain": "a.example"}]))
         finally:
             enrichment_routes.UPLOAD_DIR = orig
-        self.assertTrue(result.get("chained_job_id"),
-                        "chain creation survives a parity-file write failure")
-        recorder.assert_awaited_once()
+        recorder.assert_not_awaited()
+        # No orphan job row was created for the failed chain.
+        rows = job_store.get_store().conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE source_type='tam_chain'"
+        ).fetchone()
+        self.assertEqual(rows[0], 0)
+        # And nothing was left at any final .csv name (only .tmp, cleaned).
+        leftover = list(Path(self._tmpdir.name).rglob("*.csv"))
+        self.assertEqual(leftover, [], "no partial artifacts from the failed persist")
+
+    def test_partial_write_leaves_no_truncated_restart_input(self):
+        """A crash mid-write (simulated by writerows exploding partway) must
+        leave NO file at the final name — /restart must never read a
+        truncated CSV — and the temp file must be cleaned up."""
+        from enrichment import tam_chain as tc
+        self._create_tam_job()
+
+        real_dict_writer = csv.DictWriter
+
+        class ExplodingWriter(real_dict_writer):
+            def writerows(self, rows):
+                real_dict_writer.writerow(self, rows[0])  # partial row written
+                raise OSError("disk vanished mid-write")
+
+        recorder = AsyncMock()
+        with patch("enrichment.routes._run_domain_enrich_job", new=recorder), \
+             patch("enrichment.tam_chain.csv.DictWriter", ExplodingWriter):
+            with self.assertRaises(OSError):
+                asyncio.run(self._chain([
+                    {"name": "A", "domain": "a.example"},
+                    {"name": "B", "domain": "b.example"},
+                ]))
+        recorder.assert_not_awaited()
+        upload_dir = Path(self._tmpdir.name) / "uploads"
+        self.assertEqual(list(upload_dir.glob("*.csv")), [],
+                         "no truncated file at the final name")
+        self.assertEqual(list(upload_dir.glob("*.tmp")), [],
+                         "temp file cleaned up after the failure")
+
+    def test_same_minute_chains_never_collide_on_restart_input(self):
+        """Two chains created within the same minute (same stamp) must get
+        distinct parity files — the second write must never overwrite the
+        first job's restart input (pre-hardening: both jobs shared
+        find_companies_contacts_<stamp>.csv)."""
+        from enrichment import routes as enrichment_routes
+        self._create_tam_job()
+        companies = [
+            {"name": "A", "domain": "a.example"},
+            {"name": "L1", "domain": "",
+             "linkedin_url": "https://linkedin.com/company/li-one"},
+        ]
+        recorder = AsyncMock()
+        with patch("enrichment.routes._run_domain_enrich_job", new=recorder):
+            r1 = asyncio.run(self._chain(companies))
+            # Second chain in the SAME minute over different companies.
+            r2 = asyncio.run(self._chain([
+                {"name": "B", "domain": "b.example"},
+                {"name": "L2", "domain": "",
+                 "linkedin_url": "https://linkedin.com/company/li-two"},
+            ]))
+        self.assertNotEqual(r1["chained_job_id"], r2["chained_job_id"])
+
+        upload_dir = Path(enrichment_routes.UPLOAD_DIR)
+        p1 = upload_dir / job_store.get_store().get_job(r1["chained_job_id"])["filename"]
+        p2 = upload_dir / job_store.get_store().get_job(r2["chained_job_id"])["filename"]
+        self.assertNotEqual(p1, p2, "filenames embed the job uuid — no collision")
+        self.assertTrue(p1.exists() and p2.exists())
+        with open(p1, newline="", encoding="utf-8") as f:
+            rows1 = [dict(r) for r in csv.DictReader(f)]
+        with open(p2, newline="", encoding="utf-8") as f:
+            rows2 = [dict(r) for r in csv.DictReader(f)]
+        self.assertEqual(rows1[0]["domain"], "a.example", "job 1 keeps its own input")
+        self.assertEqual(rows2[0]["domain"], "b.example",
+                         "job 2 keeps its own input (the first file was not overwritten)")
+
+    def test_successful_chain_persists_parity_file_atomically(self):
+        """On success the final file exists, matches the runner rows exactly,
+        and no .tmp residue remains (the rename completed)."""
+        from enrichment import routes as enrichment_routes
+        self._create_tam_job()
+        recorder = AsyncMock()
+        with patch("enrichment.routes._run_domain_enrich_job", new=recorder):
+            result = asyncio.run(self._chain(self.MIXED_COMPANIES))
+        job = job_store.get_store().get_job(result["chained_job_id"])
+        upload_dir = Path(enrichment_routes.UPLOAD_DIR)
+        final = upload_dir / job["filename"]
+        self.assertTrue(final.exists())
+        self.assertEqual(list(upload_dir.glob("*.tmp")), [], "no temp residue")
+        runner_rows = recorder.await_args.kwargs["rows"]
+        with open(final, newline="", encoding="utf-8") as f:
+            file_rows = [dict(r) for r in csv.DictReader(f)]
+        self.assertEqual(
+            file_rows,
+            [{**r, "linkedin_url": r.get("linkedin_url", "")} for r in runner_rows],
+        )
 
     def test_legacy_restart_without_upload_file_misbehaves(self):
         """Documents WHY the parity file exists (and the exact legacy

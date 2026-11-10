@@ -6,9 +6,12 @@ module under the file-size budget; ``tam_flow`` re-exports
 
 Reuses the exact code path ``/flows/domain-enrich`` uses for job creation
 (``EnrichmentJobStore.create_enrichment_job``) and execution
-(``routes._run_domain_enrich_job``) — no upload, no duplicated CSV plumbing;
-rows are handed over in-memory the same way the scraper -> enrichment chain
-endpoint does.
+(``routes._run_domain_enrich_job``) — rows are handed over in-memory the
+same way the scraper -> enrichment chain endpoint does. The one on-disk
+artifact is the chain's restart-parity input CSV (see
+``_persist_chain_input_csv``): ``/restart`` resolves it first, and it is
+written atomically BEFORE the job exists, so a chain job can never run
+without a safe restart input.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ import asyncio
 import csv
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -75,6 +79,50 @@ def _company_url_from_tam_row(row: dict[str, Any]) -> str:
     return _canonical_company_url(url)
 
 
+def _persist_chain_input_csv(
+    upload_dir: Path, filename: str, rows: list[dict[str, Any]]
+) -> Path:
+    """Atomically persist the chain's exact input rows for /restart parity.
+
+    Durability contract (PR-2.3 hardening, 2026-11-10):
+      * written to ``<filename>.tmp`` in the SAME directory, flushed and
+        fsync'd, then moved onto the final name with ``os.replace`` (atomic
+        on POSIX) — a crash can never leave a truncated CSV under the final
+        name that /restart would trust;
+      * the filename embeds the chained job's uuid, so two chains created
+        in the same minute can never overwrite each other's restart input;
+      * on ANY failure the temp file is removed and the error re-raised —
+        callers treat persistence as REQUIRED (fail-closed), because a
+        running chain job whose restart input is missing resumes through
+        the unsafe parent-TAM-CSV path (misaligned index checkpoints).
+
+    Returns the final path.
+    """
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    final_path = upload_dir / filename
+    tmp_path = upload_dir / f"{filename}.tmp"
+    try:
+        with open(tmp_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=["domain", CHAIN_LINKEDIN_COL, "company_name"],
+                restval="",
+                extrasaction="ignore",
+            )
+            writer.writeheader()
+            writer.writerows(rows)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, final_path)
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:  # pragma: no cover - cleanup is best-effort
+            pass
+        raise
+    return final_path
+
+
 def create_chained_enrichment_job(
     tam_job_id: str,
     user_id: str,
@@ -113,7 +161,10 @@ def create_chained_enrichment_job(
     "chained_linkedin_rows": N}`` or ``{"chain_skipped": reason}`` (the
     legacy ``no_companies_with_domain`` literal is preserved for API/UI
     compatibility; it now means "no company had a domain OR a company
-    LinkedIn URL").
+    LinkedIn URL"). Raises (caught by tam_flow as chain_skipped
+    "chain_error: …") when the restart-parity input CSV cannot be persisted
+    — the job is then never created, so no chain job can outlive its
+    restart input.
     """
     from enrichment import routes as enrichment_routes  # lazy: avoids import cycle
 
@@ -174,19 +225,46 @@ def create_chained_enrichment_job(
     chained_job_id = str(uuid.uuid4())
     store = job_store.get_store()
     # Friendlier identity than the old tam_<id>_<id> pattern: the download
-    # filename says what it is, display_name says where it came from.
+    # filename says what it is, display_name says where it came from. The
+    # chained job's uuid is embedded in the filename so two chains created
+    # in the same minute can never collide on disk (restart input) or in the
+    # jobs table (filename column).
     chain_stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+    chain_filename = f"find_companies_contacts_{chain_stamp}_{chained_job_id[:8]}.csv"
+
+    # Restart parity (PR-2.3, 2026-11-10): /restart reconstructs a job's
+    # input rows from ``UPLOAD_DIR/<filename>.csv`` FIRST, falling back to
+    # the parent TAM output CSV when that file is absent. The parent CSV is
+    # in TAM row order and includes identifier-less rows, so its index space
+    # does not match this job's row space — blank-domain (LinkedIn-only)
+    # rows would be matched against misaligned index checkpoints (the M1
+    # path in routes._resume_remaining_rows), re-enriching already-done rows
+    # or dropping not-yet-done ones, and cross-deduped duplicates would be
+    # re-admitted. Persisting the exact chain rows (same order, same deduped
+    # set) makes the upload file the restart source, so resumed totals equal
+    # chained_total minus done rows.
+    #
+    # FAIL-CLOSED (hardening, same day): persistence happens BEFORE the job
+    # row is created and the runner is scheduled, and a failure raises — a
+    # chain job must never exist without its restart input, because its
+    # /restart would silently take the unsafe parent-walk path. The caller
+    # (tam_flow) catches this and records chain_skipped="chain_error: …"
+    # while keeping the TAM export itself done.
+    _persist_chain_input_csv(
+        Path(enrichment_routes.UPLOAD_DIR), chain_filename, deduped_rows
+    )
+
     store.create_enrichment_job(
         job_id=chained_job_id,
         user_id=user_id,
         total=len(deduped_rows),
-        filename=f"find_companies_contacts_{chain_stamp}.csv",
+        filename=chain_filename,
         domain_col="domain",
         # Persisted so /restart + auto-resume restore the company-URL
         # routing for LinkedIn-only rows automatically (same mechanism the
         # upload flow uses; the jobs table has no company_linkedin_col).
         linkedin_url_col=CHAIN_LINKEDIN_COL,
-        original_filename=f"find_companies_contacts_{chain_stamp}.csv",
+        original_filename=chain_filename,
         parent_job_id=tam_job_id,
         cascade_config=cascade_json,
         max_results=max_decision_makers,
@@ -201,40 +279,6 @@ def create_chained_enrichment_job(
     # cancel endpoints work for the chained job.
     enrichment_routes._job_signals[chained_job_id] = asyncio.Event()
     enrichment_routes._active_jobs.add(chained_job_id)
-
-    # Restart parity (PR-2.3 review, 2026-11-10): /restart reconstructs a
-    # job's input rows from ``UPLOAD_DIR/<filename>.csv`` FIRST, falling back
-    # to the parent TAM output CSV when that file is absent. The parent CSV
-    # is in TAM row order and includes identifier-less rows, so its index
-    # space does not match this job's row space — blank-domain (LinkedIn-
-    # only) rows would be matched against misaligned index checkpoints (the
-    # M1 path in routes._resume_remaining_rows), re-enriching already-done
-    # rows or dropping not-yet-done ones, and cross-deduped duplicates would
-    # be re-admitted. Persisting the exact chain rows (same order, same
-    # deduped set) makes the upload file the restart source, so resumed
-    # totals equal chained_total minus done rows. Best-effort: on a write
-    # failure the chain still runs and /restart falls back to the
-    # pre-PR-2.3-review parent-walk behavior.
-    try:
-        _upload_path = (
-            Path(enrichment_routes.UPLOAD_DIR)
-            / f"find_companies_contacts_{chain_stamp}.csv"
-        )
-        with open(_upload_path, "w", newline="", encoding="utf-8") as _f:
-            _writer = csv.DictWriter(
-                _f,
-                fieldnames=["domain", CHAIN_LINKEDIN_COL, "company_name"],
-                restval="",
-                extrasaction="ignore",
-            )
-            _writer.writeheader()
-            _writer.writerows(deduped_rows)
-    except Exception as write_err:
-        logger.warning(
-            "TAM job %s: could not persist chain input CSV for restart parity "
-            "(%s); /restart will fall back to the parent TAM CSV",
-            tam_job_id, write_err,
-        )
 
     task = asyncio.create_task(
         enrichment_routes._run_domain_enrich_job(
