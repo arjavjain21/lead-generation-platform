@@ -4,6 +4,11 @@ Mailtester API client for email verification.
 API: https://validation.hyperke.org/ninja?email={email}&key={key}
 Response: {"code": "ok"|"mb"|"ko", "message": "...", "email": "..."}
 
+Configuration: MAILTESTER_API_KEY is REQUIRED (no code fallback — removed
+2026-11-10). A missing/empty key raises RuntimeError from verify_email before
+any HTTP call; callers fail OPEN (accept the email, mailtester_code
+"unavailable") exactly like a validator outage.
+
 Response codes (default policy — configurable via MAILTESTER_ACCEPT_CODES):
 - "ok" → Accept email
 - "mb" → Reject (policy-rejected; accepted under legacy 'ok,mb' policy)
@@ -88,7 +93,19 @@ async def _acquire_rate_limit() -> None:
 
 
 def _get_api_key() -> str:
-    key = os.getenv("MAILTESTER_API_KEY", "") or "b0b4ddb5bd42ba18c09247611adfbe08374a7d06a128f404"
+    """Return the MailTester proxy key from MAILTESTER_API_KEY (required).
+
+    No code fallback exists (security fix 2026-11-10: a plaintext key was
+    previously committed here as the ``or`` fallback — treat it as burned and
+    rotate it). Same shape as blitz_client / phone_enrichment clients.
+
+    Missing/empty env raises RuntimeError BEFORE any HTTP call is attempted,
+    and the raise happens outside the retry loop, so it propagates from
+    ``verify_email`` immediately — callers already treat RuntimeError as the
+    documented fail-open signal (validator outage): the email is accepted
+    unverified with ``mailtester_code="unavailable"``.
+    """
+    key = os.getenv("MAILTESTER_API_KEY", "").strip()
     if not key:
         raise RuntimeError("MAILTESTER_API_KEY environment variable is not set")
     return key

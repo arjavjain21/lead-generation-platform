@@ -38,6 +38,10 @@ def _make_client(handler: Callable[[httpx.Request], httpx.Response]) -> httpx.As
 @pytest.fixture(autouse=True)
 def _reset_mailtester_state(monkeypatch: pytest.MonkeyPatch) -> None:
     """Isolate mailtester module state (cache, breaker, rate limiter, sleep)."""
+    # This suite calls the real verify_email (MockTransport); the key has
+    # been env-required since the 2026-11-10 security fix removed the
+    # hardcoded fallback (conftest scrubs provider keys by design).
+    monkeypatch.setenv("MAILTESTER_API_KEY", "unit-test-mailtester-key")
     monkeypatch.setattr(mt, "_last_request_time", 0.0, raising=True)
     mt._mailtester_cache.clear()
     monkeypatch.setattr(
