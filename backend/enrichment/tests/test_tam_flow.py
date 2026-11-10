@@ -962,6 +962,8 @@ class TestChainedEnrichmentJob(_TempDbTestCase):
         job = job_store.get_store().get_job(result["chained_job_id"])
         self.assertEqual(job["linkedin_url_col"], "linkedin_url",
                          "column persisted so restart/resume restores routing")
+        self.assertEqual(job["name_col"], "company_name",
+                         "kwargs parity: /restart restores name_col from the job row")
         self.assertEqual(job["source_type"], "tam_chain")
         self.assertEqual(job["total"], 3)
 

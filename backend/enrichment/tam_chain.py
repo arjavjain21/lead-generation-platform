@@ -264,6 +264,11 @@ def create_chained_enrichment_job(
         # routing for LinkedIn-only rows automatically (same mechanism the
         # upload flow uses; the jobs table has no company_linkedin_col).
         linkedin_url_col=CHAIN_LINKEDIN_COL,
+        # Persisted for kwargs parity with the initial run below: /restart
+        # rebuilds runner kwargs from these job-row columns, and the initial
+        # run passes name_col="company_name" — without this line a restarted
+        # chain would silently drop the company-name hint column mapping.
+        name_col="company_name",
         original_filename=chain_filename,
         parent_job_id=tam_job_id,
         cascade_config=cascade_json,
