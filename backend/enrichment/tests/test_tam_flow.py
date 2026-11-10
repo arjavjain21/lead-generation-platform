@@ -17,6 +17,11 @@ Coverage:
     exact_titles the stored cascade stays UNBRACKETED (the local title gate
     matches literally) and exact_titles=True is forwarded to the runner.
   * Chain skip — create_enrichment_job with zero domains -> chain_skipped.
+  * LinkedIn-only chaining (PR-2.3, 2026-11-10) — domain-less TAM rows with
+    a company LinkedIn page ride the same job via the persisted
+    linkedin_url_col; www-canonical cross-dedupe against domain rows;
+    personal/garbage URLs excluded; routing proof that chain rows flow
+    through the EXISTING company-URL orchestrator vs domain cascade.
 
 Network is fully mocked (blitz_client.tam_by_people is monkeypatched); the
 job store runs on a temp DB via the shared.db.DB_PATH swap pattern used by
@@ -924,6 +929,126 @@ class TestChainedEnrichmentJob(_TempDbTestCase):
         self.assertEqual(result["chain_skipped"], "no_companies_with_domain")
         recorder.assert_not_awaited()
 
+    # -- PR-2.3 (2026-11-10): LinkedIn-only companies ride the chain --------
+
+    def test_chain_includes_linkedin_only_companies(self):
+        """Mixed run: domain rows unchanged; domain-less rows WITH a company
+        LinkedIn page are chained too; rows with no identifier stay out."""
+        self._create_tam_job()
+        companies = [
+            {"name": "A", "domain": "a.example"},
+            {"name": "L1", "domain": "", "linkedin_url": "https://www.linkedin.com/company/li-one/"},
+            {"name": "L2", "domain": "", "linkedin_url": "linkedin.com/company/li-two"},
+            {"name": "C", "domain": ""},  # no identifier -> still dropped
+        ]
+        recorder = AsyncMock()
+
+        with patch("enrichment.routes._run_domain_enrich_job", new=recorder):
+            result = asyncio.run(self._chain(companies))
+
+        self.assertEqual(result["chained_total"], 3)
+        self.assertEqual(result["chained_linkedin_rows"], 2)
+        self.assertEqual(result["deduped_count"], 0)
+
+        job = job_store.get_store().get_job(result["chained_job_id"])
+        self.assertEqual(job["linkedin_url_col"], "linkedin_url",
+                         "column persisted so restart/resume restores routing")
+        self.assertEqual(job["source_type"], "tam_chain")
+        self.assertEqual(job["total"], 3)
+
+        kwargs = recorder.await_args.kwargs
+        self.assertEqual(kwargs.get("linkedin_url_col"), "linkedin_url")
+        rows = kwargs["rows"]
+        self.assertEqual(rows[0]["domain"], "a.example")
+        self.assertEqual(rows[1], {
+            "domain": "", "linkedin_url": "https://linkedin.com/company/li-one",
+            "company_name": "L1",
+        }, "URL normalized (scheme added, www/trailing slash/case folded)")
+        self.assertEqual(rows[2]["linkedin_url"], "https://linkedin.com/company/li-two")
+
+    def test_chain_linkedin_only_run_is_not_skipped(self):
+        """A TAM run where NO company has a domain still chains its
+        company-LinkedIn rows instead of returning chain_skipped."""
+        self._create_tam_job()
+        companies = [
+            {"name": "L1", "domain": "", "linkedin_url": "https://linkedin.com/company/li-one"},
+            {"name": "L2", "domain": "", "linkedin_url": "https://linkedin.com/company/li-two"},
+        ]
+        recorder = AsyncMock()
+        with patch("enrichment.routes._run_domain_enrich_job", new=recorder):
+            result = asyncio.run(self._chain(companies))
+        self.assertNotIn("chain_skipped", result)
+        self.assertEqual(result["chained_total"], 2)
+        self.assertEqual(result["chained_linkedin_rows"], 2)
+        self.assertEqual(len(recorder.await_args.kwargs["rows"]), 2)
+
+    def test_chain_cross_dedupes_linkedin_only_against_domain_rows(self):
+        """A company already chained by domain (its linkedin_url present on
+        the domain row) must not be chained again by URL."""
+        self._create_tam_job()
+        companies = [
+            {"name": "Acme", "domain": "acme.example",
+             "linkedin_url": "https://linkedin.com/company/acme"},
+            # Same company, no domain, same page in messier form:
+            {"name": "Acme", "domain": "",
+             "linkedin_url": "https://www.linkedin.com/company/Acme/"},
+        ]
+        recorder = AsyncMock()
+        with patch("enrichment.routes._run_domain_enrich_job", new=recorder):
+            result = asyncio.run(self._chain(companies))
+        self.assertEqual(result["chained_total"], 1)
+        self.assertEqual(result["chained_linkedin_rows"], 0)
+        rows = recorder.await_args.kwargs["rows"]
+        self.assertEqual(rows[0]["domain"], "acme.example")
+
+    def test_chain_dedupes_duplicate_company_urls(self):
+        """Duplicate company URLs among domain-less rows collapse (first wins)."""
+        self._create_tam_job()
+        companies = [
+            {"name": "L1", "domain": "", "linkedin_url": "https://linkedin.com/company/same"},
+            {"name": "L1-copy", "domain": "", "linkedin_url": "linkedin.com/company/SAME/"},
+        ]
+        recorder = AsyncMock()
+        with patch("enrichment.routes._run_domain_enrich_job", new=recorder):
+            result = asyncio.run(self._chain(companies))
+        self.assertEqual(result["chained_total"], 1)
+        self.assertEqual(result["chained_linkedin_rows"], 1)
+        rows = recorder.await_args.kwargs["rows"]
+        self.assertEqual(rows[0]["company_name"], "L1", "first occurrence wins")
+
+    def test_chain_ignores_personal_and_garbage_urls_on_domainless_rows(self):
+        """Only /company/-style pages can drive the company path: personal
+        /in/ URLs and non-LinkedIn values on domain-less rows are excluded,
+        and a run with nothing else keeps the legacy skip literal."""
+        self._create_tam_job()
+        recorder = AsyncMock()
+        with patch("enrichment.routes._run_domain_enrich_job", new=recorder):
+            result = asyncio.run(self._chain([
+                {"name": "P", "domain": "", "linkedin_url": "https://linkedin.com/in/johndoe"},
+                {"name": "G", "domain": "", "linkedin_url": "https://example.com/not-linkedin"},
+                {"name": "N", "domain": ""},
+            ]))
+        self.assertIn("chain_skipped", result)
+        self.assertEqual(result["chain_skipped"], "no_companies_with_domain",
+                         "legacy literal preserved for API/UI compatibility")
+        recorder.assert_not_awaited()
+
+    def test_chain_domain_only_rows_do_not_carry_linkedin_column(self):
+        """Domain rows keep their exact historical shape (no linkedin_url
+        key injected) — byte-for-byte parity with pre-PR-2.3 rows."""
+        self._create_tam_job()
+        recorder = AsyncMock()
+        with patch("enrichment.routes._run_domain_enrich_job", new=recorder):
+            result = asyncio.run(self._chain([
+                {"name": "A", "domain": "a.example"},
+                {"name": "B", "domain": "b.example", "linkedin_url": "https://linkedin.com/company/b"},
+            ]))
+        rows = recorder.await_args.kwargs["rows"]
+        self.assertEqual(result["chained_linkedin_rows"], 0)
+        self.assertEqual(rows[0], {"domain": "a.example", "company_name": "A"})
+        self.assertEqual(rows[1], {"domain": "b.example", "company_name": "B"},
+                         "a domain row's linkedin_url is NOT copied into the row")
+
     async def _chain(self, companies, titles=None, exact_titles=False):
         result = tam_flow.create_chained_enrichment_job(
             "tam-test-job",
@@ -938,6 +1063,78 @@ class TestChainedEnrichmentJob(_TempDbTestCase):
         # assertions below are deterministic.
         await asyncio.sleep(0)
         return result
+
+
+class TestChainedRowRouting(_TempDbTestCase):
+    """PR-2.3 routing proof: rows shaped exactly like tam_chain's output must
+    flow through the EXISTING run_domain_enrichment router — company-URL rows
+    to _enrich_by_company_linkedin (the /flows/domain-enrich company path),
+    domain rows to _enrich_single_domain — with zero new cascade code."""
+
+    def _run_rows(self, rows: list[dict]) -> tuple[AsyncMock, AsyncMock, list]:
+        from enrichment import list_builder as lb
+        company_recorder = AsyncMock(return_value=[{"row_status": "no_contacts"}])
+        domain_recorder = AsyncMock(return_value=[{"row_status": "no_contacts"}])
+        out_rows: list = []
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = Path(tmp) / "out.csv"
+            with patch("enrichment.list_builder._enrich_by_company_linkedin", new=company_recorder), \
+                 patch("enrichment.list_builder._enrich_single_domain", new=domain_recorder), \
+                 patch("enrichment.list_builder._attach_seg_columns", new=AsyncMock(return_value=None)):
+                out_rows = asyncio.run(lb.run_domain_enrichment(
+                    rows=rows,
+                    domain_col="domain",
+                    name_col="company_name",
+                    linkedin_url_col="linkedin_url",
+                    max_decision_makers=5,
+                    job_id="tam-chain-routing-test",
+                    write_incremental=True,
+                    output_path=out_path,
+                ))
+        return company_recorder, domain_recorder, out_rows
+
+    def test_linkedin_only_row_routes_to_company_orchestrator(self):
+        company_recorder, domain_recorder, _ = self._run_rows([{
+            "domain": "",
+            "linkedin_url": "https://linkedin.com/company/acme",
+            "company_name": "Acme",
+        }])
+        company_recorder.assert_awaited_once()
+        self.assertEqual(
+            company_recorder.await_args.kwargs.get("company_linkedin_url"),
+            "https://linkedin.com/company/acme",
+            "the /company/ URL auto-detect must hand the row to the existing orchestrator",
+        )
+        domain_recorder.assert_not_awaited()
+
+    def test_domain_row_still_routes_to_domain_cascade(self):
+        """Requirement: existing domain behavior preserved — a domain row
+        never visits the company-URL orchestrator."""
+        company_recorder, domain_recorder, _ = self._run_rows([
+            {"domain": "a.example", "company_name": "A"},
+        ])
+        domain_recorder.assert_awaited_once()
+        company_recorder.assert_not_awaited()
+
+    def test_mixed_rows_route_each_to_their_own_path(self):
+        company_recorder, domain_recorder, _ = self._run_rows([
+            {"domain": "a.example", "company_name": "A"},
+            {"domain": "", "linkedin_url": "https://linkedin.com/company/li-one",
+             "company_name": "L1"},
+        ])
+        company_recorder.assert_awaited_once()
+        domain_recorder.assert_awaited_once()
+
+    def test_missing_identifier_row_is_skipped_not_routed(self):
+        """A row with neither domain nor company URL is skipped with the
+        existing STATUS_SKIPPED semantics — neither path fires."""
+        company_recorder, domain_recorder, out_rows = self._run_rows([
+            {"domain": "", "company_name": "No Identifier"},
+        ])
+        company_recorder.assert_not_awaited()
+        domain_recorder.assert_not_awaited()
+        self.assertEqual(len(out_rows), 1)
+        self.assertEqual(out_rows[0].get("row_status"), "skipped")
 
 
 class TestCompanyBackup(_TempDbTestCase):
