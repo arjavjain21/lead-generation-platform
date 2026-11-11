@@ -6,18 +6,24 @@ module under the file-size budget; ``tam_flow`` re-exports
 
 Reuses the exact code path ``/flows/domain-enrich`` uses for job creation
 (``EnrichmentJobStore.create_enrichment_job``) and execution
-(``routes._run_domain_enrich_job``) — no upload, no duplicated CSV plumbing;
-rows are handed over in-memory the same way the scraper -> enrichment chain
-endpoint does.
+(``routes._run_domain_enrich_job``) — rows are handed over in-memory the
+same way the scraper -> enrichment chain endpoint does. The one on-disk
+artifact is the chain's restart-parity input CSV (see
+``_persist_chain_input_csv``): ``/restart`` resolves it first, and it is
+written atomically BEFORE the job exists, so a chain job can never run
+without a safe restart input.
 """
 
 from __future__ import annotations
 
 import asyncio
+import csv
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 from enrichment import identifier_utils
@@ -28,6 +34,93 @@ logger = logging.getLogger(__name__)
 # Fire-and-forget chain tasks keep a strong reference here so the event
 # loop's weak task refs cannot garbage-collect a live Flow-1 job mid-run.
 _pending_chain_tasks: set[asyncio.Task] = set()
+
+# Column the chained Flow-1 job uses for TAM company LinkedIn pages. It is
+# deliberately ``linkedin_url`` (NOT a bespoke name): the value is persisted
+# as the job's ``linkedin_url_col`` — an existing jobs-table column that
+# restart/resume restores automatically (routes.py create_enrichment_job +
+# runner kwargs) — and ``list_builder.process_row``'s existing auto-detect
+# routes any ``/company/`` URL found in that column straight to the
+# company-URL orchestrator (the same path /flows/domain-enrich uses for
+# company-URL rows). No new cascade code, no new column plumbing.
+CHAIN_LINKEDIN_COL = "linkedin_url"
+
+
+def _canonical_company_url(url: str) -> str:
+    """Drop a leading ``www.`` host from a normalize_linkedin_url result.
+
+    ``identifier_utils.normalize_linkedin_url`` lowercases host+path and
+    strips query/trailing slash, but deliberately preserves ``www.`` — so
+    ``www.linkedin.com/company/acme`` and ``linkedin.com/company/acme`` would
+    be two different chain keys. Stripped HERE (chain-local) instead of in
+    the shared helper: the shared normalizer feeds stored ``linkedin_norm``
+    comparisons elsewhere and must keep its exact behavior.
+    """
+    if url.startswith("https://www.linkedin.com/"):
+        return "https://linkedin.com/" + url[len("https://www.linkedin.com/"):]
+    return url
+
+
+def _company_url_from_tam_row(row: dict[str, Any]) -> str:
+    """Canonical company-page LinkedIn URL for a TAM row ('' otherwise).
+
+    Domain-less TAM rows can carry personal (/in/) or malformed URLs; only
+    company-style pages (``/company/``, ``/school/``, ``/organization/`` per
+    ``list_builder._is_company_linkedin_url``) can drive the Flow-1
+    company-URL path, so anything else is treated as absent.
+    """
+    from enrichment import list_builder  # lazy: keeps module import light
+
+    url = identifier_utils.normalize_linkedin_url(row.get("linkedin_url") or "")
+    if not url:
+        return ""
+    if not list_builder._is_company_linkedin_url(url):
+        return ""
+    return _canonical_company_url(url)
+
+
+def _persist_chain_input_csv(
+    upload_dir: Path, filename: str, rows: list[dict[str, Any]]
+) -> Path:
+    """Atomically persist the chain's exact input rows for /restart parity.
+
+    Durability contract (PR-2.3 hardening, 2026-11-10):
+      * written to ``<filename>.tmp`` in the SAME directory, flushed and
+        fsync'd, then moved onto the final name with ``os.replace`` (atomic
+        on POSIX) — a crash can never leave a truncated CSV under the final
+        name that /restart would trust;
+      * the filename embeds the chained job's uuid, so two chains created
+        in the same minute can never overwrite each other's restart input;
+      * on ANY failure the temp file is removed and the error re-raised —
+        callers treat persistence as REQUIRED (fail-closed), because a
+        running chain job whose restart input is missing resumes through
+        the unsafe parent-TAM-CSV path (misaligned index checkpoints).
+
+    Returns the final path.
+    """
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    final_path = upload_dir / filename
+    tmp_path = upload_dir / f"{filename}.tmp"
+    try:
+        with open(tmp_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=["domain", CHAIN_LINKEDIN_COL, "company_name"],
+                restval="",
+                extrasaction="ignore",
+            )
+            writer.writeheader()
+            writer.writerows(rows)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, final_path)
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:  # pragma: no cover - cleanup is best-effort
+            pass
+        raise
+    return final_path
 
 
 def create_chained_enrichment_job(
@@ -41,10 +134,21 @@ def create_chained_enrichment_job(
     exact_titles: bool = False,
     tam_display_name: str = "",
 ) -> dict[str, Any]:
-    """Create a Flow-1 domain-enrichment job over a TAM run's domains.
+    """Create a Flow-1 domain-enrichment job over a TAM run's companies.
 
     Rows are deduped by domain with normalization on (mirrors the Flow-1
-    pre-processing).
+    pre-processing). Since 2026-11-10 (PR-2.3), TAM companies that have NO
+    domain but DO have a company LinkedIn page are chained too — they ride
+    the exact company-URL path /flows/domain-enrich already uses: the URL
+    travels in a ``linkedin_url`` column (persisted as the job's
+    ``linkedin_url_col`` so restart/resume restores it; the jobs table has no
+    company_linkedin_col) and ``list_builder.process_row``'s ``/company/``
+    auto-detect routes the row to the company orchestrator. The provider
+    waterfall itself is untouched.
+
+    Cross-dedupe: a company already chained by domain (its ``linkedin_url``
+    known from the same TAM run) is not chained again by URL, and duplicate
+    company URLs among the domain-less rows collapse first-wins.
 
     Title handling: the stored ``cascade_config`` keeps the titles
     UNBRACKETED even when ``exact_titles`` is true — the chained job's local
@@ -53,8 +157,14 @@ def create_chained_enrichment_job(
     kwarg on ``_run_domain_enrich_job``, whose callee bracket-wraps at
     Blitz-call time (``blitz_find_people_prepass``).
 
-    Returns ``{"chained_job_id": ..., "chained_total": N,
-    "deduped_count": N}`` or ``{"chain_skipped": reason}``.
+    Returns ``{"chained_job_id": ..., "chained_total": N, "deduped_count": N,
+    "chained_linkedin_rows": N}`` or ``{"chain_skipped": reason}`` (the
+    legacy ``no_companies_with_domain`` literal is preserved for API/UI
+    compatibility; it now means "no company had a domain OR a company
+    LinkedIn URL"). Raises (caught by tam_flow as chain_skipped
+    "chain_error: …") when the restart-parity input CSV cannot be persisted
+    — the job is then never created, so no chain job can outlive its
+    restart input.
     """
     from enrichment import routes as enrichment_routes  # lazy: avoids import cycle
 
@@ -63,12 +173,40 @@ def create_chained_enrichment_job(
         for row in companies
         if row.get("domain")
     ]
-    if not chain_rows:
+
+    # LinkedIn-only companies (PR-2.3): collect the canonical company URLs
+    # already represented by a domain-bearing row so the same company is
+    # never chained twice, then first-wins-dedupe the domain-less rows.
+    chained_urls = {
+        _canonical_company_url(identifier_utils.normalize_linkedin_url(row.get("linkedin_url") or ""))
+        for row in companies
+        if row.get("domain")
+    }
+    chained_urls.discard("")
+    linkedin_rows: list[dict[str, Any]] = []
+    for row in companies:
+        if row.get("domain"):
+            continue  # domain rows are chained above — never twice
+        url = _company_url_from_tam_row(row)
+        if not url or url in chained_urls:
+            continue
+        linkedin_rows.append({
+            "domain": "",
+            CHAIN_LINKEDIN_COL: url,
+            "company_name": row.get("name") or "",
+        })
+        chained_urls.add(url)
+
+    if not chain_rows and not linkedin_rows:
         return {"chain_skipped": "no_companies_with_domain"}
 
     deduped_rows, deduped_count, _skipped = identifier_utils.dedupe_rows_by_domain(
         chain_rows, "domain", True
     )
+    # Empty-domain rows pass through dedupe_rows_by_domain untouched by
+    # design (its Notes: blank keys never collapse); the LinkedIn rows were
+    # already URL-deduped above, so appending preserves both guarantees.
+    deduped_rows = deduped_rows + linkedin_rows
 
     # Store the cascade UNBRACKETED and forward ``exact_titles`` to the
     # Flow-1 runner instead (mirrors how /flows/domain-enrich persists plain
@@ -87,15 +225,51 @@ def create_chained_enrichment_job(
     chained_job_id = str(uuid.uuid4())
     store = job_store.get_store()
     # Friendlier identity than the old tam_<id>_<id> pattern: the download
-    # filename says what it is, display_name says where it came from.
+    # filename says what it is, display_name says where it came from. The
+    # chained job's uuid is embedded in the filename so two chains created
+    # in the same minute can never collide on disk (restart input) or in the
+    # jobs table (filename column).
     chain_stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+    chain_filename = f"find_companies_contacts_{chain_stamp}_{chained_job_id[:8]}.csv"
+
+    # Restart parity (PR-2.3, 2026-11-10): /restart reconstructs a job's
+    # input rows from ``UPLOAD_DIR/<filename>.csv`` FIRST, falling back to
+    # the parent TAM output CSV when that file is absent. The parent CSV is
+    # in TAM row order and includes identifier-less rows, so its index space
+    # does not match this job's row space — blank-domain (LinkedIn-only)
+    # rows would be matched against misaligned index checkpoints (the M1
+    # path in routes._resume_remaining_rows), re-enriching already-done rows
+    # or dropping not-yet-done ones, and cross-deduped duplicates would be
+    # re-admitted. Persisting the exact chain rows (same order, same deduped
+    # set) makes the upload file the restart source, so resumed totals equal
+    # chained_total minus done rows.
+    #
+    # FAIL-CLOSED (hardening, same day): persistence happens BEFORE the job
+    # row is created and the runner is scheduled, and a failure raises — a
+    # chain job must never exist without its restart input, because its
+    # /restart would silently take the unsafe parent-walk path. The caller
+    # (tam_flow) catches this and records chain_skipped="chain_error: …"
+    # while keeping the TAM export itself done.
+    _persist_chain_input_csv(
+        Path(enrichment_routes.UPLOAD_DIR), chain_filename, deduped_rows
+    )
+
     store.create_enrichment_job(
         job_id=chained_job_id,
         user_id=user_id,
         total=len(deduped_rows),
-        filename=f"find_companies_contacts_{chain_stamp}.csv",
+        filename=chain_filename,
         domain_col="domain",
-        original_filename=f"find_companies_contacts_{chain_stamp}.csv",
+        # Persisted so /restart + auto-resume restore the company-URL
+        # routing for LinkedIn-only rows automatically (same mechanism the
+        # upload flow uses; the jobs table has no company_linkedin_col).
+        linkedin_url_col=CHAIN_LINKEDIN_COL,
+        # Persisted for kwargs parity with the initial run below: /restart
+        # rebuilds runner kwargs from these job-row columns, and the initial
+        # run passes name_col="company_name" — without this line a restarted
+        # chain would silently drop the company-name hint column mapping.
+        name_col="company_name",
+        original_filename=chain_filename,
         parent_job_id=tam_job_id,
         cascade_config=cascade_json,
         max_results=max_decision_makers,
@@ -117,6 +291,7 @@ def create_chained_enrichment_job(
             rows=deduped_rows,
             domain_col="domain",
             name_col="company_name",
+            linkedin_url_col=CHAIN_LINKEDIN_COL,
             first_name_col=None,
             last_name_col=None,
             max_results=max_decision_makers,
@@ -128,11 +303,14 @@ def create_chained_enrichment_job(
     task.add_done_callback(_pending_chain_tasks.discard)
 
     logger.info(
-        "TAM job %s chained Flow-1 job %s over %d domains (%d deduped away)",
-        tam_job_id, chained_job_id, len(deduped_rows), deduped_count,
+        "TAM job %s chained Flow-1 job %s over %d companies "
+        "(%d domain + %d linkedin-only; %d domain deduped away)",
+        tam_job_id, chained_job_id, len(deduped_rows),
+        len(deduped_rows) - len(linkedin_rows), len(linkedin_rows), deduped_count,
     )
     return {
         "chained_job_id": chained_job_id,
         "chained_total": len(deduped_rows),
         "deduped_count": deduped_count,
+        "chained_linkedin_rows": len(linkedin_rows),
     }

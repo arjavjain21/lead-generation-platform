@@ -17,6 +17,11 @@ Coverage:
     exact_titles the stored cascade stays UNBRACKETED (the local title gate
     matches literally) and exact_titles=True is forwarded to the runner.
   * Chain skip — create_enrichment_job with zero domains -> chain_skipped.
+  * LinkedIn-only chaining (PR-2.3, 2026-11-10) — domain-less TAM rows with
+    a company LinkedIn page ride the same job via the persisted
+    linkedin_url_col; www-canonical cross-dedupe against domain rows;
+    personal/garbage URLs excluded; routing proof that chain rows flow
+    through the EXISTING company-URL orchestrator vs domain cascade.
 
 Network is fully mocked (blitz_client.tam_by_people is monkeypatched); the
 job store runs on a temp DB via the shared.db.DB_PATH swap pattern used by
@@ -44,6 +49,7 @@ if _BACKEND_DIR not in sys.path:
 
 from shared import db as shared_db  # noqa: E402
 
+from enrichment import identifier_utils  # noqa: E402
 from enrichment import job_store  # noqa: E402
 from enrichment import tam_flow  # noqa: E402
 
@@ -112,6 +118,12 @@ class _TempDbTestCase(unittest.TestCase):
         shared_auth.init_auth_db()
         self._orig_output_dir = tam_flow.OUTPUT_DIR
         tam_flow.OUTPUT_DIR = Path(self._tmpdir.name) / "outputs"
+        # PR-2.3: the chain persists its input rows under routes.UPLOAD_DIR
+        # for restart parity — redirect so no test writes the real uploads dir.
+        from enrichment import routes as _enrichment_routes
+        self._orig_upload_dir = _enrichment_routes.UPLOAD_DIR
+        _enrichment_routes.UPLOAD_DIR = Path(self._tmpdir.name) / "uploads"
+        _enrichment_routes.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         # The runner backs companies up to the real contacts DB by default —
         # mock the upsert for EVERY test so no test ever writes to
         # leadsdatabase.cc. Individual backup tests override the mock.
@@ -155,6 +167,8 @@ class _TempDbTestCase(unittest.TestCase):
         shared_auth.DB_PATH = self._orig_auth_db_path
         shared_db.DB_PATH = self._orig_db_path
         tam_flow.OUTPUT_DIR = self._orig_output_dir
+        from enrichment import routes as _enrichment_routes
+        _enrichment_routes.UPLOAD_DIR = self._orig_upload_dir
         from enrichment import tam_legs as _tam_legs
         _tam_legs.contacts_client.upsert_business_record_async = self._orig_upsert
         self._tmpdir.cleanup()
@@ -924,6 +938,128 @@ class TestChainedEnrichmentJob(_TempDbTestCase):
         self.assertEqual(result["chain_skipped"], "no_companies_with_domain")
         recorder.assert_not_awaited()
 
+    # -- PR-2.3 (2026-11-10): LinkedIn-only companies ride the chain --------
+
+    def test_chain_includes_linkedin_only_companies(self):
+        """Mixed run: domain rows unchanged; domain-less rows WITH a company
+        LinkedIn page are chained too; rows with no identifier stay out."""
+        self._create_tam_job()
+        companies = [
+            {"name": "A", "domain": "a.example"},
+            {"name": "L1", "domain": "", "linkedin_url": "https://www.linkedin.com/company/li-one/"},
+            {"name": "L2", "domain": "", "linkedin_url": "linkedin.com/company/li-two"},
+            {"name": "C", "domain": ""},  # no identifier -> still dropped
+        ]
+        recorder = AsyncMock()
+
+        with patch("enrichment.routes._run_domain_enrich_job", new=recorder):
+            result = asyncio.run(self._chain(companies))
+
+        self.assertEqual(result["chained_total"], 3)
+        self.assertEqual(result["chained_linkedin_rows"], 2)
+        self.assertEqual(result["deduped_count"], 0)
+
+        job = job_store.get_store().get_job(result["chained_job_id"])
+        self.assertEqual(job["linkedin_url_col"], "linkedin_url",
+                         "column persisted so restart/resume restores routing")
+        self.assertEqual(job["name_col"], "company_name",
+                         "kwargs parity: /restart restores name_col from the job row")
+        self.assertEqual(job["source_type"], "tam_chain")
+        self.assertEqual(job["total"], 3)
+
+        kwargs = recorder.await_args.kwargs
+        self.assertEqual(kwargs.get("linkedin_url_col"), "linkedin_url")
+        rows = kwargs["rows"]
+        self.assertEqual(rows[0]["domain"], "a.example")
+        self.assertEqual(rows[1], {
+            "domain": "", "linkedin_url": "https://linkedin.com/company/li-one",
+            "company_name": "L1",
+        }, "URL normalized (scheme added, www/trailing slash/case folded)")
+        self.assertEqual(rows[2]["linkedin_url"], "https://linkedin.com/company/li-two")
+
+    def test_chain_linkedin_only_run_is_not_skipped(self):
+        """A TAM run where NO company has a domain still chains its
+        company-LinkedIn rows instead of returning chain_skipped."""
+        self._create_tam_job()
+        companies = [
+            {"name": "L1", "domain": "", "linkedin_url": "https://linkedin.com/company/li-one"},
+            {"name": "L2", "domain": "", "linkedin_url": "https://linkedin.com/company/li-two"},
+        ]
+        recorder = AsyncMock()
+        with patch("enrichment.routes._run_domain_enrich_job", new=recorder):
+            result = asyncio.run(self._chain(companies))
+        self.assertNotIn("chain_skipped", result)
+        self.assertEqual(result["chained_total"], 2)
+        self.assertEqual(result["chained_linkedin_rows"], 2)
+        self.assertEqual(len(recorder.await_args.kwargs["rows"]), 2)
+
+    def test_chain_cross_dedupes_linkedin_only_against_domain_rows(self):
+        """A company already chained by domain (its linkedin_url present on
+        the domain row) must not be chained again by URL."""
+        self._create_tam_job()
+        companies = [
+            {"name": "Acme", "domain": "acme.example",
+             "linkedin_url": "https://linkedin.com/company/acme"},
+            # Same company, no domain, same page in messier form:
+            {"name": "Acme", "domain": "",
+             "linkedin_url": "https://www.linkedin.com/company/Acme/"},
+        ]
+        recorder = AsyncMock()
+        with patch("enrichment.routes._run_domain_enrich_job", new=recorder):
+            result = asyncio.run(self._chain(companies))
+        self.assertEqual(result["chained_total"], 1)
+        self.assertEqual(result["chained_linkedin_rows"], 0)
+        rows = recorder.await_args.kwargs["rows"]
+        self.assertEqual(rows[0]["domain"], "acme.example")
+
+    def test_chain_dedupes_duplicate_company_urls(self):
+        """Duplicate company URLs among domain-less rows collapse (first wins)."""
+        self._create_tam_job()
+        companies = [
+            {"name": "L1", "domain": "", "linkedin_url": "https://linkedin.com/company/same"},
+            {"name": "L1-copy", "domain": "", "linkedin_url": "linkedin.com/company/SAME/"},
+        ]
+        recorder = AsyncMock()
+        with patch("enrichment.routes._run_domain_enrich_job", new=recorder):
+            result = asyncio.run(self._chain(companies))
+        self.assertEqual(result["chained_total"], 1)
+        self.assertEqual(result["chained_linkedin_rows"], 1)
+        rows = recorder.await_args.kwargs["rows"]
+        self.assertEqual(rows[0]["company_name"], "L1", "first occurrence wins")
+
+    def test_chain_ignores_personal_and_garbage_urls_on_domainless_rows(self):
+        """Only /company/-style pages can drive the company path: personal
+        /in/ URLs and non-LinkedIn values on domain-less rows are excluded,
+        and a run with nothing else keeps the legacy skip literal."""
+        self._create_tam_job()
+        recorder = AsyncMock()
+        with patch("enrichment.routes._run_domain_enrich_job", new=recorder):
+            result = asyncio.run(self._chain([
+                {"name": "P", "domain": "", "linkedin_url": "https://linkedin.com/in/johndoe"},
+                {"name": "G", "domain": "", "linkedin_url": "https://example.com/not-linkedin"},
+                {"name": "N", "domain": ""},
+            ]))
+        self.assertIn("chain_skipped", result)
+        self.assertEqual(result["chain_skipped"], "no_companies_with_domain",
+                         "legacy literal preserved for API/UI compatibility")
+        recorder.assert_not_awaited()
+
+    def test_chain_domain_only_rows_do_not_carry_linkedin_column(self):
+        """Domain rows keep their exact historical shape (no linkedin_url
+        key injected) — byte-for-byte parity with pre-PR-2.3 rows."""
+        self._create_tam_job()
+        recorder = AsyncMock()
+        with patch("enrichment.routes._run_domain_enrich_job", new=recorder):
+            result = asyncio.run(self._chain([
+                {"name": "A", "domain": "a.example"},
+                {"name": "B", "domain": "b.example", "linkedin_url": "https://linkedin.com/company/b"},
+            ]))
+        rows = recorder.await_args.kwargs["rows"]
+        self.assertEqual(result["chained_linkedin_rows"], 0)
+        self.assertEqual(rows[0], {"domain": "a.example", "company_name": "A"})
+        self.assertEqual(rows[1], {"domain": "b.example", "company_name": "B"},
+                         "a domain row's linkedin_url is NOT copied into the row")
+
     async def _chain(self, companies, titles=None, exact_titles=False):
         result = tam_flow.create_chained_enrichment_job(
             "tam-test-job",
@@ -936,6 +1072,425 @@ class TestChainedEnrichmentJob(_TempDbTestCase):
         )
         # Let the fire-and-forget Flow-1 task actually start so awaited-mock
         # assertions below are deterministic.
+        await asyncio.sleep(0)
+        return result
+
+
+class TestChainedRowRouting(_TempDbTestCase):
+    """PR-2.3 routing proof: rows shaped exactly like tam_chain's output must
+    flow through the EXISTING run_domain_enrichment router — company-URL rows
+    to _enrich_by_company_linkedin (the /flows/domain-enrich company path),
+    domain rows to _enrich_single_domain — with zero new cascade code."""
+
+    def _run_rows(self, rows: list[dict]) -> tuple[AsyncMock, AsyncMock, list]:
+        from enrichment import list_builder as lb
+        company_recorder = AsyncMock(return_value=[{"row_status": "no_contacts"}])
+        domain_recorder = AsyncMock(return_value=[{"row_status": "no_contacts"}])
+        out_rows: list = []
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = Path(tmp) / "out.csv"
+            with patch("enrichment.list_builder._enrich_by_company_linkedin", new=company_recorder), \
+                 patch("enrichment.list_builder._enrich_single_domain", new=domain_recorder), \
+                 patch("enrichment.list_builder._attach_seg_columns", new=AsyncMock(return_value=None)):
+                out_rows = asyncio.run(lb.run_domain_enrichment(
+                    rows=rows,
+                    domain_col="domain",
+                    name_col="company_name",
+                    linkedin_url_col="linkedin_url",
+                    max_decision_makers=5,
+                    job_id="tam-chain-routing-test",
+                    write_incremental=True,
+                    output_path=out_path,
+                ))
+        return company_recorder, domain_recorder, out_rows
+
+    def test_linkedin_only_row_routes_to_company_orchestrator(self):
+        company_recorder, domain_recorder, _ = self._run_rows([{
+            "domain": "",
+            "linkedin_url": "https://linkedin.com/company/acme",
+            "company_name": "Acme",
+        }])
+        company_recorder.assert_awaited_once()
+        self.assertEqual(
+            company_recorder.await_args.kwargs.get("company_linkedin_url"),
+            "https://linkedin.com/company/acme",
+            "the /company/ URL auto-detect must hand the row to the existing orchestrator",
+        )
+        domain_recorder.assert_not_awaited()
+
+    def test_domain_row_still_routes_to_domain_cascade(self):
+        """Requirement: existing domain behavior preserved — a domain row
+        never visits the company-URL orchestrator."""
+        company_recorder, domain_recorder, _ = self._run_rows([
+            {"domain": "a.example", "company_name": "A"},
+        ])
+        domain_recorder.assert_awaited_once()
+        company_recorder.assert_not_awaited()
+
+    def test_mixed_rows_route_each_to_their_own_path(self):
+        company_recorder, domain_recorder, _ = self._run_rows([
+            {"domain": "a.example", "company_name": "A"},
+            {"domain": "", "linkedin_url": "https://linkedin.com/company/li-one",
+             "company_name": "L1"},
+        ])
+        company_recorder.assert_awaited_once()
+        domain_recorder.assert_awaited_once()
+
+    def test_missing_identifier_row_is_skipped_not_routed(self):
+        """A row with neither domain nor company URL is skipped with the
+        existing STATUS_SKIPPED semantics — neither path fires."""
+        company_recorder, domain_recorder, out_rows = self._run_rows([
+            {"domain": "", "company_name": "No Identifier"},
+        ])
+        company_recorder.assert_not_awaited()
+        domain_recorder.assert_not_awaited()
+        self.assertEqual(len(out_rows), 1)
+        self.assertEqual(out_rows[0].get("row_status"), "skipped")
+
+
+class TestChainRestartParity(_TempDbTestCase):
+    """PR-2.3 review (2026-11-10): /restart of a chained job must reconstruct
+    EXACTLY the chain's selected rows — no extra companies, no wrong totals,
+    no duplicate enrichment of LinkedIn-only rows.
+
+    Mechanism under test: create_chained_enrichment_job persists its input
+    rows to UPLOAD_DIR/<job filename>.csv, and routes' restart resolution
+    prefers that file over walking the parent TAM CSV (whose row space does
+    not match the chain's — the M1 blank-domain index matching would
+    misjudge LinkedIn-only rows there)."""
+
+    MIXED_COMPANIES = [
+        {"name": "A", "domain": "a.example"},
+        {"name": "B", "domain": "b.example",
+         "linkedin_url": "https://linkedin.com/company/b"},
+        {"name": "Decoy-Nameless", "domain": ""},  # no identifier -> never chained
+        {"name": "L1", "domain": "",
+         "linkedin_url": "https://www.linkedin.com/company/li-one/"},
+        {"name": "L2", "domain": "",
+         "linkedin_url": "linkedin.com/company/li-two"},
+        # Same company as B (no domain) -> cross-deduped at chain time:
+        {"name": "B-copy", "domain": "",
+         "linkedin_url": "https://linkedin.com/company/B/"},
+    ]
+    # Expected chain rows (order is load-bearing for index checkpoints):
+    #   0: a.example   1: b.example   2: li-one   3: li-two
+    EXPECTED_CHAIN_TOTAL = 4
+
+    def _create_interrupted_chain(self, processed_prefix: int):
+        """Create the chain over MIXED_COMPANIES and simulate a crash after
+        the first ``processed_prefix`` rows were checkpointed."""
+        self._create_tam_job()
+        recorder = AsyncMock()
+        with patch("enrichment.routes._run_domain_enrich_job", new=recorder):
+            result = asyncio.run(self._chain(self.MIXED_COMPANIES))
+        store = job_store.get_store()
+        chained_job_id = result["chained_job_id"]
+        rows = recorder.await_args.kwargs["rows"]
+        self.assertEqual(len(rows), self.EXPECTED_CHAIN_TOTAL)
+
+        store.write_checkpoints_batch(chained_job_id, list(range(processed_prefix)))
+        store.write_domain_checkpoints_batch(chained_job_id, [
+            identifier_utils.normalize_domain(r["domain"])
+            for r in rows[:processed_prefix] if r.get("domain")
+        ])
+        return store, store.get_job(chained_job_id), result
+
+    def _restart_reconstructed_rows(self, store, job) -> list[dict]:
+        """Replicate /restart's row reconstruction exactly: resolve the input
+        CSV (UPLOAD_DIR file first), read it, re-run the job's dedupe flags."""
+        from enrichment import routes as enrichment_routes
+        filename = job["filename"]
+        clean = filename[:-4] if filename.lower().endswith(".csv") else filename
+        upload_path = Path(enrichment_routes.UPLOAD_DIR) / f"{clean}.csv"
+        self.assertTrue(upload_path.exists(),
+                        "chain input CSV must exist for restart parity")
+        with open(upload_path, newline="", encoding="utf-8") as f:
+            deduped_all = [dict(r) for r in csv.DictReader(f)]
+        return identifier_utils.dedupe_rows_by_domain(
+            deduped_all, job["domain_col"], True
+        )[0]
+
+    def test_chain_writes_upload_csv_matching_runner_rows(self):
+        """The persisted restart source must equal the rows the runner
+        received — same order, same values, no extras."""
+        self._create_tam_job()
+        recorder = AsyncMock()
+        with patch("enrichment.routes._run_domain_enrich_job", new=recorder):
+            result = asyncio.run(self._chain(self.MIXED_COMPANIES))
+        runner_rows = recorder.await_args.kwargs["rows"]
+        job = job_store.get_store().get_job(result["chained_job_id"])
+
+        from enrichment import routes as enrichment_routes
+        clean = job["filename"][:-4]
+        upload_path = Path(enrichment_routes.UPLOAD_DIR) / f"{clean}.csv"
+        self.assertTrue(upload_path.exists())
+        with open(upload_path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            header = reader.fieldnames
+            file_rows = [dict(r) for r in reader]
+        self.assertEqual(header, ["domain", "linkedin_url", "company_name"])
+        # CSV round-trip adds linkedin_url='' on domain rows (DictWriter
+        # restval) — exactly how /restart's pandas read sees them too, and
+        # row.get() behaves identically for both shapes.
+        normalized_runner_rows = [
+            {**r, "linkedin_url": r.get("linkedin_url", "")} for r in runner_rows
+        ]
+        self.assertEqual(file_rows, normalized_runner_rows,
+                         "restart source must be the exact chain rows")
+        self.assertEqual(job["total"], len(file_rows))
+
+    def test_restart_parity_interrupted_mixed_job(self):
+        """Interrupted after rows 0-1 (both domain rows): the resume filter
+        over the reconstructed rows must return exactly the two LinkedIn-only
+        rows — the done domain rows filtered by domain checkpoints, the
+        identifier-less and cross-deduped decoys absent entirely."""
+        from enrichment import routes as enrichment_routes
+        store, job, _ = self._create_interrupted_chain(processed_prefix=2)
+        deduped_all = self._restart_reconstructed_rows(store, job)
+        self.assertEqual(len(deduped_all), self.EXPECTED_CHAIN_TOTAL,
+                         "no extra companies from the parent TAM CSV")
+
+        remaining, _ = enrichment_routes._resume_remaining_rows(
+            store, job, deduped_all, job["domain_col"], True, dedupe=True,
+        )
+        self.assertEqual(
+            [r.get("linkedin_url") for r in remaining],
+            ["https://linkedin.com/company/li-one", "https://linkedin.com/company/li-two"],
+            "exactly the not-yet-done LinkedIn-only rows remain — index spaces align",
+        )
+        self.assertFalse(any(r.get("domain") for r in remaining),
+                         "done domain rows must be filtered by domain checkpoints")
+
+    def test_restart_parity_all_done_short_circuits(self):
+        """Every row checkpointed (e.g. crash after the last batch flush but
+        before set_done): resume returns zero rows so the restart's all-done
+        branch carries the prior partial as complete — no re-enrichment."""
+        from enrichment import routes as enrichment_routes
+        store, job, _ = self._create_interrupted_chain(
+            processed_prefix=self.EXPECTED_CHAIN_TOTAL,
+        )
+        deduped_all = self._restart_reconstructed_rows(store, job)
+        remaining, _ = enrichment_routes._resume_remaining_rows(
+            store, job, deduped_all, job["domain_col"], True, dedupe=True,
+        )
+        self.assertEqual(remaining, [], "all-done must short-circuit cleanly")
+
+    def test_restart_parity_no_progress_full_reprocess(self):
+        """Zero checkpoints (crashed before the first batch): every chain row
+        (domain AND LinkedIn-only) reprocesses; still exactly 4, never the
+        TAM CSV's 6 rows."""
+        from enrichment import routes as enrichment_routes
+        store, job, _ = self._create_interrupted_chain(processed_prefix=0)
+        deduped_all = self._restart_reconstructed_rows(store, job)
+        remaining, _ = enrichment_routes._resume_remaining_rows(
+            store, job, deduped_all, job["domain_col"], True, dedupe=True,
+        )
+        self.assertEqual(len(remaining), self.EXPECTED_CHAIN_TOTAL)
+
+    def test_persistence_failure_fails_closed_no_job_no_runner(self):
+        """Fail-closed contract (hardening, 2026-11-10): if the restart-parity
+        CSV cannot be persisted, NO chain job is created and NO runner starts
+        — a chain job must never exist without its restart input. The raise
+        is what tam_flow converts to chain_skipped="chain_error: …"."""
+        from enrichment import routes as enrichment_routes
+        self._create_tam_job()
+        blocker = Path(self._tmpdir.name) / "not-a-dir"
+        blocker.write_text("file where a directory is expected")
+        orig = enrichment_routes.UPLOAD_DIR
+        enrichment_routes.UPLOAD_DIR = blocker / "uploads"
+        recorder = AsyncMock()
+        try:
+            with patch("enrichment.routes._run_domain_enrich_job", new=recorder):
+                # Exception type varies with the failure mode (here
+                # NotADirectoryError, an OSError); tam_flow catches broadly,
+                # so the CONTRACT is "raises, no job, no runner".
+                with self.assertRaises(Exception):
+                    asyncio.run(self._chain([{"name": "A", "domain": "a.example"}]))
+        finally:
+            enrichment_routes.UPLOAD_DIR = orig
+        recorder.assert_not_awaited()
+        # No orphan job row was created for the failed chain.
+        rows = job_store.get_store().conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE source_type='tam_chain'"
+        ).fetchone()
+        self.assertEqual(rows[0], 0)
+        # And nothing was left at any final .csv name (only .tmp, cleaned).
+        leftover = list(Path(self._tmpdir.name).rglob("*.csv"))
+        self.assertEqual(leftover, [], "no partial artifacts from the failed persist")
+
+    def test_partial_write_leaves_no_truncated_restart_input(self):
+        """A crash mid-write (simulated by writerows exploding partway) must
+        leave NO file at the final name — /restart must never read a
+        truncated CSV — and the temp file must be cleaned up."""
+        from enrichment import tam_chain as tc
+        self._create_tam_job()
+
+        real_dict_writer = csv.DictWriter
+
+        class ExplodingWriter(real_dict_writer):
+            def writerows(self, rows):
+                real_dict_writer.writerow(self, rows[0])  # partial row written
+                raise OSError("disk vanished mid-write")
+
+        recorder = AsyncMock()
+        with patch("enrichment.routes._run_domain_enrich_job", new=recorder), \
+             patch("enrichment.tam_chain.csv.DictWriter", ExplodingWriter):
+            with self.assertRaises(OSError):
+                asyncio.run(self._chain([
+                    {"name": "A", "domain": "a.example"},
+                    {"name": "B", "domain": "b.example"},
+                ]))
+        recorder.assert_not_awaited()
+        upload_dir = Path(self._tmpdir.name) / "uploads"
+        self.assertEqual(list(upload_dir.glob("*.csv")), [],
+                         "no truncated file at the final name")
+        self.assertEqual(list(upload_dir.glob("*.tmp")), [],
+                         "temp file cleaned up after the failure")
+
+    def test_same_minute_chains_never_collide_on_restart_input(self):
+        """Two chains created within the same minute (same stamp) must get
+        distinct parity files — the second write must never overwrite the
+        first job's restart input (pre-hardening: both jobs shared
+        find_companies_contacts_<stamp>.csv)."""
+        from enrichment import routes as enrichment_routes
+        self._create_tam_job()
+        companies = [
+            {"name": "A", "domain": "a.example"},
+            {"name": "L1", "domain": "",
+             "linkedin_url": "https://linkedin.com/company/li-one"},
+        ]
+        recorder = AsyncMock()
+        with patch("enrichment.routes._run_domain_enrich_job", new=recorder):
+            r1 = asyncio.run(self._chain(companies))
+            # Second chain in the SAME minute over different companies.
+            r2 = asyncio.run(self._chain([
+                {"name": "B", "domain": "b.example"},
+                {"name": "L2", "domain": "",
+                 "linkedin_url": "https://linkedin.com/company/li-two"},
+            ]))
+        self.assertNotEqual(r1["chained_job_id"], r2["chained_job_id"])
+
+        upload_dir = Path(enrichment_routes.UPLOAD_DIR)
+        p1 = upload_dir / job_store.get_store().get_job(r1["chained_job_id"])["filename"]
+        p2 = upload_dir / job_store.get_store().get_job(r2["chained_job_id"])["filename"]
+        self.assertNotEqual(p1, p2, "filenames embed the job uuid — no collision")
+        self.assertTrue(p1.exists() and p2.exists())
+        with open(p1, newline="", encoding="utf-8") as f:
+            rows1 = [dict(r) for r in csv.DictReader(f)]
+        with open(p2, newline="", encoding="utf-8") as f:
+            rows2 = [dict(r) for r in csv.DictReader(f)]
+        self.assertEqual(rows1[0]["domain"], "a.example", "job 1 keeps its own input")
+        self.assertEqual(rows2[0]["domain"], "b.example",
+                         "job 2 keeps its own input (the first file was not overwritten)")
+
+    def test_successful_chain_persists_parity_file_atomically(self):
+        """On success the final file exists, matches the runner rows exactly,
+        and no .tmp residue remains (the rename completed)."""
+        from enrichment import routes as enrichment_routes
+        self._create_tam_job()
+        recorder = AsyncMock()
+        with patch("enrichment.routes._run_domain_enrich_job", new=recorder):
+            result = asyncio.run(self._chain(self.MIXED_COMPANIES))
+        job = job_store.get_store().get_job(result["chained_job_id"])
+        upload_dir = Path(enrichment_routes.UPLOAD_DIR)
+        final = upload_dir / job["filename"]
+        self.assertTrue(final.exists())
+        self.assertEqual(list(upload_dir.glob("*.tmp")), [], "no temp residue")
+        runner_rows = recorder.await_args.kwargs["rows"]
+        with open(final, newline="", encoding="utf-8") as f:
+            file_rows = [dict(r) for r in csv.DictReader(f)]
+        self.assertEqual(
+            file_rows,
+            [{**r, "linkedin_url": r.get("linkedin_url", "")} for r in runner_rows],
+        )
+
+    def test_legacy_restart_without_upload_file_misbehaves(self):
+        """Documents WHY the parity file exists (and the exact legacy
+        limitation for chain jobs created before it): when the upload file is
+        absent, /restart falls back to the parent TAM CSV, whose row space
+        does not match the chain's — an already-done DOMAIN row's chain
+        index can mask a not-yet-done LINKEDIN row (silent drop), and
+        identifier-less TAM rows leak into the resumed job."""
+        from enrichment import routes as enrichment_routes
+        # TAM order deliberately interleaves: chain rows become [A, B, L1, L2]
+        # while the TAM CSV order is [A, L1, B, L2, Decoy].
+        tam_rows = [
+            {"name": "A", "domain": "a.example"},
+            {"name": "L1", "domain": "", "linkedin_url": "https://linkedin.com/company/li-one"},
+            {"name": "B", "domain": "b.example"},
+            {"name": "L2", "domain": "", "linkedin_url": "https://linkedin.com/company/li-two"},
+            {"name": "Decoy", "domain": ""},
+        ]
+        self._create_tam_job()
+        recorder = AsyncMock()
+        with patch("enrichment.routes._run_domain_enrich_job", new=recorder):
+            result = asyncio.run(self._chain(tam_rows))
+        store = job_store.get_store()
+        job = store.get_job(result["chained_job_id"])
+        rows = recorder.await_args.kwargs["rows"]
+        self.assertEqual([r.get("domain") or r.get("linkedin_url") for r in rows],
+                         ["a.example", "b.example",
+                          "https://linkedin.com/company/li-one",
+                          "https://linkedin.com/company/li-two"])
+
+        # Simulate the legacy state: no parity file, parent TAM CSV present.
+        upload_file = Path(enrichment_routes.UPLOAD_DIR) / f"{job['filename'][:-4]}.csv"
+        self.assertTrue(upload_file.exists())
+        upload_file.unlink()
+        tam_csv = Path(self._tmpdir.name) / "tam_output.csv"
+        with open(tam_csv, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=["name", "domain", "linkedin_url"])
+            writer.writeheader()
+            writer.writerows(tam_rows)
+        store.set_done("tam-test-job", str(tam_csv))
+
+        # Interrupt after the two domain rows (chain indices 0-1).
+        store.write_checkpoints_batch(result["chained_job_id"], [0, 1])
+        store.write_domain_checkpoints_batch(result["chained_job_id"],
+                                             ["a.example", "b.example"])
+
+        # /restart resolution, legacy branch: upload file absent -> parent CSV.
+        legacy_rows = identifier_utils.dedupe_rows_by_domain(
+            [dict(r) for r in tam_rows], "domain", True,
+        )[0]
+        remaining, _ = enrichment_routes._resume_remaining_rows(
+            store, job, legacy_rows, "domain", True, dedupe=True,
+        )
+        remaining_ids = [r.get("domain") or r.get("linkedin_url") for r in remaining]
+        # The misbehavior, pinned: L1 (TAM index 1) is masked by chain index 1
+        # (a done row in the CHAIN's space) and silently DROPPED; the
+        # identifier-less Decoy row LEAKS in. Correct answer is [li-one, li-two].
+        self.assertIn("https://linkedin.com/company/li-two", remaining_ids)
+        self.assertNotIn("https://linkedin.com/company/li-one", remaining_ids,
+                         "legacy path drops the not-yet-done L1 row (masked index)")
+        self.assertTrue(
+            any(not (r.get("domain") or r.get("linkedin_url")) for r in remaining),
+            "legacy path leaks the identifier-less TAM row",
+        )
+
+        # The SAME fixture through the parity file (new path) is correct.
+        with patch("enrichment.routes._run_domain_enrich_job", new=AsyncMock()) as rec2:
+            result2 = asyncio.run(self._chain(tam_rows))
+        job2 = store.get_job(result2["chained_job_id"])
+        store.write_checkpoints_batch(result2["chained_job_id"], [0, 1])
+        store.write_domain_checkpoints_batch(result2["chained_job_id"],
+                                             ["a.example", "b.example"])
+        deduped2 = self._restart_reconstructed_rows(store, job2)
+        remaining2, _ = enrichment_routes._resume_remaining_rows(
+            store, job2, deduped2, "domain", True, dedupe=True,
+        )
+        self.assertEqual(
+            [r.get("linkedin_url") for r in remaining2],
+            ["https://linkedin.com/company/li-one", "https://linkedin.com/company/li-two"],
+            "with the parity file, both LinkedIn-only rows survive — no drops, no leaks",
+        )
+
+    async def _chain(self, companies, titles=None, exact_titles=False):
+        result = tam_flow.create_chained_enrichment_job(
+            "tam-test-job", "test-user-1", companies,
+            titles=titles, max_decision_makers=5,
+            providers=None, exact_titles=exact_titles,
+        )
         await asyncio.sleep(0)
         return result
 
