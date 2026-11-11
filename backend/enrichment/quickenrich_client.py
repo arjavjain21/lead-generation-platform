@@ -100,6 +100,30 @@ _DATASET_CAPACITY = float(
 # a title filter bills per returned employee-with-email, so the cap bounds
 # worst-case credits per domain. Default 2 pages = up to 40 candidates.
 _DATASET_MAX_PAGES = int(os.getenv("QUICKENRICH_DATASET_MAX_PAGES", "2"))
+# Hard ceiling for per-request dataset_max_pages overrides (PR-2.4): a
+# request may LOWER or modestly RAISE the page cap, never blow past this.
+_DATASET_MAX_PAGES_CEIL = int(os.getenv("QUICKENRICH_DATASET_MAX_PAGES_CEIL", "10"))
+
+# Per-job page-cap override (PR-2.4): routes set this ContextVar before
+# scheduling the runner; domain_search consumes it when its explicit
+# max_pages is None. Tasks created downstream inherit the context, so the
+# bound applies to the whole job; absent/None → env default.
+import contextvars  # noqa: E402
+
+PAGE_CAP_OVERRIDE: "contextvars.ContextVar[Optional[int]]" = contextvars.ContextVar(
+    "qe_dataset_page_cap_override", default=None
+)
+
+
+def clamp_page_cap_override(value: typing.Optional[int]) -> typing.Optional[int]:
+    """Clamp a request-supplied page cap into [1, _DATASET_MAX_PAGES_CEIL]."""
+    if value is None:
+        return None
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(1, min(v, _DATASET_MAX_PAGES_CEIL))
 
 _EMPLOYEE_SEARCH_PATH = "/api/employees/search"
 _DATASET_SEARCH_PATH = "/api/employees/dataset-search"
@@ -612,7 +636,10 @@ async def domain_search(
     if not domain:
         return None
 
-    page_cap = max(1, max_pages if max_pages is not None else _DATASET_MAX_PAGES)
+    # PR-2.4: explicit arg > per-job ContextVar override > env default —
+    # every branch bounded by the ceiling.
+    effective = max_pages if max_pages is not None else PAGE_CAP_OVERRIDE.get()
+    page_cap = max(1, min(int(effective), _DATASET_MAX_PAGES_CEIL) if effective is not None else _DATASET_MAX_PAGES)
     params: dict[str, Any] = {
         "company_url": domain,
         # Boolean as 1/0, NOT "true"/"false" strings — the API's validator

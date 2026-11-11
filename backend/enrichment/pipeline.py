@@ -3365,6 +3365,7 @@ async def _quickenrich_domain_discovery(
     collector: Optional[Any] = None,
     company_linkedin_url: str = "",
     record_provider_use: Optional[Callable[[str], None]] = None,
+    max_pages: Optional[int] = None,  # PR-2.4: bounded per-request override (None=env default)
 ) -> tuple[list[dict[str, Any]], dict[int, dict[str, Any]]]:
     """QuickEnrich dataset-search -> waterfall-item persons + pre-resolved emails.
 
@@ -3386,6 +3387,7 @@ async def _quickenrich_domain_discovery(
             blitz_http,
             company_url=domain,
             titles=include_titles if title_filter_active else _quickenrich_default_titles(),
+            max_pages=max_pages,
         )
     except Exception as e:
         logger.warning("QuickEnrich dataset_search failed for %s: %s", domain, e)

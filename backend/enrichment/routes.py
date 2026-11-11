@@ -7262,6 +7262,16 @@ class ProviderToggleRequest(BaseModel):
     # Phone for ALL contacts per domain; may trigger extra paid phone
     # lookups. Default False. No effect when include_phone is off.
     phone_for_all: bool = False
+    # PR-2.4 (2026-11-11): QuickEnrich dataset-search depth, 1..10 pages of
+    # 20 employees-with-email (server clamps to the
+    # QUICKENRICH_DATASET_MAX_PAGES_CEIL ceiling). Default None = env
+    # QUICKENRICH_DATASET_MAX_PAGES (2). Each extra page can bill up to 20
+    # more credit-per-returned-employee rows per company — a bounded opt-in.
+    dataset_max_pages: Optional[int] = None
+    # PR-2.5 (2026-11-11): optional person country for the BLITZ search lane
+    # only (cascade location filter). Other providers match on their own
+    # data and may return other locations — the UI says so explicitly.
+    person_location_country: Optional[str] = None
 
 
 @router.post("/flows/domain-enrich")
@@ -7337,6 +7347,11 @@ async def domain_enrich_with_providers(
             # persisted cascade so resume/restart preserves the opt-out.
             if req.strict_titles is False:
                 cascade = title_filter.mark_cascade_strict_off(cascade)
+            # PR-2.5: person-location rides INSIDE the persisted cascade
+            # (Blitz `location` tier field) so restart/resume keeps it.
+            loc = (req.person_location_country or "").strip()
+            if loc:
+                cascade = [{**tier, "location": [loc]} for tier in cascade]
             cascade_json = json.dumps(cascade)
 
     rows = df.fillna("").astype(str).to_dict(orient="records")
@@ -7432,6 +7447,12 @@ async def domain_enrich_with_providers(
 
     _job_signals[job_id] = asyncio.Event()
     _active_jobs.add(job_id)
+
+    # PR-2.4: arm the per-job QE page-cap override (clamped) BEFORE the
+    # runner task is created so it inherits the context.
+    quickenrich_client.PAGE_CAP_OVERRIDE.set(
+        quickenrich_client.clamp_page_cap_override(req.dataset_max_pages)
+    )
 
     background_tasks.add_task(
         _run_domain_enrich_job,
