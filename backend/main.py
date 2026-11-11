@@ -544,6 +544,9 @@ async def _call_tracker_health_loop() -> None:
 _WORKER_STARTED_ISO = datetime.now(timezone.utc).isoformat()
 
 
+_BUILD_RELEASE = _release_commit()  # frozen at worker import — what THIS process runs
+
+
 @shared_router.get("/health")
 async def health():
     return {"status": "ok", "mcp_enabled": _MCP_ENABLED}
@@ -596,7 +599,8 @@ async def meta():
     except Exception:
         provider_flags = {}
     return {
-        "release": _release_commit(),
+        "release": _BUILD_RELEASE,
+        "tree_head": _release_commit(),
         "worker_started_unix": _WORKER_STARTED_ISO,
         "routes": {
             "verify": True,  # route registered in this build (404 on pre-2026-11-11 builds)
