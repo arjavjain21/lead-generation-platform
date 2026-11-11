@@ -126,6 +126,36 @@ def _is_valid_code(code: str) -> bool:
     return code in _accepted_codes()
 
 
+_RETENTION_ENABLED_DEFAULT = "true"
+
+
+def note_rejected_candidate(sink: Any, email: str, code: str) -> None:
+    """Record a policy-rejected catch-all candidate (PR-1.2, 2026-11-11).
+
+    Called at every MailTester reject branch so ``mb`` (catch-all) candidates
+    are RETAINED for the export instead of vanishing: ``dm_email`` policy is
+    completely unchanged — this only feeds the additive trailing
+    ``dm_email_catch_all`` column and the job's ``catch_all_retained``
+    counter. ``ko`` (hard-invalid) is never retained.
+
+    ``sink`` is either a dict (pipeline's ``verification_info`` — the list
+    lands under ``catch_all_candidates``) or a list (list_builder's local
+    accumulator). No-op when ``ENABLE_CATCH_ALL_RETENTION`` is false or the
+    code is not ``mb``. Never raises.
+    """
+    try:
+        if code != "mb" or not email:
+            return
+        if os.environ.get("ENABLE_CATCH_ALL_RETENTION", _RETENTION_ENABLED_DEFAULT).lower() != "true":
+            return
+        if isinstance(sink, dict):
+            sink.setdefault("catch_all_candidates", []).append(email)
+        elif isinstance(sink, list):
+            sink.append(email)
+    except Exception:  # never let retention break the cascade
+        pass
+
+
 def _backoff_delay(attempt: int) -> float:
     """Calculate retry delay with exponential backoff and jitter."""
     cap = min(_MAX_BACKOFF, _BASE_BACKOFF * (2 ** attempt))

@@ -302,6 +302,12 @@ ENRICHED_COLUMNS = [
     # Sits after seg (matching pipeline's tail) and BEFORE the
     # past-experiences pair so pipeline remains an exact prefix.
     "dm_mx_provider",
+    # PR-1.2 (2026-11-11): catch-all (`mb`) candidates rejected by the accept
+    # policy, retained for the operator. Additive column placed right after
+    # dm_mx_provider in BOTH column lists so pipeline's ENRICHED_COLUMNS
+    # stays an exact prefix; restval='' keeps pre-feature partial CSVs
+    # lining up. dm_email semantics unchanged.
+    "dm_email_catch_all",
     # past-experiences (2026-09-16): "|"-joined NON-current companies/titles
     # from Blitz experiences[]. Appended at the VERY END (after seg) for the
     # same resume-compat reason — carry-over rows get blanks via restval=''.
@@ -368,6 +374,7 @@ def _empty_enriched() -> dict[str, Any]:
         "seg_classification": "",
         "seg_provider": "",
         "dm_mx_provider": "",
+        "dm_email_catch_all": "",
         "dm_previous_companies": "",
         "dm_previous_titles": "",
     }
@@ -635,6 +642,7 @@ async def _resolve_person_email(
     validate_email: bool = True,  # NEW PARAMETER
     record_provider_use: Optional[callable] = None,  # NEW: callback to record provider usage
     pre_resolved_getleads: Optional[dict[str, Any]] = None,  # Phase 3: batch pre-pass result
+    catch_all_sink: Optional[list] = None,  # PR-1.2: retained `mb` candidates appended here (dm_email policy unchanged)
 ) -> tuple[str, str, str, str, str, str, dict[str, str]]:
     """
     Resolve email for a person using the 2026-10-10 cascade order.
@@ -764,6 +772,9 @@ async def _resolve_person_email(
                                 )
                             else:
                                 logger.info("Email rejected by policy: %s (code: %s) - skipping mark_email_invalid", email, mailtester_code)
+                            # NOTE: not `catch_all_sink or []` — an empty list is falsy and `or` would
+                            # swap in a throwaway list, silently dropping the retention.
+                            mailtester_client.note_rejected_candidate(catch_all_sink if catch_all_sink is not None else [], email, mailtester_code)
                             # Continue to next strategy
                     except RuntimeError:
                         # Mailtester unavailable - FAIL OPEN
@@ -815,6 +826,9 @@ async def _resolve_person_email(
                                 )
                             else:
                                 logger.info("Email rejected by policy: %s (code: %s) - skipping mark_email_invalid", email, mailtester_code)
+                            # NOTE: not `catch_all_sink or []` — an empty list is falsy and `or` would
+                            # swap in a throwaway list, silently dropping the retention.
+                            mailtester_client.note_rejected_candidate(catch_all_sink if catch_all_sink is not None else [], email, mailtester_code)
                             # Continue to next strategy
                     except RuntimeError:
                         # Mailtester unavailable - FAIL OPEN
@@ -2002,7 +2016,8 @@ async def _enrich_single_domain(
 
     # Step 3: Resolve emails for each person
     tasks = []
-    for item in persons:
+    catch_all_by_person: dict[int, list[str]] = {}
+    for idx, item in enumerate(persons):
         person = item.get("person", {})
         # Phase 3: per-person GetLeads batch result (None → single-call path).
         _full = person.get("full_name") or ""
@@ -2013,6 +2028,10 @@ async def _enrich_single_domain(
             if pre_resolved_gl_by_person and _first.strip() and _last.strip()
             else None
         )
+        # PR-1.2: per-person catch-all accumulator — `mb` candidates the
+        # accept policy rejected are retained for the export column.
+        _sink: list[str] = []
+        catch_all_by_person[idx] = _sink
         tasks.append(
             _resolve_person_email(
                 blitz_http,
@@ -2024,13 +2043,14 @@ async def _enrich_single_domain(
                 validate_email=validate_email,
                 record_provider_use=record_provider_use,
                 pre_resolved_getleads=_pre_gl,
+                catch_all_sink=_sink,
             )
         )
 
     email_results = await asyncio.gather(*tasks)
 
     # Build output rows
-    for item, result in zip(persons, email_results):
+    for idx, (item, result) in enumerate(zip(persons, email_results)):
         person = item.get("person", {})
         icp_tier = item.get("icp", 0)
         # 7th element (getleads_dm) is defensive-indexed so older 6-tuples
@@ -2039,6 +2059,7 @@ async def _enrich_single_domain(
         # Extras slot: GetLeads DM snapshot AND (2026-10-15) the Blitz
         # mx_provider label — both are winner attributes, never both set.
         getleads_dm = result[6] if len(result) > 6 else {}
+        catch_all_candidates = catch_all_by_person.get(idx) or []
 
         row = {**base_row, **_empty_enriched()}
         row["company_linkedin_url"] = company_linkedin_url
@@ -2063,6 +2084,8 @@ async def _enrich_single_domain(
         row["mailtester_code"] = mailtester_code
         row["mailtester_message"] = mailtester_message
         row["dm_mx_provider"] = getleads_dm.get("mx_provider", "") if isinstance(getleads_dm, dict) else ""
+        # PR-1.2: retained catch-all candidates (additive column; dm_email untouched).
+        row["dm_email_catch_all"] = ";".join(catch_all_candidates)
         # Stored-phone precedence (2026-10-28): the cascade-result phone wins
         # (a contacts_db Strategy-1 winner already carries the same stored
         # number); otherwise fall back to the discovery person's stored
@@ -2698,6 +2721,9 @@ async def run_domain_enrichment(
                         provider = _normalize_source(src)
                         source_counts[provider] = source_counts.get(provider, 0) + 1
                 emails_found = sum(1 for r in result if r.get("dm_email"))
+                # PR-1.2: rows carrying at least one retained catch-all
+                # candidate (denominator = this domain's output rows).
+                catch_all_rows = sum(1 for r in result if r.get("dm_email_catch_all"))
                 progress_event = {
                     "index": idx,
                     "total": total,
@@ -2707,6 +2733,7 @@ async def run_domain_enrichment(
                     "emails_found": emails_found,
                     "source_counts": source_counts,
                     "title_gate_dropped": gate_stats.get("dropped", 0),
+                    "catch_all_retained": catch_all_rows,
                 }
                 # Handle both sync and async callbacks
                 if asyncio.iscoroutinefunction(on_progress):
@@ -3996,7 +4023,11 @@ async def _enrich_by_company_linkedin(
     # by _resolve_person_email consumers downstream.
     semaphore = email_semaphore or asyncio.Semaphore(LINKEDIN_CONCURRENCY)
     tasks = []
-    for person in persons_raw:
+    catch_all_by_person: dict[int, list[str]] = {}
+    for p_idx, person in enumerate(persons_raw):
+        # PR-1.2: per-person catch-all accumulator (see Step-3 comment).
+        _sink: list[str] = []
+        catch_all_by_person[p_idx] = _sink
         tasks.append(
             _resolve_person_email(
                 blitz_http,
@@ -4007,18 +4038,20 @@ async def _enrich_by_company_linkedin(
                 selected_providers=selected_providers,
                 validate_email=validate_email,
                 record_provider_use=record_provider_use,
+                catch_all_sink=_sink,
             )
         )
     email_results = await asyncio.gather(*tasks)
 
     output_rows: list[OutputRow] = []
-    for person, result in zip(persons_raw, email_results):
+    for p_idx, (person, result) in enumerate(zip(persons_raw, email_results)):
         # 7th element (getleads_dm) is defensive-indexed so older 6-tuples
         # (e.g. test mocks) keep working.
         email, phone, source, verified, mailtester_code, mailtester_message = result[:6]
         # Extras slot: GetLeads DM snapshot AND (2026-10-15) the Blitz
         # mx_provider label — both are winner attributes, never both set.
         getleads_dm = result[6] if len(result) > 6 else {}
+        catch_all_candidates = catch_all_by_person.get(p_idx) or []
 
         row = {**base_row, **_empty_enriched()}
         row["company_linkedin_url"] = company_linkedin_url
@@ -4033,6 +4066,8 @@ async def _enrich_by_company_linkedin(
         row["mailtester_code"] = mailtester_code
         row["mailtester_message"] = mailtester_message
         row["dm_mx_provider"] = getleads_dm.get("mx_provider", "") if isinstance(getleads_dm, dict) else ""
+        # PR-1.2: retained catch-all candidates (additive column; dm_email untouched).
+        row["dm_email_catch_all"] = ";".join(catch_all_candidates)
         # Stored-phone precedence (2026-10-28): cascade-result phone wins,
         # else the flat person dict's stored core.phone fill.
         row["dm_phone"] = phone or str(person.get("phone") or "").strip()

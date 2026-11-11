@@ -264,6 +264,13 @@ class JobStoreBase:
                 updates.append("title_gate_dropped = title_gate_dropped + ?")
                 values.append(title_gate_delta)
 
+            # Retained catch-all candidates (PR-1.2, 2026-11-11): same
+            # accumulate-from-progress-event pattern as title_gate_dropped.
+            catch_all_delta = event.get("catch_all_retained", 0)
+            if catch_all_delta:
+                updates.append("catch_all_retained = catch_all_retained + ?")
+                values.append(catch_all_delta)
+
             values.append(job_id)
 
             # Record to enrichment_stats table for detailed tracking

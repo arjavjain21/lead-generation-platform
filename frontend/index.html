@@ -7038,6 +7038,15 @@ example.org,Jane Doe</pre>
                             ? '<span class="file-chip" style="color:#92400e;background:#fef3c7;" title="Title gate OFF: provider-fuzzy matches pass through unfiltered — higher volume, looser titles.">Strict titles OFF</span>'
                             : '';
 
+                        // Catch-all retention badge (PR-1.2, 2026-11-11): rows whose
+                        // only email candidate was a catch-all (`mb`) domain. Those
+                        // addresses are NOT in dm_email (policy unchanged) — they are
+                        // retained in the trailing dm_email_catch_all CSV column.
+                        const _caRetained = parseInt(job.catch_all_retained || 0, 10) || 0;
+                        const catchAllChip = _caRetained > 0
+                            ? '<span class="file-chip" style="color:#1e40af;background:#dbeafe;" title="' + _caRetained.toLocaleString() + ' row(s) kept a catch-all email candidate in the dm_email_catch_all column. Catch-all means the domain accepts all mail — deliverability unconfirmed for the specific person.">📭 ' + _caRetained.toLocaleString() + ' catch-all retained</span>'
+                            : '';
+
                         // A terminal singleton whose restart children are all
                         // off-page has been superseded by a newer attempt —
                         // its actions would operate on stale state, so replace
@@ -7076,7 +7085,7 @@ example.org,Jane Doe</pre>
                             + '<div class="job-meta">' + metaHtml + '</div>'
                             + fileChip
                             + sourceChip
-                            + titleGateChip
+                            + titleGateChip + catchAllChip
                             + (ctx.chainBadge || '')
                             + supersededBadge
                             + (ctx.chainProgressHtml || '')

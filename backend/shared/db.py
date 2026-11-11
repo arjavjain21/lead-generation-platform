@@ -460,6 +460,13 @@ def init_db() -> None:
     if "title_gate_dropped" not in existing_columns:
         c.execute("ALTER TABLE jobs ADD COLUMN title_gate_dropped INTEGER DEFAULT 0")
 
+    # Retained catch-all candidate counter (PR-1.2, 2026-11-11): rows whose
+    # dm_email_catch_all column carries at least one `mb` candidate the
+    # accept policy rejected. Same guarded-ALTER pattern; surfaced on the job
+    # card so operators can see how much was retained vs dropped.
+    if "catch_all_retained" not in existing_columns:
+        c.execute("ALTER TABLE jobs ADD COLUMN catch_all_retained INTEGER DEFAULT 0")
+
     c.commit()
 
 

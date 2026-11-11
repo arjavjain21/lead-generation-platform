@@ -576,6 +576,10 @@ ENRICHED_COLUMNS = [
     # with every email — classified into our SEG provider vocabulary when
     # Blitz won the email race. Same resume-compat restval='' reasoning as seg.
     "dm_mx_provider",
+    # PR-1.2 (2026-11-11): catch-all (`mb`) candidates rejected by the accept
+    # policy, retained for the operator. Trailing additive column — same
+    # restval='' resume-compat reasoning; dm_email semantics unchanged.
+    "dm_email_catch_all",
 ]
 
 
@@ -1322,6 +1326,7 @@ async def _run_route_step(
                             if mt_result["valid"]:
                                 return {"email": candidate, "source": SOURCE_BLITZ_EMAIL, "verification": verification}
                             logger.info("Blitz unverified email rejected by Mailtester: %s - falling through", candidate)
+                            _mt.note_rejected_candidate(verification, candidate, mt_result["code"])
                             return {"email": "", "source": SOURCE_NOT_FOUND}
                         except RuntimeError:
                             # Mailtester unavailable — fail-open per cascade policy.
@@ -1589,6 +1594,7 @@ async def _run_route_step(
                     verification["mailtester_message"] = result_mt["message"]
                     if result_mt["valid"]:
                         return {"email": result["email"], "source": SOURCE_LEADOCEAN, "verification": verification}
+                    _mt.note_rejected_candidate(verification, result["email"], result_mt["code"])
                     return {"email": "", "source": SOURCE_NOT_FOUND}
                 except RuntimeError:
                     verification["mailtester_code"] = "unavailable"
@@ -1629,6 +1635,7 @@ async def _run_route_step(
                     verification["mailtester_message"] = result_mt["message"]
                     if result_mt["valid"]:
                         return {"email": result["email"], "source": SOURCE_MOLTSETS, "verification": verification}
+                    _mt.note_rejected_candidate(verification, result["email"], result_mt["code"])
                     return {"email": "", "source": SOURCE_NOT_FOUND}
                 except RuntimeError:
                     # Mailtester unavailable — FAIL OPEN (Blitz policy).
@@ -2233,11 +2240,15 @@ def _build_person_row(
         row["mailtester_code"] = verification_info.get("mailtester_code", "")
         row["mailtester_message"] = verification_info.get("mailtester_message", "")
         row["dm_mx_provider"] = verification_info.get("dm_mx_provider", "")
+        # PR-1.2: retained catch-all (`mb`) candidates — additive trailing
+        # column; dm_email policy untouched.
+        row["dm_email_catch_all"] = ";".join(verification_info.get("catch_all_candidates") or [])
     else:
         row["dm_email_verified"] = "unknown"
         row["mailtester_code"] = ""
         row["mailtester_message"] = ""
         row["dm_mx_provider"] = ""
+        row["dm_email_catch_all"] = ""
 
     # Phase 2 (full capture): when GetLeads won the email race, overlay its
     # DM attributes onto the Blitz/contacts_db-derived row. ZERO change when
@@ -2518,6 +2529,10 @@ async def _resolve_email_for_person(
         # ``_build_person_row`` serializes this to JSON in the row's
         # ``provider_errors`` CSV cell. Empty list → empty string in CSV.
         "provider_errors": [],
+        # PR-1.2 (2026-11-11): catch-all (`mb`) candidates rejected by the
+        # accept policy are retained here for the additive trailing
+        # dm_email_catch_all export column — dm_email semantics unchanged.
+        "catch_all_candidates": [],
     }
 
     def _record_error(provider: str, method: str, error: Any, error_type: str = "unknown") -> None:
@@ -2616,6 +2631,7 @@ async def _resolve_email_for_person(
                                     )
                                 else:
                                     logger.info("Email rejected by policy: %s (code: %s) - skipping mark_email_invalid", email, result["code"])
+                                mailtester_client.note_rejected_candidate(verification_info, email, result["code"])
                                 # Continue to next provider
                         except RuntimeError:
                             # Mailtester unavailable - FAIL OPEN
@@ -2676,6 +2692,7 @@ async def _resolve_email_for_person(
                                     )
                                 else:
                                     logger.info("Email rejected by policy: %s (code: %s) - skipping mark_email_invalid", email, result["code"])
+                                mailtester_client.note_rejected_candidate(verification_info, email, result["code"])
                                 # Continue to next provider
                         except RuntimeError:
                             # Mailtester unavailable - FAIL OPEN
@@ -2862,6 +2879,7 @@ async def _resolve_email_for_person(
                             return email, SOURCE_LEADOCEAN, verification_info
                         logger.info("LeadOcean %s-grade email rejected by MailTester: %s - falling through",
                                     result.get("status"), email)
+                        mailtester_client.note_rejected_candidate(verification_info, email, result_mt["code"])
                     except RuntimeError:
                         verification_info["mailtester_code"] = "unavailable"
                         verification_info["dm_email_verified"] = "unknown"
@@ -2988,6 +3006,7 @@ async def _resolve_email_for_person(
                                 # Mailtester rejected it — continue cascade.
                                 logger.info("Blitz unverified email rejected by Mailtester: %s (code: %s) - falling through",
                                             candidate, result_mt["code"])
+                                mailtester_client.note_rejected_candidate(verification_info, candidate, result_mt["code"])
                             except RuntimeError:
                                 # Mailtester unavailable — FAIL OPEN at the
                                 # candidate level (consistent with Contacts DB
@@ -3043,6 +3062,7 @@ async def _resolve_email_for_person(
                             if result_mt["valid"]:
                                 return candidate, SOURCE_BLITZ_EMAIL, verification_info
                             logger.info("Blitz find_work_email rejected by Mailtester: %s - falling through", candidate)
+                            mailtester_client.note_rejected_candidate(verification_info, candidate, result_mt["code"])
                         except RuntimeError:
                             verification_info["mailtester_code"] = "unavailable"
                             verification_info["dm_email_verified"] = "unknown"
@@ -3111,6 +3131,7 @@ async def _resolve_email_for_person(
                                 return email, SOURCE_MOLTSETS, verification_info
                             logger.info("MoltSets risk-%s email rejected by Mailtester: %s - falling through",
                                         result.get("risk_score"), email)
+                            mailtester_client.note_rejected_candidate(verification_info, email, result_mt["code"])
                         except RuntimeError:
                             # Mailtester unavailable — FAIL OPEN (Blitz policy).
                             verification_info["mailtester_code"] = "unavailable"
@@ -3237,6 +3258,7 @@ async def _resolve_email_for_person(
                                     )
                                 else:
                                     logger.info("Email rejected by policy: %s (code: %s) - skipping mark_email_invalid", email, result["code"])
+                                mailtester_client.note_rejected_candidate(verification_info, email, result["code"])
                                 # Continue to not found
                         except RuntimeError:
                             # Mailtester unavailable - FAIL OPEN
@@ -5450,6 +5472,8 @@ async def run_pipeline(
                 "contacts_found": len(result_rows),
                 "emails_found": emails_found,
                 "source_counts": source_counts,
+                # PR-1.2: rows carrying retained catch-all candidates.
+                "catch_all_retained": sum(1 for r in result_rows if r.get("dm_email_catch_all")),
             }
         )
 

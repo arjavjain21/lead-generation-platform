@@ -5018,6 +5018,15 @@ async def list_enrichment_jobs(
         except (TypeError, ValueError):
             job["title_gate_dropped"] = 0
 
+    # Retained catch-all counter (PR-1.2, 2026-11-11): rows whose
+    # dm_email_catch_all column holds at least one `mb` candidate. Column is
+    # absent on pre-2026-11 rows → 0 (same guard pattern).
+    for job in jobs:
+        try:
+            job["catch_all_retained"] = int(job.get("catch_all_retained") or 0)
+        except (TypeError, ValueError):
+            job["catch_all_retained"] = 0
+
     # File-availability flag for the UI (cheap stat per job).
     for job in jobs:
         job["output_exists"] = _job_output_exists(job)
