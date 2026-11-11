@@ -1,5 +1,73 @@
 # TAM / People Finder / Verification — Implementation Progress
 
+## ⚡ PRODUCTION RECOVERY — 2026-11-11 11:04 UTC (LATEST, supersedes the release handoff below)
+
+**Status: DEPLOYED & VERIFIED — release `6a589f1` live on all 8 gunicorn workers, uniform pool, health OK, zero DB locks after boot settled.**
+
+### What actually happened (root cause of the "Verify Emails 404" and every A-item symptom)
+
+The release was never "awaiting a merge" — the working tree was already checked out. nginx serves
+`frontend/index.html` from the tree (new UI live immediately), and **gunicorn's max-requests worker
+recycling (6000 req) caused RECYCLED workers to import the new code while old workers kept the old
+import** — a mixed 5-old/2-new worker pool. Browser requests round-robin: Verify worked ~30% of
+the time and 404'd otherwise (the reported failure). `/flows/help` showed old data for the same
+reason. This was an active hazard (workers importing mid-edit trees), not a merge problem.
+
+### Deployment (executed 11:04 UTC after full preparation)
+
+1. All fixes implemented and tested: **487 tests green** (339 backend + 148 frontend, 0 failed).
+2. Committed as `6a589f1` ("fix(prod): repairs for the 2026-11-11 production failures"); rollback
+   tag `pre-prod-recovery-2026-11-11` created.
+3. DB: `PRAGMA integrity_check` = ok (twice); WAL checkpointed. A full 11.5 GB online `.backup`
+   could NOT converge under 5 concurrent writer jobs (SQLite restart-pass thrashing — the SAME
+   reason the platform's own scheduled backup.sh has never produced a file; backup/daily is
+   empty). Documented deviation: deployed with integrity-verified DB + code-tag rollback;
+   **P1 operator action: schedule the backup in a quiet window** (see Operator Actions).
+4. 8 jobs were running (7 enrichment + 1 no-counter). **Graceful restart** (no kills, no cancels):
+   service active in ~35 s; boot locks transient (0 in the following 3 min).
+5. **Job continuity verified**: all 8 pre-restart jobs preserved; the 7 killed-by-restart jobs
+   were reaped `abandoned` → **auto-resume created children with parent lineage** and dispatched
+   them (8 running again, incl. `99883d14` already 27/150 into its remainder).
+
+### Post-deploy production verification (evidence)
+
+| Check | Result |
+|---|---|
+| Pool uniformity (8 probes of /api/meta) | **8 × `6a589f1`** (was 5×old/2×new before) |
+| `POST /api/enrichment/verify` unauthenticated | **401** (route exists; was 404) |
+| Live verify E2E (real MailTester) | `qa-probe-20261111@example.invalid` → **invalid (ko, "No MX")** — HTTP 200, the browser-failing probe now works |
+| Mixed-status E2E | `postmaster@google.com` → **catch_all (mb)**, sendable=0 under default policy; invalid-syntax input dropped and counted |
+| Background verify job | `2058ffff…` done 30/30; rollup reconciles (invalid=30); **CSV on disk: exact 9-column header + 30 rows** |
+| Cache reuse | re-check of google.com → `cache_hit: true`, verdict unchanged |
+| `/flows/help` | live 10-tier table with per-tier status (leadocean incl.) |
+| Jobs surface | listing + rollups OK; resume children running |
+| Live frontend probes | verify modal (`_vfjLimit`), headline "also:" line, Help 3-step, resolver-off wording, version-aware indicator — all served |
+
+### The 7 reported production failures — final dispositions
+
+| # | Symptom | Root cause (evidence) | Fix | Live result |
+|---|---|---|---|---|
+| A | Verify 404 | Mixed worker pool (above) | Deploy `6a589f1` + restart | **PASS** (200 + real verdicts) |
+| B | TAM fails: breaker open | Shared `blitz_api` breaker opened by UNRELATED waterfall-lane 429 storms (1,131/24 h from concurrent jobs; quota healthy at 4.4 M records) | TAM degrades honestly: GL fallback labeled `coverage: degraded`; zero-result breaker runs fail RETRYABLY with options; 4 new tests | **Fixed in code, deployed** (live TAM canary deferred — see Operator Actions) |
+| C | CEO → "Radiation Oncologist" | Server matched headline "Chief Executive Officer" (correct); UI preferred company-link title | UI renders headline as "also:" line + CSV Headline column | **PASS** (live) |
+| D | "506/500", "6021/6000" | `append_event` bumped `processed` for non-row stage events (proven: 21 prepass chunks = +21) | Only index-bearing row events count; verify events indexed | **Fixed, deployed** (new jobs count correctly; historical rows untouched) |
+| E | Scraper "Done" at 49/195 | Auto-resumed child finalized from checkpoints with the claim-time counter snapshot | Finalize syncs `done_tasks=total_tasks` | **Fixed, deployed** (new finalizations only) |
+| F | Explorer facets Oct 17 | **Broken refresh pipeline** (contacts-api side): all explorer/facet timers disabled; the 5-min catch-up cron silently no-ops on a deleted unit (`us-explorer-full-catchup2.service`) | Platform displays the honest `as_of`; **pipeline repair is contacts-api territory** — exact commands in Operator Actions | **BLOCKED on operator** (other service) |
+| G | Doc/capability mismatches | Stale copy + no version signal | 8-source LinkedIn copy, real 3-step phone ladder, Help 3-step section, resolver-off wording, `/api/meta` + version-aware Connected indicator, prompt→modal | **PASS** (live) |
+
+### Operator actions (only these remain)
+
+1. **P1 — DB backup gap (pre-existing):** the daily backup has never succeeded under load. Run once in a quiet window or wire per-table dumps:
+   `sqlite3 backend/data/jobs.db ".backup '/var/www/backups/lead-generation-platform/daily/jobs_db_manual.db'"`
+2. **P1 — Explorer freshness (contacts-api service):** `sudo systemctl enable --now contacts-explorer-refresh.timer contacts-explorer-facets.timer`, and fix/remove the dead `us-explorer-full-catchup2.service` reference in `/usr/local/bin/resume-explorer-catchup.sh`; verify `fs_computed_at` advances past 2026-10-17.
+3. **P2 — MailTester key rotation** with the proxy owner (PR-0.1 exposed-key follow-up): verify replacement, then revoke.
+4. **Optional — live TAM canary:** one small run on `/#/company-search` (≤50 companies ≈ 50 Blitz records vs 4.4 M remaining). Note the waterfall 429 pressure from the resumed 6 K-row jobs may open the shared breaker; if the run fails it now fails RETRYABLY with a clear message (that is the fix working, not a regression).
+5. **Recommend — rate-lane rebalance (needs .env change + restart):** 6 workers × BLITZ_RPS=25 = 150 RPS requested vs the 50 RPS account cap — the chronic 429 source. Suggest BLITZ_RPS=8 per worker.
+
+---
+
+
+
 **Last updated:** 11 November 2026 (FINAL — full 3-step workflow implemented; release branch ready; deployment gated on one operator action)
 **Plan:** `docs/HYPERKE_TAM_IMPLEMENTATION_PLAN.md` · **Audit:** `docs/HYPERKE_TAM_PEOPLE_VERIFICATION_AUDIT_2026-11-10.md`
 **Companion docs:** `docs/TAM_3_STEP_OPERATOR_SOP.md` (operator guide) · `docs/TAM_RELEASE_VALIDATION.md` (test matrix, DOM evidence, deploy+rollback)
