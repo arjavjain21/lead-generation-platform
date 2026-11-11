@@ -42,6 +42,7 @@ from . import company_fallback
 from . import fallback_config as fb_cfg
 from . import seg
 from . import title_filter
+from . import company_resolver
 from .env_flags import env_flag
 from .pipeline import _getleads_dm_snapshot, _is_provider_error, _leadocean_domain_discovery, _quickenrich_domain_discovery
 from shared.circuit_breaker import CircuitBreakerError
@@ -73,6 +74,21 @@ TITLE_SEARCH_POOL = title_filter.TITLE_SEARCH_POOL
 # Aliases kept so existing call sites (and tests) continue to work.
 _person_matches_titles = title_filter.person_matches_titles
 _parse_cascade_titles = title_filter.parse_cascade_titles
+
+
+_RESOLVER_STORE_CONN = None
+
+
+def _resolver_conn():
+    """jobs.db connection for the name_resolution cache table (lazy; the
+    thread-local store is shared with every other jobs.db user)."""
+    global _RESOLVER_STORE_CONN
+    if _RESOLVER_STORE_CONN is None:
+        try:
+            _RESOLVER_STORE_CONN = job_store.get_store().conn
+        except Exception:
+            return None
+    return _RESOLVER_STORE_CONN
 
 
 def _record_gate_drops(gate_stats: Optional[dict], dropped: int) -> None:
@@ -313,6 +329,12 @@ ENRICHED_COLUMNS = [
     # same resume-compat reason — carry-over rows get blanks via restval=''.
     "dm_previous_companies",
     "dm_previous_titles",
+    # PR-2.2 (2026-11-11): name-only row resolution provenance. Trailing
+    # additive columns (resume-compat restval=''); blank unless a name was
+    # resolved/reviewed.
+    "name_resolution_status",
+    "name_resolution_source",
+    "name_candidates",
 ]
 
 
@@ -375,6 +397,9 @@ def _empty_enriched() -> dict[str, Any]:
         "seg_provider": "",
         "dm_mx_provider": "",
         "dm_email_catch_all": "",
+        "name_resolution_status": "",
+        "name_resolution_source": "",
+        "name_candidates": "",
         "dm_previous_companies": "",
         "dm_previous_titles": "",
     }
@@ -2680,15 +2705,50 @@ async def run_domain_enrichment(
                 recent_hires_only=recent_hires_only,
             )
         elif not domain:
-            # PR-2.1: name-only rows are explicit, not silent. When the
-            # resolver is armed (PR-2.2), such rows resolve to domains and
-            # never reach this branch; here they land with a machine-readable
-            # reason so the CSV says WHY nothing ran.
-            _skip_reason = "name_unresolved"
-            if not (row.get(company_name_col) or "").strip():
-                _skip_reason = "no_identifier"
-            result = [{**row, **_empty_enriched(), "row_status": STATUS_SKIPPED,
-                       "no_email_reason": _skip_reason}]
+            # PR-2.1/2.2: name-only rows are explicit, not silent. When
+            # ENABLE_NAME_RESOLVER arms resolution, a HIGH/MEDIUM-confident
+            # match resolves to a domain and re-routes into the domain
+            # cascade (resolver output, not a new path). AMBIGUOUS names are
+            # NEVER auto-joined — the row is skipped with the candidates
+            # serialized for review. Resolver off → name_unresolved.
+            _name = str(row.get(company_name_col) or "").strip() if company_name_col else ""
+            if not _name:
+                result = [{**row, **_empty_enriched(), "row_status": STATUS_SKIPPED,
+                           "no_email_reason": "no_identifier"}]
+            elif company_resolver.resolver_enabled():
+                _res = await company_resolver.resolve_company_name(
+                    contacts_http, _name, conn=_resolver_conn())
+                if _res.status in ("high", "medium") and _res.domain:
+                    # Route the RESOLVED domain through the normal cascade —
+                    # no duplicated waterfall, and provenance is stamped.
+                    _row2 = {**row, "domain": _res.domain,
+                             "name_resolution_status": _res.status,
+                             "name_resolution_source": _res.source}
+                    result = await _enrich_single_domain(
+                        blitz_http, contacts_http, _row2, _res.domain,
+                        max_decision_makers, include_generic_emails,
+                        domain_semaphore, email_semaphore,
+                        force_provider=force_provider,
+                        selected_providers=selected_providers,
+                        validate_email=validate_email,
+                        record_provider_use=record_provider_use,
+                        cascade_config=cascade_config,
+                        collector=collector,
+                        gate_stats=gate_stats,
+                        recent_hires_only=recent_hires_only,
+                    )
+                else:
+                    result = [{**row, **_empty_enriched(), "row_status": STATUS_SKIPPED,
+                               "no_email_reason": (
+                                   "ambiguous_company_name" if _res.status == "ambiguous"
+                                   else "name_unresolved"),
+                               "name_resolution_status": _res.status,
+                               "name_candidates": ";".join(
+                                   f"{c.get('name', '')}|{c.get('domain', '')}"
+                                   for c in _res.candidates[:5])}]
+            else:
+                result = [{**row, **_empty_enriched(), "row_status": STATUS_SKIPPED,
+                           "no_email_reason": "name_unresolved"}]
 
         else:
             result = await _enrich_single_domain(

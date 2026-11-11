@@ -115,9 +115,10 @@ class TestSegColumnsPinned(unittest.TestCase):
         # 2026-11-11 (PR-1.2): dm_email_catch_all sits after dm_mx_provider
         # (keeps pipeline an exact prefix; see test_both_lists_in_sync).
         self.assertEqual(
-            list_builder.ENRICHED_COLUMNS[-6:],
+            list_builder.ENRICHED_COLUMNS[-9:],
             ["seg_classification", "seg_provider", "dm_mx_provider",
-             "dm_email_catch_all", "dm_previous_companies", "dm_previous_titles"],
+             "dm_email_catch_all", "dm_previous_companies", "dm_previous_titles",
+             "name_resolution_status", "name_resolution_source", "name_candidates"],
         )
 
     def test_seg_columns_are_last_two_in_pipeline(self):
@@ -187,8 +188,9 @@ class TestSegPrepassStampsRows(unittest.TestCase):
                 ])
             header, rows = _read_csv(out)
 
-        self.assertEqual(header[-6:], ["seg_classification", "seg_provider", "dm_mx_provider",
-                                        "dm_email_catch_all", "dm_previous_companies", "dm_previous_titles"])
+        self.assertEqual(header[-9:], ["seg_classification", "seg_provider", "dm_mx_provider",
+                                        "dm_email_catch_all", "dm_previous_companies", "dm_previous_titles",
+                                        "name_resolution_status", "name_resolution_source", "name_candidates"])
         self.assertEqual(len(rows), 2)
         by_input = {r["domain"]: r for r in rows}
         self.assertEqual(by_input["https://www.acme.com/about"]["seg_classification"],
@@ -267,8 +269,9 @@ class TestSegFlagOffAndMissingDomain(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             out = _run_flow1(td, [{"domain": "acme.com"}])
             header, rows = _read_csv(out)
-        self.assertEqual(header[-6:], ["seg_classification", "seg_provider", "dm_mx_provider",
-                                        "dm_email_catch_all", "dm_previous_companies", "dm_previous_titles"])
+        self.assertEqual(header[-9:], ["seg_classification", "seg_provider", "dm_mx_provider",
+                                        "dm_email_catch_all", "dm_previous_companies", "dm_previous_titles",
+                                        "name_resolution_status", "name_resolution_source", "name_candidates"])
         self.assertEqual(rows[0]["seg_classification"], "")
         self.assertEqual(rows[0]["seg_provider"], "")
 
@@ -280,8 +283,9 @@ class TestSegFlagOffAndMissingDomain(unittest.TestCase):
             with patch("enrichment.seg.classify_domains", new=fake_classify):
                 out = _run_flow1(td, [{"domain": "acme.com"}])
             header, rows = _read_csv(out)
-        self.assertEqual(header[-6:], ["seg_classification", "seg_provider", "dm_mx_provider",
-                                        "dm_email_catch_all", "dm_previous_companies", "dm_previous_titles"])
+        self.assertEqual(header[-9:], ["seg_classification", "seg_provider", "dm_mx_provider",
+                                        "dm_email_catch_all", "dm_previous_companies", "dm_previous_titles",
+                                        "name_resolution_status", "name_resolution_source", "name_candidates"])
         self.assertEqual(rows[0]["seg_classification"], "")
         self.assertEqual(rows[0]["seg_provider"], "")
 
@@ -321,8 +325,9 @@ class TestSegPrepassFailureSwallowed(unittest.TestCase):
                 out = _run_flow1(td, [{"domain": "acme.com"}, {"domain": "stripe.com"}])
             header, rows = _read_csv(out)
 
-        self.assertEqual(header[-6:], ["seg_classification", "seg_provider", "dm_mx_provider",
-                                        "dm_email_catch_all", "dm_previous_companies", "dm_previous_titles"])
+        self.assertEqual(header[-9:], ["seg_classification", "seg_provider", "dm_mx_provider",
+                                        "dm_email_catch_all", "dm_previous_companies", "dm_previous_titles",
+                                        "name_resolution_status", "name_resolution_source", "name_candidates"])
         self.assertEqual(len(rows), 2)
         for r in rows:
             self.assertEqual(r["seg_classification"], "")
@@ -390,8 +395,9 @@ class TestResumeCarryOver(unittest.TestCase):
                 writer.writerow(old_row)  # resume prepend path
             header, rows = _read_csv(out)
 
-        self.assertEqual(header[-6:], ["seg_classification", "seg_provider", "dm_mx_provider",
-                                        "dm_email_catch_all", "dm_previous_companies", "dm_previous_titles"])
+        self.assertEqual(header[-9:], ["seg_classification", "seg_provider", "dm_mx_provider",
+                                        "dm_email_catch_all", "dm_previous_companies", "dm_previous_titles",
+                                        "name_resolution_status", "name_resolution_source", "name_candidates"])
         self.assertEqual(len(rows), 1)
         # No misalignment: the old cells kept their columns, seg cells blank.
         self.assertEqual(rows[0]["domain"], "acme.com")
@@ -460,8 +466,9 @@ class TestFlushPurity(unittest.TestCase):
         # The pre-pass DID run (it called the sentinel) — but the assertion
         # above proves it fired only BEFORE the flush wrote the rows. The CSV
         # carries the (blank) stamped columns and the flush completed.
-        self.assertEqual(header[-6:], ["seg_classification", "seg_provider", "dm_mx_provider",
-                                        "dm_email_catch_all", "dm_previous_companies", "dm_previous_titles"])
+        self.assertEqual(header[-9:], ["seg_classification", "seg_provider", "dm_mx_provider",
+                                        "dm_email_catch_all", "dm_previous_companies", "dm_previous_titles",
+                                        "name_resolution_status", "name_resolution_source", "name_candidates"])
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["seg_classification"], "")
         self.assertEqual(result[0]["seg_classification"], "")

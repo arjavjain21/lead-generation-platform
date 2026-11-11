@@ -282,6 +282,42 @@ async def person_by_name_and_domain(
     )
 
 
+async def search_companies_by_name(
+    client: httpx.AsyncClient,
+    q: str,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    """GET /v1/companies/search?q=<name> — internal company search by name
+    (free, 75 RPS lane). Used by company_resolver (PR-2.2) as the primary
+    name→domain source. Returns the raw companies list ([] on any miss).
+
+    Defensive about response shape: accepts results/companies/data keys and
+    tolerates a dict-wrapped payload so a contacts-api shape tweak degrades
+    to "no candidates" instead of crashing resolution.
+    """
+    params: dict[str, Any] = {"q": q, "limit": limit}
+    try:
+        data = await _get_with_retry(
+            client,
+            f"{_base_url()}/v1/companies/search",
+            params,
+            timeout=15.0,
+        )
+    except Exception:
+        return []
+    if not isinstance(data, dict):
+        return []
+    rows = (
+        data.get("results")
+        or data.get("companies")
+        or data.get("data")
+        or []
+    )
+    if isinstance(rows, dict):  # e.g. {"companies": [...]} nesting
+        rows = next((v for v in rows.values() if isinstance(v, list)), [])
+    return [r for r in rows if isinstance(r, dict)]
+
+
 async def company_by_domain(
     client: httpx.AsyncClient, domain: str
 ) -> Optional[dict[str, Any]]:
