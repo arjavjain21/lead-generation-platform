@@ -5177,6 +5177,21 @@ async def get_enrichment_job(
             job_data["filename"] = "Unknown.csv"
             job_data["display_filename"] = "Unknown.csv"
 
+    # Verify-job rollup (PR-1.4, 2026-11-11): cumulative counters from the
+    # latest verify progress event — same numbers the CSV rows reconcile to.
+    if job_data.get("source_type") == "verify":
+        try:
+            from . import verify_routes as _vr
+            job_data["verification_rollup"] = _vr._summary_from_job_row(store, job_data)
+        except Exception as vr_err:
+            logger.debug("verify rollup for %s failed: %s", job_id, vr_err)
+    # Catch-all retention counter parity (PR-1.2): single-job consumers see
+    # the same normalized counter the jobs listing carries.
+    try:
+        job_data["catch_all_retained"] = int(job_data.get("catch_all_retained") or 0)
+    except (TypeError, ValueError):
+        job_data["catch_all_retained"] = 0
+
     # Website-email followup summary — parity with GET /jobs (the job cards'
     # data source) so single-job consumers see the same chip/button state.
     try:

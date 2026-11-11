@@ -1172,6 +1172,7 @@
                 <a class="nav-item" href="#" data-page="people"><span class="nav-icon" aria-label="Find People"><i data-lucide="users"></i></span>Find People</a>
                 <a class="nav-item" href="#" data-page="linkedin"><span class="nav-icon" aria-label="LinkedIn Enrich"><i data-lucide="link"></i></span>LinkedIn Enrich</a>
                 <a class="nav-item" href="#" data-page="phones"><span class="nav-icon" aria-label="Phone Enrichment"><i data-lucide="phone"></i></span>Phone Enrichment</a>
+                <a class="nav-item" href="#" data-page="verify"><span class="nav-icon" aria-label="Verify Emails"><i data-lucide="badge-check"></i></span>Verify Emails</a>
                 <a class="nav-item" href="#" data-page="jobs"><span class="nav-icon" aria-label="Enrichment Jobs"><i data-lucide="zap"></i></span>Enrichment Jobs</a>
                 <!-- Data Explorer: hidden until /api/explorer/status says enabled (explorerCheckStatus) -->
                 <a class="nav-item" href="#" data-page="explorer" id="navExplorer" style="display:none;"><span class="nav-icon" aria-label="Data Explorer"><i data-lucide="database"></i></span>Data Explorer</a>
@@ -2449,6 +2450,82 @@
             </div>
         </div>
 
+        <!-- Verify Emails Page (PR-1.3, 2026-11-11) -->
+        <div class="page" id="page-verify">
+            <div class="form-card">
+                <h3><i data-lucide="badge-check" class="icon" style="vertical-align:text-bottom"></i> Verify Emails</h3>
+                <div style="background:#f0f9ff;border-left:4px solid #1a315d;padding:12px;margin-bottom:1rem;border-radius:4px;font-size:0.85rem;color:#374151;">
+                    Check an email list before sending. Results are <strong>verified</strong> (deliverable),
+                    <strong>catch-all</strong> (the company's mail server accepts <em>everything</em> — we cannot
+                    confirm this exact person's inbox, so treat as lower-confidence), <strong>invalid</strong>
+                    (dead), or <strong>unknown</strong> (check failed — try again later). Catch-all rows are always
+                    kept in your export; the "count catch-all as sendable" switch only changes the summary number,
+                    never deletes results. Verification is read-only — nothing is written back to your contact
+                    database or any campaign.
+                </div>
+                <div style="margin-bottom:1rem;">
+                    <label style="font-weight:600;font-size:0.88rem;">Paste emails (one per line, or separated by commas/semicolons)</label>
+                    <textarea id="verifyPaste" rows="6" style="width:100%;margin-top:6px;padding:8px;border:1px solid #d1d5db;border-radius:6px;font-family:monospace;font-size:0.85rem;" placeholder="jane@acme.com&#10;John Doe &lt;john@acme.com&gt;&#10;sales@acme.com"></textarea>
+                    <div id="verifyPasteCount" style="font-size:0.78rem;color:#6b7280;margin-top:4px;"></div>
+                </div>
+                <div style="margin-bottom:1rem;display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
+                    <button type="button" class="btn btn-secondary btn-sm" id="verifyUploadBtn">Upload CSV instead</button>
+                    <input type="file" id="verifyFile" accept=".csv" style="display:none;">
+                    <span id="verifyFileInfo" style="font-size:0.8rem;color:#6b7280;"></span>
+                </div>
+                <div class="filters" style="margin-bottom:1rem;">
+                    <div class="filter-group" style="max-width:420px;">
+                        <label>Job name (optional)</label>
+                        <input type="text" id="verifyJobName" maxlength="120" placeholder="e.g. Museums Q4 — pre-send check">
+                    </div>
+                    <div class="filter-group">
+                        <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-weight:500;font-size:0.85rem;">
+                            <input type="checkbox" id="verifyAllowCatchAll" style="width:16px;height:16px;">
+                            Count catch-all as sendable
+                        </label>
+                        <span class="field-helper">Changes the summary's sendable count only — catch-all rows stay in the export either way.</span>
+                    </div>
+                    <div class="filter-group">
+                        <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-weight:500;font-size:0.85rem;">
+                            <input type="checkbox" id="verifyRecheck" style="width:16px;height:16px;">
+                            Re-check (ignore cached results)
+                        </label>
+                        <span class="field-helper">Fresh SMTP checks even for recently verified emails.</span>
+                    </div>
+                </div>
+                <div id="verifyError" class="validation-message error" style="display:none;" role="alert"></div>
+                <button class="btn btn-primary" id="verifySubmit">Verify</button>
+            </div>
+
+            <div class="form-card" id="verifyProgress" style="display:none;">
+                <h3>📊 Verification Progress <span id="verifyJobIdLabel" style="font-size:0.75rem;color:#6b7280;"></span></h3>
+                <div class="stats-grid" id="verifyStatsGrid">
+                    <div class="stat-card"><div class="stat-value" id="verifyTotal">0</div><div class="stat-label">Total</div></div>
+                    <div class="stat-card"><div class="stat-value" id="verifyVerified" style="color:var(--success);">0</div><div class="stat-label">Verified</div></div>
+                    <div class="stat-card"><div class="stat-value" id="verifyCatchAll" style="color:#1e40af;">0</div><div class="stat-label">Catch-all</div></div>
+                    <div class="stat-card"><div class="stat-value" id="verifyInvalid" style="color:var(--danger);">0</div><div class="stat-label">Invalid</div></div>
+                    <div class="stat-card"><div class="stat-value" id="verifyUnknown">0</div><div class="stat-label">Unknown</div></div>
+                </div>
+                <div class="progress-bar" style="margin-top:0.75rem;"><div class="progress-fill" id="verifyProgressBar" style="width:0%"></div></div>
+                <div class="progress-text"><span id="verifyProgressPct">0%</span><span id="verifyStatus">Starting…</span></div>
+                <div style="margin-top:0.75rem;display:flex;gap:8px;">
+                    <button class="btn btn-success btn-sm" id="verifyDownload" disabled>Download CSV</button>
+                    <button class="btn btn-danger btn-sm" id="verifyCancel" style="display:none;">Cancel</button>
+                </div>
+            </div>
+
+            <div class="form-card" id="verifyResults" style="display:none;">
+                <h3 style="margin:0;">Results <span id="verifyCountBadge" class="fp-count-badge"></span></h3>
+                <div id="verifyNote" class="fp-export-note" style="margin:0.5rem 0;"></div>
+                <div style="overflow-x:auto;max-height:420px;">
+                    <table class="results-table">
+                        <thead><tr><th>Email</th><th>Status</th><th>Detail</th><th>Checked</th><th>Cache</th></tr></thead>
+                        <tbody id="verifyBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
         <!-- Jobs Page - Enrichment Jobs Only -->
         <div class="page" id="page-jobs">
             <div class="form-card">
@@ -2484,6 +2561,7 @@
                         <option value="linkedin">🔗 LinkedIn</option>
                         <option value="tam_flow">🎯 Find Companies (TAM)</option>
                         <option value="tam_chain">📨 TAM Contacts Job</option>
+                        <option value="verify">✓ Verify Emails</option>
                         <option value="search">🔎 Search</option>
                         <option value="restart">↻ Restart</option>
                     </select>
@@ -3149,6 +3227,8 @@ example.org,Jane Doe</pre>
             'data-explorer': 'explorer',
             'linkedin': 'linkedin',
             'phone-enrich': 'phones',
+            'verify': 'verify',
+            'verify-emails': 'verify',
             'enrichment-jobs': 'jobs',
             'help': 'help',
             'api-keys': 'apikeys',
@@ -6032,6 +6112,205 @@ example.org,Jane Doe</pre>
         
         document.getElementById('downloadDomainResults').addEventListener('click', () => { downloadFile(currentJobId, 'domain_enrichment.csv'); });
 
+        // ---- Verify Emails page (PR-1.3, 2026-11-11) -------------------------
+        let _verifyJobId = null;
+        let _verifyPollTimer = null;
+
+        function _verifyParsePaste(text) {
+            return text.split(/[\n,;]+/).map(s => s.trim()).filter(Boolean);
+        }
+
+        function _verifyUpdatePasteCount() {
+            const emails = _verifyParsePaste(document.getElementById('verifyPaste').value);
+            const uniq = new Set(emails.map(e => e.toLowerCase()));
+            document.getElementById('verifyPasteCount').textContent = emails.length
+                ? (uniq.size + ' unique email' + (uniq.size === 1 ? '' : 's') + (emails.length !== uniq.size ? ' (' + emails.length + ' pasted, duplicates merged)' : ''))
+                : '';
+        }
+
+        function _verifyStatusBadge(cls) {
+            if (cls === 'verified') return '<span class="file-chip" style="color:#065f46;background:#d1fae5;">✓ Verified</span>';
+            if (cls === 'catch_all') return '<span class="file-chip" style="color:#1e40af;background:#dbeafe;">Catch-all</span>';
+            if (cls === 'invalid') return '<span class="file-chip" style="color:#991b1b;background:#fee2e2;">✕ Invalid</span>';
+            return '<span class="file-chip" style="color:#374151;background:#f3f4f6;">Unknown</span>';
+        }
+
+        function _verifyRenderResults(rows, summary) {
+            const tbody = document.getElementById('verifyBody');
+            tbody.innerHTML = '';
+            rows.forEach(r => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = '<td style="font-family:monospace;">' + escHtml(r.original_email) + '</td>'
+                    + '<td>' + _verifyStatusBadge(r.classification) + '</td>'
+                    + '<td style="font-size:0.78rem;color:#6b7280;">' + escHtml(r.code + (r.message ? ' — ' + r.message : '')) + '</td>'
+                    + '<td style="font-size:0.78rem;">' + escHtml((r.verified_at || '').replace('T', ' ').slice(0, 19)) + '</td>'
+                    + '<td style="font-size:0.78rem;">' + (r.cache_hit ? 'cache' : 'fresh') + '</td>';
+                tbody.appendChild(tr);
+            });
+            document.getElementById('verifyCountBadge').textContent = '(' + rows.length + ' shown)';
+            document.getElementById('verifyNote').textContent = summary
+                ? ('Sendable: ' + (summary.sendable != null ? summary.sendable : '—')
+                   + ' of ' + (summary.validated != null ? summary.validated : rows.length) + ' checked'
+                   + (summary.cache_hits ? ' · ' + summary.cache_hits + ' from cache' : '')
+                   + (summary.unavailable ? ' · ' + summary.unavailable + ' unknown (check failed)' : ''))
+                : '';
+            document.getElementById('verifyResults').style.display = 'block';
+        }
+
+        function _verifyApplyProgress(summary, status, pct) {
+            const map = [['verifyTotal', 'total'], ['verifyVerified', 'verified'],
+                         ['verifyCatchAll', 'catch_all'], ['verifyInvalid', 'invalid'],
+                         ['verifyUnknown', 'unknown']];
+            map.forEach(([id, key]) => {
+                const el = document.getElementById(id);
+                if (el) el.textContent = (summary && summary[key] != null) ? summary[key] : '0';
+            });
+            document.getElementById('verifyProgressBar').style.width = (pct || 0) + '%';
+            document.getElementById('verifyProgressPct').textContent = Math.round(pct || 0) + '%';
+            document.getElementById('verifyStatus').textContent = status || '';
+        }
+
+        async function _verifyPoll() {
+            if (!_verifyJobId) return;
+            try {
+                const res = await fetch('/api/enrichment/jobs/' + _verifyJobId, {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const job = await res.json();
+                const s = job.verification_rollup || {};
+                const pct = job.total ? (100 * (s.processed || job.processed || 0) / job.total) : 0;
+                _verifyApplyProgress(s, job.status, pct);
+                if (job.status === 'running' || job.status === 'starting') {
+                    document.getElementById('verifyCancel').style.display = '';
+                } else {
+                    clearInterval(_verifyPollTimer); _verifyPollTimer = null;
+                    document.getElementById('verifyCancel').style.display = 'none';
+                    document.getElementById('verifyDownload').disabled = !(['done', 'partial'].includes(job.status));
+                    if (job.status === 'done' || job.status === 'partial') {
+                        downloadFile(_verifyJobId, job.filename || 'verify_emails.csv',
+                                     document.getElementById('verifyDownload'));
+                    }
+                }
+            } catch (e) {
+                document.getElementById('verifyStatus').textContent = 'Poll failed (' + e + ') — retrying…';
+            }
+        }
+
+        async function _verifySubmit(emails) {
+            const err = document.getElementById('verifyError');
+            err.style.display = 'none'; err.textContent = '';
+            if (!emails.length) {
+                err.textContent = 'Paste at least one email address.'; err.style.display = 'block'; return;
+            }
+            const btn = document.getElementById('verifySubmit');
+            setButtonLoading(btn, true, 'Verifying…');
+            try {
+                const res = await fetch('/api/enrichment/verify', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        emails: emails,
+                        allow_catch_all: document.getElementById('verifyAllowCatchAll').checked,
+                        recheck: document.getElementById('verifyRecheck').checked,
+                        job_name: (document.getElementById('verifyJobName').value || '').trim() || null,
+                    })
+                });
+                const body = await res.json();
+                if (!res.ok) throw new Error(body.detail || ('HTTP ' + res.status));
+                if (body.mode === 'inline') {
+                    document.getElementById('verifyProgress').style.display = 'none';
+                    _verifyRenderResults(body.results || [], body.summary || {});
+                } else {
+                    _verifyJobId = body.job_id;
+                    document.getElementById('verifyProgress').style.display = 'block';
+                    document.getElementById('verifyResults').style.display = 'none';
+                    document.getElementById('verifyJobIdLabel').textContent = 'job ' + body.job_id.slice(0, 8) + ' · ' + body.total + ' emails';
+                    document.getElementById('verifyDownload').disabled = true;
+                    _verifyApplyProgress({ total: body.total }, 'running', 0);
+                    clearInterval(_verifyPollTimer);
+                    _verifyPollTimer = setInterval(_verifyPoll, 2000);
+                    _verifyPoll();
+                }
+            } catch (e) {
+                err.textContent = 'Verification failed: ' + e; err.style.display = 'block';
+            } finally {
+                setButtonLoading(btn, false, 'Verify');
+            }
+        }
+
+        document.getElementById('verifyPaste').addEventListener('input', _verifyUpdatePasteCount);
+        document.getElementById('verifySubmit').addEventListener('click', () => {
+            _verifySubmit(_verifyParsePaste(document.getElementById('verifyPaste').value));
+        });
+        document.getElementById('verifyUploadBtn').addEventListener('click', () => document.getElementById('verifyFile').click());
+        document.getElementById('verifyFile').addEventListener('change', async (ev) => {
+            const file = ev.target.files && ev.target.files[0];
+            if (!file) return;
+            document.getElementById('verifyFileInfo').textContent = 'Reading ' + file.name + '…';
+            try {
+                const text = await file.text();
+                // Best-effort email-column detection: split rows, find the
+                // first cell containing '@' (header row skipped heuristically).
+                const lines = text.split(/\r?\n/).filter(l => l.trim());
+                const emails = [];
+                for (const line of lines) {
+                    const cells = line.split(/[,;\t]/);
+                    for (const cell of cells) {
+                        const v = cell.trim().replace(/^"|"$/g, '');
+                        if (v.includes('@') && !/^email/i.test(v)) { emails.push(v); break; }
+                    }
+                }
+                document.getElementById('verifyFileInfo').textContent =
+                    file.name + ' → ' + emails.length + ' email(s) found';
+                if (emails.length) _verifySubmit(emails);
+            } catch (e) {
+                document.getElementById('verifyFileInfo').textContent = 'Could not read file: ' + e;
+            } finally {
+                ev.target.value = '';
+            }
+        });
+        document.getElementById('verifyDownload').addEventListener('click', function () {
+            if (_verifyJobId) downloadFile(_verifyJobId, 'verify_emails.csv', this);
+        });
+        document.getElementById('verifyCancel').addEventListener('click', async () => {
+            if (!_verifyJobId) return;
+            try {
+                await fetch('/api/enrichment/jobs/' + _verifyJobId + '/cancel', {
+                    method: 'POST', headers: { 'Authorization': 'Bearer ' + token }
+                });
+                document.getElementById('verifyStatus').textContent = 'Cancelling…';
+            } catch (e) { /* polling will show the final state */ }
+        });
+
+        async function verifyFromJob(jobId, btn) {
+            const n = window.prompt('Verify how many emails from this job? (most recent first)', '2000');
+            if (n === null) return;
+            const limit = Math.max(1, Math.min(50000, parseInt(n, 10) || 2000));
+            if (btn) { btn.disabled = true; btn.innerHTML = 'Starting…'; }
+            try {
+                const res = await fetch('/api/enrichment/verify/from-job/' + jobId + '?limit=' + limit + '&include_catch_all=true', {
+                    method: 'POST', headers: { 'Authorization': 'Bearer ' + token }
+                });
+                const body = await res.json();
+                if (!res.ok) throw new Error(body.detail || ('HTTP ' + res.status));
+                window.alert('Verification job started for ' + body.total + ' emails (job ' + String(body.job_id).slice(0, 8) + '). Track it on the Jobs page or the Verify Emails page.');
+                window.location.hash = '#/verify';
+                _verifyJobId = body.job_id;
+                document.getElementById('verifyProgress').style.display = 'block';
+                document.getElementById('verifyJobIdLabel').textContent = 'job ' + String(body.job_id).slice(0, 8) + ' · ' + body.total + ' emails';
+                clearInterval(_verifyPollTimer);
+                _verifyPollTimer = setInterval(_verifyPoll, 2000);
+                _verifyPoll();
+            } catch (e) {
+                window.alert('Could not start verification: ' + e);
+            } finally {
+                if (btn) { btn.disabled = false; btn.innerHTML = '✓ Verify emails'; }
+            }
+        }
+        window.verifyFromJob = verifyFromJob;
+
+
         // ---- Website-email followup (2026-09-29) — second CSV for the job's
         // without-email domains, scraped on the webscrapedash VPS. ----
         function downloadWebsiteEmails(jobId, btn) {
@@ -6843,6 +7122,11 @@ example.org,Jane Doe</pre>
                             const fname = job.display_filename || job.filename || 'enrichment_job';
                             const safeName = fname.replace(/[^a-z0-9]/gi, '_').substring(0, 30);
                             actions += ' <button class="btn btn-success btn-sm" id="dl-enrich-'+job.job_id+'" onclick="downloadFile(\''+job.job_id+'\',\''+safeName+'_enrichment_'+job.job_id.substr(0,8)+'.csv\', this)">Download</button>';
+                            // PR-1.3: verify a chunk of this job's emails (Stage 3
+                            // shortcut). Verify jobs themselves have no emails to verify.
+                            if ((job.emails_found || 0) > 0 && job.source_type !== 'verify') {
+                                actions += ' <button class="btn btn-secondary btn-sm" onclick="verifyFromJob(\''+job.job_id+'\', this)" title="Check a chosen number of this job\'s emails before sending">✓ Verify emails</button>';
+                            }
                         } else if (job.status === 'failed' || job.status === 'abandoned' || job.status === 'cancelled') {
                             // Resume (skip already-processed rows) — only when we
                             // actually have something to resume from. Without
@@ -6989,6 +7273,9 @@ example.org,Jane Doe</pre>
                                 new Date(job.created_at).toLocaleString(),
                                 (job.result_count || 0) + ' companies' + (job.status === 'done' ? '' : ' so far'),
                                 (job.processed || 0) + ' pages',
+                            ] : (job.source_type === 'verify') ? [
+                                new Date(job.created_at).toLocaleString(),
+                                (job.processed||0) + '/' + (job.total||0) + ' emails checked',
                             ] : [
                                 new Date(job.created_at).toLocaleString(),
                                 (job.processed||0) + '/' + (job.total||0) + ' rows',
@@ -7016,6 +7303,7 @@ example.org,Jane Doe</pre>
                             tam_flow: { t: '🎯 Find Companies (TAM)', c: '#065f46', b: '#d1fae5' },
                             tam_chain: { t: '🎯→📧 TAM → Contacts', c: '#065f46', b: '#d1fae5' },
                             restart: { t: '↻ Restart', c: '#92400e', b: '#fef3c7' },
+                            verify: { t: '✓ Verify Emails', c: '#1e40af', b: '#dbeafe' },
                         };
                         const _srcKey = ctx.group ? ctx.sourceType : (ctx.sourceType || job.source_type);
                         const _src = _srcKey ? _srcMap[_srcKey] : null;
