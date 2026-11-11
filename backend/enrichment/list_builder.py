@@ -2357,7 +2357,7 @@ async def _apply_company_fallback_to_output_rows(
 
 async def run_domain_enrichment(
     rows: list[dict[str, Any]],
-    domain_col: str,
+    domain_col: str,  # PR-2.1: '' for LinkedIn/name-only lists (callers may pass '')
     name_col: Optional[str] = None,
     first_name_col: Optional[str] = None,
     last_name_col: Optional[str] = None,
@@ -2680,7 +2680,15 @@ async def run_domain_enrichment(
                 recent_hires_only=recent_hires_only,
             )
         elif not domain:
-            result = [{**row, **_empty_enriched(), "row_status": STATUS_SKIPPED}]
+            # PR-2.1: name-only rows are explicit, not silent. When the
+            # resolver is armed (PR-2.2), such rows resolve to domains and
+            # never reach this branch; here they land with a machine-readable
+            # reason so the CSV says WHY nothing ran.
+            _skip_reason = "name_unresolved"
+            if not (row.get(company_name_col) or "").strip():
+                _skip_reason = "no_identifier"
+            result = [{**row, **_empty_enriched(), "row_status": STATUS_SKIPPED,
+                       "no_email_reason": _skip_reason}]
 
         else:
             result = await _enrich_single_domain(

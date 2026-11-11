@@ -7169,7 +7169,12 @@ class ProviderToggleRequest(BaseModel):
 
     Fields:
         upload_id: ID of the uploaded CSV file to process.
-        domain_col: Name of the column containing company domains.
+        domain_col: Name of the column containing company domains. OPTIONAL
+            since 2026-11-11 (PR-2.1): a CSV with only company LinkedIn URLs
+            (or company names, when ENABLE_NAME_RESOLVER arms resolution) is
+            accepted — at least ONE identifier column (domain, company
+            LinkedIn, linkedin_url carrying /company/ URLs, company_name)
+            must be present and exist in the CSV.
         name_col: Optional column name for full names.
         first_name_col: Optional column name for first names.
         last_name_col: Optional column name for last names.
@@ -7199,7 +7204,7 @@ class ProviderToggleRequest(BaseModel):
             False. No effect when include_phone is False.
     """
     upload_id: str
-    domain_col: str
+    domain_col: Optional[str] = None  # PR-2.1: optional when other identifiers exist
     name_col: Optional[str] = None
     first_name_col: Optional[str] = None
     last_name_col: Optional[str] = None
@@ -7285,10 +7290,29 @@ async def domain_enrich_with_providers(
         raise HTTPException(status_code=404, detail="Upload not found.")
 
     df = pd.read_csv(str(upload_path), skipinitialspace=True)
-    if req.domain_col not in df.columns:
+    # PR-2.1 (2026-11-11): at least ONE company identifier column must be
+    # supplied AND exist. domain remains first-class; company-LinkedIn-only
+    # and name-only lists are accepted (name-only rows resolve to domains
+    # only when ENABLE_NAME_RESOLVER arms the resolver — otherwise they are
+    # skipped with row-level reasons, never silently dropped).
+    identifier_cols = [
+        ("domain", req.domain_col),
+        ("company_linkedin_col", req.company_linkedin_col),
+        ("linkedin_url_col", req.linkedin_url_col),
+        ("company_name_col", req.company_name_col),
+    ]
+    present = [label for label, col in identifier_cols if col]
+    if not present:
         raise HTTPException(
-            status_code=400, detail=f"Column '{req.domain_col}' not found in CSV."
+            status_code=400,
+            detail="Provide at least one company identifier column: domain, "
+                   "company_linkedin_col, linkedin_url_col, or company_name_col.",
         )
+    for label, col in identifier_cols:
+        if col and col not in df.columns:
+            raise HTTPException(
+                status_code=400, detail=f"Column '{col}' ({label}) not found in CSV."
+            )
 
     # Validate titles if provided
     if req.titles is not None and req.titles != "":
@@ -7325,10 +7349,36 @@ async def domain_enrich_with_providers(
     # Pre-processing: dedupe by domain column (default ON). Runs BEFORE
     # job creation so total reflects unique rows. deduped_count and the
     # raw skipped values are persisted for auditability.
-    if req.dedupe_by_domain:
+    if req.dedupe_by_domain and req.domain_col:
         deduped_rows, deduped_count, skipped_domains = identifier_utils.dedupe_rows_by_domain(
             rows, req.domain_col, req.normalize_domains
         )
+    elif req.dedupe_by_domain:
+        # No domain column: dedupe by company-URL identity (explicit column
+        # first, then any /company/ URL in linkedin_url_col); rows with
+        # neither keep first-wins by company_name, blanks pass through.
+        from enrichment import list_builder as _lb
+
+        def _row_key(row):
+            for col in (req.company_linkedin_col, req.linkedin_url_col):
+                if col:
+                    url = identifier_utils.normalize_linkedin_url(row.get(col) or "")
+                    if url and _lb._is_company_linkedin_url(url):
+                        return "li:" + url
+            nm = str(row.get(req.company_name_col) or "").strip().lower() if req.company_name_col else ""
+            return ("name:" + nm) if nm else ""
+
+        seen_keys: set = set()
+        deduped_rows, skipped_domains = [], []
+        for row in rows:
+            key = _row_key(row)
+            if key and key in seen_keys:
+                skipped_domains.append(key)
+                continue
+            if key:
+                seen_keys.add(key)
+            deduped_rows.append(row)
+        deduped_count = len(skipped_domains)
     else:
         deduped_rows, deduped_count, skipped_domains = rows, 0, []
 
@@ -7359,7 +7409,7 @@ async def domain_enrich_with_providers(
         user_id=current_user["user_id"],
         total=len(deduped_rows),
         filename=str(req.upload_id),
-        domain_col=req.domain_col,
+        domain_col=req.domain_col or "",
         original_filename=original_filename,
         name_col=req.name_col,
         first_name_col=req.first_name_col,
@@ -7387,7 +7437,7 @@ async def domain_enrich_with_providers(
         _run_domain_enrich_job,
         job_id=job_id,
         rows=deduped_rows,
-        domain_col=req.domain_col,
+        domain_col=req.domain_col or "",
         name_col=req.name_col,
         first_name_col=req.first_name_col,
         last_name_col=req.last_name_col,
@@ -7418,7 +7468,7 @@ async def domain_enrich_with_providers(
 async def _run_domain_enrich_job(
     job_id: str,
     rows: list[dict[str, Any]],
-    domain_col: str,
+    domain_col: str,  # PR-2.1: '' when the CSV carries no domain column (LinkedIn/name-only lists)
     name_col: Optional[str],
     first_name_col: Optional[str],
     last_name_col: Optional[str],
