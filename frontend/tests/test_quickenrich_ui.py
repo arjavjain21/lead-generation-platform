@@ -144,8 +144,11 @@ class TestProviderIdListAndResults:
 
 class TestMarketingCopyUpdated:
     def test_home_copy_lists_new_order(self, html_content):
-        # 2026-10-14: moltsets added 6th + better_enrich re-enabled 7th.
-        assert "9-source cascade: Contacts DB, smartprospect, QuickEnrich, LeadOcean, GetLeads, Blitz API, MoltSets, Better Enrich, and WizLeads" in html_content
+        # 2026-11-11 (PR-0.2): counts the 8 ACTIVE cascade tiers only —
+        # better_enrich, though code-enabled since 2026-10-14, runs with
+        # ENABLE_BETTER_ENRICH=false in prod, so operator-facing copy must
+        # not count it (further pinned in tests/test_truth_sync_ui.py).
+        assert "8-source cascade: Contacts DB, smartprospect, QuickEnrich, LeadOcean, GetLeads, Blitz API, MoltSets, and WizLeads" in html_content
 
     def test_old_home_order_copy_gone(self, html_content):
         assert "Contacts DB, Blitz API, GetLeads, smartprospect, WizLeads, and BetterEnrich" not in html_content

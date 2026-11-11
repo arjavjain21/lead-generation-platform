@@ -910,6 +910,46 @@ async def website_scrape_status(
 # In-API documentation (mirror of docs/LIST_BUILDING_API_2026-07-05.md)
 # ---------------------------------------------------------------------------
 
+# Explicit cascade-order truth for /flows/help (PR-0.2, 2026-11-11). The
+# ORDER + per-tier copy mirror the executors (pipeline.py / list_builder.py);
+# each tier's live enabled/disabled status is derived from
+# providers.get_enabled_providers() so env kill switches (e.g.
+# ENABLE_BETTER_ENRICH=false in prod) are reflected without a second
+# hand-maintained enable list. Evaluated at import time — equivalent to
+# request-time because env flips require a service restart, which re-imports.
+_HELP_CASCADE_TIERS: list[tuple[str, str, str]] = [
+    ("contacts_db", "75 RPS", "Internal PostgreSQL DB, always first, free"),
+    ("smartprospect", "shared cross-process RPM (SMARTPROSPECT_RATE_LIMIT_RPM; account cap 2000/min)", "SmartLead Find Emails — self-verifying person-email finder, batch up to 10. Gates on firstName+lastName+domain."),
+    ("quickenrich", f"{int(quickenrich_client._RATE_LIMIT_RPM)}/{int(quickenrich_client._DATASET_RATE_LIMIT_RPM)} RPM (two shared lanes: person-search / dataset-search; global plan cap shared by both)", "QuickEnrich — person email via employee-search + domain decision-makers via dataset-search (tier since 2026-10-10)."),
+    ("leadocean", "150 RPS shared cross-process (LEADOCEAN_RATE_LIMIT_RPS; plan 200 account-wide)", "LeadOcean (tier since 2026-11-06) — work email + personal fallback by LinkedIn URL; domain→people discovery as the terminal discovery tier."),
+    ("getleads", "batch 100 (plan ~10k/min, fair-use metered)", "Verified DM emails + bonus phones; from-linkedin fallback in the LinkedIn arm; decision-makers domain fallback when the whole arm misses."),
+    ("blitz", "50 RPS per endpoint (per-lane caps BLITZ_RPS family; FUP 15M records/mo)", "LinkedIn-based enrichment with title waterfall. Billing: search bills per returned result; email/phone bill per call; person/domain-to-linkedin success-only."),
+    ("moltsets", "30 RPM shared cross-process (MOLTSETS_RATE_LIMIT_RPM; fair-use windows 15k/5h + 75k/wk)", "MoltSets (tier since 2026-10-14) — best person email incl. personal fallback; person misses negative-cached 14d."),
+    ("better_enrich", "10/5 RPS", "Person email + company-email fallback — code-present; env kill switch ENABLE_BETTER_ENRICH (off in prod since the 2026-09-29 credit incident; global kill switch beats force_provider/selected_providers)."),
+    ("wizleads", "10 RPS", "Catch-all verified email enrichment (terminal tier)."),
+    ("prospeo", "n/a", "DISABLED end-to-end — code present, never called."),
+]
+
+
+def _cascade_help_table() -> list[dict[str, str]]:
+    """Build the /flows/help cascade rows with live enabled/disabled status.
+
+    Uses providers.is_provider_enabled() per tier — NOT
+    get_enabled_providers(), which ignores the per-provider env kill
+    switches (ENABLE_BETTER_ENRICH etc.) that prod relies on.
+    """
+    return [
+        {
+            "name": name,
+            "rate": rate,
+            "role": role,
+            "status": "enabled" if providers.is_provider_enabled(name) else "disabled",
+        }
+        for name, rate, role in _HELP_CASCADE_TIERS
+    ]
+
+
+
 _LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
     "generated_at": "2026-07-05",
     "document_version": "1.0",
@@ -936,18 +976,16 @@ _LIST_BUILDING_HELP_PAYLOAD: dict[str, Any] = {
         "note": "Since 2026-09-07 every /api/enrichment/* endpoint accepts JWT Bearer OR X-API-Key, except the SSE stream (GET /jobs/{job_id}/stream), which stays JWT-only — API-key clients poll GET /jobs/{job_id}. API keys are created/revoked with a JWT at POST /api/api-keys (a key cannot mint keys); phone enrichment is a separate JWT-only surface.",
     },
     "providers": {
-        "cascade_order": [
-            {"name": "contacts_db", "rate": "75 RPS", "role": "Internal PostgreSQL DB, always first, free"},
-            {"name": "smartprospect", "rate": "1900 RPM shared cross-process (account cap 2000/min)", "role": "SmartLead Find Emails — self-verifying person-email finder, batch up to 10. Gates on firstName+lastName+domain."},
-            {"name": "quickenrich", "rate": f"{int(quickenrich_client._RATE_LIMIT_RPM)}/{int(quickenrich_client._DATASET_RATE_LIMIT_RPM)} RPM (two shared lanes: person-search / dataset-search; GTM Unlimited global cap 6000/min shared by both)", "role": "QuickEnrich — person email via employee-search + domain decision-makers via dataset-search (added 2026-10-10)."},
-            {"name": "getleads", "rate": "batch 100 (plan ~10k/min, fair-use metered)", "role": "Verified DM emails + bonus phones; from-linkedin fallback in the LinkedIn arm; decision-makers domain fallback when the whole arm misses."},
-            {"name": "blitz", "rate": "50 RPS per endpoint (per-lane caps BLITZ_RPS family; FUP 15M records/mo)", "role": "LinkedIn-based enrichment with title waterfall. Billing: search bills per returned result; email/phone bill per call; person/domain-to-linkedin success-only."},
-            {"name": "wizleads", "rate": "10 RPS", "role": "Catch-all verified email enrichment (last active tier)"},
-            {"name": "better_enrich", "rate": "10 RPS", "role": "DISABLED since 2026-09-29 (credit incident) — global kill switch beats force_provider/selected_providers"},
-            {"name": "prospeo", "rate": "n/a", "role": "DISABLED — code present, end-to-end off"},
-        ],
+        # Live truth (PR-0.2, 2026-11-11): membership/status is computed from
+        # providers.get_enabled_providers() at request time; the ORDER and
+        # per-tier copy are the explicit cascade truth mirroring the executors
+        # (pipeline.py / list_builder.py). No second hand-maintained enable
+        # list — env kill switches (e.g. ENABLE_BETTER_ENRICH=false in prod)
+        # are reflected automatically. Previously this table omitted leadocean
+        # and moltsets and carried a stale better_enrich label.
+        "cascade_order": _cascade_help_table(),
         "cascade_behavior": "Stop on first provider that returns a usable contact. Later providers are skipped for that row.",
-        "cascade_arms": "order above = person arm (name+domain) · linkedin_url arm: contacts_db -> quickenrich -> getleads -> blitz · domain-only DM discovery arm: contacts_db -> quickenrich(dataset-search) -> blitz(waterfall) -> getleads(decision-makers fallback)",
+        "cascade_arms": "order above = person arm (name+domain) · linkedin_url arm: contacts_db -> quickenrich -> leadocean -> getleads -> blitz -> moltsets · domain-only DM discovery arm: contacts_db -> quickenrich(dataset-search) -> blitz(waterfall) -> getleads(decision-makers fallback) -> leadocean(domain->people, terminal)",
         "title_tiers_default": {
             "tier_1": ["Owner", "CEO", "Founder", "Co-Founder", "President"],
             "tier_2": ["CMO", "CTO", "COO", "VP-level"],
