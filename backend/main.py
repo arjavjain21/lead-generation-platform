@@ -544,9 +544,6 @@ async def _call_tracker_health_loop() -> None:
 _WORKER_STARTED_ISO = datetime.now(timezone.utc).isoformat()
 
 
-_BUILD_RELEASE = _release_commit()  # frozen at worker import — what THIS process runs
-
-
 @shared_router.get("/health")
 async def health():
     return {"status": "ok", "mcp_enabled": _MCP_ENABLED}
@@ -581,6 +578,12 @@ def _release_commit() -> str:
         return head[:7] if _re.fullmatch(r"[0-9a-f]{40}", head) else "unknown"
     except Exception:
         return "unknown"
+
+
+# Frozen at worker import — always reports what THIS process runs (a live
+# .git read could drift ahead on docs-only commits that move HEAD without a
+# restart). tree_head is the live read.
+_BUILD_RELEASE = _release_commit()
 
 
 @shared_router.get("/meta")
