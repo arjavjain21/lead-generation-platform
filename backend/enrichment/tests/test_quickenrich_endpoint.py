@@ -48,12 +48,23 @@ def _override_auth():
 
 @pytest.fixture
 def client():
+    """TestClient WITHOUT entering the app lifespan.
+
+    2026-11-11 RCA (the long-standing box hang): ``with TestClient(app)``
+    deadlocks in the anyio portal waiting for main.app's full lifespan
+    startup under pytest (verified: the lifespan itself completes fine under
+    a plain asyncio.run with ENABLE_STARTUP_REAPERS=false + ENABLE_MCP_ORACLE
+    false — the conftest flags — and a minimal FastAPI TestClient enters
+    fine; only the full-app-in-portal combination wedges, every run, >90s).
+    These endpoint tests never need the lifespan loops (reapers, dispatcher,
+    outbox) — requests route normally without it (verified 200 on
+    /api/health), dependency_overrides still apply.
+    """
     from fastapi.testclient import TestClient
     from main import app
 
     app.dependency_overrides.update(_override_auth())
-    with TestClient(app) as test_client:
-        yield test_client
+    yield TestClient(main_app := app)
     app.dependency_overrides.clear()
 
 
