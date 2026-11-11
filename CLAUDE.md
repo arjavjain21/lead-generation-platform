@@ -70,6 +70,9 @@ DB changes (`everything-claude-code:database-reviewer`), security (`everything-c
 │   ├── scraper/                 # Google Maps scraper
 │   │   ├── crawler.py           # Async scraper (8 workers)
 │   │   ├── centers.py           # Region/city center data loader
+│   │   ├── places_client.py     # GetLeads "Instant US Database" client (places API: free count/categories, paid exports)
+│   │   ├── places_flow.py       # Places job runner (scraper jobs, source_type='getleads_places', born running, restart re-arm)
+│   │   ├── places_routes.py     # /api/scraper/places/* (categories, count, fair-use, jobs)
 │   │   └── data/                # Country CSV files
 │   └── shared/
 │       ├── auth.py              # JWT auth (7-day), API keys (lgp_), user mgmt (CLI-only creation)
@@ -150,7 +153,7 @@ Each enrichment source has different cost/quality tradeoffs. Cascade order (set 
 | **LeadOcean** | 150 RPS shared cross-process (`LEADOCEAN_RATE_LIMIT_RPS`; Agency UGC $247/mo: 1M enrich/day, 25M search/mo, 200 RPS account-wide, 1 key of 5) | 4th (since 2026-11-06) | Work email **+ personal fallback** by LinkedIn URL (`/v2/people/email/work` → `/personal`; 82% measured yield on QE misses). Misses bill 1 record (negative-cached 7d, `leadocean_miss`); the 1M/day wall THROTTLES ~400x past-limit instead of erroring — `leadocean_guards.py` cooldown makes it an instant skip until 00:00 UTC; lazy free `/v1/usage` check arms it. Status: `verified` accepted, other grades mailtester-gated, invalid/role/abuse/spam_trap dropped (`LEADOCEAN_REJECT_STATUS`). Kill switch `ENABLE_LEADOCEAN`. Gauge: `GET /api/enrichment/leadocean/usage`. Source `leadocean_email`. **Phase 2 (2026-11-07):** domain→people discovery (`GET /v1/companies/{domain}/people`, terminal discovery tier, 1 search record/row on the 25M/mo window, cursor-paged, `LEADOCEAN_DISCOVERY_MAX_ROWS=100` cap, has_email=true only, 404 domain-miss cached 7d; kill switch `ENABLE_LEADOCEAN_DISCOVERY`) + FREE industry company counts (`GET /api/enrichment/leadocean/count?industry=` repeatable OR; enum via `/leadocean/industries`; 532 exact values) |
 | **GetLeads** | batch 100 (~10k/min) | 5th | Verified DM emails + bonus phones (batch of 100, unlimited plan); from-linkedin fallback in the LinkedIn-only arm (after QuickEnrich); decision-makers domain fallback when contacts_db + QuickEnrich + Blitz waterfall all find nobody (`lookup_decision_makers`, C-Team/VP/Director, 1 credit/record vs fair use) |
 | **Blitz** | 50 RPS per endpoint (legacy plan 2026-09; per-lane caps `BLITZ_RPS` default + `BLITZ_RPS_EMAIL/_DISCOVERY/_SEARCH`; FUP 15M records/mo, metered live in `blitz_fair_use`) | 5th | LinkedIn-based enrichment with title cascade. Summer release (2026-09-16): find-people batch prepass (`/v2/search/people`, 50 companies/call, jobs with >5 domains), TAM-by-People flow (`/flows/tam`, 1 record/company), 30-day domain-miss negative cache (`blitz_domain_miss`, definitive misses only), optional DM phone bundle (`include_phone`, 1 record/call, US-only). Summer-followup (2026-10-16): MX records on every email response → `dm_mx_provider` CSV column (SEG vocabulary); TAM `mx_providers_include/exclude` server-side filter; `recent_hires_only` on Flow 1 + `is_recent_hire` on TAM (strict boolean, job-changers <90d). **Billing truths:** search endpoints bill 1 record per returned result (empty = free); `/v2/enrichment/email` + `/v2/enrichment/phone` bill 1 record per CALL (miss still bills); `/v2/enrichment/person` + domain-to-linkedin bill on success only; errors never bill |
-| **MoltSets** | 30 RPM shared cross-process (`MOLTSETS_RATE_LIMIT_RPM`; plan: 15k records/5h, 75k/week, 7.5k searches/5h) | 6th | Best person email incl. personal fallback (`linkedin_to_best_email` by URL — terminal step of the LinkedIn-only arm — / `search_business_email_by_name` for name+domain); risk-graded A–F (D dropped); fair-use windows arm a cross-worker cooldown (`moltsets_guards.py`) so a spent window = instant skip, zero latency; misses negative-cached 14d. Kill switch `ENABLE_MOLTSETS`. Observability: `GET /api/enrichment/moltsets/usage` |
+| **MoltSets** | 48 RPM shared cross-process (prod since 2026-11-11, was 30; `MOLTSETS_RATE_LIMIT_RPM`, code default 30; plan: 15k records/5h, 75k/week, 7.5k searches/5h — 48 RPM × 5h = 14,400 < 15k so the 5h wall stays unreachable) | 6th | Best person email incl. personal fallback (`linkedin_to_best_email` by URL — terminal step of the LinkedIn-only arm — / `search_business_email_by_name` for name+domain); risk-graded A–F (D dropped); fair-use windows arm a cross-worker cooldown (`moltsets_guards.py`) so a spent window = instant skip, zero latency; misses negative-cached 14d. Kill switch `ENABLE_MOLTSETS`. Observability: `GET /api/enrichment/moltsets/usage` |
 | **BetterEnrich** | 10 RPS | 7th (re-enabled 2026-10-14; env kill switch `ENABLE_BETTER_ENRICH`) | Person email, company email |
 | **WizLeads** | shared cross-process 10 RPS (`WIZLEADS_RATE_LIMIT_RPS`); circuit breaker; 429 = skip tier, no in-request sleep | 8th (terminal tier) | Catch-all verified email enrichment |
 
@@ -242,7 +245,7 @@ QUICKENRICH_RATE_LIMIT_RPM=5800         # person-search lane, SHARED cross-proce
 QUICKENRICH_DATASET_RATE_LIMIT_RPM=5800 # dataset-search lane (same global 6000/min cap; code defaults 900/280 = Standard-safe)
 MOLTSETS_API_KEY=<moltsets-key>
 ENABLE_MOLTSETS=true                  # MoltSets kill switch (tier 6)
-MOLTSETS_RATE_LIMIT_RPM=30            # shared cross-process limiter
+MOLTSETS_RATE_LIMIT_RPM=48            # shared cross-process limiter (raised from 30 on 2026-11-11; 48×5h=14.4k < 15k window)
 MOLTSETS_MISS_TTL_DAYS=14             # person-miss negative-cache TTL
 ENRICH_REQUEST_BUDGET_S=20            # interactive /enrich cascade deadline (2026-10-15; 0 disables)
 WIZLEADS_RATE_LIMIT_RPS=10            # shared cross-process limiter (was per-process; 2026-10-15)
@@ -302,6 +305,13 @@ BLITZ_MISS_TTL_DAYS=30                # blitz_domain_miss negative-cache TTL (de
 ENABLE_BLITZ_MISS_SKIP=true           # arm the miss-store wiring in production callers (pipeline + list_builder)
 ENABLE_PHONE_BUNDLE=true              # master switch for include_phone DM phone lookups (per-request opt-in)
 TITLE_SEARCH_POOL=12                  # free contacts_db candidate pool feeding the title gate (NOT a Blitz billing knob)
+
+# Instant US Database (GetLeads places, 2026-11-11) — scraper-page source "⚡ Instant US Database"
+ENABLE_GETLEADS_PLACES=true           # kill switch (router omitted + client guarded when false)
+GETLEADS_PLACES_POLL_S=5              # async-export poll interval
+GETLEADS_PLACES_EXPORT_TIMEOUT_S=1800 # overall export deadline per job
+# Shares GETLEADS_API_KEY + the shared "getleads" 100-RPM limiter bucket with enrichment getleads_client.
+# Budget: account-wide google_maps fair use (50K rows/day, 500K/mo) — prechecked in every job; gauge: GET /api/scraper/places/fair-use
 ```
 
 ## PostgreSQL Companion Database
@@ -483,6 +493,16 @@ This project changes often; do not rely on a frozen snapshot here. For current s
   `~/.claude/projects/-var-www-lead-generation-platform/memory/`.
 - **Live health:** `curl -s http://localhost:8765/api/health` and `./monitor.sh`.
 - **Canonical API contract:** `docs/ListBuilding_Platform_Full_API_Reference_2026-07-16.md`.
+- **2026-11-11 shipped:** Instant US Database (GetLeads places) phase 1 — new source on the Google
+  Maps Scraper page: pre-indexed 20.5M US listings with emails/socials, fetched in seconds via
+  async CSV export (25K rows/export cap; fair-use precheck on every job — account-wide google_maps
+  budget 50K/day, 500K/mo, gauge `GET /api/scraper/places/fair-use`). Jobs are scraper jobs with
+  `source_type='getleads_places'`, born `running` (never queued — dispatcher can't claim them),
+  restart re-armed via export_id in the regions blob + resume_claimed_at CAS. Output CSV carries a
+  literal `website` column so "Chain to Enrichment" works unchanged. Endpoints:
+  `/api/scraper/places/{categories,count,fair-use,jobs}` (JWT). Files: `scraper/places_{client,flow,routes}.py`.
+  Categories/cities/count lookups are FREE; autocomplete prefers exact category picks (picked →
+  `categories`, typed → `category_contains`).
 - **2026-11-07 shipped:** LeadOcean phase 2 — domain→people discovery (`/v1/companies/{domain}/people`) wired as the TERMINAL discovery tier in all domain arms (pipeline no-LI rescue + main Step 2.4b, list_builder mirrors, unified-API executor; 1 search record/row, 25M/mo window, row-capped, has_email-only, 404 domain-miss cached 7d; `leadocean_people` normalizer + stats) + search-window cooldown (`pace.search` arms `search_exhausted`) + FREE industry counts endpoints (`GET /api/enrichment/leadocean/count`, `/leadocean/industries`; 532-value enum `leadocean_industries.py`).
 - **2026-11-06 shipped:** LeadOcean provider added as tier 4 (after quickenrich; work email + personal fallback by LinkedIn URL; daily-wall cooldown + 7d miss cache; `GET /api/enrichment/leadocean/usage` gauge). Cascade now `contacts_db → smartprospect → quickenrich → leadocean → getleads → blitz → moltsets → better_enrich → wizleads`.
 - **2026-10-14 shipped:** MoltSets provider added as tier 6 + BetterEnrich re-enabled as tier 7 (cascade: contacts_db → smartprospect → quickenrich → getleads → blitz → moltsets → better_enrich → wizleads). MoltSets = person email only (linkedin_to_best_email / search_business_email_by_name), one request per person per attempt; fair-use windows (15k rec/5h, 75k/wk) arm a cross-worker cooldown for instant skip; person misses negative-cached (`moltsets_miss`, 14d); `moltsets_usage` ledger + `GET /api/enrichment/moltsets/usage`. New env kill switch `ENABLE_BETTER_ENRICH` (BE credits were 0.1 at re-enable — watch before expecting BE hits). WizLeads back to terminal tier.

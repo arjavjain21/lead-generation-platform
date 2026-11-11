@@ -1329,6 +1329,23 @@
                         <div id="scraperCategoryList" style="display:none;margin-top:4px;max-height:180px;overflow-y:auto;border:1px solid var(--gray-300);border-radius:8px;background:white;position:absolute;z-index:100;width:calc(100% - 24px);"></div>
                     </div>
                 </div>
+                <div class="filters" id="placesSourceRow">
+                    <div class="filter-group">
+                        <label>Data Source</label>
+                        <select id="scraperSource">
+                            <option value="live" selected>Live Google Maps Scrape (30 countries)</option>
+                            <option value="instant">⚡ Instant US Database (emails included)</option>
+                        </select>
+                        <span class="field-helper" id="placesSourceHint" style="display:none;">Pre-indexed US listings (refreshed quarterly) — results in seconds, includes emails &amp; social links. Preview counts are free; fetches draw from the shared GetLeads daily budget.</span>
+                    </div>
+                    <div class="filter-group" id="placesCountGroup" style="display:none;">
+                        <label>Match Preview (free)</label>
+                        <div id="placesCountBadge" class="field-helper">Enter a category to preview the match count…</div>
+                        <label style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:0.85rem;">
+                            <input type="checkbox" id="placesHasEmail"> Only businesses with an email
+                        </label>
+                    </div>
+                </div>
                 <div class="filters">
                     <div class="filter-group">
                         <label>Country</label>
@@ -3973,6 +3990,11 @@ example.org,Jane Doe</pre>
         const queryInput = document.getElementById('scraperQuery');
         const categoryList = document.getElementById('scraperCategoryList');
 
+        // Instant US Database: when the user picks a suggestion, we send it as
+        // an EXACT category; free-typed text is sent as a whole-word
+        // category_contains term instead. Cleared the moment they edit it.
+        let placesExactCategory = null;
+
         // Add blur validation for scraper query
         queryInput.addEventListener('blur', function() {
             const validationEl = document.getElementById('scraperQueryValidation');
@@ -3985,6 +4007,17 @@ example.org,Jane Doe</pre>
         });
 
         queryInput.addEventListener('input', function() {
+            if (placesExactCategory !== null && this.value.trim() !== placesExactCategory) {
+                placesExactCategory = null; // edited after picking → no longer exact
+            }
+            // Instant DB mode: suggestions come from the GetLeads category API
+            // (free) instead of the local Google categories file.
+            const qRaw = this.value.trim();
+            if (typeof scraperSourceIsInstant === 'function' && scraperSourceIsInstant() && qRaw.length >= 2) {
+                placesCategorySuggest(qRaw);
+                refreshPlacesCount();
+                return;
+            }
             const q = this.value.toLowerCase().trim();
             if (q.length < 2) {
                 categoryList.style.display = 'none';
@@ -4118,6 +4151,42 @@ example.org,Jane Doe</pre>
             document.getElementById('scraperStatesContainer').style.display = (mode === 'states') ? 'block' : 'none';
             document.getElementById('scraperCitiesContainer').style.display = (mode === 'cities') ? 'block' : 'none';
             document.getElementById('scraperZipsContainer').style.display = (mode === 'zips') ? 'block' : 'none';
+        });
+
+        // Data Source toggle (2026-11-11): swap the form between the live
+        // grid-scraper (country + mode + cities) and the Instant US Database
+        // (GetLeads places: US-only, states + ZIPs both shown, free count).
+        function scraperSourceIsInstant() {
+            const el = document.getElementById('scraperSource');
+            return !!el && el.value === 'instant';
+        }
+
+        function updateScraperSourceUI() {
+            const instant = scraperSourceIsInstant();
+            const countryGroup = document.getElementById('scraperCountry').closest('.filter-group');
+            const modeGroup = document.getElementById('scraperMode').closest('.filter-group');
+            if (countryGroup) countryGroup.style.display = instant ? 'none' : '';
+            if (modeGroup) modeGroup.style.display = instant ? 'none' : '';
+            document.getElementById('scraperCitiesContainer').style.display = 'none';
+            document.getElementById('placesSourceHint').style.display = instant ? '' : 'none';
+            document.getElementById('placesCountGroup').style.display = instant ? '' : 'none';
+            if (instant) {
+                document.getElementById('scraperStatesContainer').style.display = 'block';
+                document.getElementById('scraperZipsContainer').style.display = 'block';
+                refreshPlacesCount();
+                loadPlacesFairUse();
+            } else {
+                // Restore exactly the mode-driven visibility the mode
+                // listener applies, so toggling back is lossless.
+                const mode = document.getElementById('scraperMode').value;
+                document.getElementById('scraperStatesContainer').style.display = (mode === 'states') ? 'block' : 'none';
+                document.getElementById('scraperCitiesContainer').style.display = (mode === 'cities') ? 'block' : 'none';
+                document.getElementById('scraperZipsContainer').style.display = (mode === 'zips') ? 'block' : 'none';
+            }
+        }
+        document.getElementById('scraperSource').addEventListener('change', function() {
+            placesExactCategory = null;
+            updateScraperSourceUI();
         });
 
         // Real-time zip/postal code validation
@@ -4441,6 +4510,14 @@ example.org,Jane Doe</pre>
             if (query.length < 2) {
                 FormValidator.showError(queryInput, 'Search query must be at least 2 characters');
                 queryInput.focus();
+                return;
+            }
+
+            // Instant US Database: different endpoint, and no cache check —
+            // the pre-indexed GetLeads DB *is* the instant path. Branch out.
+            if (scraperSourceIsInstant()) {
+                isSubmitting = true;
+                await startPlacesJobFromForm(queryInput, query);
                 return;
             }
 
@@ -4787,6 +4864,217 @@ example.org,Jane Doe</pre>
                 delete btn.dataset.originalText;
             }
         }
+
+        // ---- Instant US Database (GetLeads places, 2026-11-11) --------------
+        let placesCountTimer = null;
+        let placesSuggestTimer = null;
+        let placesFairUse = null;
+
+        function placesCurrentFilters(queryText) {
+            const filters = {};
+            if (placesExactCategory) {
+                filters.categories = [placesExactCategory];
+            } else if (queryText && queryText.trim().length >= 2) {
+                filters.category_contains = [queryText.trim()];
+            }
+            const statesSelect = document.getElementById('scraperStates');
+            if (statesSelect) {
+                const selected = Array.from(statesSelect.selectedOptions).map(o => o.value).filter(Boolean);
+                if (selected.length) filters.states = selected;
+            }
+            const zipInput = document.getElementById('scraperZipsInput');
+            if (zipInput && zipInput.value.trim()) {
+                const zr = validateZipCodes(zipInput.value);
+                if (zr.valid.length) filters.zips = zr.valid;
+            }
+            const hasEmailBox = document.getElementById('placesHasEmail');
+            if (hasEmailBox && hasEmailBox.checked) filters.has_email = true;
+            return filters;
+        }
+
+        async function loadPlacesFairUse() {
+            try {
+                const res = await fetch('/api/scraper/places/fair-use', {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (!res.ok) return;
+                const data = await res.json();
+                if (data.available) placesFairUse = data.google_maps;
+            } catch (e) { console.error('places fair-use fetch failed:', e); }
+        }
+
+        function refreshPlacesCount() {
+            if (!scraperSourceIsInstant()) return;
+            const badge = document.getElementById('placesCountBadge');
+            if (!badge) return;
+            const queryText = document.getElementById('scraperQuery').value.trim();
+            const filters = placesCurrentFilters(queryText);
+            const hasFilters = ['categories', 'category_contains', 'business_name', 'states', 'zips']
+                .some(k => filters[k] && filters[k].length);
+            if (!hasFilters) {
+                badge.textContent = 'Enter a category (and optionally states/ZIPs) to preview the match count…';
+                badge.style.color = '';
+                return;
+            }
+            clearTimeout(placesCountTimer);
+            placesCountTimer = setTimeout(async () => {
+                badge.textContent = 'Counting matches (free)…';
+                try {
+                    const res = await fetch('/api/scraper/places/count', {
+                        method: 'POST',
+                        headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ filters })
+                    });
+                    if (!res.ok) { badge.textContent = 'Count unavailable right now.'; return; }
+                    const data = await res.json();
+                    const total = data.total_matching || 0;
+                    const cap = data.max_export_rows || 25000;
+                    const fu = data.fair_use || {};
+                    let text = '≈ ' + total.toLocaleString() + ' businesses match';
+                    if (total > cap) {
+                        text += ' — over the ' + cap.toLocaleString() + '/fetch cap, narrow the filters';
+                        badge.style.color = '#b45309';
+                    } else {
+                        badge.style.color = '';
+                    }
+                    if (typeof fu.daily_remaining === 'number') {
+                        text += ' · ' + fu.daily_remaining.toLocaleString() + ' rows left today';
+                    }
+                    badge.textContent = text;
+                } catch (e) {
+                    badge.textContent = 'Count unavailable right now.';
+                }
+            }, 700);
+        }
+
+        function placesCategorySuggest(term) {
+            clearTimeout(placesSuggestTimer);
+            placesSuggestTimer = setTimeout(async () => {
+                try {
+                    const res = await fetch('/api/scraper/places/categories?q=' + encodeURIComponent(term), {
+                        headers: { 'Authorization': 'Bearer ' + token }
+                    });
+                    if (!res.ok) return;
+                    const data = await res.json();
+                    const cats = data.categories || [];
+                    const list = document.getElementById('scraperCategoryList');
+                    if (!cats.length || !list) { if (list) list.style.display = 'none'; return; }
+                    list.innerHTML = '';
+                    cats.slice(0, 8).forEach(cat => {
+                        const div = document.createElement('div');
+                        div.style.padding = '8px 12px';
+                        div.style.cursor = 'pointer';
+                        div.style.borderBottom = '1px solid #eee';
+                        div.style.fontSize = '13px';
+                        div.textContent = cat;
+                        div.addEventListener('click', function() {
+                            document.getElementById('scraperQuery').value = cat;
+                            placesExactCategory = cat; // exact category picked
+                            list.style.display = 'none';
+                            refreshPlacesCount();
+                        });
+                        list.appendChild(div);
+                    });
+                    list.style.display = 'block';
+                } catch (e) { console.error('places category suggest failed:', e); }
+            }, 250);
+        }
+
+        async function startPlacesJobFromForm(queryInput, query) {
+            const btn = document.getElementById('startScraperJob');
+            setButtonLoading(btn, true, 'Starting…');
+            try {
+                const filters = placesCurrentFilters(query);
+                const hasFilters = ['categories', 'category_contains', 'business_name', 'states', 'zips']
+                    .some(k => filters[k] && filters[k].length);
+                if (!hasFilters) {
+                    FormValidator.showError(queryInput, 'Enter a category (or pick at least one state/ZIP) for the Instant Database');
+                    return;
+                }
+                const res = await fetch('/api/scraper/places/jobs', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ filters })
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    currentJobId = data.job_id;
+                    document.getElementById('scraperTotal').textContent = data.total_tasks || 3;
+                    document.getElementById('scraperProgress').style.display = 'block';
+                    document.getElementById('scraperStatus').textContent = 'Instant DB: starting…';
+                    const at = document.getElementById('scraperActivityText');
+                    if (at) at.textContent = 'Counting matches and starting the export…';
+                    startPlacesProgressStream(currentJobId);
+                    loadScraperJobs();
+                    document.getElementById('scraperProgress').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                    setButtonLoading(btn, false, 'Start Scraper Job');
+                } else {
+                    const err = await res.json();
+                    alert('Failed to start: ' + (err.detail || 'Unknown error'));
+                    setButtonLoading(btn, false, 'Start Scraper Job');
+                }
+            } catch (e) {
+                alert('Error: ' + e.message);
+                setButtonLoading(btn, false, 'Start Scraper Job');
+            } finally {
+                isSubmitting = false;
+            }
+        }
+
+        function startPlacesProgressStream(jobId) {
+            const eventSource = new EventSource('/api/scraper/jobs/' + jobId + '/stream?token=' + token);
+            eventSource.onmessage = function(e) {
+                const data = JSON.parse(e.data);
+                document.getElementById('scraperDone').textContent = data.done_tasks || 0;
+                document.getElementById('scraperResults').textContent = data.result_count || 0;
+                const total = parseInt(document.getElementById('scraperTotal').textContent) || 3;
+                const pct = Math.min(100, Math.round(((data.done_tasks || 0) / total) * 100));
+                document.getElementById('scraperProgressBar').style.width = pct + '%';
+                document.getElementById('scraperProgressText').textContent = pct + '%';
+                const at = document.getElementById('scraperActivityText');
+                if (data.message && at) at.textContent = data.message;
+                document.getElementById('scraperStatus').textContent =
+                    data.message ? data.message : (data.status || 'Running…');
+                if (data.done || ['done', 'failed', 'cancelled', 'abandoned'].includes(data.status)) {
+                    eventSource.close();
+                    loadScraperJobs();
+                }
+            };
+            eventSource.onerror = function() { eventSource.close(); loadScraperJobs(); };
+        }
+
+        async function retryPlacesJob(jobId) {
+            try {
+                const res = await fetch('/api/scraper/jobs/' + jobId, {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (!res.ok) { alert('Could not load job details.'); return; }
+                const job = await res.json();
+                let filters = {};
+                try { filters = (JSON.parse(job.regions || '{}').filters) || {}; } catch (err) { /* keep {} */ }
+                const start = await fetch('/api/scraper/places/jobs', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ filters })
+                });
+                if (start.ok) {
+                    const data = await start.json();
+                    currentJobId = data.job_id;
+                    document.getElementById('scraperTotal').textContent = data.total_tasks || 3;
+                    document.getElementById('scraperProgress').style.display = 'block';
+                    startPlacesProgressStream(currentJobId);
+                    loadScraperJobs();
+                } else {
+                    const err = await start.json();
+                    alert('Retry failed: ' + (err.detail || 'Unknown error'));
+                }
+            } catch (e) { alert('Error: ' + e.message); }
+        }
+
+        // Also live-refresh the count when geo/email filters change in instant mode.
+        document.getElementById('scraperStates').addEventListener('change', refreshPlacesCount);
+        document.getElementById('scraperZipsInput').addEventListener('input', refreshPlacesCount);
+        document.getElementById('placesHasEmail').addEventListener('change', refreshPlacesCount);
 
         // Internal job start function (without cache check)
         async function startScraperJobInternal(payload) {
@@ -7953,28 +8241,39 @@ example.org,Jane Doe</pre>
             {
                 // Status display via the shared label map.
                 let statusDisplay = jobStatusLabel(job.status);
+                const isPlacesJob = job.source_type === 'getleads_places';
 
                 const statusBadge = '<span class="job-status status-' + job.status + '">' + statusDisplay + '</span>';
                 let actions = '';
                 if (job.status === 'done') {
                     actions += ' <button class="btn btn-success btn-sm" id="dl-scraper-'+job.job_id+'" onclick="downloadScraperJob(\''+job.job_id+'\', this)">Download</button>';
                     actions += ' <button class="btn btn-primary btn-sm" onclick="chainScraperToEnrichment(\''+job.job_id+'\')">Chain to Enrichment</button>';
-                    actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleScraperShards(\''+job.job_id+'\', this)">▦ Download in chunks</button>';
-                } else if (job.status === 'failed' || job.status === 'abandoned' || job.status === 'cancelled' || job.status === 'stopped') {
-                    // Show resume button if job has checkpoints
-                    if (job.checkpoint_count > 0 && job.is_resumable === 1) {
-                        actions += ' <button class="btn btn-warning btn-sm" onclick="resumeScraperJob(\''+job.job_id+'\')">↻ Resume ('+job.checkpoint_count+' tasks)</button>';
+                    if (!isPlacesJob) {
+                        actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleScraperShards(\''+job.job_id+'\', this)">▦ Download in chunks</button>';
                     }
-                    actions += ' <button class="btn btn-secondary btn-sm" onclick="retryScraperJob(\''+job.job_id+'\')">Retry</button>';
-                    // /partial-download has no status gate and falls back to the on-disk
-                    // CSV, so this works for abandoned jobs even though output_path is
-                    // null until set_done runs at completion.
-                    actions += ' <button class="btn btn-success btn-sm" onclick="downloadScraperPartial(\''+job.job_id+'\', this)">↓ Download partial</button>';
-                    actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleScraperShards(\''+job.job_id+'\', this)">▦ Download in chunks</button>';
+                } else if (job.status === 'failed' || job.status === 'abandoned' || job.status === 'cancelled' || job.status === 'stopped') {
+                    if (isPlacesJob) {
+                        // Places jobs have no partial/checkpoints — Retry
+                        // re-posts the SAME filters to the instant endpoint.
+                        actions += ' <button class="btn btn-secondary btn-sm" onclick="retryPlacesJob(\''+job.job_id+'\')">Retry</button>';
+                    } else {
+                        // Show resume button if job has checkpoints
+                        if (job.checkpoint_count > 0 && job.is_resumable === 1) {
+                            actions += ' <button class="btn btn-warning btn-sm" onclick="resumeScraperJob(\''+job.job_id+'\')">↻ Resume ('+job.checkpoint_count+' tasks)</button>';
+                        }
+                        actions += ' <button class="btn btn-secondary btn-sm" onclick="retryScraperJob(\''+job.job_id+'\')">Retry</button>';
+                        // /partial-download has no status gate and falls back to the on-disk
+                        // CSV, so this works for abandoned jobs even though output_path is
+                        // null until set_done runs at completion.
+                        actions += ' <button class="btn btn-success btn-sm" onclick="downloadScraperPartial(\''+job.job_id+'\', this)">↓ Download partial</button>';
+                        actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleScraperShards(\''+job.job_id+'\', this)">▦ Download in chunks</button>';
+                    }
                 } else if (job.status === 'running' || job.status === 'queued' || job.status === 'pending') {
                     actions += ' <button class="btn btn-danger btn-sm" onclick="cancelScraperJob(\''+job.job_id+'\')">Stop</button>';
-                    actions += ' <button class="btn btn-success btn-sm" onclick="downloadScraperPartial(\''+job.job_id+'\', this)">↓ Download partial</button>';
-                    actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleScraperShards(\''+job.job_id+'\', this)">▦ Download in chunks</button>';
+                    if (!isPlacesJob) {
+                        actions += ' <button class="btn btn-success btn-sm" onclick="downloadScraperPartial(\''+job.job_id+'\', this)">↓ Download partial</button>';
+                        actions += ' <button class="btn btn-secondary btn-sm" onclick="toggleScraperShards(\''+job.job_id+'\', this)">▦ Download in chunks</button>';
+                    }
                 }
                 // Show error message for failed/abandoned/cancelled jobs with hover
                 // tooltip. Restrained color + truncation; full text via title.
@@ -7987,9 +8286,13 @@ example.org,Jane Doe</pre>
                 // Metadata as separated inline items (wraps, not one dense string).
                 const metaParts = [
                     new Date(job.created_at).toLocaleString(),
-                    (job.done_tasks||0) + '/' + (job.total_tasks||0) + ' tasks',
-                    (job.result_count||0) + ' results',
                 ];
+                if (isPlacesJob) {
+                    metaParts.push((job.result_count||0).toLocaleString() + ' businesses');
+                } else {
+                    metaParts.push((job.done_tasks||0) + '/' + (job.total_tasks||0) + ' tasks');
+                    metaParts.push((job.result_count||0) + ' results');
+                }
                 if (job.location_display || job.regions) metaParts.push(job.location_display || getLocationDisplay(job.regions));
                 const metaHtml = metaParts.map(p => '<span class="meta-item">' + p + '</span>').join('<span class="meta-sep" aria-hidden="true">·</span>');
 
@@ -8546,6 +8849,8 @@ example.org,Jane Doe</pre>
         // Scraper Stop + Retry Fresh (were silently broken on click):
         window.cancelScraperJob = cancelScraperJob;
         window.retryScraperJob = retryScraperJob;
+        // Instant US Database retry (same window-export rule — inline onclick).
+        window.retryPlacesJob = retryPlacesJob;
         window.filterEnrichmentJobs = filterEnrichmentJobs;
         window.loadJobs = loadJobs;
         // Enrichment date-filter handlers (inline onclick/onchange need window export).

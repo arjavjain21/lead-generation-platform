@@ -758,6 +758,19 @@ def _location_display_for_list(regions_raw) -> str:
     country = (r.get("country") or "").upper()
     if r.get("mode") == "all":
         return "All " + ("United States" if country == "US" else country)
+    if r.get("mode") == "places":
+        # Instant US Database jobs: same states/zips display logic, US-only.
+        states = r.get("states") or []
+        zips_ = r.get("zips") or []
+        filters = r.get("filters") or {}
+        geo = filters.get("states") or states
+        geo_zips = filters.get("zips") or zips_
+        if geo:
+            shown = ", ".join(geo[:2])
+            return f"{shown} +{len(geo) - 2} more (US)" if len(geo) > 2 else f"{shown} (US)"
+        if geo_zips:
+            return f"{len(geo_zips)} ZIPs (US)"
+        return "United States"
     states = r.get("states") or []
     cities = r.get("cities") or []
     zips_ = r.get("zips") or []
@@ -789,6 +802,7 @@ _SCRAPER_LIST_FIELDS = (
     "checkpoint_count",
     "is_resumable",
     "group_name",
+    "source_type",
 )
 
 
@@ -1100,7 +1114,12 @@ async def download_scraper_result(
     result_count = job_data.get("result_count", 0)
     status = job_data.get("status", "done")
 
-    filename = f"{query_slug}_{total_tasks}_centers_{result_count}_results_{status}.csv"
+    # Places jobs (Instant US Database) have no centers — label accordingly
+    # so "_3_centers_" doesn't mislead.
+    if job_data.get("source_type") == "getleads_places":
+        filename = f"{query_slug}_{result_count}_businesses_instant_db_{status}.csv"
+    else:
+        filename = f"{query_slug}_{total_tasks}_centers_{result_count}_results_{status}.csv"
 
     return FileResponse(path=str(output_path), media_type="text/csv", filename=filename)
 

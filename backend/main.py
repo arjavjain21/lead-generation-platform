@@ -38,6 +38,7 @@ from shared import auth, db
 from shared.job_store_base import JobStoreBase
 from shared.mcp_auth import MCPAuthMiddleware
 from scraper import routes as scraper_routes
+from scraper import places_flow as scraper_places_flow  # Instant US Database (GetLeads places)
 from enrichment import routes as enrichment_routes
 from enrichment import blitz_client
 from enrichment import call_tracker
@@ -312,6 +313,16 @@ async def _run_parent_startup():
         except Exception as e:
             logger.warning("Failed to start website-email followup poller: %s", e)
 
+        # Instant US Database (2026-11-11): re-attach pollers to places jobs
+        # still 'running' from before a restart (export_id survives in the
+        # regions blob; cross-worker CAS claim inside).
+        try:
+            rearmed = scraper_places_flow.rearm_running_places_jobs()
+            if rearmed:
+                logger.info("Re-armed %d Instant US Database job(s) after restart", rearmed)
+        except Exception as e:
+            logger.warning("Failed to re-arm places jobs: %s", e)
+
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -402,6 +413,13 @@ if os.environ.get("ENABLE_EXTERNAL_SCRAPER_API", "true").lower() == "true":
     from scraper import external_routes as scraper_external_routes
     app.include_router(scraper_external_routes.router, tags=["external-scraper"])
     logger.info("External scraper API enabled at /api/external/scraper")
+
+# Instant US Database (/api/scraper/places/*) — GetLeads Google Maps places
+# source on the scraper page. Kill-switch: ENABLE_GETLEADS_PLACES=false omits it.
+if os.environ.get("ENABLE_GETLEADS_PLACES", "true").lower() == "true":
+    from scraper import places_routes as scraper_places_routes
+    app.include_router(scraper_places_routes.router, tags=["scraper-places"])
+    logger.info("Instant US Database (GetLeads places) enabled at /api/scraper/places")
 
 # Create a shared router for common endpoints
 shared_router = APIRouter(prefix="/api", tags=["shared"])
