@@ -39,6 +39,7 @@ from typing import Any, Callable, Optional
 import httpx
 
 from enrichment import blitz_client
+from shared.circuit_breaker import CircuitBreakerError
 from enrichment import tam_ranker
 from enrichment import job_store
 from enrichment.tam_chain import create_chained_enrichment_job  # noqa: F401  (re-export)
@@ -546,6 +547,7 @@ async def run_tam_flow(
         backup_stats: dict[str, int] = {}
         async with httpx.AsyncClient() as http:
             shared = _PullShared(rows=rows, dedupe=set() if fanout else None)
+            blitz_unavailable = False
             if "blitz" in sources:
                 variants = (
                     tam_ranker.build_blitz_variants(company_filters, query_plan)
@@ -578,12 +580,37 @@ async def run_tam_flow(
                                 })
                             except Exception:
                                 pass
+                        try:
+                            await _blitz_pull(
+                                http,
+                                job_id=job_id,
+                                company_filters=variant_filters,
+                                people_filters=people_filters,
+                                budget=budget,
+                                shared=shared,
+                                exclude_domains=exclude_domains,
+                                should_cancel=should_cancel,
+                                on_progress=on_progress,
+                                write=not ranked,
+                                writer=writer,
+                                csv_file=csv_file,
+                            )
+                        except CircuitBreakerError:
+                            blitz_unavailable = True
+                            logger.warning(
+                                "TAM job %s: blitz circuit open mid-fanout "
+                                "(variant %d/%d) — continuing with %d companies",
+                                job_id, index, total_variants, len(shared.rows),
+                            )
+                            break
+                else:
+                    try:
                         await _blitz_pull(
                             http,
                             job_id=job_id,
-                            company_filters=variant_filters,
+                            company_filters=company_filters,
                             people_filters=people_filters,
-                            budget=budget,
+                            budget=overall_budget,
                             shared=shared,
                             exclude_domains=exclude_domains,
                             should_cancel=should_cancel,
@@ -592,21 +619,12 @@ async def run_tam_flow(
                             writer=writer,
                             csv_file=csv_file,
                         )
-                else:
-                    await _blitz_pull(
-                        http,
-                        job_id=job_id,
-                        company_filters=company_filters,
-                        people_filters=people_filters,
-                        budget=overall_budget,
-                        shared=shared,
-                        exclude_domains=exclude_domains,
-                        should_cancel=should_cancel,
-                        on_progress=on_progress,
-                        write=not ranked,
-                        writer=writer,
-                        csv_file=csv_file,
-                    )
+                    except CircuitBreakerError:
+                        blitz_unavailable = True
+                        logger.warning(
+                            "TAM job %s: blitz circuit open before first page — "
+                            "blitz leg unavailable", job_id,
+                        )
             cancelled = shared.cancelled
             pages = shared.pages
             cursor = shared.cursor
@@ -626,6 +644,14 @@ async def run_tam_flow(
                     "(no ownership-type column on GetLeads; Blitz rows only)",
                     job_id,
                 )
+                if blitz_unavailable and not shared.rows:
+                    raise RuntimeError(
+                        "Blitz is temporarily unavailable (rate-limit circuit "
+                        "breaker open) and these filters have no GetLeads "
+                        "equivalent (company-type is Blitz-only). Retry in "
+                        "~1 minute, or remove the Type filter / switch Source "
+                        "to GetLeads."
+                    )
             elif "getleads" in sources and len(shared.rows) < max_companies:
                 gl_variants = (
                     tam_ranker.build_getleads_variants(
@@ -679,6 +705,18 @@ async def run_tam_flow(
                             pass
                 if not ranked:
                     csv_file.flush()
+
+            if blitz_unavailable and not shared.rows:
+                # AFTER the fallback: no leg produced anything — this is NOT
+                # a legitimate zero result; fail retryably with options.
+                raise RuntimeError(
+                    "Blitz is temporarily unavailable (rate-limit circuit "
+                    "breaker open) and the GetLeads fallback produced no "
+                    "companies for these filters. Retry in ~1 minute; or "
+                    "switch Source to GetLeads with company filters it "
+                    "supports (industry/size/country/titles)."
+                )
+
             rows = shared.rows
 
             # Ranked export: score every buffered candidate against the
@@ -743,6 +781,12 @@ async def run_tam_flow(
         "csv_path": str(output_path),
         "capped": not cancelled and cursor is not None,
         "sources": sources,
+        # Honest coverage: a breaker-open run completed on GetLeads only —
+        # labeled, never presented as full-coverage Blitz results.
+        **({"coverage": "degraded: blitz unavailable (rate-limit circuit "
+                        "breaker open) — GetLeads leg only",
+            "blitz_unavailable": True}
+           if blitz_unavailable else {}),
         "getleads_credits_used": getleads_credits_used if "getleads" in sources else 0,
         **({"getleads_skipped": getleads_skipped_reason} if getleads_skipped_reason else {}),
         **backup_stats,

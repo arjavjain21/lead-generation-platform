@@ -1924,8 +1924,27 @@ async def _launch_claimed_job(job_id: str) -> None:
                 # Everything already done (crash between last checkpoint and
                 # set_done) — finalize from existing output instead of failing.
                 if output_path.exists() and output_path.stat().st_size > 0:
+                    # 2026-11-11 RCA (production E): resumed children inherit
+                    # the claim-time done_tasks snapshot; when every task is
+                    # already checkpointed (duplicate center names collapse
+                    # the key space), finalize with truthful counters instead
+                    # of freezing "49/195" on a fully-done job.
+                    try:
+                        conn = store.conn if hasattr(store, "conn") else None
+                        if conn is not None:
+                            conn.execute(
+                                "UPDATE jobs SET done_tasks = total_tasks, "
+                                "updated_at = ? WHERE job_id = ?",
+                                (datetime.now(timezone.utc).isoformat(), job_id),
+                            )
+                            conn.commit()
+                    except Exception as counter_err:
+                        logger.warning(
+                            "Dispatch: job %s counter sync failed: %s",
+                            job_id[:8], counter_err,
+                        )
                     store.set_done(job_id, str(output_path))
-                    logger.info("Dispatch: job %s had no pending tasks — marked done from existing output", job_id[:8])
+                    logger.info("Dispatch: job %s had no pending tasks — marked done from existing output (counters synced to total)", job_id[:8])
                 else:
                     store.set_failed(job_id, "No pending tasks and no output file")
                 return

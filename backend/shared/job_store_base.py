@@ -235,8 +235,17 @@ class JobStoreBase:
             emails_delta = event.get("emails_found", 0)
             source_counts = event.get("source_counts", {})
 
-            updates = ["updated_at = ?", "processed = processed + 1", "emails_found = emails_found + ?"]
+            # 2026-11-11 RCA (production D): stage events (blitz prepass
+            # chunks, TAM pages, verify results) were bumping the row
+            # counter — jobs showed "506/500" / "6021/6000" while every row
+            # was processed exactly once. Only ROW events carry an index;
+            # count those. Verify jobs' per-email events also carry index
+            # (verify_flow on_result), so their processed stays accurate.
+            is_row_event = "index" in event
+            updates = ["updated_at = ?", "emails_found = emails_found + ?"]
             values = [_now(), emails_delta]
+            if is_row_event:
+                updates.append("processed = processed + 1")
 
             # Update source-specific columns on jobs table
             if source_counts:

@@ -276,6 +276,7 @@ async def _run_verify_job(
                 counters["cache_hits"] += 1
             _append_event({
                 "type": "verify_result",
+                "index": counters["processed"] - 1,  # row event (D-fix counter rule)
                 "processed": counters["processed"],
                 "total": len(pairs),
                 **counters,

@@ -2147,8 +2147,11 @@
                     <div style="background:#fefce8;border-left:4px solid #ca8a04;padding:10px 12px;margin-bottom:0.75rem;border-radius:4px;font-size:0.8rem;color:#713f12;">
                         Identifier priority: <strong>company LinkedIn URL → website domain → company name</strong>.
                         A row with several identifiers enriches by the LinkedIn page (the strongest identity);
-                        conflicts are never silently switched. Name-only rows are resolved conservatively —
-                        ambiguous names are flagged for you to review, never guessed.
+                        conflicts are never silently switched. <strong>Name-only rows:</strong> automatic
+                        name→company resolution is currently <em>switched off by the administrator</em> —
+                        name-only rows are skipped (reason <code>name_unresolved</code>) unless at least one
+                        LinkedIn URL or domain is present. When enabled, ambiguous names are flagged for
+                        review, never guessed.
                     </div>
                     <textarea id="peopleScopeList" rows="6" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:6px;font-family:monospace;font-size:0.85rem;" placeholder="https://www.linkedin.com/company/acme&#10;stripe.com&#10;Notion"></textarea>
                     <div id="peopleScopeCount" style="font-size:0.78rem;color:#6b7280;margin:4px 0 0.75rem;"></div>
@@ -2391,7 +2394,7 @@
             <div class="form-card">
                 <h3><i data-lucide="link" class="icon" style="vertical-align:text-bottom"></i> Upload LinkedIn CSV</h3>
                 <div style="background:#f0f9ff;border-left:4px solid #1a315d;padding:12px;margin-bottom:1rem;border-radius:4px;font-size:0.85rem;color:#374151;">
-                    <strong>How to use:</strong> Upload a CSV file with LinkedIn profile URLs. We'll find work emails, phone numbers, and company details for each person (Contacts DB → smartprospect → QuickEnrich → GetLeads → Blitz). Required column: <code>linkedin_url</code> (e.g., https://linkedin.com/in/johndoe)
+                    <strong>How to use:</strong> Upload a CSV file with LinkedIn profile URLs. We'll find work emails, phone numbers, and company details for each person through the full 8-source cascade (Contacts DB → smartprospect → QuickEnrich → LeadOcean → GetLeads → Blitz → MoltSets → WizLeads). Required column: <code>linkedin_url</code> (e.g., https://linkedin.com/in/johndoe)
                 </div>
                 <div class="upload-zone" id="linkedinUploadZone" role="button" tabindex="0" aria-label="Upload CSV file">
                     <input type="file" id="linkedinFile" accept=".csv">
@@ -2467,8 +2470,7 @@
             <div class="form-card">
                 <h3><i data-lucide="phone" class="icon" style="vertical-align:text-bottom"></i> Phone Number Enrichment (via LinkedIn)</h3>
                 <div style="background:#fef3c7;border-left:4px solid #f59e0b;padding:12px;margin-bottom:1rem;border-radius:4px;font-size:0.85rem;color:#92400e;">
-                    <strong>Important:</strong> This feature looks up US phone numbers only using LinkedIn profile URLs.<br>
-                    <strong>How it works:</strong> Upload a CSV with LinkedIn URLs. We'll look up phone numbers for each profile.
+                    <strong>How it works:</strong> Upload a CSV with LinkedIn profile URLs. Phones are looked up through a 3-step ladder: <strong>① your own database</strong> (free — 2.6M stored numbers), then <strong>② QuickEnrich</strong> phone search (credit only on a hit), then <strong>③ Blitz Direct Phone</strong> (US numbers only) for eligible profiles. Every result says which step found it.
                 </div>
                 <div class="upload-zone" id="phoneUploadZone" role="button" tabindex="0" aria-label="Upload CSV file">
                     <input type="file" id="phoneFile" accept=".csv">
@@ -2635,6 +2637,15 @@
         
         <!-- Help Page -->
         <div class="page" id="page-help">
+            <div class="help-section">
+                <h3>The 3-step workflow</h3>
+                <p>The whole platform is one pipeline:</p>
+                <ol>
+                    <li><strong>Find Companies</strong> (<a href="#/company-search">#/company-search</a>) — describe the company + the person you want to reach; get a qualified account list. Optionally chain straight into step 2.</li>
+                    <li><strong>Find People</strong> (<a href="#/people">#/people</a>) — search your own 30M+ person database for free, or open <em>Scope to Companies</em> and paste your account list (LinkedIn URLs / domains / names) to run the full email cascade as one job.</li>
+                    <li><strong>Verify Emails</strong> (<a href="#/verify">#/verify</a>) — paste/upload emails or verify a chunk of any finished job. Every address is checked: verified, catch-all, invalid, or unknown.</li>
+                </ol>
+            </div>
             <div class="help-section">
                 <h3>What is List Building Tool?</h3>
                 <p>List Building Tool helps you find decision makers and their verified work emails. You can:</p>
@@ -5324,6 +5335,12 @@ example.org,Jane Doe</pre>
         let _findPeopleAbort = null;
         const _UNKNOWN_RE = /^(unknown|nan|none|null|n\/a|\s*)$/i;
         function cleanTitle(p){ const t=(p.title||'').trim(), h=(p.headline||'').trim(); if(t && !_UNKNOWN_RE.test(t)) return t; if(h && !_UNKNOWN_RE.test(h)) return h; return ''; }
+        // Secondary line: the LinkedIn HEADLINE (the field title searches
+        // actually match server-side). Dual-role people — e.g. current job
+        // title 'Radiation Oncologist' but headline 'Chief Executive
+        // Officer' — are why a CEO search can show an unrelated-looking
+        // title; surfacing the headline makes the match self-explaining.
+        function cleanHeadline(p){ const h=(p.headline||'').trim(); return (h && !_UNKNOWN_RE.test(h)) ? h : ''; }
         function setRolePillSelected(role){
             document.querySelectorAll('[data-role]').forEach(b => {
                 const on = b.dataset.role === role;
@@ -5508,7 +5525,10 @@ example.org,Jane Doe</pre>
                                : seg === 'other_or_unknown' ? '<span class="fp-seg-other" title="' + escHtml(p.seg_provider) + '">Other</span>' : '—';
                 const ratingHtml = p.rating ? '⭐ ' + p.rating + ' <span style="color:var(--gray-400);font-size:0.7rem">(' + (p.reviews||0) + ')</span>' : '';
                 const tr = document.createElement('tr');
-                tr.innerHTML = '<td>' + escHtml(p.full_name) + '</td><td>' + escHtml(title) + '</td><td>' + escHtml(p.company_name) + '</td><td>' + escHtml(p.industry) + '</td><td>' + escHtml(loc) + '</td><td>' + univBadge + '</td><td>' + ratingHtml + '</td><td>' + escHtml(p.email) + '</td><td>' + segBadge + '</td>';
+                const headline = cleanHeadline(p);
+                const titleHtml = escHtml(title) + (headline && headline.toLowerCase() !== String(title||'').toLowerCase()
+                    ? '<br><span style="color:var(--gray-400);font-size:0.72rem;">also: ' + escHtml(headline) + '</span>' : '');
+                tr.innerHTML = '<td>' + escHtml(p.full_name) + '</td><td>' + titleHtml + '</td><td>' + escHtml(p.company_name) + '</td><td>' + escHtml(p.industry) + '</td><td>' + escHtml(loc) + '</td><td>' + univBadge + '</td><td>' + ratingHtml + '</td><td>' + escHtml(p.email) + '</td><td>' + segBadge + '</td>';
                 tbody.appendChild(tr);
             });
         }
@@ -5518,12 +5538,12 @@ example.org,Jane Doe</pre>
         document.getElementById('downloadPeopleCsv').addEventListener('click', () => {
             if (!_peopleResults.length) return;
             const hideNoTitle = document.getElementById('findHideNoTitle').checked;
-            const cols = ['full_name','title','company_name','industry','geo_city','geo_state','geo_country','seniority','function','lead_universe','rating','reviews','local_category','email','seg_classification','seg_provider'];
-            const header = ['Full Name','Title','Company','Industry','City','State','Country','Seniority','Function','Universe','Rating','Reviews','Local Category','Email','SEG Classification','SEG Provider'];
+            const cols = ['full_name','title','headline','company_name','industry','geo_city','geo_state','geo_country','seniority','function','lead_universe','rating','reviews','local_category','email','seg_classification','seg_provider'];
+            const header = ['Full Name','Title','Headline','Company','Industry','City','State','Country','Seniority','Function','Universe','Rating','Reviews','Local Category','Email','SEG Classification','SEG Provider'];
             const dataRows = _peopleResults.map(p => {
                 const title = cleanTitle(p);
                 if (hideNoTitle && !title) return null;
-                const row = Object.assign({}, p, { title: title });
+                const row = Object.assign({}, p, { title: title, headline: cleanHeadline(p) });
                 return cols.map(c => { const v = row[c]; return v==null?'':String(v).replace(/"/g,'""'); });
             }).filter(Boolean);
             const csv = [header.map(h=>'"'+h.replace(/"/g,'""')+'"').join(','), ...dataRows.map(r => r.map(c=>'"'+c+'"').join(','))].join('\r\n');
@@ -6454,11 +6474,47 @@ example.org,Jane Doe</pre>
             } catch (e) { /* polling will show the final state */ }
         });
 
+        function _verifyFromJobModal(jobId, onGo) {
+            // Inline modal (2026-11-11): window.prompt gave no validation and
+            // swallowed its own errors. Bounded input, live preview text,
+            // explicit cancel; Enter confirms.
+            var back = document.createElement('div');
+            back.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:9999;display:flex;align-items:center;justify-content:center;';
+            back.innerHTML = '<div style="background:#fff;border-radius:10px;max-width:420px;width:92%;padding:20px;box-shadow:0 20px 50px rgba(0,0,0,.25);font-family:inherit;">'
+                + '<h4 style="margin:0 0 6px;font-size:1rem;">Verify emails from this job</h4>'
+                + '<p style="margin:0 0 10px;font-size:0.82rem;color:#475569;">Checks a chosen number of this job\u2019s addresses (most recent first, duplicates merged). Results appear on the Verify Emails page with statuses verified / catch-all / invalid / unknown.</p>'
+                + '<label style="font-size:0.8rem;font-weight:600;">How many emails?</label>'
+                + '<input id="_vfjLimit" type="number" min="1" max="50000" value="2000" style="width:100%;padding:8px;margin:6px 0 4px;border:1px solid #cbd5e1;border-radius:6px;">'
+                + '<div style="font-size:0.74rem;color:#64748b;">Between 1 and 50,000.</div>'
+                + '<div id="_vfjErr" style="color:#b91c1c;font-size:0.78rem;margin-top:6px;display:none;"></div>'
+                + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">'
+                + '<button id="_vfjCancel" class="btn btn-secondary btn-sm">Cancel</button>'
+                + '<button id="_vfjGo" class="btn btn-primary btn-sm">Start verification</button>'
+                + '</div></div>';
+            document.body.appendChild(back);
+            var input = back.querySelector('#_vfjLimit');
+            var err = back.querySelector('#_vfjErr');
+            input.focus(); input.select();
+            function close() { back.remove(); }
+            back.querySelector('#_vfjCancel').onclick = close;
+            back.addEventListener('click', function (e) { if (e.target === back) close(); });
+            function submit() {
+                var n = parseInt(input.value, 10);
+                if (!n || n < 1 || n > 50000) {
+                    err.textContent = 'Enter a number between 1 and 50,000.'; err.style.display = 'block'; return;
+                }
+                close(); onGo(n);
+            }
+            back.querySelector('#_vfjGo').onclick = submit;
+            input.addEventListener('keydown', function (e) { if (e.key === 'Enter') submit(); });
+            document.addEventListener('keydown', function esc(e) { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc); } });
+        }
+
         async function verifyFromJob(jobId, btn) {
-            const n = window.prompt('Verify how many emails from this job? (most recent first)', '2000');
-            if (n === null) return;
+            const askLimit = new Promise(function (resolve) { _verifyFromJobModal(jobId, resolve); });
+            const n = await askLimit;
             const limit = Math.max(1, Math.min(50000, parseInt(n, 10) || 2000));
-            if (btn) { btn.disabled = true; btn.innerHTML = 'Starting…'; }
+            if (btn) { btn.disabled = true; btn.innerHTML = 'Starting\u2026'; }
             try {
                 const res = await fetch('/api/enrichment/verify/from-job/' + jobId + '?limit=' + limit + '&include_catch_all=true', {
                     method: 'POST', headers: { 'Authorization': 'Bearer ' + token }
@@ -8713,6 +8769,36 @@ example.org,Jane Doe</pre>
             if (scraperConnStatus) { scraperConnStatus.classList.remove('connected', 'disconnected'); scraperConnStatus.classList.add(cls); }
             if (scraperConnStatusText) scraperConnStatusText.textContent = label;
         }
+
+        // Readiness ≠ liveness (2026-11-11 incident): a green "Connected"
+        // light over a frontend/backend version split hid Verify-Emails
+        // 404s. /api/health says the process is alive; /api/meta says which
+        // BUILD is running and whether new routes exist. Old builds 404 on
+        // /api/meta → amber "backend update pending".
+        (function () {
+            fetch('/api/meta').then(function (r) { return r.ok ? r.json() : null; }).then(function (meta) {
+                if (!meta) {
+                    updateConnectionStatus(true);
+                    var warn = 'Backend update pending';
+                    if (connectionStatusText) connectionStatusText.textContent = warn;
+                    if (fpConnStatusText) fpConnStatusText.textContent = warn;
+                    if (scraperConnStatusText) scraperConnStatusText.textContent = warn;
+                    [connectionStatus, fpConnStatus, scraperConnStatus].forEach(function (el) {
+                        if (el) { el.classList.remove('connected', 'disconnected'); el.classList.add('disconnected'); el.title = 'The backend is an older build — newest features (Verify Emails, company-scoped search) are unavailable until the service is restarted.'; }
+                    });
+                    return;
+                }
+                updateConnectionStatus(true);
+                var label = 'Connected \u00b7 ' + String(meta.release || '?');
+                if (connectionStatusText) connectionStatusText.textContent = label;
+                if (fpConnStatusText) fpConnStatusText.textContent = label;
+                if (scraperConnStatusText) scraperConnStatusText.textContent = label;
+                var off = Object.keys(meta.providers_enabled || {}).filter(function (k) { return !meta.providers_enabled[k]; });
+                if (connectionStatus) connectionStatus.title = off.length
+                    ? ('Release ' + meta.release + '. Sources currently off: ' + off.join(', '))
+                    : ('Release ' + meta.release + '. All configured sources on.');
+            }).catch(function () { /* offline paths handle the label */ });
+        })();
 
         // Monitor online/offline status
         window.addEventListener('online', () => updateConnectionStatus(true));

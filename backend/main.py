@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import io
+from datetime import datetime, timezone
 import json
 import logging
 import os
@@ -539,9 +540,70 @@ async def _call_tracker_health_loop() -> None:
 # Shared Auth Routes
 # ---------------------------------------------------------------------------
 
+# Worker boot stamp for /api/meta (readiness ≠ liveness evidence).
+_WORKER_STARTED_ISO = datetime.now(timezone.utc).isoformat()
+
+
 @shared_router.get("/health")
 async def health():
     return {"status": "ok", "mcp_enabled": _MCP_ENABLED}
+
+
+def _release_commit() -> str:
+    """Short commit of the running tree (read-only, no subprocess).
+
+    Reads .git/HEAD (+ packed refs fallback) directly — the service PATH may
+    not include git, and subprocess-per-request is needless. Lets the UI
+    prove frontend/backend parity: gunicorn max-requests recycling can
+    otherwise serve a MIXED worker pool (observed live 2026-11-11: old
+    workers 404ing /verify while recycled workers served it).
+    """
+    import re as _re
+
+    try:
+        root = Path(__file__).resolve().parent.parent
+        head = (root / ".git" / "HEAD").read_text(encoding="utf-8").strip()
+        if head.startswith("ref:"):
+            ref_path = root / ".git" / head[4:].strip()
+            if ref_path.exists():
+                return ref_path.read_text(encoding="utf-8").strip()[:7]
+            # packed refs fallback
+            packed = root / ".git" / "packed-refs"
+            if packed.exists():
+                ref_name = head[4:].strip()
+                for line in packed.read_text(encoding="utf-8").splitlines():
+                    if line.endswith(" " + ref_name):
+                        return line.split()[0][:7]
+            return "detached-unknown"
+        return head[:7] if _re.fullmatch(r"[0-9a-f]{40}", head) else "unknown"
+    except Exception:
+        return "unknown"
+
+
+@shared_router.get("/meta")
+async def meta():
+    """Deployment/version truth: liveness ≠ readiness. Reports the running
+    backend's commit, worker start time, and per-provider enablement so the
+    UI can show 'backend update pending' instead of a green light over a
+    frontend/backend mismatch. Public by design (no secrets — names/flags
+    only, mirroring /api/enrichment/flows/help)."""
+    try:
+        from enrichment import providers as _providers
+        provider_flags = {
+            name: _providers.is_provider_enabled(name)
+            for name in _providers.ENABLED_PROVIDERS
+        }
+    except Exception:
+        provider_flags = {}
+    return {
+        "release": _release_commit(),
+        "worker_started_unix": _WORKER_STARTED_ISO,
+        "routes": {
+            "verify": True,  # route registered in this build (404 on pre-2026-11-11 builds)
+        },
+        "providers_enabled": provider_flags,
+        "mcp_enabled": _MCP_ENABLED,
+    }
 
 
 @shared_router.post("/auth/login")
