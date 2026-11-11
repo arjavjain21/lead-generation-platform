@@ -2129,6 +2129,65 @@
                 </div>
             </div>
 
+            <!-- Scope to Companies (PR-2.6, 2026-11-11): company-scoped people
+                 discovery + email enrichment through the SAME Flow-1 engine the
+                 Upload Domains page uses (no duplicate waterfall). -->
+            <div class="form-card" id="peopleScopeCard">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;">
+                    <h3 style="margin:0;border:none;padding:0;">🏢 Scope to Companies</h3>
+                    <button class="btn btn-secondary btn-sm" id="peopleScopeToggle" type="button" aria-expanded="false">Show</button>
+                </div>
+                <p style="font-size:0.85rem;color:#374151;margin:0 0 0.75rem;">
+                    Already have your account list (from <strong>Find Companies</strong> or your own research)?
+                    Paste one company per line — company LinkedIn URL, website domain, or company name —
+                    and we'll find decision makers with verified emails at THOSE companies using the full
+                    enrichment cascade. Not the database search above: this starts a real enrichment job.
+                </p>
+                <div id="peopleScopePanel" style="display:none;">
+                    <div style="background:#fefce8;border-left:4px solid #ca8a04;padding:10px 12px;margin-bottom:0.75rem;border-radius:4px;font-size:0.8rem;color:#713f12;">
+                        Identifier priority: <strong>company LinkedIn URL → website domain → company name</strong>.
+                        A row with several identifiers enriches by the LinkedIn page (the strongest identity);
+                        conflicts are never silently switched. Name-only rows are resolved conservatively —
+                        ambiguous names are flagged for you to review, never guessed.
+                    </div>
+                    <textarea id="peopleScopeList" rows="6" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:6px;font-family:monospace;font-size:0.85rem;" placeholder="https://www.linkedin.com/company/acme&#10;stripe.com&#10;Notion"></textarea>
+                    <div id="peopleScopeCount" style="font-size:0.78rem;color:#6b7280;margin:4px 0 0.75rem;"></div>
+                    <div class="filters" style="margin-bottom:0.75rem;">
+                        <div class="filter-group">
+                            <label>Job titles to find</label>
+                            <input type="text" id="peopleScopeTitles" placeholder="e.g. CEO, Founder, Head of Marketing (blank = default business titles)">
+                            <span class="field-helper">Comma-separated. Strict matching is ON by default — contacts must match your titles (synonyms count: VP = Vice President).</span>
+                        </div>
+                        <div class="filter-group">
+                            <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-weight:500;font-size:0.85rem;">
+                                <input type="checkbox" id="peopleScopeStrict" checked style="width:16px;height:16px;">
+                                Strict title match
+                            </label>
+                            <span class="field-helper">Uncheck to keep provider fuzzy matches (more results, looser titles).</span>
+                        </div>
+                        <div class="filter-group">
+                            <label>Max decision-makers per company</label>
+                            <select id="peopleScopeMax"><option value="3">3</option><option value="5" selected>5</option><option value="10">10</option></select>
+                        </div>
+                        <div class="filter-group">
+                            <label>Person country (optional)</label>
+                            <input type="text" id="peopleScopeCountry" placeholder="e.g. US, Germany">
+                            <span class="field-helper">⚠ Applies to Blitz searches only — other sources match on their own data and may return other countries.</span>
+                        </div>
+                        <div class="filter-group">
+                            <label>QuickEnrich depth (pages of 20)</label>
+                            <select id="peopleScopeDepth"><option value="">Default (2)</option><option value="3">3</option><option value="5">5</option><option value="10">10</option></select>
+                            <span class="field-helper">Deeper pages find more people per company and use more QuickEnrich credits (max 10).</span>
+                        </div>
+                    </div>
+                    <div id="peopleScopeError" class="validation-message error" style="display:none;" role="alert"></div>
+                    <button class="btn btn-primary" id="peopleScopeGo" type="button">Find People at These Companies</button>
+                    <div id="peopleScopeJobCard" style="display:none;margin-top:0.75rem;padding:10px;border:1px solid #e5e7eb;border-radius:6px;font-size:0.85rem;">
+                        <div id="peopleScopeJobBody"></div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Results -->
             <div class="form-card" id="findPeopleResults" style="display:none;">
                 <div class="fp-results-header">
@@ -5307,6 +5366,118 @@ example.org,Jane Doe</pre>
         });
 
         document.getElementById('findPeopleCancel').addEventListener('click', () => { if (_findPeopleAbort) _findPeopleAbort.abort(); });
+
+        // ---- Scope to Companies (PR-2.6): Flow-1 engine via /upload ------
+        (function () {
+            var panelOpen = false;
+            var scopeJobId = null;
+            var scopeTimer = null;
+
+            function classifyLine(line) {
+                var t = line.trim();
+                if (!t) return null;
+                if (/linkedin\.com\/company\//i.test(t)) return 'li';
+                if (/^https?:\/\//i.test(t) || /^[a-z0-9.-]+\.[a-z]{2,}/i.test(t)) return 'domain';
+                return 'name';
+            }
+
+            function updateCount() {
+                var lines = document.getElementById('peopleScopeList').value.split('\n');
+                var c = { li: 0, domain: 0, name: 0 };
+                lines.forEach(function (l) {
+                    var k = classifyLine(l);
+                    if (k) c[k]++;
+                });
+                var total = c.li + c.domain + c.name;
+                document.getElementById('peopleScopeCount').textContent = total
+                    ? (total + ' compan' + (total === 1 ? 'y' : 'ies') + ' \u2014 ' + c.li + ' LinkedIn, ' + c.domain + ' domain, ' + c.name + ' name-only')
+                    : '';
+            }
+
+            function poll() {
+                if (!scopeJobId) return;
+                fetch('/api/enrichment/jobs/' + scopeJobId, { headers: { 'Authorization': 'Bearer ' + token } })
+                    .then(function (r) { return r.json(); })
+                    .then(function (job) {
+                        var pct = job.total ? Math.round(100 * (job.processed || 0) / job.total) : 0;
+                        var dl = (job.status === 'done' || job.status === 'partial')
+                            ? ' <button class="btn btn-success btn-sm" onclick="downloadFile(\'' + scopeJobId + '\', \'company_contacts.csv\', this)">Download CSV</button>'
+                            : '';
+                        document.getElementById('peopleScopeJobBody').innerHTML =
+                            '<strong>' + escHtml(job.display_name || 'Company enrichment') + '</strong> \u00b7 ' +
+                            '<span class="meta-item">' + (job.processed || 0) + '/' + (job.total || 0) + ' companies \u00b7 ' + (job.emails_found || 0) + ' emails</span>' +
+                            ' <span class="file-chip">' + escHtml(job.status || '') + ' \u00b7 ' + pct + '%</span>' + dl +
+                            ' \u00b7 <a href="#/jobs" style="color:#1d4ed8;">Open Jobs page</a>';
+                        if (job.status === 'running' || job.status === 'starting') {
+                            scopeTimer = setTimeout(poll, 2500);
+                        }
+                    })
+                    .catch(function () { scopeTimer = setTimeout(poll, 4000); });
+            }
+
+            document.getElementById('peopleScopeToggle').addEventListener('click', function () {
+                panelOpen = !panelOpen;
+                document.getElementById('peopleScopePanel').style.display = panelOpen ? 'block' : 'none';
+                this.textContent = panelOpen ? 'Hide' : 'Show';
+                this.setAttribute('aria-expanded', String(panelOpen));
+            });
+            document.getElementById('peopleScopeList').addEventListener('input', updateCount);
+
+            document.getElementById('peopleScopeGo').addEventListener('click', async function () {
+                var errEl = document.getElementById('peopleScopeError');
+                errEl.style.display = 'none'; errEl.textContent = '';
+                var lines = document.getElementById('peopleScopeList').value.split('\n').map(function (l) { return l.trim(); }).filter(Boolean);
+                if (!lines.length) { errEl.textContent = 'Paste at least one company (LinkedIn URL, domain, or name).'; errEl.style.display = 'block'; return; }
+                // Build a CSV with all three identifier columns; Flow-1's
+                // routing applies the LinkedIn > domain > name priority.
+                var rows = [['domain', 'linkedin_url', 'company_name']];
+                lines.forEach(function (l) {
+                    var k = classifyLine(l);
+                    if (k === 'li') rows.push(['', l, '']);
+                    else if (k === 'domain') rows.push([l.replace(/^https?:\/\//i, '').split('/')[0], '', '']);
+                    else rows.push(['', '', l]);
+                });
+                var csv = rows.map(function (r) { return r.map(function (c) { return '"' + c.replace(/"/g, '""') + '"'; }).join(','); }).join('\n');
+                var btn = this;
+                setButtonLoading(btn, true, 'Starting\u2026');
+                try {
+                    var fd = new FormData();
+                    fd.append('file', new Blob([csv], { type: 'text/csv' }), 'people_scope_' + Date.now() + '.csv');
+                    var up = await fetch('/api/enrichment/upload', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token }, body: fd });
+                    var upBody = await up.json();
+                    if (!up.ok) throw new Error(upBody.detail || 'Upload failed');
+                    var cols = upBody.columns || [];
+                    var body = {
+                        upload_id: upBody.upload_id,
+                        domain_col: cols.includes('domain') ? 'domain' : null,
+                        linkedin_url_col: cols.includes('linkedin_url') ? 'linkedin_url' : null,
+                        company_name_col: cols.includes('company_name') ? 'company_name' : null,
+                        max_results: parseInt(document.getElementById('peopleScopeMax').value, 10) || 5,
+                        titles: (document.getElementById('peopleScopeTitles').value || '').trim() || null,
+                        strict_titles: document.getElementById('peopleScopeStrict').checked,
+                        person_location_country: (document.getElementById('peopleScopeCountry').value || '').trim() || null,
+                    };
+                    var depth = document.getElementById('peopleScopeDepth').value;
+                    if (depth) body.dataset_max_pages = parseInt(depth, 10);
+                    var res = await fetch('/api/enrichment/flows/domain-enrich', {
+                        method: 'POST',
+                        headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body)
+                    });
+                    var job = await res.json();
+                    if (!res.ok) throw new Error(job.detail || 'Could not start the job');
+                    scopeJobId = job.job_id;
+                    document.getElementById('peopleScopeJobCard').style.display = 'block';
+                    document.getElementById('peopleScopeJobBody').innerHTML = 'Job started \u2014 ' + job.total + ' companies. Tracking progress\u2026';
+                    clearTimeout(scopeTimer);
+                    poll();
+                } catch (e) {
+                    errEl.textContent = 'Failed: ' + e; errEl.style.display = 'block';
+                } finally {
+                    setButtonLoading(btn, false, 'Find People at These Companies');
+                }
+            });
+        })();
 
         function displayPeopleResults(data) {
             _peopleResults = data.people || [];
