@@ -389,6 +389,8 @@ app.include_router(enrichment_routes.router, tags=["enrichment"])
 # after enrichment_routes because tam_routes imports its shared job plumbing
 # (_job_signals / _active_jobs / _cancelled_jobs) at module load.
 app.include_router(tam_routes.router, tags=["enrichment"])
+from enrichment import verify_routes  # PR-1.1: standalone email verification
+app.include_router(verify_routes.router, tags=["enrichment"])
 app.include_router(phone_enrichment_routes.router, tags=["phone_enrichment"])
 # Data Explorer BFF — additive, flag-gated; see backend/exploration/.
 app.include_router(explorer_routes.router)
