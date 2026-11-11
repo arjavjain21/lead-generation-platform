@@ -1237,19 +1237,21 @@
         <div class="page active" id="page-home">
             <div class="welcome-card">
                 <h2>Find Decision Makers with Verified Emails</h2>
-                <p>Build targeted lead lists by uploading domains, searching companies, or enriching LinkedIn profiles. Get emails using our 9-source cascade: Contacts DB, smartprospect, QuickEnrich, LeadOcean, GetLeads, Blitz API, MoltSets, Better Enrich, and WizLeads.</p>
+                <p>Build targeted lead lists by uploading domains, searching companies, or enriching LinkedIn profiles. Get emails using our 8-source cascade: Contacts DB, smartprospect, QuickEnrich, LeadOcean, GetLeads, Blitz API, MoltSets, and WizLeads.</p>
             </div>
             
             <div class="info-grid">
                 <div class="info-card">
                     <h3>Data Sources</h3>
-                    <p>We use 6 data sources (in priority order):</p>
+                    <p>We use 8 active data sources (in cascade order):</p>
                     <ol>
-                        <li><strong>Contacts DB</strong> - Free, cached data (75 RPS)</li>
-                        <li><strong>smartprospect</strong> - Verified email finder (30 RPS, batch up to 10)</li>
-                        <li><strong>QuickEnrich</strong> - Employee email + phone enrichment (6000 req/min)</li>
+                        <li><strong>Contacts DB</strong> - Free, our own 30M+ person database (75 RPS)</li>
+                        <li><strong>smartprospect</strong> - Self-verifying email finder (batch up to 10)</li>
+                        <li><strong>QuickEnrich</strong> - Employee email + phone enrichment (6000 req/min plan cap)</li>
+                        <li><strong>LeadOcean</strong> - Work + personal emails by LinkedIn URL; last-resort people finder</li>
                         <li><strong>GetLeads</strong> - Verified DM emails + bonus phones (batch of 100, unlimited plan)</li>
                         <li><strong>Blitz API</strong> - LinkedIn-based enrichment (25 RPS)</li>
+                        <li><strong>MoltSets</strong> - Best person email incl. personal fallback</li>
                         <li><strong>WizLeads</strong> - Catchall email verification (10 RPS)</li>
                     </ol>
                 </div>
@@ -2087,7 +2089,7 @@
                 <hr class="fp-divider">
 
                 <div class="fp-info-banner">
-                    Search your own database of <strong>6.6M+ leads</strong> — free, instant, no credits.
+                    Search your own database of <strong>30M+ people</strong> — free, instant, no credits.
                     Pick a role below or type your own, then click <strong>Find People</strong>.
                 </div>
                 <div id="findPeopleError" class="validation-message error" style="display:none;" role="alert"></div>
@@ -2480,6 +2482,8 @@
                         <option value="google_maps_chain">🌐 Google Maps</option>
                         <option value="csv_upload">📤 Upload</option>
                         <option value="linkedin">🔗 LinkedIn</option>
+                        <option value="tam_flow">🎯 Find Companies (TAM)</option>
+                        <option value="tam_chain">📨 TAM Contacts Job</option>
                         <option value="search">🔎 Search</option>
                         <option value="restart">↻ Restart</option>
                     </select>
@@ -2516,10 +2520,10 @@
             
             <div class="help-section">
                 <h3>Data Sources</h3>
-                <p>We use 6 data sources in a cascade to maximize coverage while minimizing costs:</p>
+                <p>We use 8 active data sources in a cascade to maximize coverage while minimizing costs (listed in cascade order):</p>
                 <div class="data-sources">
                     <h4>1. Contacts DB (Primary - Free)</h4>
-                    <p style="font-size:0.85rem;color:var(--gray-600);">Cached database with millions of contacts. Always checked first (75 RPS).</p>
+                    <p style="font-size:0.85rem;color:var(--gray-600);">Our own database of 30M+ people. Always checked first (75 RPS).</p>
                     <div style="margin-top:0.5rem;">
                         <span class="source-tag">contacts_db_linkedin</span>
                         <span class="source-tag">contacts_db_name</span>
@@ -2532,14 +2536,18 @@
                 </div>
                 <div class="data-sources">
                     <h4>3. QuickEnrich (Paid)</h4>
-                    <p style="font-size:0.85rem;color:var(--gray-600);">Employee email and phone enrichment by name or company (6000 req/min).</p>
+                    <p style="font-size:0.85rem;color:var(--gray-600);">Employee email and phone enrichment by name or company (6000 req/min plan cap).</p>
                 </div>
                 <div class="data-sources">
-                    <h4>4. GetLeads (Paid)</h4>
+                    <h4>4. LeadOcean (Paid)</h4>
+                    <p style="font-size:0.85rem;color:var(--gray-600);">Work email + personal fallback by LinkedIn URL; last-resort people finder when other sources miss. Auto-skips when its daily quota is spent.</p>
+                </div>
+                <div class="data-sources">
+                    <h4>5. GetLeads (Paid)</h4>
                     <p style="font-size:0.85rem;color:var(--gray-600);">Verified decision-maker emails plus bonus phones (batches of 100).</p>
                 </div>
                 <div class="data-sources">
-                    <h4>5. Blitz API (Paid)</h4>
+                    <h4>6. Blitz API (Paid)</h4>
                     <p style="font-size:0.85rem;color:var(--gray-600);">LinkedIn-based enrichment with title cascade prioritizing executives (25 RPS).</p>
                     <div style="margin-top:0.5rem;">
                         <span class="source-tag">blitz_linkedin</span>
@@ -2548,12 +2556,16 @@
                     </div>
                 </div>
                 <div class="data-sources">
-                    <h4>6. WizLeads (Paid)</h4>
+                    <h4>7. MoltSets (Paid)</h4>
+                    <p style="font-size:0.85rem;color:var(--gray-600);">Best person email including personal fallback; skips automatically when its fair-use window is spent.</p>
+                </div>
+                <div class="data-sources">
+                    <h4>8. WizLeads (Paid)</h4>
                     <p style="font-size:0.85rem;color:var(--gray-600);">Catchall email verification (10 RPS).</p>
                 </div>
                 <div class="data-sources">
                     <h4>Disabled sources</h4>
-                    <p style="font-size:0.85rem;color:var(--gray-600);">BetterEnrich (person email lookup and company catchall emails) and Prospeo are currently disabled — contact admin to enable.</p>
+                    <p style="font-size:0.85rem;color:var(--gray-600);">BetterEnrich (person email lookup and company catchall emails) is currently switched off by an admin kill switch; Prospeo is disabled end-to-end. Contact admin to enable.</p>
                 </div>
             </div>
             
@@ -2698,7 +2710,7 @@ example.org,Jane Doe</pre>
             </div>
 
             <div style="text-align:center;margin-top:2rem;padding-top:1rem;border-top:1px solid var(--gray-200);">
-                <p style="font-size:0.75rem;color:var(--gray-500);">Last Updated: 2026-07-05</p>
+                <p style="font-size:0.75rem;color:var(--gray-500);">Last Updated: 2026-11-11</p>
             </div>
         </div>
 
