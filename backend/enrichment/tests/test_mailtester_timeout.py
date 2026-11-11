@@ -65,7 +65,12 @@ def _reset_module_state(monkeypatch: pytest.MonkeyPatch) -> None:
       test's cached success / accumulated failures can't leak in.
     * Patch ``asyncio.sleep`` to a no-op so retry backoffs don't slow the
       suite (attempt 3 backoff is up to 16s, totalling >30s real time).
+    * Set MAILTESTER_API_KEY: this suite calls the real ``verify_email``
+      (MockTransport), and the key has been env-required since the
+      2026-11-10 security fix removed the hardcoded fallback
+      (conftest scrubs provider keys by design).
     """
+    monkeypatch.setenv("MAILTESTER_API_KEY", "unit-test-mailtester-key")
     monkeypatch.setattr(mt, "_last_request_time", 0.0, raising=True)
     mt._mailtester_cache.clear()
     # Fresh breaker so failures accumulated in other tests can't open the

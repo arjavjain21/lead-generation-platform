@@ -231,6 +231,7 @@ Enriches LinkedIn profiles with phone numbers using Blitz Direct Phone API:
 # Required
 JWT_SECRET=<secret>
 SCRAPER_TECH_KEY=<scraper-tech-key>
+MAILTESTER_API_KEY=<mailtester-proxy-key>   # REQUIRED (2026-11-10: no code fallback — missing key disables verification, emails pass unverified)
 BLITZ_API_KEY=<blitz-key>
 GETLEADS_API_KEY=<getleads-key>
 ENABLE_GETLEADS=true
