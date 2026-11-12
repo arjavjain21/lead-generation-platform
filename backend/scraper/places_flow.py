@@ -394,10 +394,22 @@ def _save_places_state(job_id: str, **state: Any) -> None:
     store.conn.commit()
 
 
+def _norm_header(key: str) -> str:
+    """'Business Name' → 'business_name' (the live export CSV uses Title Case
+    with spaces — verified 2026-11-12; snake_case docs form also matches)."""
+    return key.strip().lower().replace(" ", "_")
+
+
 def _normalize_row(raw: dict[str, str]) -> dict[str, str]:
-    """GetLeads CSV row → our canonical columns (missing fields → '')."""
+    """GetLeads CSV row → our canonical columns (missing fields → '').
+
+    Header-tolerant: builds a lower/underscore view of the row first, so
+    'Business Name' and 'business_name' both resolve.
+    """
+    low = {_norm_header(k): v for k, v in raw.items() if k}
+
     def g(key: str) -> str:
-        return (raw.get(key) or "").strip()
+        return (low.get(key) or "").strip()
 
     extra_emails = "; ".join(
         e for e in (g(f"email_{i}") for i in range(2, 9)) if e

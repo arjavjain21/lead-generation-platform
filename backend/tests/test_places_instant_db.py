@@ -188,6 +188,27 @@ class TestNormalizeRow:
         assert row["additional_emails"] == "a@acme.com; b@acme.com"
         assert row["full_address"] == "1 Main St, Austin, TX, 78701"
 
+    def test_title_case_headers_resolve(self):
+        """Live-E2E regression (2026-11-12): the real export CSV ships Title
+        Case headers — 'Business Name', 'Primary Email', 'Google Maps URL'.
+        Snake_case-only reading collapsed every row to empty strings."""
+        row = places_flow._normalize_row({
+            "Business Name": "Lapeyre Roofing", "Category": "Roofing contractor",
+            "Rating": "5", "Review Count": "359", "Phone": "(512) 877-3087",
+            "Website": "https://lapeyreroofing.com", "Street Address": "215 Brazos St",
+            "City": "Austin", "State": "TX", "ZIP": "78701",
+            "Google Maps URL": "https://maps/x", "Primary Email": "x@y.z",
+            "Email Type": "Generic", "Email 2": "a@y.z",
+            "Facebook": "f", "Instagram": "i", "LinkedIn": "l",
+        })
+        assert row["name"] == "Lapeyre Roofing"
+        assert row["website"] == "https://lapeyreroofing.com"
+        assert row["email"] == "x@y.z"
+        assert row["additional_emails"] == "a@y.z"
+        assert row["zip"] == "78701"
+        assert row["google_maps_url"] == "https://maps/x"
+        assert row["full_address"] == "215 Brazos St, Austin, TX, 78701"
+
 
 # ---------------------------------------------------------------------------
 # Job creation
