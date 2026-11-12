@@ -320,8 +320,11 @@ async def download_export_csv(export_url: str) -> tuple[list[str], list[dict[str
     parse it. Returns (fieldnames, rows-as-dicts). Raises PlacesError on
     download/parse failure — the URL expires, so call promptly on completion."""
     try:
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            resp = await client.get(export_url)
+        async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
+            # The API's export_url 302-redirects to the actual file (live E2E
+            # 2026-11-12) — httpx does NOT follow redirects by default and
+            # raise_for_status() errors on the 302 itself.
+            resp = await client.get(export_url, follow_redirects=True)
             resp.raise_for_status()
             text = resp.text
     except httpx.HTTPError as exc:
