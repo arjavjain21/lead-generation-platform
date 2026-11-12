@@ -109,6 +109,37 @@ FILTERS = {"categories": ["Roofing contractor"], "states": ["TX"]}
 # ---------------------------------------------------------------------------
 
 
+class TestClientPaths:
+    """Live-E2E regression (2026-11-12): poll_export referenced a wrong
+    constant name and NameError'd on its first REAL call — mocked-client unit
+    tests never executed the f-string. Pin the URL paths now."""
+
+    def test_poll_export_hits_the_export_path(self, monkeypatch):
+        seen = {}
+
+        async def _fake_request(method, path, **kwargs):
+            seen["path"] = path
+            return {"job_status": "completed", "export_url": "https://s3/x"}
+
+        monkeypatch.setattr(places_client, "API_KEY", "test-key")
+        monkeypatch.setattr(places_client, "_request", _fake_request)
+        data = asyncio.run(places_client.poll_export("exp-1"))
+        assert seen["path"] == "/api/v1/places/search/export/exp-1"
+        assert data["job_status"] == "completed"
+
+    def test_count_hits_the_count_path(self, monkeypatch):
+        seen = {}
+
+        async def _fake_request(method, path, **kwargs):
+            seen["path"] = path
+            return {"total_matching": 7}
+
+        monkeypatch.setattr(places_client, "API_KEY", "test-key")
+        monkeypatch.setattr(places_client, "_request", _fake_request)
+        assert asyncio.run(places_client.count_places({"states": ["TX"]})) == 7
+        assert seen["path"] == "/api/v1/places/search/count"
+
+
 class TestSanitizeFilters:
     def test_filterless_raises(self):
         with pytest.raises(ValueError):

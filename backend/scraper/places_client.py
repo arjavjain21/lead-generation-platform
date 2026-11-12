@@ -312,7 +312,7 @@ async def start_export(filters: dict[str, Any]) -> str:
 async def poll_export(export_id: str) -> dict[str, Any]:
     """Poll export status. Completed payloads carry export_url + rows_exported;
     shape varies defensively (job_status: pending|processing|completed|failed)."""
-    return await _request("GET", f"{EXPORT_PATH}/{export_id}")
+    return await _request("GET", f"{_EXPORT_PATH}/{export_id}")
 
 
 async def download_export_csv(export_url: str) -> tuple[list[str], list[dict[str, str]]]:
