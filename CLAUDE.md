@@ -503,6 +503,21 @@ This project changes often; do not rely on a frozen snapshot here. For current s
   `/api/scraper/places/{categories,count,fair-use,jobs}` (JWT). Files: `scraper/places_{client,flow,routes}.py`.
   Categories/cities/count lookups are FREE; autocomplete prefers exact category picks (picked →
   `categories`, typed → `category_contains`).
+- **2026-11-12 shipped:** Instant US Database phases 2–3 — (a) **90-day result cache** (`places_cache`
+  table + `/mnt/disk/.../cache/places/`): identical filters served instantly, 0 budget; `/places/count`
+  reports `cached`/`cached_rows`. (b) **Auto-partitioning** for >25K pulls: free-count recursive bisection
+  into ≤20K ZIP groups (`GETLEADS_PLACES_PARTITION_TARGET`, max 64 parts), durable per-part CSVs
+  (`{job_id}.part{i}.csv`) so restarts resume without re-billing done parts; mid-run budget exhaustion
+  finalizes a clearly-labeled **PARTIAL** result (never cached). (c) **cities filter** expanded to exact
+  ZIPs via `us_zips.csv` (new `centers.get_zips_for_states`; GetLeads stored-city values are dirty).
+  (d) **External API** `POST /api/external/scraper/places/{count,jobs}` (API-key, envelope, `dry_run`
+  default) via async `impl_places_count`/`impl_places_fetch`. (e) **MCP tools**
+  `count_local_businesses_database` (free) + `fetch_local_businesses_database` (dry_run default).
+  (f) UI: city input, ⚡CACHED badge, auto-split messaging, **"Scrape Live Instead"** one-click fallback
+  on budget-failed cards. Live-E2E lessons baked into tests: the export_url **302-redirects** (follow it)
+  and the export CSV ships **Title Case headers** (`Business Name`, `Primary Email`) — `_normalize_row`
+  is header-tolerant. Real pull verified: 33 roofers/78701 → 32 rows (1 dup deduped), 18 with email,
+  budget +33 exactly; identical re-run served from cache, 0 budget.
 - **2026-11-07 shipped:** LeadOcean phase 2 — domain→people discovery (`/v1/companies/{domain}/people`) wired as the TERMINAL discovery tier in all domain arms (pipeline no-LI rescue + main Step 2.4b, list_builder mirrors, unified-API executor; 1 search record/row, 25M/mo window, row-capped, has_email-only, 404 domain-miss cached 7d; `leadocean_people` normalizer + stats) + search-window cooldown (`pace.search` arms `search_exhausted`) + FREE industry counts endpoints (`GET /api/enrichment/leadocean/count`, `/leadocean/industries`; 532-value enum `leadocean_industries.py`).
 - **2026-11-06 shipped:** LeadOcean provider added as tier 4 (after quickenrich; work email + personal fallback by LinkedIn URL; daily-wall cooldown + 7d miss cache; `GET /api/enrichment/leadocean/usage` gauge). Cascade now `contacts_db → smartprospect → quickenrich → leadocean → getleads → blitz → moltsets → better_enrich → wizleads`.
 - **2026-10-14 shipped:** MoltSets provider added as tier 6 + BetterEnrich re-enabled as tier 7 (cascade: contacts_db → smartprospect → quickenrich → getleads → blitz → moltsets → better_enrich → wizleads). MoltSets = person email only (linkedin_to_best_email / search_business_email_by_name), one request per person per attempt; fair-use windows (15k rec/5h, 75k/wk) arm a cross-worker cooldown for instant skip; person misses negative-cached (`moltsets_miss`, 14d); `moltsets_usage` ledger + `GET /api/enrichment/moltsets/usage`. New env kill switch `ENABLE_BETTER_ENRICH` (BE credits were 0.1 at re-enable — watch before expecting BE hits). WizLeads back to terminal tier.
