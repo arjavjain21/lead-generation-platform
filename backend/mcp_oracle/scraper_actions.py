@@ -212,7 +212,7 @@ async def cancel_scrape_job(job_id: str, ctx: Context = None) -> str:
 
 
 def register_tools(mcp_instance: FastMCP, *, enabled: bool = True) -> None:
-    """Register the 5 action tools on a FastMCP instance (idempotent-ish:
+    """Register the action tools on a FastMCP instance (idempotent-ish:
     FastMCP replace()es same-name tools, so double registration is safe)."""
     if not enabled:
         return
@@ -222,8 +222,94 @@ def register_tools(mcp_instance: FastMCP, *, enabled: bool = True) -> None:
         get_scrape_job_results,
         check_scrape_cache,
         cancel_scrape_job,
+        count_local_businesses_database,
+        fetch_local_businesses_database,
     ):
         mcp_instance.add_tool(fn)
+
+
+def _places_filters(
+    categories: Optional[list[str]],
+    category_contains: Optional[list[str]],
+    business_name: Optional[str],
+    states: Optional[list[str]],
+    cities: Optional[list[str]],
+    zips: Optional[list[str]],
+    has_email: Optional[bool],
+) -> dict[str, Any]:
+    """Assemble a places filter dict, dropping empty values."""
+    filters: dict[str, Any] = {}
+    if categories:
+        filters["categories"] = categories
+    if category_contains:
+        filters["category_contains"] = category_contains
+    if business_name:
+        filters["business_name"] = business_name
+    if states:
+        filters["states"] = states
+    if cities:
+        filters["cities"] = cities  # server expands to ZIPs via us_zips DB
+    if zips:
+        filters["zips"] = zips
+    if has_email is not None:
+        filters["has_email"] = has_email
+    return filters
+
+
+async def count_local_businesses_database(
+    categories: Optional[list[str]] = None,
+    category_contains: Optional[list[str]] = None,
+    business_name: Optional[str] = None,
+    states: Optional[list[str]] = None,
+    cities: Optional[list[str]] = None,
+    zips: Optional[list[str]] = None,
+    has_email: Optional[bool] = None,
+    ctx: Context = None,
+) -> str:
+    """FREE preview of the Instant US Database (pre-indexed 20.5M US Google
+    Maps listings with emails): match count, estimated exports (auto-
+    partitioned above 25K), the account's remaining daily google_maps budget,
+    and whether the exact filters are already cached (free, instant).
+
+    At least one business filter (categories/category_contains/business_name)
+    or geo filter (states/cities/zips) is required. Cities are expanded to
+    ZIPs server-side. Costs nothing — count before every fetch."""
+    user = _user_from_ctx(ctx)
+    filters = _places_filters(
+        categories, category_contains, business_name,
+        states, cities, zips, has_email,
+    )
+    return _dump(await ext.impl_places_count(user, filters))
+
+
+async def fetch_local_businesses_database(
+    categories: Optional[list[str]] = None,
+    category_contains: Optional[list[str]] = None,
+    business_name: Optional[str] = None,
+    states: Optional[list[str]] = None,
+    cities: Optional[list[str]] = None,
+    zips: Optional[list[str]] = None,
+    has_email: Optional[bool] = None,
+    dry_run: bool = True,
+    ctx: Context = None,
+) -> str:
+    """Fetch businesses from the Instant US Database (emails + socials
+    included). dry_run=true (DEFAULT) returns the FREE preview (count,
+    budget, cache) without creating anything — set dry_run=false to create
+    the job, then poll get_scrape_job_status and read rows with
+    get_scrape_job_results like any scraper job.
+
+    Pulls above 25,000 rows are auto-split into ZIP-grouped fetches; if the
+    daily budget runs out mid-run you get a clearly-labeled PARTIAL result.
+    Identical filters within 90 days are served from cache (free)."""
+    user = _user_from_ctx(ctx)
+    filters = _places_filters(
+        categories, category_contains, business_name,
+        states, cities, zips, has_email,
+    )
+    if dry_run:
+        return _dump(await ext.impl_places_count(user, filters))
+    return _dump(await ext.impl_places_fetch(user, filters, "MCP"))
 
 
 # Register on the production singleton. The env gate lives HERE (not only in

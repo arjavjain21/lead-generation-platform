@@ -1344,6 +1344,10 @@
                         <label style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:0.85rem;">
                             <input type="checkbox" id="placesHasEmail"> Only businesses with an email
                         </label>
+                        <label style="display:block;margin-top:6px;font-size:0.85rem;">Cities (auto-expanded to ZIPs)</label>
+                        <input type="text" id="placesCitiesInput" placeholder="e.g. Austin, Charleston SC" autocomplete="off"
+                               style="width:100%;padding:0.5rem;border:1px solid var(--gray-300);border-radius:8px;font-size:0.85rem;">
+                        <span class="field-helper">We convert city names to exact ZIPs (cleaner than the database's raw city values).</span>
                     </div>
                 </div>
                 <div class="filters">
@@ -4889,6 +4893,11 @@ example.org,Jane Doe</pre>
             }
             const hasEmailBox = document.getElementById('placesHasEmail');
             if (hasEmailBox && hasEmailBox.checked) filters.has_email = true;
+            const citiesInput = document.getElementById('placesCitiesInput');
+            if (citiesInput && citiesInput.value.trim()) {
+                const cities = citiesInput.value.split(',').map(c => c.trim()).filter(c => c.length >= 2);
+                if (cities.length) filters.cities = cities;
+            }
             return filters;
         }
 
@@ -4909,10 +4918,10 @@ example.org,Jane Doe</pre>
             if (!badge) return;
             const queryText = document.getElementById('scraperQuery').value.trim();
             const filters = placesCurrentFilters(queryText);
-            const hasFilters = ['categories', 'category_contains', 'business_name', 'states', 'zips']
+            const hasFilters = ['categories', 'category_contains', 'business_name', 'states', 'cities', 'zips']
                 .some(k => filters[k] && filters[k].length);
             if (!hasFilters) {
-                badge.textContent = 'Enter a category (and optionally states/ZIPs) to preview the match count…';
+                badge.textContent = 'Enter a category (and optionally states/cities/ZIPs) to preview the match count…';
                 badge.style.color = '';
                 return;
             }
@@ -4931,8 +4940,11 @@ example.org,Jane Doe</pre>
                     const cap = data.max_export_rows || 25000;
                     const fu = data.fair_use || {};
                     let text = '≈ ' + total.toLocaleString() + ' businesses match';
-                    if (total > cap) {
-                        text += ' — over the ' + cap.toLocaleString() + '/fetch cap, narrow the filters';
+                    if (data.cached) {
+                        text += ' · ⚡ CACHED — instant & free';
+                        badge.style.color = '#15803d';
+                    } else if (total > cap) {
+                        text += ' — auto-split into parts (each fetch caps at ' + cap.toLocaleString() + ')';
                         badge.style.color = '#b45309';
                     } else {
                         badge.style.color = '';
@@ -4985,10 +4997,10 @@ example.org,Jane Doe</pre>
             setButtonLoading(btn, true, 'Starting…');
             try {
                 const filters = placesCurrentFilters(query);
-                const hasFilters = ['categories', 'category_contains', 'business_name', 'states', 'zips']
+                const hasFilters = ['categories', 'category_contains', 'business_name', 'states', 'cities', 'zips']
                     .some(k => filters[k] && filters[k].length);
                 if (!hasFilters) {
-                    FormValidator.showError(queryInput, 'Enter a category (or pick at least one state/ZIP) for the Instant Database');
+                    FormValidator.showError(queryInput, 'Enter a category (or pick at least one state/city/ZIP) for the Instant Database');
                     return;
                 }
                 const res = await fetch('/api/scraper/places/jobs', {
@@ -5027,6 +5039,11 @@ example.org,Jane Doe</pre>
                 const data = JSON.parse(e.data);
                 document.getElementById('scraperDone').textContent = data.done_tasks || 0;
                 document.getElementById('scraperResults').textContent = data.result_count || 0;
+                // Big pulls re-plan into N fetches — the bar denominator can
+                // grow mid-run; honor the server's total.
+                if (data.total_tasks) {
+                    document.getElementById('scraperTotal').textContent = data.total_tasks;
+                }
                 const total = parseInt(document.getElementById('scraperTotal').textContent) || 3;
                 const pct = Math.min(100, Math.round(((data.done_tasks || 0) / total) * 100));
                 document.getElementById('scraperProgressBar').style.width = pct + '%';
@@ -5071,10 +5088,53 @@ example.org,Jane Doe</pre>
             } catch (e) { alert('Error: ' + e.message); }
         }
 
-        // Also live-refresh the count when geo/email filters change in instant mode.
+        // Budget-exhausted places job → same query through the LIVE scraper
+        // (scraper.tech grid; takes longer, no GetLeads budget involved).
+        async function retryPlacesJobLive(jobId) {
+            try {
+                const res = await fetch('/api/scraper/jobs/' + jobId, {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (!res.ok) { alert('Could not load job details.'); return; }
+                const job = await res.json();
+                let filters = {};
+                try { filters = (JSON.parse(job.regions || '{}').filters) || {}; } catch (err) { /* keep {} */ }
+                const payload = { country: 'us' };
+                payload.query = (filters.categories && filters.categories[0])
+                    || (filters.category_contains && filters.category_contains[0])
+                    || filters.business_name || 'local business';
+                if (filters.zips && filters.zips.length) {
+                    payload.mode = 'zips'; payload.zips = filters.zips;
+                } else if (filters.states && filters.states.length) {
+                    payload.mode = 'states'; payload.states = filters.states;
+                } else {
+                    payload.mode = 'all';
+                }
+                const start = await fetch('/api/scraper/jobs', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (start.ok) {
+                    const data = await start.json();
+                    currentJobId = data.job_id;
+                    document.getElementById('scraperTotal').textContent = data.total_tasks || 0;
+                    document.getElementById('scraperProgress').style.display = 'block';
+                    document.getElementById('scraperStatus').textContent = 'Queued (live scrape)';
+                    startScraperProgressStream(currentJobId);
+                    loadScraperJobs();
+                } else {
+                    const err = await start.json();
+                    alert('Live scrape failed to start: ' + (err.detail || 'Unknown error'));
+                }
+            } catch (e) { alert('Error: ' + e.message); }
+        }
+
+        // Also live-refresh the count when geo/email/city filters change in instant mode.
         document.getElementById('scraperStates').addEventListener('change', refreshPlacesCount);
         document.getElementById('scraperZipsInput').addEventListener('input', refreshPlacesCount);
         document.getElementById('placesHasEmail').addEventListener('change', refreshPlacesCount);
+        document.getElementById('placesCitiesInput').addEventListener('input', refreshPlacesCount);
 
         // Internal job start function (without cache check)
         async function startScraperJobInternal(payload) {
@@ -8256,6 +8316,11 @@ example.org,Jane Doe</pre>
                         // Places jobs have no partial/checkpoints — Retry
                         // re-posts the SAME filters to the instant endpoint.
                         actions += ' <button class="btn btn-secondary btn-sm" onclick="retryPlacesJob(\''+job.job_id+'\')">Retry</button>';
+                        // Budget wall → offer the same query on the live
+                        // grid-scraper (slower, but no GetLeads budget).
+                        if ((job.error || '').includes('budget is used up')) {
+                            actions += ' <button class="btn btn-primary btn-sm" onclick="retryPlacesJobLive(\''+job.job_id+'\')">Scrape Live Instead</button>';
+                        }
                     } else {
                         // Show resume button if job has checkpoints
                         if (job.checkpoint_count > 0 && job.is_resumable === 1) {
@@ -8849,8 +8914,9 @@ example.org,Jane Doe</pre>
         // Scraper Stop + Retry Fresh (were silently broken on click):
         window.cancelScraperJob = cancelScraperJob;
         window.retryScraperJob = retryScraperJob;
-        // Instant US Database retry (same window-export rule — inline onclick).
+        // Instant US Database retry + live-fallback (same window-export rule).
         window.retryPlacesJob = retryPlacesJob;
+        window.retryPlacesJobLive = retryPlacesJobLive;
         window.filterEnrichmentJobs = filterEnrichmentJobs;
         window.loadJobs = loadJobs;
         // Enrichment date-filter handlers (inline onclick/onchange need window export).

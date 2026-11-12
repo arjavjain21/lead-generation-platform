@@ -30,7 +30,11 @@ router = APIRouter(prefix="/api/scraper/places", tags=["scraper-places"])
 
 class PlacesFilters(BaseModel):
     """Filter set for count + export. At least one business or geo filter is
-    required (enforced by places_client.sanitize_filters)."""
+    required (enforced by places_client.sanitize_filters).
+
+    `cities` is resolved server-side into `zips` via our us_zips database
+    (GetLeads stored-city values are unreliable) before counting/exporting.
+    """
 
     categories: List[str] = Field(default_factory=list)
     category_contains: List[str] = Field(default_factory=list)
@@ -38,6 +42,7 @@ class PlacesFilters(BaseModel):
     exclude_categories: List[str] = Field(default_factory=list)
     exclude_category_contains: List[str] = Field(default_factory=list)
     states: List[str] = Field(default_factory=list)
+    cities: List[str] = Field(default_factory=list)
     zips: List[str] = Field(default_factory=list)
     has_email: Optional[bool] = None
     has_phone: Optional[bool] = None
@@ -90,11 +95,16 @@ async def places_count(
     current_user: dict = Depends(auth.get_current_user),
 ):
     """FREE match count for the chosen filters + the account's google_maps
-    daily budget, so the UI can show "N businesses · M rows left today"."""
+    daily budget + cache availability, so the UI can show
+    "N businesses · M rows left today · ⚡ cached"."""
     _guard_enabled()
     try:
-        filters = places_client.sanitize_filters(req.filters.to_dict())
+        from scraper import places_flow
+
+        resolved, _notes = places_flow.resolve_filters(req.filters.to_dict())
+        filters = places_client.sanitize_filters(resolved)
         total = await places_client.count_places(filters)
+        cached = places_flow.places_cache_lookup(filters)
         fu = await places_client.fair_use()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -106,6 +116,8 @@ async def places_count(
     return {
         "total_matching": total,
         "max_export_rows": places_client.MAX_EXPORT_ROWS,
+        "cached": bool(cached),
+        "cached_rows": (cached or {}).get("row_count"),
         "fair_use": {
             "daily_remaining": daily.get("remaining"),
             "daily_cap": daily.get("cap"),

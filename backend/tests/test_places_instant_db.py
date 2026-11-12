@@ -62,7 +62,7 @@ CREATE TABLE job_checkpoints (
 
 
 @pytest.fixture
-def temp_store():
+def temp_store(monkeypatch, tmp_path):
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = f.name
     conn = sqlite3.connect(db_path)
@@ -77,16 +77,15 @@ def temp_store():
     def _get_store():
         return store
 
-    # Route every get_store() the flow makes to the temp store.
-    monkeypatch_target = scraper_job_store
-    original = monkeypatch_target.get_store
-    monkeypatch_target.get_store = _get_store
-    try:
-        yield store
-    finally:
-        monkeypatch_target.get_store = original
-        conn.close()
-        Path(db_path).unlink()
+    # Route every get_store() the flow makes to the temp store, and redirect
+    # direct db.get_db() calls (cache layer) to the same temp connection —
+    # tests must never touch the live jobs.db.
+    monkeypatch.setattr(scraper_job_store, "get_store", _get_store)
+    monkeypatch.setattr(places_flow.db, "get_db", lambda: conn)
+    monkeypatch.setattr(places_flow, "CACHE_DIR", tmp_path / "places_cache")
+    yield store
+    conn.close()
+    Path(db_path).unlink()
 
 
 @pytest.fixture
@@ -437,3 +436,275 @@ class TestPlacesRoutes:
             assert res.status_code == 503
         finally:
             monkeypatch.delenv("ENABLE_GETLEADS_PLACES")
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: cities→ZIP resolution, partition planning, result cache
+# ---------------------------------------------------------------------------
+
+
+class TestResolveFilters:
+    def test_cities_expanded_to_zips(self):
+        resolved, notes = places_flow.resolve_filters(
+            {"categories": ["Dentist"], "cities": ["Austin"]}
+        )
+        assert "cities" not in resolved
+        assert resolved["zips"], "expected Austin to resolve to ZIPs"
+        assert resolved["categories"] == ["Dentist"]
+        assert any("ZIPs" in n for n in notes)
+
+    def test_unknown_city_raises(self):
+        with pytest.raises(ValueError):
+            places_flow.resolve_filters({"cities": ["Definitely Not A City 9x9z"]})
+
+    def test_no_cities_passthrough(self):
+        resolved, notes = places_flow.resolve_filters({"zips": ["78701"]})
+        assert resolved == {"zips": ["78701"]}
+        assert notes == []
+
+
+class TestPlanPartitions:
+    def test_small_pull_single_partition(self):
+        parts = asyncio.run(places_flow.plan_partitions(
+            {"categories": ["Dentist"], "zips": ["78701"]}, 100,
+            count_fn=lambda f: asyncio.sleep(0, 100),
+        ))
+        assert len(parts) == 1
+
+    def test_big_pull_bisects_until_fits(self):
+        # 8 ZIPs, counts: total 40K; halves 20K+20K → each at target → 2 parts.
+        async def fake_count(filters):
+            if len(filters.get("zips", [])) == 8:
+                return 40_000
+            return 10_000 if len(filters.get("zips", [])) == 4 else 20_000
+
+        parts = asyncio.run(places_flow.plan_partitions(
+            {"categories": ["Dentist"], "zips": [str(10000 + i) for i in range(8)]},
+            40_000, count_fn=fake_count,
+        ))
+        assert len(parts) == 2
+        all_zips = sorted(z for p in parts for z in p["zips"])
+        assert all_zips == sorted(str(10000 + i) for i in range(8))  # disjoint cover
+
+    def test_partitions_carry_base_filters(self):
+        async def fake_count(filters):
+            return 10_000
+
+        parts = asyncio.run(places_flow.plan_partitions(
+            {"categories": ["Dentist"], "has_email": True,
+             "zips": [str(20000 + i) for i in range(4)]}, 40_000, count_fn=fake_count,
+        ))
+        assert all(p["categories"] == ["Dentist"] and p["has_email"] is True for p in parts)
+
+    def test_no_geo_axis_expands_states(self):
+        # No zips/states: partitioner expands every state's ZIPs via us_zips.
+        async def fake_count(filters):
+            # Half the country fits → exactly 2 partitions.
+            return 10_000 if len(filters.get("zips", [])) < 40000 else 40_000
+
+        parts = asyncio.run(places_flow.plan_partitions(
+            {"categories": ["Dentist"]}, 40_000, count_fn=fake_count,
+        ))
+        assert 1 <= len(parts) <= places_flow.MAX_PARTITIONS
+        for p in parts:
+            assert p["zips"], "partitions must be ZIP-keyed"
+
+
+class TestPlacesCache:
+    def test_store_then_hit(self, temp_store, tmp_path):
+        filters = {"categories": ["Dentist"], "zips": ["78701"]}
+        src = tmp_path / "src.csv"
+        src.write_text("name,website\nAcme,https://acme.com\n")
+
+        assert places_flow.places_cache_lookup(filters) is None
+        key = places_flow.places_cache_store(filters, src, 1)
+        hit = places_flow.places_cache_lookup(filters)
+        assert hit is not None
+        assert hit["row_count"] == 1
+        assert Path(hit["csv_path"]).exists()
+        assert places_flow.places_cache_key(filters) == key
+
+    def test_key_ignores_dict_ordering(self):
+        a = places_flow.places_cache_key({"zips": ["78701"], "categories": ["Dentist"]})
+        b = places_flow.places_cache_key({"categories": ["Dentist"], "zips": ["78701"]})
+        assert a == b
+
+    def test_cache_hit_job_short_circuits_export(self, temp_store, monkeypatch, tmp_path):
+        calls = {"start": 0}
+
+        async def _start(filters):
+            calls["start"] += 1
+            return "exp-never"
+
+        monkeypatch.setattr(places_flow.places_client, "fair_use",
+                            lambda: asyncio.sleep(0, FAIR_USE_OK))
+        monkeypatch.setattr(places_flow.places_client, "count_places",
+                            lambda f: asyncio.sleep(0, 999))
+        monkeypatch.setattr(places_flow.places_client, "start_export", _start)
+        monkeypatch.setattr(places_flow, "OUTPUT_DIR", tmp_path)
+
+        cached_src = tmp_path / "cached.csv"
+        cached_src.write_text(
+            "name,website,email\nAcme,https://acme.com,info@acme.com\n"
+        )
+        places_flow.places_cache_store(FILTERS, cached_src, 1)
+
+        _make_places_job(temp_store, "c1")
+        asyncio.run(places_flow.run_places_job("c1"))
+
+        job = temp_store.get_job("c1")
+        assert job["status"] == "done"
+        assert job["result_count"] == 1
+        assert calls["start"] == 0  # zero budget spent
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: partial delivery when the budget runs out mid-run
+# ---------------------------------------------------------------------------
+
+
+class TestPartialOnBudgetExhaustion:
+    def test_midrun_402_finalizes_partial(self, temp_store, monkeypatch, tmp_path):
+        # Force 2 partitions by planning manually into the state blob.
+        filters = dict(FILTERS)
+        parts = [{"categories": filters["categories"], "zips": ["78701"]},
+                 {"categories": filters["categories"], "zips": ["78702"]}]
+        rows = [dict(business_name="Acme", category="Roofing contractor",
+                     website="https://acme.com", primary_email="info@acme.com")]
+
+        async def _fair_use():
+            return FAIR_USE_OK
+
+        async def _count(f):
+            return 30_000
+
+        exports = {"n": 0}
+
+        async def _start(f):
+            exports["n"] += 1
+            if exports["n"] == 1:
+                return "exp-ok"
+            raise PlacesError("start_export", 402, "fair use limit exceeded")
+
+        async def _poll(export_id):
+            return {"job_status": "completed", "export_url": "https://s3/x.csv"}
+
+        async def _download(url):
+            return ["business_name"], rows
+
+        for name, fn in [("fair_use", _fair_use), ("count_places", _count),
+                         ("start_export", _start), ("poll_export", _poll),
+                         ("download_export_csv", _download)]:
+            monkeypatch.setattr(places_flow.places_client, name, fn)
+        monkeypatch.setattr(places_flow.places_client, "EXPORT_POLL_INTERVAL_S", 0.01)
+        monkeypatch.setattr(places_flow, "OUTPUT_DIR", tmp_path)
+
+        # Pre-plan so plan_partitions never runs (count=30K would replan).
+        _make_places_job(temp_store, "p1")
+        store = temp_store
+        job = store.get_job("p1")
+        regions = json.loads(job["regions"])
+        regions["places"] = {"partitions": parts, "done_parts": [],
+                             "export_id": None, "expected": 30_000}
+        store.conn.execute("UPDATE jobs SET regions=? WHERE job_id='p1'",
+                           (json.dumps(regions),))
+        store.conn.commit()
+
+        asyncio.run(places_flow.run_places_job("p1", resume=True))
+
+        job = store.get_job("p1")
+        assert job["status"] == "done"  # partial delivered, not failed
+        assert job["result_count"] == 1
+        events = [json.loads(r["payload"]) for r in store.conn.execute(
+            "SELECT payload FROM job_events WHERE job_id='p1' ORDER BY seq")]
+        final = [e for e in events if e.get("status") == "done"][-1]
+        assert "PARTIAL" in final["message"]
+        assert "budget ran out" in final["message"]
+        # partial results must NOT poison the cache
+        assert places_flow.places_cache_lookup(parts[0]) is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: external API mirror
+# ---------------------------------------------------------------------------
+
+
+class TestExternalPlacesRoutes:
+    @pytest.fixture
+    def client(self, monkeypatch):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from scraper import external_routes
+        from scraper.external_helpers import ExternalError
+        from shared import auth
+        import main as main_module
+
+        # The lazy `from . import places_client` inside the impls resolves at
+        # call time — patching the module attrs covers every indirection.
+        monkeypatch.setattr(places_client, "API_KEY", "test-key")
+        app = FastAPI()
+        app.include_router(external_routes.router)
+        app.add_exception_handler(ExternalError, main_module.external_error_handler)
+        app.dependency_overrides[auth.get_current_user_with_api_key] = lambda: USER
+        return TestClient(app)
+
+    def test_count_envelope(self, client, monkeypatch):
+        async def _count(filters):
+            return 1_234
+
+        async def _fu():
+            return FAIR_USE_OK
+
+        monkeypatch.setattr(places_client, "count_places", _count)
+        monkeypatch.setattr(places_client, "fair_use", _fu)
+        res = client.post("/api/external/scraper/places/count",
+                          json={"filters": {"categories": ["Dentist"]}})
+        assert res.status_code == 200
+        body = res.json()
+        assert body["success"] is True
+        assert body["data"]["total_matching"] == 1_234
+        assert body["data"]["estimated_exports"] >= 1
+
+    def test_jobs_dry_run_default_creates_nothing(self, client, monkeypatch):
+        async def _count(filters):
+            return 42
+
+        async def _fu():
+            return FAIR_USE_OK
+
+        monkeypatch.setattr(places_client, "count_places", _count)
+        monkeypatch.setattr(places_client, "fair_use", _fu)
+        res = client.post("/api/external/scraper/places/jobs",
+                          json={"filters": {"categories": ["Dentist"]}})
+        assert res.status_code == 200
+        data = res.json()["data"]
+        assert "total_matching" in data and "job_id" not in data
+
+    def test_kill_switch_external_error(self, client, monkeypatch):
+        monkeypatch.setenv("ENABLE_GETLEADS_PLACES", "false")
+        try:
+            res = client.post("/api/external/scraper/places/count",
+                              json={"filters": {"categories": ["Dentist"]}})
+            assert res.status_code == 503
+            assert res.json()["success"] is False  # envelope, not a bare 500
+        finally:
+            monkeypatch.delenv("ENABLE_GETLEADS_PLACES")
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: MCP tool registration
+# ---------------------------------------------------------------------------
+
+
+class TestMcpPlacesTools:
+    def test_tools_register_on_fresh_instance(self):
+        from mcp.server.fastmcp import FastMCP
+        from mcp_oracle import scraper_actions
+
+        fresh = FastMCP("test-places")
+        scraper_actions.register_tools(fresh)
+        tools = asyncio.run(fresh.list_tools())
+        names = {t.name for t in tools}
+        assert "count_local_businesses_database" in names
+        assert "fetch_local_businesses_database" in names
+        assert "scrape_local_businesses" in names  # existing 5 unaffected

@@ -1140,6 +1140,26 @@ def parse_ca_postal_codes_from_string(input_str: str) -> list[str]:
 # City-to-Zip/Postal Code Mapping
 # ---------------------------------------------------------------------------
 
+def get_zips_for_states(states: list[str] | None = None) -> tuple[list[str], list[str]]:
+    """All known 5-digit ZIPs for the given states (2-letter codes, case-
+    insensitive), or for EVERY state when None/empty.
+
+    Returns (zips, errors) — errors lists state inputs that matched no ZIP
+    (typically a typo or a non-US code). Used by the Instant US Database
+    partitioner to split large pulls into per-export ZIP groups.
+    """
+    zip_db = _load_zip_database()
+    wanted = {s.strip().upper() for s in (states or []) if s and s.strip()}
+    present = {v["state"] for v in zip_db.values()}
+    unknown = sorted(w for w in wanted if w not in present)
+    zips = [
+        code
+        for code, data in zip_db.items()
+        if not wanted or data["state"] in wanted
+    ]
+    return zips, [f"No ZIPs found for state '{s}'" for s in unknown]
+
+
 def get_zips_for_cities(cities: list[str]) -> tuple[dict[str, list[str]], list[str]]:
     """
     Get all zip codes for a list of cities (US only).

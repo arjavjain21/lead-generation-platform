@@ -92,3 +92,35 @@ class TestPlacesSourceUI:
 
     def test_script_tag_balance(self, html_content):
         assert html_content.count("<script") == html_content.count("</script>")
+
+
+class TestPlacesPhase23UI:
+    """Phase 2/3 (2026-11-12): city input, cached badge, live fallback."""
+
+    def test_city_input_present(self, html_content):
+        assert 'id="placesCitiesInput"' in html_content
+
+    def test_cities_sent_in_filters(self, html_content):
+        assert "filters.cities = cities" in html_content
+
+    def test_cached_badge_text(self, html_content):
+        assert "⚡ CACHED — instant & free" in html_content
+        assert "data.cached" in html_content
+
+    def test_partition_message_not_an_error(self, html_content):
+        # Oversize pulls are now auto-split — the badge must not read as a
+        # dead end anymore.
+        assert "auto-split into parts" in html_content
+
+    def test_live_fallback_function_and_export(self, html_content):
+        assert "function retryPlacesJobLive" in html_content
+        assert "window.retryPlacesJobLive = retryPlacesJobLive" in html_content
+
+    def test_live_fallback_button_on_budget_failures(self, html_content):
+        assert "budget is used up" in html_content
+        assert "Scrape Live Instead" in html_content
+
+    def test_stream_honors_replanned_totals(self, html_content):
+        # Multi-partition jobs raise total_tasks mid-run; the progress bar
+        # must follow the server's number.
+        assert "if (data.total_tasks) {" in html_content

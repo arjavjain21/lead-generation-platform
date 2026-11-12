@@ -137,3 +137,42 @@ def cancel_job(job_id: str, current_user: dict = Depends(auth.get_current_user_w
 def quota(current_user: dict = Depends(auth.get_current_user_with_api_key)):
     """Daily quota snapshot (limit/used/remaining/resets_at) + external task cap."""
     return ext.envelope(ext.impl_quota(current_user))
+
+
+# ---------------------------------------------------------------------------
+# Instant US Database (GetLeads places) — phase 3 (2026-11-12)
+#
+# Same data source as the UI's "⚡ Instant US Database": free counts,
+# 90-day result cache, auto-partitioned exports. These handlers are async
+# (GetLeads client is async) — unlike the sync CSV handlers above.
+# ---------------------------------------------------------------------------
+
+from pydantic import BaseModel  # noqa: E402
+from typing import Optional  # noqa: E402
+
+from scraper.places_routes import PlacesFilters  # noqa: E402
+
+
+class PlacesBody(BaseModel):
+    filters: PlacesFilters
+    group: Optional[str] = None
+    dry_run: bool = True
+
+
+@router.post("/places/count")
+async def places_count(body: PlacesBody, current_user: dict = Depends(auth.get_current_user_with_api_key)):
+    """FREE: match count + partition preview + google_maps budget + cache
+    status for a filter set. No side effects, no budget use."""
+    return ext.envelope(await ext.impl_places_count(current_user, body.filters.to_dict()))
+
+
+@router.post("/places/jobs")
+async def places_jobs(body: PlacesBody, current_user: dict = Depends(auth.get_current_user_with_api_key)):
+    """Create an Instant US Database job. dry_run=true (DEFAULT) returns the
+    free preview (count/budget/cache) WITHOUT creating anything; dry_run=false
+    creates the job — poll GET /jobs/{id} like any scraper job."""
+    if body.dry_run:
+        return ext.envelope(await ext.impl_places_count(current_user, body.filters.to_dict()))
+    return ext.envelope(
+        await ext.impl_places_fetch(current_user, body.filters.to_dict(), source="API")
+    )

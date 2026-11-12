@@ -829,3 +829,93 @@ def impl_cancel_job(user: dict[str, Any], job_id: str) -> dict[str, Any]:
 def impl_quota(user: dict[str, Any]) -> dict[str, Any]:
     """Quota snapshot for the external surface."""
     return quota_snapshot(user)
+
+
+# ---------------------------------------------------------------------------
+# Instant US Database (GetLeads places) — phase 3 (2026-11-12)
+#
+# Same guardrails as the places UI surface: kill switch, cities→ZIP
+# resolution, filter validation, the account-wide google_maps fair-use
+# precheck, and job-card-compatible scraper jobs. These impls are ASYNC
+# (the GetLeads client is async) — routes/tools must await them directly,
+# not via the sync _run threadpool.
+# ---------------------------------------------------------------------------
+
+
+async def impl_places_count(user: dict[str, Any], filters: dict[str, Any]) -> dict[str, Any]:
+    """FREE: match count + partition plan preview + budget + cache status."""
+    from . import places_client, places_flow
+
+    if not places_client.is_enabled() or not places_client.is_configured():
+        raise ExternalError(
+            "places_disabled",
+            "Instant US Database is disabled or GETLEADS_API_KEY is not configured.",
+            503,
+        )
+    try:
+        resolved, notes = places_flow.resolve_filters(filters)
+        sanitized = places_client.sanitize_filters(resolved)
+        total = await places_client.count_places(sanitized)
+        cached = places_flow.places_cache_lookup(sanitized)
+        fu = await places_client.fair_use()
+    except ValueError as exc:
+        raise ExternalError("invalid_filters", str(exc), 400)
+    except places_client.PlacesError as exc:
+        status = 402 if exc.status_code == 402 else 502
+        raise ExternalError("places_upstream", exc.detail, status)
+
+    daily = (fu or {}).get("daily", {})
+    parts_preview = max(1, -(-total // places_flow.PARTITION_TARGET))
+    return {
+        "total_matching": total,
+        "max_export_rows": places_client.MAX_EXPORT_ROWS,
+        "estimated_exports": parts_preview,
+        "auto_partitioned": total > places_client.MAX_EXPORT_ROWS,
+        "cache": {
+            "cached": bool(cached),
+            "rows_available": (cached or {}).get("row_count"),
+        },
+        "fair_use": {
+            "daily_remaining": daily.get("remaining"),
+            "daily_cap": daily.get("cap"),
+            "resets_at": daily.get("resets_at"),
+        },
+        "notes": notes,
+        "quota": quota_snapshot(user),
+    }
+
+
+async def impl_places_fetch(
+    user: dict[str, Any],
+    filters: dict[str, Any],
+    source: str = "API",
+) -> dict[str, Any]:
+    """Create an Instant US Database job (runs in the web workers; poll with
+    the shared GET /jobs/{id} surface). Raises ExternalError on guards."""
+    from . import places_client, places_flow
+
+    if not places_client.is_enabled() or not places_client.is_configured():
+        raise ExternalError(
+            "places_disabled",
+            "Instant US Database is disabled or GETLEADS_API_KEY is not configured.",
+            503,
+        )
+    try:
+        result = places_flow.create_and_launch(user=user, filters=filters)
+    except ValueError as exc:
+        raise ExternalError("invalid_filters", str(exc), 400)
+    except places_client.PlacesError as exc:
+        status = 503 if exc.status_code == 503 else 502
+        raise ExternalError("places_upstream", exc.detail, status)
+    return {
+        "created": True,
+        "job_id": result["job_id"],
+        "status": result["status"],
+        "source": source,
+        "links": {
+            "status": f"/api/external/scraper/jobs/{result['job_id']}",
+            "results": f"/api/external/scraper/jobs/{result['job_id']}/results",
+            "cancel": f"/api/external/scraper/jobs/{result['job_id']}/cancel",
+        },
+        "quota": quota_snapshot(user),
+    }
