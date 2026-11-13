@@ -39,6 +39,7 @@ from typing import Any, Callable, Optional
 import httpx
 
 from enrichment import blitz_client
+from enrichment import tam_legs
 from shared.circuit_breaker import CircuitBreakerError
 from enrichment import tam_ranker
 from enrichment import job_store
@@ -519,7 +520,8 @@ async def run_tam_flow(
     )
     output_dir = Path(params.get("output_dir") or OUTPUT_DIR)
     should_cancel: Optional[Callable[[], bool]] = params.get("should_cancel")
-    sources = [s for s in (params.get("sources") or ["blitz"]) if s in ("blitz", "getleads")] or ["blitz"]
+    sources = [s for s in (params.get("sources") or ["blitz"])
+               if s in ("blitz", "getleads", "quickenrich", "leadocean")] or ["blitz"]
     exclude_domains = set(params.get("exclude_domains") or [])
 
     rank_seeds = [s for s in (params.get("rank_seeds") or []) if isinstance(s, dict)]
@@ -705,6 +707,40 @@ async def run_tam_flow(
                             pass
                 if not ranked:
                     csv_file.flush()
+
+            # QuickEnrich + LeadOcean discovery legs (2026-11-11): the
+            # unlimited-plan company finders. QE contact-finder gives true
+            # "companies employing matching people" when titles are set; LO
+            # companies/search adds firmographic breadth on the 25M/mo
+            # search window (both row/page-capped in tam_legs).
+            if "quickenrich" in sources and len(shared.rows) < max_companies:
+                qe_rows, qe_pages = await tam_legs.quickenrich_company_pull(
+                    http, company_filters, people_filters,
+                    needed=overall_budget - len(shared.rows),
+                    existing_keys=_gl_seen_keys(shared.rows),
+                    exclude_domains=exclude_domains,
+                )
+                for row in qe_rows:
+                    shared.rows.append(row)
+                    if not ranked:
+                        writer.writerow(row)
+                if qe_rows:
+                    logger.info("TAM %s: QuickEnrich leg +%d companies (%d pages)",
+                                job_id, len(qe_rows), qe_pages)
+            if "leadocean" in sources and len(shared.rows) < max_companies:
+                lo_rows, lo_pages = await tam_legs.leadocean_company_pull(
+                    http, company_filters,
+                    needed=overall_budget - len(shared.rows),
+                    existing_keys=_gl_seen_keys(shared.rows),
+                    exclude_domains=exclude_domains,
+                )
+                for row in lo_rows:
+                    shared.rows.append(row)
+                    if not ranked:
+                        writer.writerow(row)
+                if lo_rows:
+                    logger.info("TAM %s: LeadOcean leg +%d companies (%d pages)",
+                                job_id, len(lo_rows), lo_pages)
 
             if blitz_unavailable and not shared.rows:
                 # AFTER the fallback: no leg produced anything — this is NOT

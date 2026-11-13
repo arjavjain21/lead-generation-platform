@@ -418,7 +418,8 @@ async def start_tam_flow(
             )
         rank_seeds = lookalike.rank_seed_payloads(seed_results)
 
-    sources = [s for s in (req.sources or ["blitz"]) if s in ("blitz", "getleads")] or ["blitz"]
+    _KNOWN_SOURCES = ("blitz", "getleads", "quickenrich", "leadocean")
+    sources = [s for s in (req.sources or ["blitz"]) if s in _KNOWN_SOURCES] or ["blitz"]
     # Company-type filters (Privately Held / Self-Employed …) are
     # Blitz-source-only: GetLeads' search dataset has no ownership-type
     # column (live-verified 2026-10-07). With 'both', the runner SKIPS the

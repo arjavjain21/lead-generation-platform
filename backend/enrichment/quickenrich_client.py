@@ -87,6 +87,9 @@ API_KEY = os.getenv("QUICKENRICH_API_KEY", "")
 # at 5,800 for headroom. Buckets are SHARED across gunicorn workers via
 # shared/rate_limiter.py (SQLite-backed), so 4 workers draw from ONE bucket per lane.
 _RATE_LIMIT_RPM = env_float("QUICKENRICH_RATE_LIMIT_RPM", "900")
+# Finder (TAM discovery) lane - separate, conservative bucket until measured
+_FINDER_REFILL = env_float("QUICKENRICH_FINDER_RPM", "100") / 60.0
+_FINDER_BURST = env_float("QUICKENRICH_FINDER_BURST", "10")
 _REFILL_PER_SEC = _RATE_LIMIT_RPM / 60.0
 _CAPACITY = env_float("QUICKENRICH_RATE_LIMIT_BURST", _REFILL_PER_SEC)
 
@@ -362,6 +365,7 @@ async def _request_with_retries(
     path: str,
     *,
     params: Optional[dict[str, Any]] = None,
+    json_body: Optional[dict[str, Any]] = None,
     bucket: str = "quickenrich",
     refill_per_sec: float = _REFILL_PER_SEC,
     capacity: float = _CAPACITY,
@@ -385,6 +389,7 @@ async def _request_with_retries(
                 method,
                 url,
                 params=params,
+                json=json_body,
                 headers=_headers(),
                 timeout=_REQUEST_TIMEOUT,
             )
@@ -729,4 +734,122 @@ async def domain_search(
         "employees": employees,
         "credits_used": credits_used,
         "remaining_credits": remaining,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Finder endpoints - TAM account discovery (2026-11-11)
+# ---------------------------------------------------------------------------
+
+def _finder_filter(include=None, exclude=None):
+    """Build a Finder Filter object ({include, exclude}); None when empty."""
+    inc = [str(v).strip() for v in (include or []) if str(v).strip()]
+    exc = [str(v).strip() for v in (exclude or []) if str(v).strip()]
+    if not inc and not exc:
+        return None
+    out = {}
+    if inc:
+        out["include"] = inc
+    if exc:
+        out["exclude"] = exc
+    return out
+
+
+def _drop_none(payload):
+    return {k: v for k, v in payload.items() if v is not None}
+
+
+async def company_finder(
+    client,
+    *,
+    industry=None, exclude_industry=None, country_code=None,
+    company_name=None, keywords=None, employee_count=None, revenue=None,
+    per_page=100, cursor=None,
+):
+    """POST /api/companies/company-finder - discover companies by firmographic
+    filters with NO domain/name input required (TAM Stage 1, wired 2026-11-11).
+
+    Returns {"companies": [...], "next_cursor": str|None, "has_more": bool}
+    or a falsy _ProviderError. Band labels are the vendor's (see
+    /api/lookups/employee-ranges and /api/lookups/revenue-ranges); a 422
+    returns a validation error naming the field.
+    """
+    if not is_configured() or not _is_enabled():
+        return _provider_error("company_finder", "disabled", "kill switch active or no key")
+    payload = _drop_none({
+        "industry": _finder_filter(include=industry, exclude=exclude_industry),
+        "country_code": _finder_filter(include=country_code),
+        "company_name": _finder_filter(include=company_name),
+        "home_page_text": _finder_filter(include=keywords),
+        "number_of_employees": _finder_filter(include=employee_count),
+        "revenue": _finder_filter(include=revenue),
+        "per_page": max(1, min(int(per_page), 100)),
+        "cursor": cursor,
+    })
+    resp = await _request_with_retries(
+        client, "POST", "/api/companies/company-finder",
+        json_body=payload,
+        bucket="quickenrich_finder",
+        refill_per_sec=_FINDER_REFILL, capacity=_FINDER_BURST,
+    )
+    if resp is None:
+        return _provider_error("company_finder", "unavailable", "request failed after retries")
+    if resp.status_code >= 400:
+        return _terminal_error(resp, "company_finder")
+    try:
+        body = resp.json()
+    except ValueError:
+        return _provider_error("company_finder", "bad_response", "non-JSON response")
+    meta = body.get("meta") or {}
+    return {
+        "companies": body.get("data") or [],
+        "next_cursor": meta.get("next_cursor"),
+        "has_more": bool(meta.get("has_more")),
+    }
+
+
+async def contact_finder(
+    client,
+    *,
+    title=None, industry=None, country_code=None, employee_count=None,
+    has_email=True, per_page=100, cursor=None,
+):
+    """POST /api/employees/contact-finder - persona+firmographic contact
+    discovery (title x industry x geo x size) with no domain input (TAM
+    Stage 1 with people filters, wired 2026-11-11).
+
+    Returns {"contacts": [...], "next_cursor": str|None, "has_more": bool}.
+    Contacts carry person + company fields; callers dedupe to companies by
+    email_domain/company_url and count real per-company matches.
+    """
+    if not is_configured() or not _is_enabled():
+        return _provider_error("contact_finder", "disabled", "kill switch active or no key")
+    payload = _drop_none({
+        "title": _finder_filter(include=title),
+        "industry": _finder_filter(include=industry),
+        "country_code": _finder_filter(include=country_code),
+        "number_of_employees": _finder_filter(include=employee_count),
+        "has_email": bool(has_email),
+        "per_page": max(1, min(int(per_page), 100)),
+        "cursor": cursor,
+    })
+    resp = await _request_with_retries(
+        client, "POST", "/api/employees/contact-finder",
+        json_body=payload,
+        bucket="quickenrich_finder",
+        refill_per_sec=_FINDER_REFILL, capacity=_FINDER_BURST,
+    )
+    if resp is None:
+        return _provider_error("contact_finder", "unavailable", "request failed after retries")
+    if resp.status_code >= 400:
+        return _terminal_error(resp, "contact_finder")
+    try:
+        body = resp.json()
+    except ValueError:
+        return _provider_error("contact_finder", "bad_response", "non-JSON response")
+    meta = body.get("meta") or {}
+    return {
+        "contacts": body.get("data") or [],
+        "next_cursor": meta.get("next_cursor"),
+        "has_more": bool(meta.get("has_more")),
     }

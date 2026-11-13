@@ -9,12 +9,14 @@ helpers so existing callers/tests are unchanged.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Optional
 
 import httpx
 
 from enrichment import contacts_client
 from enrichment import getleads_client
+from enrichment import leadocean_industries
 from enrichment.lookalike import normalize_band
 
 logger = logging.getLogger(__name__)
@@ -195,3 +197,206 @@ async def _getleads_company_pull(
     for row, key in zip(rows, ordered):
         row["matched_people"] = contact_counts.get(key, 1)
     return rows, credits_used
+
+
+# ---------------------------------------------------------------------------
+# QuickEnrich + LeadOcean discovery legs (2026-11-11) - owner direction:
+# shift TAM discovery from credit-limited Blitz/GetLeads onto unlimited QE
+# and the 25M/mo LO search window.
+# ---------------------------------------------------------------------------
+
+QE_FINDER_MAX_ROWS = 2000
+QE_FINDER_MAX_PAGES = 20
+LO_SEARCH_MAX_ROWS = 1000
+LO_SEARCH_MAX_PAGES = 10
+
+
+def _env_int(name: str, default: int) -> int:
+    """Env override read at CALL time (repo convention — see env_crashloop
+    RCA: module-level int() froze test/ops overrides at import)."""
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _qe_company_from_record(rec: dict[str, Any]) -> dict[str, Any]:
+    domain = (rec.get("final_email_domain") or rec.get("email_domain") or rec.get("url") or "").strip().lower()
+    if domain and "." not in domain:
+        domain = ""
+    return {
+        "name": rec.get("company_name") or "",
+        "domain": domain,
+        "linkedin_url": rec.get("linkedin_url") or "",
+        "industry": rec.get("industry") or "",
+        "size": rec.get("employee_count") or "",
+        "revenue": rec.get("revenue") or "",
+        "matched_people": 1,
+        "source": "quickenrich",
+    }
+
+
+def _qe_company_from_contact(rec: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """(dedupe key, TAM row) from a contact-finder record."""
+    domain = (rec.get("email_domain") or rec.get("company_url") or "").strip().lower()
+    if domain and "." not in domain:
+        domain = ""
+    return domain or ("name:" + (rec.get("company_name") or "").strip().lower()), {
+        "name": rec.get("company_name") or "",
+        "domain": domain,
+        "linkedin_url": rec.get("company_linkedin_url") or rec.get("company_linkedin") or "",
+        "industry": rec.get("industry") or rec.get("company_industry") or "",
+        "size": rec.get("company_employee_count") or rec.get("number_of_employees") or "",
+        "revenue": rec.get("company_revenue") or "",
+        "matched_people": 1,  # accumulated by the caller per key
+        "source": "quickenrich",
+    }
+
+
+async def quickenrich_company_pull(
+    http,
+    company_filters: dict[str, Any],
+    people_filters: dict[str, Any],
+    needed: int,
+    existing_keys: set,
+    exclude_domains: set,
+) -> tuple[list[dict[str, Any]], int]:
+    """QuickEnrich discovery: contact-finder when people filters exist (true
+    'companies that employ matching people' semantics, real match counts),
+    else company-finder. Bounded by TAM_QUICKENRICH_MAX_ROWS/PAGES. Never
+    raises - errors return ([], 0)."""
+    from enrichment import quickenrich_client as qe
+
+    if needed <= 0:
+        return [], 0
+    titles = list(people_filters.get("job_title_include") or [])
+    payload_common = {
+        "industry": [i for i in (company_filters.get("industry_include") or []) if i],
+        "country_code": ([company_filters.get("hq_country_code")] if company_filters.get("hq_country_code") else None),
+        "employee_count": [b for b in (company_filters.get("employee_range") or []) if b],
+        "keywords": [k for k in (company_filters.get("keywords_include") or []) if k],
+    }
+    rows: list[dict[str, Any]] = []
+    seen = set(existing_keys)
+    pages = 0
+    cursor = None
+    match_counts: dict[str, int] = {}
+    row_cap = min(needed, _env_int("TAM_QUICKENRICH_MAX_ROWS", QE_FINDER_MAX_ROWS))
+    try:
+        while len(rows) < row_cap and pages < _env_int("TAM_QUICKENRICH_MAX_PAGES", QE_FINDER_MAX_PAGES):
+            pages += 1
+            if titles:
+                result = await qe.contact_finder(
+                    http, title=titles, cursor=cursor,
+                    industry=payload_common["industry"] or None,
+                    country_code=payload_common["country_code"],
+                    employee_count=payload_common["employee_count"] or None,
+                )
+                contacts = result.get("contacts") if isinstance(result, dict) else None
+                if contacts is None:
+                    break
+                for c in contacts:
+                    key, row = _qe_company_from_contact(c)
+                    if not key or key in seen:
+                        continue
+                    if row["domain"] and row["domain"] in exclude_domains:
+                        continue
+                    seen.add(key)
+                    match_counts[key] = match_counts.get(key, 0) + 1
+                    rows.append(row)
+                cursor = result.get("next_cursor")
+            else:
+                result = await qe.company_finder(
+                    http, cursor=cursor,
+                    industry=payload_common["industry"] or None,
+                    country_code=payload_common["country_code"],
+                    employee_count=payload_common["employee_count"] or None,
+                    keywords=payload_common["keywords"] or None,
+                )
+                companies = result.get("companies") if isinstance(result, dict) else None
+                if companies is None:
+                    break
+                for rec in companies:
+                    row = _qe_company_from_record(rec)
+                    key = row["domain"] or ("name:" + row["name"].strip().lower())
+                    if not key or key in seen:
+                        continue
+                    if row["domain"] and row["domain"] in exclude_domains:
+                        continue
+                    seen.add(key)
+                    rows.append(row)
+                cursor = result.get("next_cursor")
+            if not cursor or not result.get("has_more", bool(cursor)):
+                if not cursor:
+                    break
+    except Exception as exc:
+        logger.warning("QuickEnrich TAM pull failed: %s", exc)
+        return rows[:row_cap], pages
+    return rows[:row_cap], pages
+
+
+async def leadocean_company_pull(
+    http,
+    company_filters: dict[str, Any],
+    needed: int,
+    existing_keys: set,
+    exclude_domains: set,
+) -> tuple[list[dict[str, Any]], int]:
+    """LeadOcean /v1/companies/search discovery - 1 search record per row on
+    the 25M/mo window, bounded by TAM_LEADOCEAN_MAX_ROWS/PAGES. Never
+    raises."""
+    from enrichment import leadocean_client as lo
+
+    if needed <= 0:
+        return [], 0
+    industries = [i for i in (company_filters.get("industry_include") or []) if i]
+    # Only validated enum values pass through (invalid labels silently drop —
+    # an empty industry list simply means "not filtered by industry").
+    industries = [i for i in industries if leadocean_industries.is_valid_industry(i)]
+    params: dict[str, Any] = {}
+    if industries:
+        params["industry"] = industries
+    if company_filters.get("industry_exclude"):
+        params["excludeIndustry"] = [i for i in company_filters["industry_exclude"] if i]
+    if company_filters.get("type_include"):
+        params["companyType"] = list(company_filters["type_include"])
+    if company_filters.get("employee_range"):
+        params["employeeRange"] = list(company_filters["employee_range"])
+    if company_filters.get("hq_country_code"):
+        params["hqCountry"] = company_filters["hq_country_code"]
+    if company_filters.get("keywords_include"):
+        params["keywords"] = list(company_filters["keywords_include"])
+    if company_filters.get("name_include"):
+        params["q"] = " ".join(company_filters["name_include"][:3])
+    if not params:
+        return [], 0  # untargeted pull = burn search records; refuse
+
+    rows: list[dict[str, Any]] = []
+    seen = set(existing_keys)
+    pages = 0
+    cursor = None
+    lo_cap = min(needed, _env_int("TAM_LEADOCEAN_MAX_ROWS", LO_SEARCH_MAX_ROWS))
+    try:
+        while len(rows) < lo_cap and pages < _env_int("TAM_LEADOCEAN_MAX_PAGES", LO_SEARCH_MAX_PAGES):
+            pages += 1
+            result = await lo.search_companies(http, params, cursor=cursor)
+            companies = result.get("companies") if isinstance(result, dict) else None
+            if companies is None:
+                break
+            for row in companies:
+                key = row.get("domain") or ("name:" + (row.get("name") or "").strip().lower())
+                if not key or key in seen:
+                    continue
+                if row.get("domain") and row["domain"] in exclude_domains:
+                    continue
+                seen.add(key)
+                row["matched_people"] = 1
+                row["source"] = "leadocean"
+                rows.append(row)
+            cursor = result.get("next_cursor")
+            if not cursor:
+                break
+    except Exception as exc:
+        logger.warning("LeadOcean TAM pull failed: %s", exc)
+        return rows[:lo_cap], pages
+    return rows[:lo_cap], pages

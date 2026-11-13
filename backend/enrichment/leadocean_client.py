@@ -221,6 +221,65 @@ async def _get_json(
     return None, _provider_error(method_label, "retries_exhausted", "retries exhausted")
 
 
+async def _post_json(
+    client: httpx.AsyncClient,
+    path: str,
+    body_params: dict[str, Any],
+    method_label: str,
+) -> tuple[Optional[int], Any]:
+    """POST-JSON with the same retry/cooldown semantics as _get_json."""
+    if not API_KEY:
+        return None, _provider_error(method_label, "no_api_key", "LEADOCEAN_API_KEY not configured")
+
+    for attempt in range(_MAX_RETRIES + 1):
+        granted = await _acquire_rate_limit()
+        if not granted:
+            return None, _provider_error(
+                method_label, "lane_busy",
+                "rate-lane queue exceeded the wait budget - skipping to protect pipeline latency",
+            )
+        try:
+            resp = await client.post(
+                f"{BASE_URL}{path}", json=body_params, headers=_headers(),
+                timeout=_REQUEST_TIMEOUT,
+            )
+        except httpx.HTTPError as exc:
+            if attempt >= _MAX_RETRIES:
+                return None, _provider_error(method_label, "network_error", f"network error: {exc}")
+            await asyncio.sleep(random.uniform(0.0, min(_MAX_BACKOFF, _BASE_BACKOFF * (2 ** attempt))))
+            continue
+
+        if resp.status_code == 429:
+            retry_after = None
+            raw = resp.headers.get("Retry-After")
+            try:
+                retry_after = float(raw) if raw is not None else None
+            except ValueError:
+                retry_after = None
+            if attempt >= _MAX_RETRIES:
+                leadocean_guards.set_cooldown(
+                    "rate_limited", "sustained 429s", retry_after=retry_after or 120.0
+                )
+                return None, _provider_error(method_label, "rate_limited", "sustained 429s")
+            await asyncio.sleep(min(retry_after or _BACKOFF_DELAY(), _MAX_BACKOFF))
+            continue
+
+        if resp.status_code == 402:
+            leadocean_guards.set_daily_exhausted_cooldown()
+            return None, _provider_error(method_label, "quota_exhausted", "402 payment required")
+
+        if resp.status_code == 403:
+            return None, _provider_error(method_label, "forbidden", "key missing required scope")
+
+        try:
+            body = resp.json()
+        except ValueError:
+            body = {}
+        return resp.status_code, body
+
+    return None, _provider_error(method_label, "retries_exhausted", "retries exhausted")
+
+
 def _BACKOFF_DELAY() -> float:
     return random.uniform(0.0, _MAX_BACKOFF)
 
@@ -611,6 +670,69 @@ async def count_companies(
     if isinstance(data, dict):
         return data
     return None
+
+
+def _co_first(company_data: dict[str, Any], *keys: str) -> Any:
+    for k in keys:
+        v = company_data.get(k)
+        if v not in (None, "", []):
+            return v
+    return None
+
+
+async def search_companies(
+    client: httpx.AsyncClient,
+    filters: dict[str, Any],
+    *,
+    limit: int = 100,
+    cursor: Optional[str] = None,
+    max_rows: int = 1000,
+) -> dict[str, Any]:
+    """POST /v1/companies/search - TAM account discovery (wired 2026-11-11).
+
+    Full industry/persona-free firmographic discovery - no domain or company
+    name input required. Bills 1 SEARCH record per returned row on the 25M/mo
+    window (shared account-wide) - ``max_rows`` bounds the spend per call and
+    the caller bounds pages.
+
+    ``filters`` accepts the vendor's flat body params (industry,
+    excludeIndustry, employeeRange, companyType, hqCountry, keywords, q,
+    minRevenue, naics, technologies, ...). Returns
+    {"companies": [normalized...], "next_cursor": str|None, "rows": N,
+    "records_used": N} or a falsy _ProviderError. Normalized rows carry
+    name/domain/linkedin_url/industry/size/revenue/country pulled
+    defensively from company_data (field spellings vary by release).
+    """
+    if not _is_enabled() or not API_KEY:
+        return _provider_error("search_companies", "disabled", "kill switch active or no key")
+    body_params: dict[str, Any] = {k: v for k, v in (filters or {}).items() if v not in (None, "", [])}
+    body_params["limit"] = max(1, min(int(limit), 100))
+    if cursor:
+        body_params["cursor"] = cursor
+
+    status, body = await _post_json(client, "/v1/companies/search", body_params, "search_companies")
+    if status is None:
+        return body
+    data = body.get("data") if isinstance(body, dict) else None
+    meta = (body.get("meta") or {}) if isinstance(body, dict) else {}
+    rows_out: list[dict[str, Any]] = []
+    for item in (data or [])[:max_rows]:
+        cd = item.get("company_data") or {}
+        rows_out.append({
+            "name": _co_first(cd, "company_name", "name") or "",
+            "domain": (_co_first(cd, "company_domain", "domain") or "").lower(),
+            "linkedin_url": _co_first(cd, "company_linkedin_url", "linkedin_url", "linkedin") or "",
+            "industry": _co_first(cd, "industry", "company_industry") or "",
+            "size": _co_first(cd, "employee_range", "employeeRange", "employees") or "",
+            "revenue": _co_first(cd, "revenue", "revenue_range") or "",
+            "country": _co_first(cd, "country", "hq_country", "country_code") or "",
+        })
+    return {
+        "companies": rows_out,
+        "next_cursor": meta.get("nextCursor"),
+        "rows": len(rows_out),
+        "records_used": meta.get("records") or len(rows_out),
+    }
 
 
 async def get_usage(client: httpx.AsyncClient) -> Optional[dict[str, Any]]:

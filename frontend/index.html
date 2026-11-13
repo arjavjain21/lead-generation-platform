@@ -2055,7 +2055,10 @@
                         <select id="tamSources">
                             <option value="blitz" selected>Blitz company data (default)</option>
                             <option value="getleads">GetLeads data (credits)</option>
-                            <option value="both">Both — merged &amp; deduped</option>
+                            <option value="both">Blitz + GetLeads — merged &amp; deduped</option>
+                            <option value="qe">Blitz + QuickEnrich finder (unlimited plan)</option>
+                            <option value="lo">Blitz + LeadOcean search (25M/mo)</option>
+                            <option value="unlimited">QuickEnrich + LeadOcean only (no Blitz/GetLeads credits)</option>
                         </select>
                         <span class="field-helper">Where the company list comes from</span>
                     </div>
@@ -5440,7 +5443,13 @@ example.org,Jane Doe</pre>
 
         function _tamSourcesPayload() {
             const v = document.getElementById('tamSources').value;
-            return v === 'both' ? ['blitz', 'getleads'] : [v];
+            const map = {
+                both: ['blitz', 'getleads'],
+                qe: ['blitz', 'quickenrich'],
+                lo: ['blitz', 'leadocean'],
+                unlimited: ['quickenrich', 'leadocean'],
+            };
+            return map[v] || [v];
         }
 
         function _tamRenderSeedPanel(seeds, profile) {
