@@ -117,6 +117,63 @@ DOMAIN ONLY (discover decision makers):
 **Default mode for "here's a CSV, get me emails."** Profile the file, route each row down its
 strongest path, ask at most ONE round of questions, run, merge everything into ONE output CSV.
 
+## The 3-step TAM → People → Verify workflow (2026-11-11, the default for list building)
+
+Do these in order for a from-scratch list; start at any step if the client brings data.
+
+### Step 1 — Account TAM: `POST /api/enrichment/flows/tam`
+
+Persona+firmographic filters → qualified company list (CSV with `domain`, `linkedin_url`,
+`name`, match counts). Chain with `create_enrichment_job: true` to drop straight into Step 2
+(LinkedIn-only companies are chained too, via the company-URL path).
+
+**Provider truth (code-verified 2026-11-11 — do not overclaim):**
+- Company-list discovery: **Blitz** `tam-by-people` (primary, 1 record/company, empty=free)
+  + **GetLeads** top-up/degraded-fallback leg (1 credit/contact, ≤500 credits/run).
+- **QuickEnrich and LeadOcean are NOT account-list sources.** LeadOcean contributes FREE
+  industry sizing counts (`GET /api/enrichment/leadocean/count?industry=…`, 532-value enum via
+  `/api/enrichment/leadocean/industries`). QuickEnrich joins at Step 2.
+- **Degraded semantics (live since 2026-11-11):** if the shared Blitz breaker opens from
+  unrelated traffic, the run either completes GetLeads-only with `coverage: "degraded…"` in
+  the summary, or fails RETRYABLY (~60s) with the operator's options. A retryable failure is
+  protection working — wait a minute and resubmit, don't strip filters.
+
+### Step 2 — People + emails: Flow 1 (`/flows/domain-enrich`)
+
+The TAM chain runs here automatically; manually, upload a CSV with ANY MIX of identifiers —
+`domain`, company LinkedIn URLs (in a `linkedin_url` column; `/company/` rows route to the
+company path), and `company_name` (at least one identifier column required). Identifier
+priority: **company LinkedIn → domain → name**; conflicts are never silently switched;
+name-only rows skip with `no_email_reason=name_unresolved` (the auto name resolver ships
+admin-off). This step uses the FULL 8-source cascade — **QuickEnrich (person email +
+dataset-search domain→DMs) and LeadOcean (person email + terminal domain→people discovery)
+both fire here**, alongside contacts_db/smartprospect/getleads/blitz/moltsets/wizleads.
+Bounded knobs per request: `dataset_max_pages` (1–10), `person_location_country`
+(Blitz-lane only), `strict_titles` (default true).
+
+### Step 3 — Verify: `POST /api/enrichment/verify`
+
+```bash
+# ≤25 emails → inline results; more → background job (source_type='verify')
+curl -s -X POST $BASE/api/enrichment/verify -H "X-API-Key: $KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"emails":["a@co.com","b@co.com"],"allow_catch_all":false,"recheck":false}'
+# verify a chunk of any finished job:
+curl -s -X POST "$BASE/api/enrichment/verify/from-job/$JOB_ID?limit=2000&include_catch_all=true" \
+  -H "X-API-Key: $KEY"
+# summary: GET /api/enrichment/verify/results/{job_id}; CSV via the generic jobs download
+```
+
+Classifications: `verified` (ok) / `catch_all` (mb — domain accepts everything, person
+unconfirmed; NEVER counted sendable unless `allow_catch_all`, rows never deleted) /
+`invalid` (ko) / `unknown` (unavailable — retry, never treated as invalid). Raw verdicts
+cached 30d keyed (email_norm, verifier); `recheck:true` bypasses reads. Read-only: nothing
+is written to the contacts DB. CSV columns: `original_email, email_norm, classification,
+verifier, code, message, verified_at, cache_hit, source_job_id`.
+
+**Every session, first:** `curl -s $BASE/api/meta` — all workers must report the same
+`release` (mixed = the 2026-11-11 incident class); it also lists disabled providers.
+
 ## Phase A — Understand the ask (30 seconds)
 
 1. **Titles/ICP**: if unstated, ask ONCE: *"No titles specified — use the default 3-tier
