@@ -205,6 +205,35 @@ async def _getleads_company_pull(
 # and the 25M/mo LO search window.
 # ---------------------------------------------------------------------------
 
+def _kw_includes(keyword_filter: Any) -> list[str]:
+    """Include values from a Blitz-style {include:[...], exclude:[...]} filter."""
+    if isinstance(keyword_filter, dict):
+        return [str(v) for v in (keyword_filter.get("include") or []) if v]
+    return []
+
+
+def _tam_filter_values(company_filters: dict[str, Any]) -> dict[str, list[str]]:
+    """Normalize a Blitz CompanyFilter payload into flat include lists for
+    the QE/LO legs (accepts BOTH the payload shape {industry:{include}} and
+    the request shape {industry_include:[...]})."""
+    def inc(key, alt):
+        return list(dict.fromkeys(
+            [str(v) for v in (_kw_includes(company_filters.get(key)) or company_filters.get(alt) or []) if v]))
+    def exc(key, alt):
+        return list(dict.fromkeys(
+            [str(v) for v in (_kw_includes(company_filters.get(key) and {"include": None, "exclude": company_filters[key].get("exclude")} or None) or company_filters.get(alt) or []) if v]))
+    out = {
+        "industry": inc("industry", "industry_include"),
+        "industry_exclude": exc("industry", "industry_exclude"),
+        "keywords": inc("keywords", "keywords_include"),
+        "name": inc("name", "name_include"),
+        "type": inc("type", "type_include"),
+    }
+    hq = company_filters.get("hq") or {}
+    out["country"] = [str(v) for v in (hq.get("country_code") or company_filters.get("hq_country_code") or []) if v]
+    return out
+
+
 def _kw_values(keyword_filter: Any) -> list[str]:
     """Extract include values from a Blitz-style {include:[...]} keyword filter."""
     if isinstance(keyword_filter, dict):
@@ -278,11 +307,12 @@ async def quickenrich_company_pull(
         return [], 0
     titles = list(people_filters.get("job_title_include")
                   or _kw_values(people_filters.get("job_title")) or [])
+    fv = _tam_filter_values(company_filters)
     payload_common = {
-        "industry": [i for i in (company_filters.get("industry_include") or []) if i],
-        "country_code": ([company_filters.get("hq_country_code")] if company_filters.get("hq_country_code") else None),
-        "employee_count": [b for b in (company_filters.get("employee_range") or []) if b],
-        "keywords": [k for k in (company_filters.get("keywords_include") or []) if k],
+        "industry": fv["industry"] or None,
+        "country_code": fv["country"] or None,
+        "employee_count": [b for b in (company_filters.get("employee_range") or []) if b] or None,
+        "keywords": fv["keywords"] or None,
     }
     rows: list[dict[str, Any]] = []
     seen = set(existing_keys)
@@ -378,25 +408,26 @@ async def leadocean_company_pull(
 
     if needed <= 0:
         return [], 0
-    industries = [i for i in (company_filters.get("industry_include") or []) if i]
+    fv = _tam_filter_values(company_filters)
+    industries = fv["industry"]
     # Only validated enum values pass through (invalid labels silently drop —
     # an empty industry list simply means "not filtered by industry").
     industries = [i for i in industries if leadocean_industries.is_valid_industry(i)]
     params: dict[str, Any] = {}
     if industries:
         params["industry"] = industries
-    if company_filters.get("industry_exclude"):
-        params["excludeIndustry"] = [i for i in company_filters["industry_exclude"] if i]
-    if company_filters.get("type_include"):
-        params["companyType"] = list(company_filters["type_include"])
+    if fv["industry_exclude"]:
+        params["excludeIndustry"] = fv["industry_exclude"]
+    if fv["type"]:
+        params["companyType"] = fv["type"]
     if company_filters.get("employee_range"):
         params["employeeRange"] = list(company_filters["employee_range"])
-    if company_filters.get("hq_country_code"):
-        params["hqCountry"] = company_filters["hq_country_code"]
-    if company_filters.get("keywords_include"):
-        params["keywords"] = list(company_filters["keywords_include"])
-    if company_filters.get("name_include"):
-        params["q"] = " ".join(company_filters["name_include"][:3])
+    if fv["country"]:
+        params["hqCountry"] = fv["country"]
+    if fv["keywords"]:
+        params["keywords"] = fv["keywords"]
+    if fv["name"]:
+        params["q"] = " ".join(fv["name"][:3])
     if not params:
         return [], 0  # untargeted pull = burn search records; refuse
 
