@@ -205,6 +205,13 @@ async def _getleads_company_pull(
 # and the 25M/mo LO search window.
 # ---------------------------------------------------------------------------
 
+def _kw_values(keyword_filter: Any) -> list[str]:
+    """Extract include values from a Blitz-style {include:[...]} keyword filter."""
+    if isinstance(keyword_filter, dict):
+        return [str(v) for v in (keyword_filter.get("include") or []) if v]
+    return []
+
+
 QE_FINDER_MAX_ROWS = 2000
 QE_FINDER_MAX_PAGES = 20
 LO_SEARCH_MAX_ROWS = 1000
@@ -269,7 +276,8 @@ async def quickenrich_company_pull(
 
     if needed <= 0:
         return [], 0
-    titles = list(people_filters.get("job_title_include") or [])
+    titles = list(people_filters.get("job_title_include")
+                  or _kw_values(people_filters.get("job_title")) or [])
     payload_common = {
         "industry": [i for i in (company_filters.get("industry_include") or []) if i],
         "country_code": ([company_filters.get("hq_country_code")] if company_filters.get("hq_country_code") else None),
@@ -286,12 +294,19 @@ async def quickenrich_company_pull(
         while len(rows) < row_cap and pages < _env_int("TAM_QUICKENRICH_MAX_PAGES", QE_FINDER_MAX_PAGES):
             pages += 1
             if titles:
+                industry_vals = payload_common["industry"] or None
                 result = await qe.contact_finder(
                     http, title=titles, cursor=cursor,
-                    industry=payload_common["industry"] or None,
+                    industry=industry_vals,
                     country_code=payload_common["country_code"],
                     employee_count=payload_common["employee_count"] or None,
                 )
+                if isinstance(result, dict) and result.get("error") == "validation":
+                    result = await qe.contact_finder(
+                        http, title=titles, cursor=cursor,
+                        country_code=payload_common["country_code"],
+                        employee_count=payload_common["employee_count"] or None,
+                    )
                 contacts = result.get("contacts") if isinstance(result, dict) else None
                 if contacts is None:
                     break
@@ -306,13 +321,27 @@ async def quickenrich_company_pull(
                     rows.append(row)
                 cursor = result.get("next_cursor")
             else:
+                industry_vals = payload_common["industry"] or None
+                kw_vals = payload_common["keywords"] or None
                 result = await qe.company_finder(
                     http, cursor=cursor,
-                    industry=payload_common["industry"] or None,
+                    industry=industry_vals,
                     country_code=payload_common["country_code"],
                     employee_count=payload_common["employee_count"] or None,
-                    keywords=payload_common["keywords"] or None,
+                    keywords=kw_vals,
                 )
+                if isinstance(result, dict) and result.get("error") == "validation":
+                    # QE industry enum rejected the value(s) — retry with the
+                    # industry terms as free-text keywords (mirrors the Blitz
+                    # 422 industry→keywords fallback; the failed request does
+                    # not count against results).
+                    merged = list(dict.fromkeys((kw_vals or []) + (industry_vals or [])))
+                    result = await qe.company_finder(
+                        http, cursor=None,
+                        country_code=payload_common["country_code"],
+                        employee_count=payload_common["employee_count"] or None,
+                        keywords=merged or None,
+                    )
                 companies = result.get("companies") if isinstance(result, dict) else None
                 if companies is None:
                     break

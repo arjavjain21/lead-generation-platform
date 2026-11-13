@@ -350,6 +350,12 @@ def _terminal_error(response: httpx.Response, method: str) -> Any:
             message=f"QuickEnrich {response.status_code} ({error_type})",
         )
     logger.warning("QuickEnrich %s terminal %d", method, response.status_code)
+    if response.status_code == 422:
+        # Validation rejection (e.g. a filter value not in the vendor's
+        # enum). Distinguishable so TAM's finder legs can retry with the
+        # offending filter converted to keywords. No vendor body embedded
+        # (security convention).
+        return {"error": "validation", "status": 422, "method": method}
     return None
 
 
@@ -795,7 +801,8 @@ async def company_finder(
     if resp is None:
         return _provider_error("company_finder", "unavailable", "request failed after retries")
     if resp.status_code >= 400:
-        return _terminal_error(resp, "company_finder")
+        err = _terminal_error(resp, "company_finder")
+        return err if err is not None else {"error": "terminal", "status": resp.status_code}
     try:
         body = resp.json()
     except ValueError:
@@ -842,7 +849,8 @@ async def contact_finder(
     if resp is None:
         return _provider_error("contact_finder", "unavailable", "request failed after retries")
     if resp.status_code >= 400:
-        return _terminal_error(resp, "contact_finder")
+        err = _terminal_error(resp, "contact_finder")
+        return err if err is not None else {"error": "terminal", "status": resp.status_code}
     try:
         body = resp.json()
     except ValueError:
