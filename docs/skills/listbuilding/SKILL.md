@@ -127,12 +127,25 @@ Persona+firmographic filters → qualified company list (CSV with `domain`, `lin
 `name`, match counts). Chain with `create_enrichment_job: true` to drop straight into Step 2
 (LinkedIn-only companies are chained too, via the company-URL path).
 
-**Provider truth (code-verified 2026-11-11 — do not overclaim):**
-- Company-list discovery: **Blitz** `tam-by-people` (primary, 1 record/company, empty=free)
-  + **GetLeads** top-up/degraded-fallback leg (1 credit/contact, ≤500 credits/run).
-- **QuickEnrich and LeadOcean are NOT account-list sources.** LeadOcean contributes FREE
-  industry sizing counts (`GET /api/enrichment/leadocean/count?industry=…`, 532-value enum via
-  `/api/enrichment/leadocean/industries`). QuickEnrich joins at Step 2.
+**Provider truth (SDK-verified 2026-11-11 — read carefully, two layers):**
+
+*What the ListBuilding `/flows/tam` endpoint wires TODAY:* company-list discovery runs
+**Blitz** `tam-by-people` (1 record/company, empty=free) + **GetLeads** top-up/degraded
+fallback (1 credit/contact, ≤500 credits/run). LeadOcean contributes FREE industry sizing
+(`GET /api/enrichment/leadocean/count?industry=…`, enum via `/leadocean/industries`).
+
+*What the vendors ACTUALLY support (both can build account lists from industry + persona
+alone — NO domain or company-name input needed):*
+
+| Vendor | Discovery endpoints (from their SDKs) | Key filters | Quota basis |
+|---|---|---|---|
+| **QuickEnrich** | `POST /api/companies/company-finder` · `POST /api/employees/contact-finder` | industry, employee-count, revenue, country, city, company-name, bio/services keywords; contact-finder adds title + locality + `has_email`/`has_phone`, cursor-paged | GTM Unlimited plan |
+| **LeadOcean** | `POST /v1/companies/search` · `POST /v1/people/search` · bulk `POST /v1/exports` (async CSV) | industry, companyType, employeeRange, revenue, funding, NAICS/SIC, hq country/city/state, technologies, keywords; cursor-paged; `/v1/filters` + `/v1/enums` for enums; `/coverage` for dataset scope | 25M search records/mo (shared with the harvest key) |
+
+**Status: these discovery legs are NOT yet routed through the ListBuilding API** — they are
+the approved next wiring target (owner direction 2026-11-11: shift TAM discovery from
+credit-limited Blitz/GetLeads onto unlimited QuickEnrich + LeadOcean). Agents with direct
+vendor keys can use the endpoints above today; through ListBuilding, use `/flows/tam` as-is.
 - **Degraded semantics (live since 2026-11-11):** if the shared Blitz breaker opens from
   unrelated traffic, the run either completes GetLeads-only with `coverage: "degraded…"` in
   the summary, or fails RETRYABLY (~60s) with the operator's options. A retryable failure is
