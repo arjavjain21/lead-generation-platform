@@ -457,3 +457,151 @@ def test_auto_submit_kill_switch(fresh_db, fake_dash, tmp_path, monkeypatch):
     _patch_job(monkeypatch, _eligible_job())
     run(wf.auto_submit_for_job("job-auto", _sample_results_csv(tmp_path / "job.csv")))
     assert wf.get_followup("job-auto") is None
+
+
+# ---------------------------------------------------------------------------
+# Merge-back (rung 2, 2026-11-19): curated website emails -> main CSV +
+# Contacts DB write-back.
+# ---------------------------------------------------------------------------
+
+
+def _insert_parent_job(job_id: str, output_csv: Path) -> None:
+    conn = shared_db.get_db()
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS jobs ("
+        " job_id TEXT PRIMARY KEY, job_type TEXT, status TEXT,"
+        " output_path TEXT DEFAULT '', partial_output_path TEXT DEFAULT '',"
+        " created_at TEXT DEFAULT '', updated_at TEXT DEFAULT '')"
+    )
+    conn.execute(
+        "INSERT INTO jobs (job_id, job_type, status, output_path, created_at, updated_at) "
+        "VALUES (?, 'enrichment', 'completed', ?, ?, ?)",
+        (job_id, str(output_csv), "2026-11-19T00:00:00Z", "2026-11-19T00:00:00Z"),
+    )
+    conn.commit()
+
+
+def _main_csv(path: Path) -> Path:
+    rows = [
+        {"domain": "miss1.com", "dm_email": "", "row_status": "no_contacts"},
+        {"domain": "miss1.com", "dm_email": "", "row_status": "not_found"},
+        {"domain": "hit.com", "dm_email": "ceo@hit.com", "row_status": "enriched"},
+        {"domain": "company.com", "dm_email": "", "company_email": "info@company.com", "row_status": "enriched"},
+        {"domain": "nomatch.org", "dm_email": "", "row_status": "no_contacts"},
+    ]
+    return _write_results_csv(path, rows)
+
+
+def test_curate_followup_emails_keeps_only_on_domain_role_addresses():
+    results = [
+        {"website": "a.com", "email": "info@a.com", "found": True, "status": "completed", "business_name": "A"},
+        {"website": "b.com", "email": "owner@gmail.com", "found": True, "status": "completed", "business_name": "B"},  # freemail
+        {"website": "c.com", "email": "info@other.com", "found": True, "status": "completed", "business_name": "C"},  # off-domain
+        {"website": "d.com", "email": "jane@d.com", "found": True, "status": "completed", "business_name": "D"},      # named person
+        {"website": "e.com", "email": "contact@e.com", "found": False, "status": "no_email", "business_name": "E"},   # not found
+        {"website": "f.com", "email": "frontdesk@f.com", "found": True, "status": "completed", "business_name": "F"},
+    ]
+    curated = wf._curate_followup_emails(results)
+    assert set(curated) == {"a.com", "f.com"}
+    assert curated["a.com"]["email"] == "info@a.com"
+    assert curated["f.com"]["email"] == "frontdesk@f.com"
+
+
+def test_merge_into_main_csv_fills_only_eligible_rows_and_is_idempotent(fresh_db, tmp_path):
+    main = _main_csv(tmp_path / "main.csv")
+    _insert_parent_job("job-merge", main)
+    curated = {
+        "miss1.com": {"email": "info@miss1.com", "business_name": "Miss1"},
+        "hit.com": {"email": "info@hit.com", "business_name": "Hit"},      # row has dm_email -> untouched
+        "company.com": {"email": "sales@company.com", "business_name": "Co"},  # row has company_email -> untouched
+        "missing.org": {"email": "info@missing.org", "business_name": ""},     # no matching rows
+    }
+    merged = wf._merge_into_main_csv("job-merge", curated)
+    assert merged == 2  # the two miss1.com rows
+    with open(main, newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    by_domain = [r for r in rows if r["domain"] == "miss1.com"]
+    assert all(r["company_email"] == "info@miss1.com" for r in by_domain)
+    assert all(r["company_email_source"] == "webscrape_followup" for r in by_domain)
+    assert all(r["final_email"] == "info@miss1.com" for r in by_domain)
+    assert all(r["final_email_level"] == "company" for r in by_domain)
+    hit = next(r for r in rows if r["domain"] == "hit.com")
+    assert hit["dm_email"] == "ceo@hit.com" and not hit.get("company_email")
+    co = next(r for r in rows if r["domain"] == "company.com")
+    assert co["company_email"] == "info@company.com"  # not overwritten
+    # Idempotent: second run changes nothing and leaves no tmp file.
+    assert wf._merge_into_main_csv("job-merge", curated) == 0
+    assert not list(tmp_path.glob("*.merging.tmp"))
+
+
+def test_finalize_merges_back_and_writes_to_contacts_db(fresh_db, fake_dash, tmp_path, monkeypatch):
+    notified = _notify_recorder(monkeypatch)
+    main = _main_csv(tmp_path / "main.csv")
+    _insert_parent_job("job-mb", main)
+    # The followup submitter reads the parent CSV for miss domains.
+    miss_csv = _write_results_csv(tmp_path / "miss.csv", [
+        {"input_domain": "miss1.com", "dm_email": "", "row_status": "no_contacts"},
+    ])
+    run(wf.create_followup("job-mb", miss_csv, origin="auto"))
+    batch_job = json.loads(wf.get_followup("job-mb")["batches_json"])[0]["job_id"]
+    fake_dash.job_states[batch_job] = {"total": 2, "processed": 2, "emails_found": 2, "done": True}
+    fake_dash.results[batch_job] = [
+        {"website": "miss1.com", "email": "info@miss1.com", "found": True, "status": "completed",
+         "business_name": "Miss1 Corp", "confidence": 0.95},
+        {"website": "miss1.com", "email": "someone@yahoo.com", "found": True, "status": "completed",
+         "business_name": "Miss1 Corp", "confidence": 0.5},  # freemail -> not merged
+    ]
+    written: list[list[dict[str, Any]]] = []
+
+    async def fake_batch(payloads, job_id=None):
+        written.append(payloads)
+        return {"queued": len(payloads)}
+
+    import enrichment.contacts_writer as cw
+    monkeypatch.setattr(cw, "write_enrichment_result_batch", fake_batch)
+
+    run(wf.poll_tick("w1"))
+    assert wf.get_followup("job-mb")["status"] == wf.STATUS_DONE
+    # Main CSV gained the website email on miss1.com rows.
+    with open(main, newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    miss_rows = [r for r in rows if r["domain"] == "miss1.com"]
+    assert len(miss_rows) == 2
+    assert all(r["company_email"] == "info@miss1.com" for r in miss_rows)
+    # Contacts DB write-back carried exactly the curated domain.
+    assert len(written) == 1 and len(written[0]) == 1
+    payload = written[0][0]
+    assert payload["domain"] == "miss1.com"
+    assert payload["company_email"] == "info@miss1.com"
+    assert payload["source_name"] == "webscrape_followup"
+    assert notified == [("job-mb", 2, 2)]
+
+
+def test_finalize_merge_failure_never_fails_finalize(fresh_db, fake_dash, tmp_path, monkeypatch):
+    notified = _notify_recorder(monkeypatch)
+    main = _main_csv(tmp_path / "main.csv")
+    _insert_parent_job("job-mbf", main)
+    miss_csv = _write_results_csv(tmp_path / "miss.csv", [
+        {"input_domain": "miss1.com", "dm_email": "", "row_status": "no_contacts"},
+    ])
+    run(wf.create_followup("job-mbf", miss_csv, origin="auto"))
+    batch_job = json.loads(wf.get_followup("job-mbf")["batches_json"])[0]["job_id"]
+    fake_dash.job_states[batch_job] = {"total": 1, "processed": 1, "emails_found": 1, "done": True}
+    fake_dash.results[batch_job] = [
+        {"website": "miss1.com", "email": "info@miss1.com", "found": True, "status": "completed",
+         "business_name": "", "confidence": 0.95},
+    ]
+    import enrichment.contacts_writer as cw
+
+    async def exploding_batch(payloads, job_id=None):
+        raise RuntimeError("outbox down")
+
+    monkeypatch.setattr(cw, "write_enrichment_result_batch", exploding_batch)
+    run(wf.poll_tick("w1"))
+    # Finalize still completed; the merge happened; only write-back degraded.
+    row = wf.get_followup("job-mbf")
+    assert row["status"] == wf.STATUS_DONE and row["error"] == ""
+    with open(main, newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    assert any(r["company_email"] == "info@miss1.com" for r in rows if r["domain"] == "miss1.com")
+    assert notified == [("job-mbf", 1, 1)]

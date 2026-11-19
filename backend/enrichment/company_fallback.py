@@ -164,6 +164,17 @@ _PLACEHOLDER_NAMES: frozenset[str] = frozenset({
 })
 
 
+def is_role_prefix_email(email: str) -> bool:
+    """Whether the local part is a known role/generic address prefix
+    (info@, contact@, frontdesk@, ...). Public: shared with
+    webscrape_followup's merge-back curation so both rungs accept the
+    same shape of company-level email.
+    """
+    if not email or "@" not in email:
+        return False
+    return email.split("@", 1)[0].strip().lower() in _CONTACTS_DB_ROLE_PREFIXES
+
+
 def _contactsdb_email_is_role_or_placeholder(email: str, full_name: str) -> bool:
     """Whether an on-domain email from the Contacts DB is a company-level
     address (role prefix OR placeholder full_name) rather than a named
@@ -172,8 +183,7 @@ def _contactsdb_email_is_role_or_placeholder(email: str, full_name: str) -> bool
     """
     if not email or "@" not in email:
         return False
-    local = email.split("@", 1)[0].strip().lower()
-    if local in _CONTACTS_DB_ROLE_PREFIXES:
+    if is_role_prefix_email(email):
         return True
     name = (full_name or "").strip().lower()
     if name in _PLACEHOLDER_NAMES or not name:

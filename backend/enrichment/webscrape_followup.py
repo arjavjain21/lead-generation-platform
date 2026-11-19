@@ -518,6 +518,26 @@ async def _finalize(parent_job_id: str) -> None:
         len(results),
         csv_path,
     )
+
+    # Rung 2 merge-back: curated on-domain website emails go into the main
+    # CSV (company_email/final_email) and the Contacts DB. Never fails
+    # finalize — each step degrades to a logged warning.
+    merged = 0
+    written_back = 0
+    try:
+        curated = _curate_followup_emails(results)
+        merged = _merge_into_main_csv(parent_job_id, curated)
+        written_back = await _writeback_company_emails(curated, parent_job_id)
+    except Exception as exc:  # noqa: BLE001 — merge must never fail finalize
+        logger.error("followup merge-back failed for %s: %s", parent_job_id, exc)
+    if merged or written_back:
+        logger.info(
+            "followup merge-back for %s: %d row(s) merged into main CSV, %d domain(s) pushed to Contacts DB",
+            parent_job_id,
+            merged,
+            written_back,
+        )
+
     await _notify_done(parent_job_id, emails_found, len(results))
 
 
@@ -598,6 +618,182 @@ async def _notify_done(parent_job_id: str, emails_found: int, total: int) -> Non
         )
     except Exception as exc:  # noqa: BLE001 — notify must never fail finalize
         logger.warning("followup notification failed for %s: %s", parent_job_id, exc)
+
+
+# ---------------------------------------------------------------------------
+# Merge-back (rung 2, 2026-11-19): fold curated website emails into the
+# parent job's main CSV + Contacts DB so users get ONE file with everything.
+# ---------------------------------------------------------------------------
+
+SOURCE_WEBCRAPE_FOLLOWUP = "webscrape_followup"
+
+# Rows whose result_status marks a scrape that found nothing usable.
+_MERGE_EXCLUDE_STATUSES = frozenset({"no_email", "error", "failed"})
+
+
+def _curate_followup_emails(results: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Pick the merge-worthy website emails from scrape results.
+
+    Mirrors the nightly sync's curation spirit, scoped to company-level
+    addresses only: found + on-domain + role/generic local part
+    (info@, contact@, frontdesk@, ...). Freemail (gmail/yahoo), off-domain
+    and named-person on-domain emails are NOT company emails and are left
+    for the person-waterfall side ticket.
+
+    Returns {normalized_domain: {"email", "business_name"}}.
+    """
+    from enrichment.company_fallback import is_role_prefix_email
+
+    curated: dict[str, dict[str, Any]] = {}
+    for r in results:
+        if not isinstance(r, dict) or not r.get("found"):
+            continue
+        if str(r.get("status") or "").strip().lower() in _MERGE_EXCLUDE_STATUSES:
+            continue
+        domain = normalize_domain(r.get("website") or "")
+        email = str(r.get("email") or "").strip().lower()
+        if not domain or not email or "@" not in email:
+            continue
+        if not email.endswith(f"@{domain}"):
+            continue
+        if not is_role_prefix_email(email):
+            continue
+        curated.setdefault(domain, {
+            "email": email,
+            "business_name": str(r.get("business_name") or "").strip(),
+        })
+    return curated
+
+
+def _main_csv_path(parent_job_id: str) -> Optional[Path]:
+    """The parent enrichment job's downloadable output CSV, if any."""
+    try:
+        conn = db.get_db()
+        row = conn.execute(
+            "SELECT output_path, partial_output_path FROM jobs WHERE job_id=? AND job_type='enrichment'",
+            (parent_job_id,),
+        ).fetchone()
+    except Exception as exc:  # missing jobs table (fresh test DB) etc.
+        logger.warning("merge-back job lookup failed for %s: %s", parent_job_id, exc)
+        return None
+    if not row:
+        return None
+    for candidate in (row[0], row[1]):
+        if candidate and str(candidate).strip().lower().endswith(".csv"):
+            path = Path(candidate)
+            if path.exists():
+                return path
+    return None
+
+
+def _merge_into_main_csv(parent_job_id: str, curated: dict[str, dict[str, Any]]) -> int:
+    """Write curated website emails into the parent job's main CSV.
+
+    Fills company_email* columns on every row of a matching domain that has
+    no company email yet, and final_email when the row also has no person
+    email (same person-first policy as the inline fallback tier). Idempotent
+    (rows with a company_email are never overwritten) and atomic
+    (tmp file + os.replace) so a concurrent download never sees a torn file.
+    """
+    if not curated:
+        return 0
+    csv_path = _main_csv_path(parent_job_id)
+    if csv_path is None:
+        return 0
+    try:
+        with open(csv_path, newline="", encoding="utf-8", errors="replace") as fh:
+            reader = csv.DictReader(fh)
+            fieldnames = list(reader.fieldnames or [])
+            rows = list(reader)
+    except Exception as exc:
+        logger.warning("merge-back read failed for %s: %s", csv_path, exc)
+        return 0
+    if not rows:
+        return 0
+
+    for col in ("company_email", "company_email_source", "company_email_verified",
+                "company_email_type", "company_email_source_path"):
+        if col not in fieldnames:
+            fieldnames.append(col)
+    for col in ("final_email", "final_email_level", "final_email_source_path"):
+        if col not in fieldnames:
+            fieldnames.append(col)
+
+    merged = 0
+    for row in rows:
+        if row.get("dm_email"):
+            continue
+        domain = normalize_domain(row.get("domain") or row.get("website") or row.get("input_domain") or "")
+        hit = curated.get(domain)
+        if not hit:
+            continue
+        if (row.get("company_email") or "").strip():
+            continue  # idempotent: never overwrite an existing company email
+        email = hit["email"]
+        row["company_email"] = email
+        row["company_email_source"] = SOURCE_WEBCRAPE_FOLLOWUP
+        row["company_email_verified"] = "unknown"
+        row["company_email_type"] = "generic"
+        row["company_email_source_path"] = SOURCE_WEBCRAPE_FOLLOWUP
+        if not (row.get("final_email") or "").strip():
+            row["final_email"] = email
+            row["final_email_level"] = "company"
+            row["final_email_source_path"] = SOURCE_WEBCRAPE_FOLLOWUP
+        merged += 1
+
+    if merged:
+        tmp_path = csv_path.with_name(csv_path.name + ".merging.tmp")
+        try:
+            with open(tmp_path, "w", newline="", encoding="utf-8") as fh:
+                writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(rows)
+            os.replace(tmp_path, csv_path)
+        except Exception as exc:
+            logger.warning("merge-back write failed for %s: %s", csv_path, exc)
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return 0
+    return merged
+
+
+async def _writeback_company_emails(
+    curated: dict[str, dict[str, Any]],
+    parent_job_id: str,
+) -> int:
+    """Push curated website emails into the Contacts DB via the sanctioned
+    contacts_writer outbox (same payload shape as the nightly website-scrape
+    sync). Makes the inline contacts_db fallback rung hit on these domains
+    for every future job. Best-effort: a writer outage never fails finalize
+    (the outbox retries), it only skips this round.
+    """
+    if not curated:
+        return 0
+    try:
+        from enrichment import contacts_writer
+
+        payloads = [
+            {
+                "domain": domain,
+                "company_name": hit["business_name"] or domain,
+                "company_email": hit["email"],
+                "company_email_source": SOURCE_WEBCRAPE_FOLLOWUP,
+                "company_email_verified": "unknown",
+                "company_email_type": "work",  # writer enum: work/personal/other
+                "source_path": SOURCE_WEBCRAPE_FOLLOWUP,
+                "source_name": SOURCE_WEBCRAPE_FOLLOWUP,
+                "provider_metadata": {"parent_job_id": parent_job_id, "kind": "webscrape_followup"},
+                "row_index": index,
+            }
+            for index, (domain, hit) in enumerate(curated.items())
+        ]
+        await contacts_writer.write_enrichment_result_batch(payloads, job_id=parent_job_id)
+        return len(payloads)
+    except Exception as exc:  # noqa: BLE001 — outbox LoudFailure etc.
+        logger.warning("merge-back contacts write-back failed for %s: %s", parent_job_id, exc)
+        return 0
 
 
 # ---------------------------------------------------------------------------
