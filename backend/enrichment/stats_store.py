@@ -85,6 +85,9 @@ SOURCE_GROUPS: dict[str, str] = {
     "better_enrich_person": "better_enrich",
     "better_enrich_facebook_email": "better_enrich",
     "better_enrich_company_email": "better_enrich",
+    # Contacts DB website-email fallback rung (2026-11-19) — aggregates to
+    # the contacts_db provider group like the other contacts_db sources.
+    "contacts_db_website": "contacts_db",
     # Prospeo sources
     "prospeo": "prospeo",
     "prospeo_person": "prospeo",

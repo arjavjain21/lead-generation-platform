@@ -421,6 +421,7 @@ SOURCE_BETTER_ENRICH_COMPANY = "better_enrich_company"    # Generic company emai
 SOURCE_BETTER_ENRICH_PERSON = "better_enrich_person"      # Person email from BetterEnrich
 SOURCE_BETTER_ENRICH_FACEBOOK = "better_enrich_facebook_email"  # Page email from BetterEnrich Facebook lookup
 SOURCE_BETTER_ENRICH_COMPANY_V2 = "better_enrich_company_email"  # Company email from BetterEnrich find-company-email (fallback tier)
+SOURCE_CONTACTS_DB_WEBSITE = "contacts_db_website"  # Scraped website email read back from the Contacts DB (fallback tier rung 1, 2026-11-19)
 SOURCE_WIZLEADS = "wizleads_email"                        # Person email from WizLeads
 SOURCE_SMARTPROSPECT = "smartprospect_email"              # Person email from SmartLead Find Emails (self-verifying)
 SOURCE_GETLEADS = "getleads_email"                        # Person email from GetLeads (app.getleads.io)

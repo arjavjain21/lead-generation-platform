@@ -604,5 +604,131 @@ class TestProviderAttemptsAccounting(unittest.IsolatedAsyncioTestCase):
         self.assertIn("better_enrich", recorded)
 
 
+# ---------------------------------------------------------------------------
+# Rung 1 (2026-11-19): free contacts_db website-email lookup.
+# ---------------------------------------------------------------------------
+
+
+class TestContactsDbWebsiteEmailRung(unittest.IsolatedAsyncioTestCase):
+    """The free contacts_db rung runs BEFORE the BetterEnrich tiers,
+    short-circuits them on hit, and falls through cleanly on miss."""
+
+    def _be_counters(self):
+        calls = {"facebook": 0, "company": 0}
+
+        async def fake_fb(http, url):
+            calls["facebook"] += 1
+            return {"email": "page@acme.com", "email_status": "verified"}
+
+        async def fake_company(http, website):
+            calls["company"] += 1
+            return None
+
+        return calls, fake_fb, fake_company
+
+    async def test_hit_populates_company_email_and_skips_be(self):
+        calls, fake_fb, fake_company = self._be_counters()
+        persons = [
+            {"email": "carlos@acme.com", "full_name": "Carlos Xavier"},   # named person — must be skipped
+            {"email": "contact@acme.com", "full_name": "Acme Dental Care"},  # on-domain placeholder
+        ]
+        with _enable_company_fallbacks(allow_generic=True, allow_as_final=True), \
+             patch.object(cc, "company_persons_by_domain", AsyncMock(return_value=persons)), \
+             patch.object(bec, "find_email_from_facebook_page", fake_fb), \
+             patch.object(bec, "find_company_email", fake_company):
+            fb_result = await cf.run_company_fallbacks(
+                AsyncMock(), domain="acme.com", facebook_url="https://facebook.com/AcmePage",
+                source_path_prefix="contacts_db -> wizleads", validate_email=True,
+            )
+        self.assertEqual(fb_result["company_email"], "contact@acme.com")
+        self.assertEqual(fb_result["company_email_source"], pipeline_mod.SOURCE_CONTACTS_DB_WEBSITE)
+        self.assertEqual(fb_result["company_email_type"], "generic")
+        self.assertEqual(fb_result["company_email_verified"], "unknown")
+        self.assertIn("contacts_db_website", fb_result["company_email_source_path"])
+        self.assertEqual(fb_result["final_email"], "contact@acme.com")
+        self.assertEqual(fb_result["final_email_level"], "company")
+        self.assertIn("contacts_db", fb_result["providers_called"])
+        self.assertIn("contacts_db_website_email", fb_result["providers_called"])
+        # Paid BetterEnrich tiers never fired.
+        self.assertEqual(calls["facebook"], 0)
+        self.assertEqual(calls["company"], 0)
+
+    async def test_named_person_only_is_a_miss_not_a_company_email(self):
+        calls, fake_fb, fake_company = self._be_counters()
+        persons = [{"email": "carlos@acme.com", "full_name": "Carlos Xavier"}]
+        with _enable_company_fallbacks(allow_generic=True, allow_as_final=True), \
+             patch.object(cc, "company_persons_by_domain", AsyncMock(return_value=persons)), \
+             patch.object(bec, "find_email_from_facebook_page", fake_fb), \
+             patch.object(bec, "find_company_email", fake_company):
+            fb_result = await cf.run_company_fallbacks(
+                AsyncMock(), domain="acme.com", facebook_url="", validate_email=False,
+            )
+        # Named on-domain person emails are NOT misfiled as company emails.
+        self.assertEqual(fb_result["company_email"], "")
+        # Miss fell through to the paid company tier.
+        self.assertEqual(calls["company"], 1)
+
+    async def test_role_prefix_frontdesk_classified_generic(self):
+        persons = [{"email": "frontdesk@acme.com", "full_name": "Office Location"}]
+        with _enable_company_fallbacks(allow_generic=False, allow_as_final=True), \
+             patch.object(cc, "company_persons_by_domain", AsyncMock(return_value=persons)), \
+             patch.object(bec, "find_email_from_facebook_page", AsyncMock(return_value=None)), \
+             patch.object(bec, "find_company_email", AsyncMock(return_value=None)):
+            fb_result = await cf.run_company_fallbacks(
+                AsyncMock(), domain="acme.com", facebook_url="", validate_email=False,
+            )
+        # Policy rejected it: type/email cleared + explicit reason.
+        self.assertEqual(fb_result["no_email_reason"], "generic_company_email_rejected")
+        self.assertEqual(fb_result["company_email"], "")
+
+    async def test_exception_in_contacts_db_is_swallowed(self):
+        calls, fake_fb, fake_company = self._be_counters()
+        with _enable_company_fallbacks(allow_generic=True, allow_as_final=True), \
+             patch.object(cc, "company_persons_by_domain", AsyncMock(side_effect=RuntimeError("boom"))), \
+             patch.object(bec, "find_email_from_facebook_page", fake_fb), \
+             patch.object(bec, "find_company_email", fake_company):
+            fb_result = await cf.run_company_fallbacks(
+                AsyncMock(), domain="acme.com", facebook_url="", validate_email=False,
+            )
+        self.assertEqual(fb_result["company_email"], "")
+        self.assertEqual(calls["company"], 1)
+
+    async def test_dedupe_one_lookup_per_domain(self):
+        calls, fake_fb, fake_company = self._be_counters()
+        persons = [{"email": "info@acme.com", "full_name": "Contact"}]
+        mock_lookup = AsyncMock(return_value=persons)
+        dedupe = cf.CompanyFallbackDedupe()
+        with _enable_company_fallbacks(allow_generic=True, allow_as_final=True), \
+             patch.object(cc, "company_persons_by_domain", mock_lookup), \
+             patch.object(bec, "find_email_from_facebook_page", fake_fb), \
+             patch.object(bec, "find_company_email", fake_company):
+            r1 = await cf.run_company_fallbacks(
+                AsyncMock(), domain="acme.com", facebook_url="", validate_email=False, dedupe=dedupe,
+            )
+            r2 = await cf.run_company_fallbacks(
+                AsyncMock(), domain="https://www.acme.com/about", facebook_url="", validate_email=False, dedupe=dedupe,
+            )
+        self.assertEqual(mock_lookup.await_count, 1)
+        self.assertEqual(r1["company_email"], "info@acme.com")
+        self.assertEqual(r2["company_email"], "info@acme.com")
+
+    async def test_rung_runs_even_when_better_enrich_globally_off(self):
+        """contacts_db is always allowed: the free rung must NOT be gated on
+        better_enrich_allowed (unlike the paid BE tiers)."""
+        calls, fake_fb, fake_company = self._be_counters()
+        persons = [{"email": "info@acme.com", "full_name": "Contact"}]
+        with _enable_company_fallbacks(allow_generic=True, allow_as_final=True), \
+             patch.dict(providers_mod.ENABLED_PROVIDERS, {"better_enrich": False}), \
+             patch.object(cc, "company_persons_by_domain", AsyncMock(return_value=persons)), \
+             patch.object(bec, "find_email_from_facebook_page", fake_fb), \
+             patch.object(bec, "find_company_email", fake_company):
+            fb_result = await cf.run_company_fallbacks(
+                AsyncMock(), domain="acme.com", facebook_url="", validate_email=False,
+            )
+        self.assertEqual(fb_result["company_email"], "info@acme.com")
+        self.assertEqual(fb_result["no_email_reason"], "")
+        self.assertEqual(calls["company"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

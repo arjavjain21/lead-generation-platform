@@ -9,6 +9,16 @@ company_email/final_email columns and is subject to the policy in
 `fallback_config.py` (ALLOW_GENERIC_COMPANY_EMAIL,
 ALLOW_COMPANY_EMAIL_AS_FINAL).
 
+Rung order (2026-11-19, after the BetterEnrich credits died):
+  1. contacts_db website-email lookup — FREE and instant. The nightly
+     website-scrape sync (tag ``website_scrape``) and past write-backs
+     store scraped on-domain emails in the Contacts DB as placeholder
+     person rows; this rung reads them back per domain. Measured ~20%
+     hit on live no-email domains. Not gated on better_enrich (contacts_db
+     is always allowed, same as the person waterfall).
+  2. BetterEnrich find-email-from-facebook-page (paid, env-gated).
+  3. BetterEnrich find-company-email (paid, env-gated).
+
 Dedupe:
   * BetterEnrich find-company-email: keyed by `normalized_domain` and
     reused across rows in the same job. The first row that needs the
@@ -27,6 +37,7 @@ from typing import Any, Awaitable, Callable, Optional
 import httpx
 
 from . import better_enrich_client
+from . import contacts_client
 from . import fallback_config as fb_cfg
 from . import identifier_utils
 from . import mailtester_client
@@ -133,6 +144,88 @@ def _classify_email_type(email: str) -> str:
     return "generic" if fb_cfg.is_generic_email(email) else "specific"
 
 
+# Role-address local-parts accepted by the contacts_db website-email rung,
+# beyond the 7 generic prefixes in fallback_config (frontdesk/inquiry/etc.
+# are role mailboxes the website-scrape sync regularly captures). Used for
+# BOTH selection and classification so ALLOW_GENERIC_COMPANY_EMAIL policy
+# applies consistently to everything this rung returns.
+_CONTACTS_DB_ROLE_PREFIXES: frozenset[str] = frozenset({
+    "frontdesk", "front-desk", "inquiry", "inquiries", "enquiry",
+    "enquiries", "mail", "team", "reception", "receptionist", "help",
+    "helpdesk", "info", "contact", "support", "hello", "sales", "admin",
+    "office",
+})
+
+# full_name values that mark a Contacts DB person row as a company-contact
+# placeholder rather than a real decision maker (the website-scrape sync
+# writes the business name or "Contact"; never a first+last person name).
+_PLACEHOLDER_NAMES: frozenset[str] = frozenset({
+    "contact", "office location", "office", "admin", "info",
+})
+
+
+def _contactsdb_email_is_role_or_placeholder(email: str, full_name: str) -> bool:
+    """Whether an on-domain email from the Contacts DB is a company-level
+    address (role prefix OR placeholder full_name) rather than a named
+    person's direct address. Named persons are skipped: their emails belong
+    in dm_email via the person waterfall, not in company_email.
+    """
+    if not email or "@" not in email:
+        return False
+    local = email.split("@", 1)[0].strip().lower()
+    if local in _CONTACTS_DB_ROLE_PREFIXES:
+        return True
+    name = (full_name or "").strip().lower()
+    if name in _PLACEHOLDER_NAMES or not name:
+        return True
+    return False
+
+
+def _classify_contactsdb_email_type(email: str) -> str:
+    """Classify a contacts_db rung email for the generic-policy gate."""
+    if not email:
+        return ""
+    local = email.split("@", 1)[0].strip().lower()
+    return "generic" if (local in _CONTACTS_DB_ROLE_PREFIXES) else "specific"
+
+
+async def _contactsdb_website_email(
+    client: httpx.AsyncClient,
+    domain: str,
+) -> Optional[dict[str, Any]]:
+    """Look up a scraped website email for `domain` in the Contacts DB.
+
+    Queries persons-by-domain (the nightly website-scrape sync stores
+    scraped emails as placeholder person rows linked to the company) and
+    returns the first on-domain role/placeholder email as
+    ``{"email", "email_status": "unknown"}`` — same shape as the
+    BetterEnrich results so the shared classification/policy code path
+    applies unchanged. Returns None on miss/404. Never raises: any error
+    is logged and treated as a miss so the paid tiers can still run.
+    """
+    domain_key = normalize_domain_key(domain)
+    if not domain_key:
+        return None
+    try:
+        persons = await contacts_client.company_persons_by_domain(client, domain_key)
+        if not isinstance(persons, list):
+            return None
+        for person in persons:
+            if not isinstance(person, dict):
+                continue
+            email = str(person.get("email") or "").strip().lower()
+            if not email or "@" not in email:
+                continue
+            if not email.endswith(f"@{domain_key}"):
+                continue
+            if _contactsdb_email_is_role_or_placeholder(email, str(person.get("full_name") or "")):
+                return {"email": email, "email_status": "unknown"}
+        return None
+    except Exception as e:
+        logger.warning("contacts_db website-email lookup failed for %s: %s", domain_key, e)
+        return None
+
+
 def _build_source_path(parts: list[str]) -> str:
     """Join non-empty source_path parts with ' -> '. Strips empties."""
     return " -> ".join(p for p in parts if p)
@@ -150,9 +243,49 @@ class CompanyFallbackDedupe:
     def __init__(self) -> None:
         self._company: dict[str, Optional[dict]] = {}
         self._facebook: dict[str, Optional[dict]] = {}
+        self._contactsdb: dict[str, Optional[dict]] = {}
         self._company_inflight: dict[str, asyncio.Future] = {}
         self._facebook_inflight: dict[str, asyncio.Future] = {}
+        self._contactsdb_inflight: dict[str, asyncio.Future] = {}
         self._lock = asyncio.Lock()
+
+    async def get_or_fetch_contactsdb(
+        self,
+        fetch: Callable[[], Awaitable[Optional[dict]]],
+        domain: str,
+    ) -> Optional[dict]:
+        """Run `fetch` at most once per normalized_domain for the free
+        contacts_db website-email rung (same race-sharing semantics as the
+        company/facebook methods)."""
+        key = normalize_domain_key(domain)
+        if not key:
+            return None
+        own_call = False
+        inflight: Optional[asyncio.Future] = None
+        async with self._lock:
+            if key in self._contactsdb:
+                return self._contactsdb[key]
+            if key in self._contactsdb_inflight:
+                inflight = self._contactsdb_inflight[key]
+            else:
+                inflight = asyncio.get_event_loop().create_future()
+                self._contactsdb_inflight[key] = inflight
+                own_call = True
+        if not own_call:
+            assert inflight is not None
+            return await inflight
+        try:
+            result = await fetch()
+        except Exception as e:
+            inflight.set_exception(e)
+            async with self._lock:
+                self._contactsdb_inflight.pop(key, None)
+            raise
+        async with self._lock:
+            self._contactsdb[key] = result
+            self._contactsdb_inflight.pop(key, None)
+        inflight.set_result(result)
+        return result
 
     async def get_or_fetch_company(
         self,
@@ -308,9 +441,55 @@ async def run_company_fallbacks(
     # products; a selection that omits better_enrich must not leak paid calls.
     be_allowed = better_enrich_allowed(selected_providers)
 
+    # ---- Rung 1: contacts_db website-email lookup (free, instant) ----
+    # Reads back scraped website emails (nightly website_scrape sync) from
+    # the Contacts DB. Not gated on better_enrich_allowed: contacts_db is
+    # always allowed, same as the person waterfall. Runs before the paid
+    # tiers and short-circuits them on hit.
+    if _is_paid_company():
+        async def _do_contactsdb() -> Optional[dict]:
+            providers_called.append("contacts_db")
+            if record_provider_use:
+                try:
+                    record_provider_use("contacts_db")
+                except Exception as e:
+                    logger.warning("record_provider_use failed: %s", e)
+            return await _contactsdb_website_email(blitz_http, domain)
+
+        cdb_result = await dedupe.get_or_fetch_contactsdb(_do_contactsdb, domain)
+        if cdb_result and cdb_result.get("email"):
+            providers_called.append("contacts_db_website_email")
+            company_email = cdb_result["email"]
+            company_email_source = pipeline_mod.SOURCE_CONTACTS_DB_WEBSITE
+            # Scraped emails are pre-curated by the sync (own-domain /
+            # role-service classes, junk-filtered) — accepted as-is, no
+            # MailTester hop on the hot path.
+            company_email_verified = "unknown"
+            company_email_type = _classify_contactsdb_email_type(company_email)
+            company_email_source_path = _build_source_path([
+                source_path_prefix,
+                "contacts_db_website",
+            ])
+            if collector is not None:
+                try:
+                    collector.capture_company_email(
+                        source="contacts_db",
+                        domain=domain,
+                        company_linkedin_url=company_linkedin_url,
+                        email_data=cdb_result,
+                    )
+                except Exception as _cap_err:
+                    logger.debug(
+                        "collector.capture_company_email(contacts_db) failed for %s: %s",
+                        domain, _cap_err,
+                    )
+
     # ---- Facebook page email fallback ----
     normalized_fb = identifier_utils.normalize_facebook_url(facebook_url)
-    if not be_allowed or not _is_paid_facebook():
+    if company_email:
+        # Free contacts_db rung already yielded — skip the paid lookups.
+        pass
+    elif not be_allowed or not _is_paid_facebook():
         if facebook_url and not normalized_fb:
             # facebook URL was given but not parseable.
             no_email_reason = pipeline_mod.NO_EMAIL_REASON_FACEBOOK_PAGE_MISSING
