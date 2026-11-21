@@ -1617,10 +1617,10 @@ async def _run_route_step(
                 return {"email": "", "source": SOURCE_NOT_FOUND}
             if _is_provider_error(result):
                 return result
-            if result and result.get("email"):
-                # MailTester-verified by the service; catch-all hint
-                # guesses (unverified) are never returned as emails by
-                # the client, so anything here is vendor-verified.
+            if result and result.get("email") and result.get("verified", True):
+                # Only vendor-verified (MailTester code=ok) results count;
+                # the client flags catch-all hint guesses verified=False and
+                # those must never be returned as found emails.
                 verification["dm_email_verified"] = "yes"
                 verification["email_finder_pattern"] = result.get("pattern") or ""
                 verification["email_finder_hint_status"] = result.get("hint_status") or ""

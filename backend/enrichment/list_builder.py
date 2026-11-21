@@ -1155,7 +1155,8 @@ async def _resolve_person_email(
                 result = await email_finder_client.find_email(
                     blitz_http, first_name=ef_first, last_name=ef_last, domain=domain,
                 )
-                if result and result.get("email"):
+                if result and result.get("email") and result.get("verified", True):
+                    # Unverified catch-all guesses are never returned as found
                     return (
                         result["email"],
                         "",
