@@ -1145,6 +1145,7 @@ async def _run_route_step(
     record_provider_use: Optional[Callable[[str], None]] = None,
     pre_resolved_getleads: Optional[dict[str, Any]] = None,
     pre_resolved_smartprospect: Optional[dict[str, Any]] = None,
+    force_provider: str = "",
 ) -> dict[str, Any]:
     """Execute a single routed step. Returns one of:
 
@@ -1597,7 +1598,8 @@ async def _run_route_step(
                     (inputs.get("first_name") or "").lower(),
                     (inputs.get("last_name") or "").lower(),
                     (inputs.get("domain") or "").lower(),
-                )
+                ),
+                force_provider or "",
             ):
                 return {"email": "", "source": SOURCE_NOT_FOUND}
             _record("email_finder")
@@ -1763,6 +1765,7 @@ async def run_enrichment_route(
     record_provider_use: Optional[Callable[[str], None]] = None,
     pre_resolved_getleads: Optional[dict[str, Any]] = None,
     pre_resolved_smartprospect: Optional[dict[str, Any]] = None,
+    force_provider: str = "",
 ) -> dict[str, Any]:
     """Execute a route produced by `route_enrichment`.
 
@@ -1846,6 +1849,7 @@ async def run_enrichment_route(
             record_provider_use=record_provider_use,
             pre_resolved_getleads=pre_resolved_getleads,
             pre_resolved_smartprospect=pre_resolved_smartprospect,
+            force_provider=force_provider,
         )
         latency_ms = int((time.monotonic() - t0) * 1000)
         steps_taken.append(step)
@@ -5373,6 +5377,7 @@ async def run_pipeline(
                 contacts_http,
                 email_semaphore,
                 validate_email=validate_email,
+                force_provider=force_provider or "",
                 job_id=job_id or "",
                 row_index=idx,
                 emit_logs=True,
