@@ -82,6 +82,22 @@ def email_finder_canary_bucket(identifier: str) -> int:
     return int(hashlib.sha1(identifier.encode("utf-8")).hexdigest(), 16) % 100
 
 
+# Persistent canary halt state, written by the watchdog
+# (tools/canary_watchdog.py) when a safety threshold trips. File-based so
+# the halt survives restarts and is visible to every worker without env
+# changes. Cleared only by an operator after investigation.
+EMAIL_FINDER_HALT_FILE = os.environ.get(
+    "EMAIL_FINDER_HALT_FILE", "/mnt/disk/email-finder/canary_halt"
+)
+
+
+def _canary_halted() -> bool:
+    try:
+        return os.path.exists(EMAIL_FINDER_HALT_FILE)
+    except OSError:
+        return True  # fail closed: unreadable state halts the tier
+
+
 def email_finder_rollout_allows(identifier: str, force_provider: str = "") -> bool:
     """Canary gate for the Email Finder terminal tier.
 
@@ -89,9 +105,11 @@ def email_finder_rollout_allows(identifier: str, force_provider: str = "") -> bo
     env kill switch) AND the identifier falling inside the
     EMAIL_FINDER_CANARY_PERCENT cohort (0=off default, 5=canary, 100=full).
     An explicit force_provider=email_finder diagnostic request bypasses the
-    canary but never the enable/kill switches.
+    canary but never the enable/kill switches or a watchdog halt.
     """
     if not is_provider_enabled("email_finder"):
+        return False
+    if _canary_halted():
         return False
     if force_provider == "email_finder":
         return True
