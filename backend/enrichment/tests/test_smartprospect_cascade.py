@@ -213,6 +213,7 @@ class TestRoutePlanning:
             "moltsets",
             "better_enrich",
             "wizleads",
+            "email_finder",
         ]
         blitz_idx = providers_in_order.index("blitz")
         sp_idx = providers_in_order.index("smartprospect")
@@ -314,6 +315,7 @@ class TestRouteEnrichmentAutoDerivesNames:
             "moltsets",
             "better_enrich",
             "wizleads",
+            "email_finder",
         ]
 
     def test_explicit_first_and_last_are_not_overridden(self):
