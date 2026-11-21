@@ -681,6 +681,27 @@ def normalize_better_enrich_contact(raw: dict) -> Optional[dict[str, str]]:
     )
 
 
+def normalize_email_finder_contact(raw: dict) -> Optional[dict[str, str]]:
+    """Normalize an Email Finder service capture.
+
+    The cascade capture augments the client result
+    (``enrichment/email_finder_client.py``) with identity fields for
+    lineage. Only vendor-verified emails reach capture (the cascade blocks
+    drop unverified catch-all guesses before capturing).
+    """
+    if not isinstance(raw, dict):
+        return None
+    return _build_record(
+        source="email_finder",
+        email=raw.get("email"),
+        first_name=raw.get("first_name"),
+        last_name=raw.get("last_name"),
+        full_name=raw.get("full_name"),
+        linkedin_url=raw.get("linkedin_url"),
+        domain=raw.get("domain"),
+    )
+
+
 def normalize_wizleads_contact(raw: dict) -> Optional[dict[str, str]]:
     """Normalize a WizLeads contact dict.
 
@@ -1083,6 +1104,7 @@ _PROVIDER_DISPATCH: dict[str, Callable[[dict], Optional[dict[str, str]]]] = {
     "betterenrich": normalize_better_enrich_contact,
     "better-enrich": normalize_better_enrich_contact,
     "wizleads": normalize_wizleads_contact,
+    "email_finder": normalize_email_finder_contact,
     "wiz_leads": normalize_wizleads_contact,
     "wiz-leads": normalize_wizleads_contact,
     "smartprospect": normalize_smartprospect_contact,

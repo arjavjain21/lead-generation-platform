@@ -3268,6 +3268,41 @@ async def _resolve_email_for_person(
                     _record_error("wizleads", "find_email", e)
                     logger.warning("WizLeads lookup failed for %s / %s: %s", full_name, domain, e)
 
+        # Step 10.5 (terminal, ENABLE_EMAIL_FINDER): internal Email Finder
+        # service — pattern brute-force validated via the shared MailTester
+        # proxy. Mirrors the route-engine block (ROUTE_METHOD_EMAIL_FINDER_FIND)
+        # and list_builder._resolve_person_email.
+        if full_name and domain and not _should_skip_provider("email_finder", force_provider):
+            ef_first = person.get("first_name", "") or (full_name.split(" ")[0] if full_name else "")
+            ef_last = person.get("last_name", "") or (" ".join(full_name.split(" ")[1:]) if " " in full_name else "")
+            if ef_first and ef_last:
+                _record("email_finder")
+                try:
+                    from . import email_finder_client as _ef
+                    ef_result = await _ef.find_email(
+                        blitz_client_inst,
+                        first_name=ef_first, last_name=ef_last, domain=domain,
+                    )
+                    if ef_result and ef_result.get("email") and ef_result.get("verified", True):
+                        email = ef_result["email"]
+                        _capture("email_finder", {
+                            **ef_result,
+                            "full_name": full_name,
+                            "first_name": ef_first,
+                            "last_name": ef_last,
+                            "linkedin_url": linkedin_url,
+                            "email": email,
+                        })
+                        verification_info["dm_email_verified"] = "yes"
+                        verification_info["email_finder_pattern"] = ef_result.get("pattern") or ""
+                        verification_info["email_finder_mailtester_calls"] = ef_result.get("mailtester_calls", 0)
+                        logger.info("Email Finder found email for %s: %s (%s)",
+                                    full_name, email, ef_result.get("pattern"))
+                        return email, SOURCE_EMAIL_FINDER, verification_info
+                except Exception as e:
+                    _record_error("email_finder", "find_email", e)
+                    logger.warning("Email Finder lookup failed for %s / %s: %s", full_name, domain, e)
+
         # Step 11: Contacts DB by input row name + domain (if different from person name)
         # This handles edge cases where the input name differs from the person's current name
         if input_full_name and input_full_name != full_name and domain and not _should_skip_provider("contacts_db", force_provider):
