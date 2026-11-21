@@ -1592,6 +1592,14 @@ async def _run_route_step(
             return {"email": "", "source": SOURCE_NOT_FOUND}
 
         if method == ROUTE_METHOD_EMAIL_FINDER_FIND:
+            if not providers.email_finder_rollout_allows(
+                "{}|{}|{}".format(
+                    (inputs.get("first_name") or "").lower(),
+                    (inputs.get("last_name") or "").lower(),
+                    (inputs.get("domain") or "").lower(),
+                )
+            ):
+                return {"email": "", "source": SOURCE_NOT_FOUND}
             _record("email_finder")
             try:
                 from . import email_finder_client as _ef
@@ -3272,7 +3280,16 @@ async def _resolve_email_for_person(
         # service — pattern brute-force validated via the shared MailTester
         # proxy. Mirrors the route-engine block (ROUTE_METHOD_EMAIL_FINDER_FIND)
         # and list_builder._resolve_person_email.
-        if full_name and domain and not _should_skip_provider("email_finder", force_provider):
+        if (
+            full_name and domain
+            and not _should_skip_provider("email_finder", force_provider)
+            and providers.email_finder_rollout_allows(
+                f"{(person.get('first_name') or full_name.split(' ')[0] or '').lower()}|"
+                f"{(' '.join(full_name.split(' ')[1:]) if ' ' in full_name else person.get('last_name') or '').lower()}|"
+                f"{domain.lower()}",
+                force_provider or "",
+            )
+        ):
             ef_first = person.get("first_name", "") or (full_name.split(" ")[0] if full_name else "")
             ef_last = person.get("last_name", "") or (" ".join(full_name.split(" ")[1:]) if " " in full_name else "")
             if ef_first and ef_last:

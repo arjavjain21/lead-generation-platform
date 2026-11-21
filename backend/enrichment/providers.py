@@ -71,6 +71,41 @@ def is_provider_enabled(provider: str) -> bool:
     return True
 
 
+def email_finder_canary_bucket(identifier: str) -> int:
+    """Deterministic 0-99 cohort bucket from a stable identifier.
+
+    sha1-based, so the same person (keyed on first+last+domain, lowercased)
+    lands in the same bucket across jobs, restarts, and workers — no
+    cohort registry needed.
+    """
+    import hashlib
+    return int(hashlib.sha1(identifier.encode("utf-8")).hexdigest(), 16) % 100
+
+
+def email_finder_rollout_allows(identifier: str, force_provider: str = "") -> bool:
+    """Canary gate for the Email Finder terminal tier.
+
+    Requires the provider enabled (ENABLED_PROVIDERS + ENABLE_EMAIL_FINDER
+    env kill switch) AND the identifier falling inside the
+    EMAIL_FINDER_CANARY_PERCENT cohort (0=off default, 5=canary, 100=full).
+    An explicit force_provider=email_finder diagnostic request bypasses the
+    canary but never the enable/kill switches.
+    """
+    if not is_provider_enabled("email_finder"):
+        return False
+    if force_provider == "email_finder":
+        return True
+    try:
+        pct = int(os.environ.get("EMAIL_FINDER_CANARY_PERCENT", "0"))
+    except ValueError:
+        pct = 0
+    if pct <= 0:
+        return False
+    if pct >= 100:
+        return True
+    return email_finder_canary_bucket(identifier) < pct
+
+
 def get_enabled_providers() -> list[str]:
     """
     Return list of enabled provider names.

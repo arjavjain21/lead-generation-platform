@@ -1144,7 +1144,13 @@ async def _resolve_person_email(
     # Terminal tier (ENABLE_EMAIL_FINDER, default off): internal Email Finder
     # service — pattern brute-force validated via the shared MailTester proxy.
     # Mirrors pipeline.py ROUTE_METHOD_EMAIL_FINDER_FIND.
-    if search_name and domain and not _should_skip_provider("email_finder", force_provider, selected_providers):
+    if (
+        search_name and domain
+        and not _should_skip_provider("email_finder", force_provider, selected_providers)
+        and providers.email_finder_rollout_allows(
+            f"{search_name.lower()}|{domain.lower()}", force_provider or ""
+        )
+    ):
         ef_first = search_name.split(" ")[0] if search_name else ""
         ef_last = " ".join(search_name.split(" ")[1:]) if " " in search_name else ""
         if ef_first and ef_last:

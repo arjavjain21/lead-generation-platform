@@ -117,3 +117,54 @@ class TestClient:
 
         assert result["email"] == ""
         assert result["skipped_reason"] == "catch_all"
+
+
+class TestCanaryGate:
+    def test_bucket_is_deterministic(self):
+        from enrichment.providers import email_finder_canary_bucket
+        a = email_finder_canary_bucket("john|doe|acme.com")
+        b = email_finder_canary_bucket("john|doe|acme.com")
+        assert a == b and 0 <= a < 100
+
+    def test_canary_off_by_default(self):
+        import os
+        from enrichment.providers import email_finder_rollout_allows
+        os.environ.pop("EMAIL_FINDER_CANARY_PERCENT", None)
+        with patch.dict(providers.ENABLED_PROVIDERS, {"email_finder": True}):
+            # even enabled, percent default 0 -> nobody passes
+            assert not email_finder_rollout_allows("anyone")
+
+    def test_five_percent_cohort_boundary(self):
+        from enrichment.providers import email_finder_canary_bucket, email_finder_rollout_allows
+        with patch.dict(providers.ENABLED_PROVIDERS, {"email_finder": True}), \
+             patch.dict({"EMAIL_FINDER_CANARY_PERCENT": "5"}):
+            import os
+            os.environ["EMAIL_FINDER_CANARY_PERCENT"] = "5"
+            inside = f"cohort-member-{email_finder_canary_bucket('x')}"  # sanity var
+            # deterministic members: bucket<5 pass, >=5 don't
+            for i in range(200):
+                ident = f"person{i}"
+                b = email_finder_canary_bucket(ident)
+                assert email_finder_rollout_allows(ident) == (b < 5)
+            os.environ.pop("EMAIL_FINDER_CANARY_PERCENT", None)
+
+    def test_full_percent_and_force_override(self):
+        from enrichment.providers import email_finder_rollout_allows
+        with patch.dict(providers.ENABLED_PROVIDERS, {"email_finder": True}):
+            import os
+            os.environ["EMAIL_FINDER_CANARY_PERCENT"] = "100"
+            assert email_finder_rollout_allows("anyone")
+            os.environ["EMAIL_FINDER_CANARY_PERCENT"] = "0"
+            assert not email_finder_rollout_allows("anyone")
+            # force_provider bypasses the canary but not the kill switch
+            assert email_finder_rollout_allows("anyone", force_provider="email_finder")
+            os.environ.pop("EMAIL_FINDER_CANARY_PERCENT", None)
+
+    def test_kill_switch_beats_everything(self):
+        from enrichment.providers import email_finder_rollout_allows
+        import os
+        with patch.dict(providers.ENABLED_PROVIDERS, {"email_finder": True}), \
+             patch.dict(os.environ, {"ENABLE_EMAIL_FINDER": "false",
+                                     "EMAIL_FINDER_CANARY_PERCENT": "100"}):
+            assert not email_finder_rollout_allows("anyone")
+            assert not email_finder_rollout_allows("anyone", force_provider="email_finder")
