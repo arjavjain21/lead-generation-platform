@@ -25,11 +25,10 @@ ENABLED_PROVIDERS: Final[dict[str, bool]] = {
     "prospeo": False,   # ← disable Prospeo (was paid, temporarily disabled)
     # Internal Email Finder service (127.0.0.1:8910, systemd email-finder.service):
     # terminal pattern-guessing fallback validated via the shared MailTester
-    # proxy. HARD-OFF until the rollout gate is approved: flip to True (code
-    # deploy + restart) to arm; ENABLE_EMAIL_FINDER env then acts as the
-    # runtime kill switch. Kept out of get_enabled_providers() listings while
-    # off so it never appears in the public providers status endpoint.
-    "email_finder": False,
+    # proxy. ARMED 2026-11-21 (approved 5% canary): ENABLE_EMAIL_FINDER env
+    # is the runtime kill switch; EMAIL_FINDER_CANARY_PERCENT gates traffic
+    # (0 = armed but no traffic; watchdog halt file overrides everything).
+    "email_finder": True,
 }
 
 

@@ -20,9 +20,11 @@ from enrichment.routes import VALID_PROVIDERS as ROUTES_PROVIDERS
 
 
 class TestProviderFlag:
-    def test_disabled_by_default(self):
-        """Hard-off: not in ENABLED_PROVIDERS until the rollout gate flips it."""
-        assert not providers.is_provider_enabled("email_finder")
+    def test_armed_with_kill_switch(self):
+        """Armed since the approved 2026-11-21 canary; env kill switch disables."""
+        assert providers.is_provider_enabled("email_finder")
+        with patch.dict(os.environ, {"ENABLE_EMAIL_FINDER": "false"}):
+            assert not providers.is_provider_enabled("email_finder")
 
     def test_env_is_kill_switch_once_armed(self):
         with patch.dict(providers.ENABLED_PROVIDERS, {"email_finder": True}):
@@ -37,11 +39,11 @@ class TestProviderFlag:
 
 
 class TestRouteConstruction:
-    def test_no_step_when_disabled(self):
-        os.environ.pop("ENABLE_EMAIL_FINDER", None)
-        route = route_enrichment(
-            first_name="John", last_name="Doe", domain="acme.com",
-        )
+    def test_no_step_when_kill_switched(self):
+        with patch.dict(os.environ, {"ENABLE_EMAIL_FINDER": "false"}):
+            route = route_enrichment(
+                first_name="John", last_name="Doe", domain="acme.com",
+            )
         assert route["mode"] == "name_domain"
         assert all(s["provider"] != "email_finder" for s in route["steps"])
 
