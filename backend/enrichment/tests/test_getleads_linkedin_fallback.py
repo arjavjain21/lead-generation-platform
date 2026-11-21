@@ -465,7 +465,7 @@ def test_valid_providers_mirror_x3():
     assert set(pipeline_mod.VALID_PROVIDERS) == set(lb.VALID_PROVIDERS)
     assert set(pipeline_mod.VALID_PROVIDERS) == {
         "contacts_db", "blitz", "getleads", "smartprospect", "quickenrich",
-        "leadocean", "wizleads", "better_enrich", "moltsets",
+        "leadocean", "wizleads", "better_enrich", "moltsets", "email_finder",
     }
 
 
