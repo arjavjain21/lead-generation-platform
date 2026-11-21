@@ -50,7 +50,7 @@ class TestNameDomainOrder:
         )
         assert route["mode"] == "name_domain"
         # 2026-10-14: moltsets 6th, better_enrich re-enabled 7th, wizleads terminal.
-        assert _providers(route) == [P, S, Q, G, B, M, BE, W]
+        assert _providers(route) == [P, S, Q, G, B, M, BE, W, "email_finder"]
 
     def test_contacts_db_always_first(self):
         route = pipeline.route_enrichment(
@@ -221,7 +221,7 @@ class TestInputHardening:
             first_name="Jane", last_name="Doe", domain="acme.com"
         )
         assert route["mode"] == "name_domain"
-        assert _providers(route) == [P, S, Q, G, B, M, BE, W]
+        assert _providers(route) == [P, S, Q, G, B, M, BE, W, "email_finder"]
 
     def test_whitespace_only_full_name_is_invalid(self):
         route = pipeline.route_enrichment(full_name="   ", domain="acme.com")
