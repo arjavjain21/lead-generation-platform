@@ -23,6 +23,13 @@ ENABLED_PROVIDERS: Final[dict[str, bool]] = {
     "moltsets": True,   # MoltSets (api.moltsets.com), person email tier 6th ($97/mo: 15k rec/5h, 75k rec/wk, 7.5k searches/5h). Kill switch ENABLE_MOLTSETS. Cooldown + miss store in moltsets_guards.py
     "leadocean": True,   # LeadOcean (api.leadocean.io), person email tier 4 — directly after quickenrich (Agency UGC $247/mo: 1M enrich/day, 25M search/mo, 200 RPS). Kill switch ENABLE_LEADOCEAN. Daily-wall cooldown + miss store in leadocean_guards.py
     "prospeo": False,   # ← disable Prospeo (was paid, temporarily disabled)
+    # Internal Email Finder service (127.0.0.1:8910, systemd email-finder.service):
+    # terminal pattern-guessing fallback validated via the shared MailTester
+    # proxy. HARD-OFF until the rollout gate is approved: flip to True (code
+    # deploy + restart) to arm; ENABLE_EMAIL_FINDER env then acts as the
+    # runtime kill switch. Kept out of get_enabled_providers() listings while
+    # off so it never appears in the public providers status endpoint.
+    "email_finder": False,
 }
 
 
@@ -56,6 +63,10 @@ def is_provider_enabled(provider: str) -> bool:
             return False
     if provider == "leadocean":
         if os.environ.get("ENABLE_LEADOCEAN", "true").lower() != "true":
+            return False
+    if provider == "email_finder":
+        # Runtime kill switch (armed once the dict entry flips to True).
+        if os.environ.get("ENABLE_EMAIL_FINDER", "true").lower() != "true":
             return False
     return True
 

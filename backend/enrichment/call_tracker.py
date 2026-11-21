@@ -69,6 +69,8 @@ _HOSTS: dict[str, str] = {
     "api.moltsets.com": "moltsets",
     "api.leadocean.io": "leadocean",
     "validation.hyperke.org": "mailtester",
+    "127.0.0.1:8910": "email_finder",
+    "localhost:8910": "email_finder",
     "api.scraper.tech": "scraper_tech",
     # SEG MX classification (enrichment/seg.py): Cloudflare DoH. dns.google
     # is NOT mapped — this module only calls cloudflare-dns.com, and mapping

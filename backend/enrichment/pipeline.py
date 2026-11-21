@@ -278,7 +278,7 @@ def _compact_attempts_summary(attempts: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 # Valid provider values for force_provider / selected_providers parameter
-VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "getleads", "smartprospect", "quickenrich", "leadocean", "wizleads", "better_enrich", "moltsets"})
+VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "getleads", "smartprospect", "quickenrich", "leadocean", "wizleads", "better_enrich", "moltsets", "email_finder"})
 
 
 def _should_skip_provider(
@@ -375,6 +375,8 @@ def _normalize_source(source: str) -> str:
         return "better_enrich"
     elif source.startswith("wizleads"):
         return "wizleads"
+    elif source.startswith("email_finder"):
+        return "email_finder"
     elif source.startswith("prospeo"):
         return "prospeo"  # Historical: old rows may have prospeo as dm_email_source
     return source
@@ -423,6 +425,7 @@ SOURCE_BETTER_ENRICH_FACEBOOK = "better_enrich_facebook_email"  # Page email fro
 SOURCE_BETTER_ENRICH_COMPANY_V2 = "better_enrich_company_email"  # Company email from BetterEnrich find-company-email (fallback tier)
 SOURCE_CONTACTS_DB_WEBSITE = "contacts_db_website"  # Scraped website email read back from the Contacts DB (fallback tier rung 1, 2026-11-19)
 SOURCE_WIZLEADS = "wizleads_email"                        # Person email from WizLeads
+SOURCE_EMAIL_FINDER = "email_finder_email"                # Person email from internal Email Finder (MailTester-verified)
 SOURCE_SMARTPROSPECT = "smartprospect_email"              # Person email from SmartLead Find Emails (self-verifying)
 SOURCE_GETLEADS = "getleads_email"                        # Person email from GetLeads (app.getleads.io)
 SOURCE_QUICKENRICH = "quickenrich_email"                  # Person email from QuickEnrich employee-search (app.quickenrich.io)
@@ -485,6 +488,7 @@ ROUTE_PROVIDER_WIZLEADS = "wizleads"
 ROUTE_PROVIDER_BETTER_ENRICH = "better_enrich"
 ROUTE_PROVIDER_MOLTSETS = "moltsets"
 ROUTE_PROVIDER_LEADOCEAN = "leadocean"
+ROUTE_PROVIDER_EMAIL_FINDER = "email_finder"
 
 # Provider methods used in source_path.
 ROUTE_METHOD_PERSON_BY_LINKEDIN = "person_by_linkedin"
@@ -493,6 +497,7 @@ ROUTE_METHOD_FIND_WORK_EMAIL = "find_work_email"
 ROUTE_METHOD_PERSON_BY_NAME_DOMAIN = "person_by_name_and_domain"
 ROUTE_METHOD_PERSON_ENRICH = "person_enrich"
 ROUTE_METHOD_FIND_EMAIL = "find_email"
+ROUTE_METHOD_EMAIL_FINDER_FIND = "email_finder_find"
 ROUTE_METHOD_FIND_EMAIL_SMARTPROSPECT = "find_email_smartprospect"
 ROUTE_METHOD_FIND_EMAIL_GETLEADS = "find_email_getleads"
 ROUTE_METHOD_FIND_EMAIL_LINKEDIN_GETLEADS = "find_email_linkedin_getleads"
@@ -617,6 +622,8 @@ def _provider_label(method: str) -> str:
         return ROUTE_PROVIDER_MOLTSETS
     if method == ROUTE_METHOD_LEADOCEAN_WORK_EMAIL:
         return ROUTE_PROVIDER_LEADOCEAN
+    if method == ROUTE_METHOD_EMAIL_FINDER_FIND:
+        return ROUTE_PROVIDER_EMAIL_FINDER
     if method == ROUTE_METHOD_PHONE_REVERSE_LOOKUP:
         return ROUTE_PROVIDER_BLITZ  # phone reverse is a Blitz concept
     return method
@@ -654,6 +661,8 @@ def _can_provider_use_method(method: str, inputs: dict[str, str]) -> bool:
     if method == ROUTE_METHOD_FIND_EMAIL_LINKEDIN_GETLEADS:
         return bool(li)
     if method == ROUTE_METHOD_FIND_EMAIL_SMARTPROSPECT:
+        return bool(first) and bool(last) and bool(dom)
+    if method == ROUTE_METHOD_EMAIL_FINDER_FIND:
         return bool(first) and bool(last) and bool(dom)
     if method == ROUTE_METHOD_EMPLOYEE_SEARCH_LINKEDIN_QUICKENRICH:
         return bool(li)
@@ -983,6 +992,15 @@ def route_enrichment(
                 "method": ROUTE_METHOD_FIND_EMAIL,
                 "provider": ROUTE_PROVIDER_WIZLEADS,
             })
+        # Terminal tier (behind ENABLE_EMAIL_FINDER, default off): internal
+        # Email Finder pattern brute-force validated via the shared
+        # MailTester proxy. Runs after every paid provider misses.
+        if first_name and last_name:
+            raw_steps.append({
+                "identifier": ROUTE_IDENTIFIER_NAME_DOMAIN,
+                "method": ROUTE_METHOD_EMAIL_FINDER_FIND,
+                "provider": ROUTE_PROVIDER_EMAIL_FINDER,
+            })
         mode = "name_domain"
     elif has_domain:
         # Domain-only cascade. The decision-maker cascade is handled
@@ -1017,6 +1035,7 @@ def route_enrichment(
             "better_enrich": ROUTE_PROVIDER_BETTER_ENRICH,
             "moltsets": ROUTE_PROVIDER_MOLTSETS,
             "leadocean": ROUTE_PROVIDER_LEADOCEAN,
+            "email_finder": ROUTE_PROVIDER_EMAIL_FINDER,
         }
         forced = family_map.get(force_provider)
         if not forced:
@@ -1570,6 +1589,43 @@ async def _run_route_step(
             if result and result.get("email"):
                 verification["dm_email_verified"] = "yes"
                 return {"email": result["email"], "source": SOURCE_WIZLEADS, "verification": verification}
+            return {"email": "", "source": SOURCE_NOT_FOUND}
+
+        if method == ROUTE_METHOD_EMAIL_FINDER_FIND:
+            _record("email_finder")
+            try:
+                from . import email_finder_client as _ef
+                result = await _ef.find_email(
+                    blitz_http,
+                    first_name=inputs.get("first_name", ""),
+                    last_name=inputs.get("last_name", ""),
+                    domain=inputs.get("domain", ""),
+                )
+            except httpx.HTTPStatusError as e:
+                logger.warning("Email Finder find_email failed: %s", e)
+                error_type, message = _classify_http_error(e, "email_finder", "find_email")
+                return _ProviderError(
+                    provider="email_finder",
+                    method="find_email",
+                    error_type=error_type,
+                    message=message,
+                )
+            except Exception as e:
+                # Service down / timeout is a miss for this row, never a
+                # job failure — the terminal tier must fail open.
+                logger.warning("Email Finder find_email failed: %s", e)
+                return {"email": "", "source": SOURCE_NOT_FOUND}
+            if _is_provider_error(result):
+                return result
+            if result and result.get("email"):
+                # MailTester-verified by the service; catch-all hint
+                # guesses (unverified) are never returned as emails by
+                # the client, so anything here is vendor-verified.
+                verification["dm_email_verified"] = "yes"
+                verification["email_finder_pattern"] = result.get("pattern") or ""
+                verification["email_finder_hint_status"] = result.get("hint_status") or ""
+                verification["email_finder_mailtester_calls"] = result.get("mailtester_calls", 0)
+                return {"email": result["email"], "source": SOURCE_EMAIL_FINDER, "verification": verification}
             return {"email": "", "source": SOURCE_NOT_FOUND}
 
         if method == ROUTE_METHOD_LEADOCEAN_WORK_EMAIL:

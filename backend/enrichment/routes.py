@@ -213,7 +213,7 @@ async def _run_contacts_writer_v2(
 
 
 # Valid provider values for force_provider / selected_providers parameter
-VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "getleads", "smartprospect", "quickenrich", "leadocean", "wizleads", "better_enrich", "moltsets"})
+VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "getleads", "smartprospect", "quickenrich", "leadocean", "wizleads", "better_enrich", "moltsets", "email_finder"})
 
 
 def _should_skip_provider(

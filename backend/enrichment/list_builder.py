@@ -116,7 +116,7 @@ def _detect_linkedin_url_type(url: str) -> str:
 
 
 # Valid provider values for force_provider parameter
-VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "getleads", "smartprospect", "quickenrich", "leadocean", "wizleads", "better_enrich", "moltsets"})
+VALID_PROVIDERS = frozenset({"contacts_db", "blitz", "getleads", "smartprospect", "quickenrich", "leadocean", "wizleads", "better_enrich", "moltsets", "email_finder"})
 
 
 def _should_skip_provider(
@@ -238,6 +238,7 @@ SOURCE_BLITZ_LINKEDIN = "blitz_linkedin"
 SOURCE_BLITZ_NAME = "blitz_name"
 SOURCE_BLITZ_DOMAIN = "blitz_domain"
 SOURCE_WIZLEADS = "wizleads_email"
+SOURCE_EMAIL_FINDER = "email_finder_email"
 SOURCE_SMARTPROSPECT = "smartprospect_email"
 SOURCE_GETLEADS = "getleads_email"
 SOURCE_QUICKENRICH = "quickenrich_email"
@@ -1139,6 +1140,37 @@ async def _resolve_person_email(
                     return email, "", SOURCE_WIZLEADS, "yes", "", "", {}
             except Exception as e:
                 logger.debug("WizLeads lookup failed: %s", e)
+
+    # Terminal tier (ENABLE_EMAIL_FINDER, default off): internal Email Finder
+    # service — pattern brute-force validated via the shared MailTester proxy.
+    # Mirrors pipeline.py ROUTE_METHOD_EMAIL_FINDER_FIND.
+    if search_name and domain and not _should_skip_provider("email_finder", force_provider, selected_providers):
+        ef_first = search_name.split(" ")[0] if search_name else ""
+        ef_last = " ".join(search_name.split(" ")[1:]) if " " in search_name else ""
+        if ef_first and ef_last:
+            if record_provider_use:
+                record_provider_use("email_finder")
+            try:
+                from . import email_finder_client
+                result = await email_finder_client.find_email(
+                    blitz_http, first_name=ef_first, last_name=ef_last, domain=domain,
+                )
+                if result and result.get("email"):
+                    return (
+                        result["email"],
+                        "",
+                        SOURCE_EMAIL_FINDER,
+                        "yes",
+                        "",
+                        "",
+                        {
+                            "email_finder_pattern": result.get("pattern") or "",
+                            "email_finder_hint_status": result.get("hint_status") or "",
+                            "email_finder_mailtester_calls": result.get("mailtester_calls", 0),
+                        },
+                    )
+            except Exception as e:
+                logger.debug("Email Finder lookup failed: %s", e)
 
     return "", "", SOURCE_NOT_FOUND, "unknown", "", "", {}
 
