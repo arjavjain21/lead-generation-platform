@@ -153,6 +153,7 @@ class TestRouteEnrichmentSelectedProviders:
             "moltsets",
             "better_enrich",
             "wizleads",
+            "email_finder",
         ]
 
     def test_selected_providers_empty_list_surfaces_no_email_reason(self):
