@@ -2650,6 +2650,21 @@ async def _resolve_email_for_person(
             )
 
     async with email_semaphore:
+        # Verify-existing-first candidates (ENABLE_EMAIL_FINDER_VERIFY_EXISTING):
+        # harvest every email the free contacts_db lookups already returned
+        # for this person, so the terminal tier can validate them (~1 call)
+        # before any pattern guessing. Empty unless the flag is armed.
+        existing_candidates: list[str] = []
+
+        def _harvest_existing(data: Any) -> None:
+            if not isinstance(data, dict):
+                return
+            for e in data.get("emails") or []:
+                cand = e if isinstance(e, str) else (e.get("email") or e.get("address") or "")
+                if isinstance(cand, str) and "@" in cand and cand.lower().endswith("@" + domain.lower()):
+                    if cand.lower() not in [c.lower() for c in existing_candidates]:
+                        existing_candidates.append(cand)
+
         # Step 1: Contacts DB by person's name + domain (PRIMARY - FREE)
         # When both name and LinkedIn URL are available, prefer name+domain to avoid
         # returning stale emails from previous employers via person_by_linkedin
@@ -2660,6 +2675,7 @@ async def _resolve_email_for_person(
                     contacts_client_inst, full_name, domain
                 )
                 email = contacts_client.extract_email_from_contacts_response(contacts_data)
+                _harvest_existing(contacts_data)
                 # Phase 2a: capture the Contacts DB response BEFORE validation
                 # drops it. Capture even when email is missing — name+title
                 # is still a meaningful person contact. Mutate a copy so the
@@ -2724,6 +2740,7 @@ async def _resolve_email_for_person(
                     contacts_client_inst, linkedin_url
                 )
                 email = contacts_client.extract_email_from_contacts_response(contacts_data)
+                _harvest_existing(contacts_data)
                 # Phase 2a: capture the Contacts DB LinkedIn-URL lookup result
                 # (same shape as Step 1).
                 if contacts_data:

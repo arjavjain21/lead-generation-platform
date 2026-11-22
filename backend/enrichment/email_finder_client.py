@@ -38,6 +38,13 @@ BASE_URL = os.getenv("EMAIL_FINDER_BASE_URL", "http://127.0.0.1:8910")
 _REQUEST_TIMEOUT = 90.0
 
 
+def verify_existing_enabled() -> bool:
+    """ENABLE_EMAIL_FINDER_VERIFY_EXISTING (default false): send the
+    person's existing Contacts-DB email candidates to the finder so they
+    are validated BEFORE pattern guessing (~1 call vs a full sweep)."""
+    return os.environ.get("ENABLE_EMAIL_FINDER_VERIFY_EXISTING", "false").lower() == "true"
+
+
 async def find_email(
     client: httpx.AsyncClient,
     first_name: str,
@@ -46,6 +53,7 @@ async def find_email(
     pattern_hint: Optional[str] = None,
     hint_first_name: Optional[str] = None,
     hint_last_name: Optional[str] = None,
+    existing_emails: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     """Find a verified person email via the Email Finder service.
 
@@ -66,6 +74,11 @@ async def find_email(
             payload["hint_first_name"] = hint_first_name
         if hint_last_name:
             payload["hint_last_name"] = hint_last_name
+    if existing_emails and verify_existing_enabled():
+        # Candidates only ship when the verify-existing flag is armed;
+        # the finder validates them first and marks a hit as
+        # found_source="existing_email" (still vendor-verified only).
+        payload["existing_emails"] = existing_emails[:10]
 
     resp = await client.post(
         f"{BASE_URL}/api/v1/find",
@@ -90,6 +103,7 @@ async def find_email(
             # Only vendor-verified results reach valid_emails without a
             # hint; catch-all hint guesses are flagged as unverified.
             "verified": stats.get("hint_status") != "unverifiable_catch_all",
+            "found_source": stats.get("found_source") or "",
             "mailtester_calls": stats.get("mailtester_calls", 0),
             "millionverifier_calls": stats.get("millionverifier_calls", 0),
             "skipped_reason": skipped_reason,

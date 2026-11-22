@@ -170,3 +170,46 @@ class TestCanaryGate:
                                      "EMAIL_FINDER_CANARY_PERCENT": "100"}):
             assert not email_finder_rollout_allows("anyone")
             assert not email_finder_rollout_allows("anyone", force_provider="email_finder")
+
+
+class TestVerifyExistingFlag:
+    def test_flag_off_by_default(self):
+        from enrichment import email_finder_client
+        import os
+        os.environ.pop("ENABLE_EMAIL_FINDER_VERIFY_EXISTING", None)
+        assert not email_finder_client.verify_existing_enabled()
+
+    def test_flag_gates_candidate_shipping(self):
+        """existing_emails only reach the payload when the flag is armed."""
+        import asyncio, os
+        import httpx
+        from enrichment import email_finder_client
+
+        sent = {}
+
+        class FakeResp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"person": {}, "valid_emails": [],
+                        "statistics": {"total_tested": 0, "valid_count": 0, "invalid_count": 0,
+                                       "skipped_reason": "catch_all", "mailtester_calls": 1}}
+
+        class FakeClient(httpx.AsyncClient):
+            async def post(self, url, **kw):
+                sent.update(kw.get("json") or {})
+                return FakeResp()
+
+        os.environ.pop("ENABLE_EMAIL_FINDER_VERIFY_EXISTING", None)
+        asyncio.run(email_finder_client.find_email(
+            FakeClient(), "John", "Doe", "acme.com", existing_emails=["jdoe@acme.com"]))
+        assert "existing_emails" not in sent, "flag off must not ship candidates"
+
+        os.environ["ENABLE_EMAIL_FINDER_VERIFY_EXISTING"] = "true"
+        try:
+            asyncio.run(email_finder_client.find_email(
+                FakeClient(), "John", "Doe", "acme.com", existing_emails=["jdoe@acme.com"]))
+            assert sent.get("existing_emails") == ["jdoe@acme.com"]
+        finally:
+            os.environ.pop("ENABLE_EMAIL_FINDER_VERIFY_EXISTING", None)
