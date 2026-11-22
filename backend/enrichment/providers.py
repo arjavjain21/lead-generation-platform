@@ -85,14 +85,15 @@ def email_finder_canary_bucket(identifier: str) -> int:
 # (tools/canary_watchdog.py) when a safety threshold trips. File-based so
 # the halt survives restarts and is visible to every worker without env
 # changes. Cleared only by an operator after investigation.
-EMAIL_FINDER_HALT_FILE = os.environ.get(
-    "EMAIL_FINDER_HALT_FILE", "/mnt/disk/email-finder/canary_halt"
-)
+EMAIL_FINDER_HALT_FILE_DEFAULT = "/mnt/disk/email-finder/canary_halt"
 
 
 def _canary_halted() -> bool:
     try:
-        return os.path.exists(EMAIL_FINDER_HALT_FILE)
+        # Read at CALL time so tests (and operators) can redirect the halt
+        # file without re-importing the module.
+        path = os.environ.get("EMAIL_FINDER_HALT_FILE", EMAIL_FINDER_HALT_FILE_DEFAULT)
+        return os.path.exists(path)
     except OSError:
         return True  # fail closed: unreadable state halts the tier
 

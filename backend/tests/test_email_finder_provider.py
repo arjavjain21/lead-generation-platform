@@ -122,6 +122,18 @@ class TestClient:
 
 
 class TestCanaryGate:
+    @pytest.fixture(autouse=True)
+    def _isolate_halt_file(self, tmp_path):
+        """Gate tests must not see a real watchdog halt state."""
+        import os as _os
+        old = _os.environ.get("EMAIL_FINDER_HALT_FILE")
+        _os.environ["EMAIL_FINDER_HALT_FILE"] = str(tmp_path / "no_halt")
+        yield
+        if old is None:
+            _os.environ.pop("EMAIL_FINDER_HALT_FILE", None)
+        else:
+            _os.environ["EMAIL_FINDER_HALT_FILE"] = old
+
     def test_bucket_is_deterministic(self):
         from enrichment.providers import email_finder_canary_bucket
         a = email_finder_canary_bucket("john|doe|acme.com")
