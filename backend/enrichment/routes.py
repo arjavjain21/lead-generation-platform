@@ -1799,6 +1799,9 @@ async def enrich_single_domain(
     cascade_json: Optional[str] = None,
     force_provider: Optional[str] = None,
     source: Optional[str] = None,
+    validate_email: bool = True,  # 2026-11-25: real query param (was `req.validate_email` — a
+    # NameError shipped 2026-11-07 in 2617add2 that 500'd every call to this
+    # endpoint; default True mirrors the POST /enrich model).
     current_user: dict = Depends(auth.get_current_user_with_api_key),
 ):
     """Enrich a single domain with decision-maker contacts."""
@@ -1844,7 +1847,7 @@ async def enrich_single_domain(
             domain_semaphore,
             email_semaphore,
             force_provider=force_provider,
-            validate_email=req.validate_email,
+            validate_email=validate_email,
         )
     finally:
         # Shared cascade clients are reused across requests — do NOT close here.
