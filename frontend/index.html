@@ -1969,8 +1969,12 @@
                     </div>
                     <div class="filter-group">
                         <label>Industry</label>
-                        <select id="searchIndustry"><option value="">Any</option></select>
-                        <span class="field-helper">Filter by industry (optional)</span>
+                        <div style="position:relative;">
+                            <input type="text" id="tamIndustrySearch" class="search-input" placeholder="Type to filter — click to toggle (Any by default)" autocomplete="off">
+                            <div id="tamIndustryDrop" style="display:none;position:absolute;z-index:30;background:#fff;border:1px solid #d1d5db;border-radius:6px;max-height:220px;overflow-y:auto;width:100%;box-shadow:0 4px 10px rgba(0,0,0,.08);"></div>
+                        </div>
+                        <div id="tamIndustryChips" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;"></div>
+                        <span class="field-helper">Pick one or more industries (matched as OR)</span>
                     </div>
                     <div class="filter-group">
                         <label>Employees</label>
@@ -2171,11 +2175,10 @@
                     <div style="background:#fefce8;border-left:4px solid #ca8a04;padding:10px 12px;margin-bottom:0.75rem;border-radius:4px;font-size:0.8rem;color:#713f12;">
                         Identifier priority: <strong>company LinkedIn URL → website domain → company name</strong>.
                         A row with several identifiers enriches by the LinkedIn page (the strongest identity);
-                        conflicts are never silently switched. <strong>Name-only rows:</strong> automatic
-                        name→company resolution is currently <em>switched off by the administrator</em> —
-                        name-only rows are skipped (reason <code>name_unresolved</code>) unless at least one
-                        LinkedIn URL or domain is present. When enabled, ambiguous names are flagged for
-                        review, never guessed.
+                        conflicts are never silently switched. <strong>Name-only rows:</strong> tick
+                        <em>Resolve company names</em> below to auto-resolve them to a domain — ambiguous
+                        names are flagged for review, never guessed. When resolution is off, name-only rows
+                        are skipped (reason <code>name_unresolved</code>).
                     </div>
                     <textarea id="peopleScopeList" rows="6" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:6px;font-family:monospace;font-size:0.85rem;" placeholder="https://www.linkedin.com/company/acme&#10;stripe.com&#10;Notion"></textarea>
                     <div id="peopleScopeCount" style="font-size:0.78rem;color:#6b7280;margin:4px 0 0.75rem;"></div>
@@ -2199,7 +2202,14 @@
                         <div class="filter-group">
                             <label>Person country (optional)</label>
                             <input type="text" id="peopleScopeCountry" placeholder="e.g. US, Germany">
-                            <span class="field-helper">⚠ Applies to Blitz searches only — other sources match on their own data and may return other countries.</span>
+                            <span class="field-helper">Filters results to this country everywhere: applied to Blitz searches directly AND as a final filter on every exported contact. Rows with unknown location are kept — check the Location column.</span>
+                        </div>
+                        <div class="filter-group">
+                            <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-weight:500;font-size:0.85rem;">
+                                <input type="checkbox" id="peopleScopeResolveNames" style="width:16px;height:16px;">
+                                Resolve company names
+                            </label>
+                            <span class="field-helper">Name-only rows are matched to a company automatically. Ambiguous names are never guessed — they're skipped with reviewable candidates.</span>
                         </div>
                         <div class="filter-group">
                             <label>QuickEnrich depth (pages of 20)</label>
@@ -3459,11 +3469,15 @@ example.org,Jane Doe</pre>
         async function loadSearchOptions() {
             try {
                 const res = await fetch('/api/enrichment/search/options', { headers: { 'Authorization': 'Bearer ' + token } }), data = await res.json();
-                ['Industry', 'EmployeeRange', 'Country'].forEach((type, i) => {
+                ['EmployeeRange', 'Country'].forEach((type, i) => {
                     const sel = document.getElementById('search' + type);
-                    const items = [data.industries, data.employee_ranges, data.countries][i];
+                    const items = [data.employee_ranges, data.countries][i];
                     items.forEach(item => { const opt = document.createElement('option'); opt.value = item.code || item; opt.textContent = item.name || item; sel.appendChild(opt); });
                 });
+                // Industry is a searchable chip MULTI-select (2026-11-25): the
+                // backend takes industry_include as an OR-array; chips replace
+                // the old single-select industry dropdown.
+                setupTamIndustryChips(data.industries || []);
                 // Company type is MULTI-select (2026-10-07): checkbox chips —
                 // e.g. Privately Held + Self-Employed in one TAM run. Blitz
                 // source only; typed 'both' runs skip the GetLeads leg.
@@ -3481,6 +3495,63 @@ example.org,Jane Doe</pre>
                     });
                 }
             } catch (e) { console.error('Failed to load options:', e); }
+        }
+
+        // Industry chip multi-select state + wiring (2026-11-25). Selected
+        // values feed company.industry_include (OR-array) on submit.
+        const tamIndustrySelected = new Set();
+        let tamIndustryAll = [];
+        function renderTamIndustryChips() {
+            const box = document.getElementById('tamIndustryChips');
+            if (!box) return;
+            box.innerHTML = '';
+            tamIndustrySelected.forEach(ind => {
+                const chip = document.createElement('span');
+                chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;background:#1a315d;color:#fff;border-radius:12px;padding:2px 8px;font-size:0.75rem;';
+                chip.textContent = ind;
+                const x = document.createElement('button');
+                x.type = 'button'; x.textContent = '×'; x.setAttribute('aria-label', 'Remove ' + ind);
+                x.style.cssText = 'background:none;border:none;color:#fff;cursor:pointer;font-size:0.85rem;padding:0 2px;';
+                x.addEventListener('click', () => { tamIndustrySelected.delete(ind); renderTamIndustryChips(); });
+                chip.appendChild(x);
+                box.appendChild(chip);
+            });
+        }
+        function renderTamIndustryDrop(filterText) {
+            const drop = document.getElementById('tamIndustryDrop');
+            if (!drop) return;
+            const q = (filterText || '').trim().toLowerCase();
+            const hits = q ? tamIndustryAll.filter(i => i.toLowerCase().includes(q)).slice(0, 30) : tamIndustryAll.slice(0, 30);
+            drop.innerHTML = '';
+            hits.forEach(ind => {
+                const row = document.createElement('div');
+                row.style.cssText = 'padding:6px 10px;cursor:pointer;font-size:0.82rem;display:flex;justify-content:space-between;align-items:center;';
+                row.onmouseenter = () => { row.style.background = '#f3f4f6'; };
+                row.onmouseleave = () => { row.style.background = '#fff'; };
+                row.appendChild(document.createTextNode(ind));
+                if (tamIndustrySelected.has(ind)) {
+                    const tick = document.createElement('span'); tick.textContent = '✓';
+                    tick.style.cssText = 'color:#059669;font-weight:700;'; row.appendChild(tick);
+                }
+                row.addEventListener('click', () => {
+                    if (tamIndustrySelected.has(ind)) tamIndustrySelected.delete(ind);
+                    else tamIndustrySelected.add(ind);
+                    renderTamIndustryChips(); renderTamIndustryDrop(q);
+                });
+                drop.appendChild(row);
+            });
+            drop.style.display = hits.length ? 'block' : 'none';
+        }
+        function setupTamIndustryChips(industries) {
+            tamIndustryAll = industries;
+            const input = document.getElementById('tamIndustrySearch');
+            if (!input) return;
+            input.addEventListener('input', () => renderTamIndustryDrop(input.value));
+            input.addEventListener('focus', () => renderTamIndustryDrop(input.value));
+            document.addEventListener('click', (e) => {
+                const wrap = document.getElementById('tamIndustryDrop');
+                if (wrap && !wrap.contains(e.target) && e.target !== input) wrap.style.display = 'none';
+            });
         }
 
         // API Keys Functions
@@ -5576,12 +5647,12 @@ example.org,Jane Doe</pre>
             // 1. Company filters (same element ids the options loader fills)
             const company = {};
             const searchName = document.getElementById('searchName').value.trim();
-            const searchIndustry = document.getElementById('searchIndustry').value;
             const searchEmployeeRange = document.getElementById('searchEmployeeRange').value;
             const searchCountry = document.getElementById('searchCountry').value;
             const companyTypes = Array.from(document.querySelectorAll('input[name="tamCompanyType"]:checked')).map(cb => cb.value);
             if (searchName) company.name_include = [searchName];
-            if (searchIndustry) company.industry_include = [searchIndustry];
+            // Industry chip multi-select (2026-11-25): OR-array; empty = Any.
+            if (tamIndustrySelected.size) company.industry_include = Array.from(tamIndustrySelected);
             if (searchEmployeeRange) company.employee_range = [searchEmployeeRange];
             if (companyTypes.length) company.type_include = companyTypes;
             if (searchCountry) company.hq_country_code = [searchCountry];
@@ -5670,18 +5741,75 @@ example.org,Jane Doe</pre>
                     const dl = (j.status === 'done' || j.status === 'partial')
                         ? ' <button class="btn btn-success btn-sm" onclick="downloadFile(\'' + j.job_id + '\',\'' + (j.filename || 'find_companies').replace(/[^a-z0-9.]/gi, '_') + '\')">Download</button>'
                         : '';
+                    // 2026-11-25: one-click Step 1 → Step 2 (TAM companies →
+                    // Find People Scope panel).
+                    const ppl = (j.status === 'done' || j.status === 'partial')
+                        ? ' <button class="btn btn-secondary btn-sm" title="Find people at these companies" onclick="handoffTamToPeople(\'' + j.job_id + '\', this)">→ People</button>'
+                        : '';
                     return '<tr>'
                         + '<td>' + new Date(j.created_at).toLocaleString() + '</td>'
                         + '<td>' + escHtml(j.display_name || j.filename || '') + '</td>'
                         + '<td><strong>' + (j.result_count || 0) + '</strong>' + (j.status === 'done' ? '' : ' so far') + '</td>'
                         + '<td><span class="job-status status-' + j.status + '">' + j.status + '</span></td>'
                         + '<td>' + chainCell + '</td>'
-                        + '<td>' + dl + '</td>'
+                        + '<td>' + dl + ppl + '</td>'
                         + '</tr>';
                 }).join('');
                 card.style.display = 'block';
             } catch (e) {
                 // Runs list is a convenience — never block the page on it.
+            }
+        }
+
+        // TAM → Find People handoff (2026-11-25): pulls the finished run's
+        // company CSV, extracts one identifier per company (LinkedIn URL
+        // preferred, domain fallback), and prefills the Scope-to-Companies
+        // panel — Step 1 → Step 2 of the 3-step flow in one click.
+        function _parseCsvLine(line) {
+            const out = []; let cur = '', inQ = false;
+            for (let i = 0; i < line.length; i++) {
+                const ch = line[i];
+                if (inQ) {
+                    if (ch === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else inQ = false; }
+                    else cur += ch;
+                } else if (ch === '"') inQ = true;
+                else if (ch === ',') { out.push(cur); cur = ''; }
+                else cur += ch;
+            }
+            out.push(cur);
+            return out;
+        }
+        async function handoffTamToPeople(jobId, btn) {
+            if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
+            try {
+                const res = await fetch('/api/enrichment/jobs/' + jobId + '/download?token=' + token);
+                if (!res.ok) throw new Error('could not load the run CSV (' + res.status + ')');
+                const text = await res.text();
+                const lines = text.split(/\r?\n/).filter(Boolean);
+                if (lines.length < 2) throw new Error('the run CSV is empty');
+                const hdr = _parseCsvLine(lines[0]).map(h => h.trim().toLowerCase());
+                const iDom = hdr.indexOf('domain'), iLi = hdr.indexOf('linkedin_url');
+                const idents = [];
+                for (let k = 1; k < lines.length; k++) {
+                    const cols = _parseCsvLine(lines[k]);
+                    const li = (iLi >= 0 ? (cols[iLi] || '') : '').trim();
+                    const dom = (iDom >= 0 ? (cols[iDom] || '') : '').trim();
+                    if (li && /linkedin\.com\/company\//i.test(li)) idents.push(li);
+                    else if (dom) idents.push(dom);
+                }
+                if (!idents.length) throw new Error('no company identifiers found in the CSV');
+                navigateToPage('people');
+                const panel = document.getElementById('peopleScopePanel');
+                const tgl = document.getElementById('peopleScopeToggle');
+                if (panel && panel.style.display === 'none' && tgl) tgl.click();
+                const ta = document.getElementById('peopleScopeList');
+                ta.value = idents.join('\n');
+                ta.dispatchEvent(new Event('input', { bubbles: true }));
+                setTimeout(() => ta.scrollIntoView({ behavior: 'smooth', block: 'center' }), 150);
+            } catch (e) {
+                alert('TAM → People handoff failed: ' + e.message);
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = '→ People'; }
             }
         }
 
@@ -5830,6 +5958,7 @@ example.org,Jane Doe</pre>
                         titles: (document.getElementById('peopleScopeTitles').value || '').trim() || null,
                         strict_titles: document.getElementById('peopleScopeStrict').checked,
                         person_location_country: (document.getElementById('peopleScopeCountry').value || '').trim() || null,
+                        resolve_names: !!(document.getElementById('peopleScopeResolveNames') && document.getElementById('peopleScopeResolveNames').checked),
                     };
                     var depth = document.getElementById('peopleScopeDepth').value;
                     if (depth) body.dataset_max_pages = parseInt(depth, 10);
@@ -8903,6 +9032,7 @@ example.org,Jane Doe</pre>
         window.copyApiKey = copyApiKey;
         window.dismissNewApiKey = dismissNewApiKey;
         window.downloadFile = downloadFile;
+        window.handoffTamToPeople = handoffTamToPeople;
         window.retryEnrichmentJob = retryEnrichmentJob;
         window.cancelEnrichmentJob = cancelEnrichmentJob;
         // Inline onclick="fn(...)" handlers resolve via the global (window) scope,

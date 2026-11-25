@@ -61,6 +61,21 @@ def resolver_enabled() -> bool:
     return os.environ.get("ENABLE_NAME_RESOLVER", "false").lower() == "true"
 
 
+def resolution_allowed(per_request: bool) -> bool:
+    """Tri-state arming for name resolution (2026-11-25, B1).
+
+    ENABLE_NAME_RESOLVER explicitly "false" -> hard OFF (admin kill-switch;
+    the per-request opt-in is ignored).
+    ENABLE_NAME_RESOLVER "true"              -> always ON (pre-B1 behavior).
+    unset / empty                            -> the per-request flag decides
+        (the Scope-to-Companies "resolve company names" checkbox).
+    """
+    env = os.environ.get("ENABLE_NAME_RESOLVER")
+    if env is None or env.strip() == "":
+        return bool(per_request)
+    return env.strip().lower() == "true"
+
+
 def blitz_fallback_enabled() -> bool:
     return os.environ.get("ENABLE_NAME_RESOLVER_BLITZ", "false").lower() == "true"
 
@@ -153,7 +168,12 @@ async def resolve_company_name(
     name_norm = normalize_company_name(name)
     if not name_norm:
         return ResolveResult(status="none")
-    if not resolver_enabled():
+    # Defense-in-depth kill-switch: only an EXPLICIT ENABLE_NAME_RESOLVER=false
+    # blocks here. The env-unset case is decided by the caller's tri-state
+    # (resolution_allowed) — since 2026-11-25 the per-request resolve_names
+    # opt-in arms resolution with the env unset, and this internal gate must
+    # not short-circuit that path back to "none".
+    if not resolution_allowed(True):
         return ResolveResult(status="none")
     country_hint = (country_hint or "").strip().lower()
 

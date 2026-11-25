@@ -39,7 +39,10 @@ def test_identifier_priority_copy(html):
 
 
 def test_location_caveat_present(html):
-    assert "Applies to Blitz searches only" in html
+    # 2026-11-25 (A1): person country is now BOTH a Blitz search filter and a
+    # cross-leg output filter; the caveat reflects the dual behavior.
+    assert "applied to Blitz searches directly AND as a final filter" in html
+    assert "Rows with unknown location are kept" in html
 
 
 def test_rides_flow1_engine_not_a_new_one(html):

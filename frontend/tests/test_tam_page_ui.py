@@ -46,10 +46,13 @@ def test_explainer_answers_why_and_where(html):
 def test_company_filter_ids_survived_for_options_loader(html):
     # loadSearchOptions() fills these by id — renaming them breaks it.
     # (2026-10-07: searchCompanyType single-select became the
-    # tamCompanyTypes multi-select checkbox row.)
+    # tamCompanyTypes multi-select checkbox row. 2026-11-25: searchIndustry
+    # single-select became the tamIndustrySearch/tamIndustryChips multi-select
+    # — the loader now fills only the two remaining <select>s by id.)
     for element_id in (
-        "searchName", "searchIndustry", "searchEmployeeRange",
+        "searchName", "searchEmployeeRange",
         "tamCompanyTypes", "searchCountry",
+        "tamIndustrySearch",
     ):
         assert f'id="{element_id}"' in html
 

@@ -7274,6 +7274,10 @@ class ProviderToggleRequest(BaseModel):
     # only (cascade location filter). Other providers match on their own
     # data and may return other locations — the UI says so explicitly.
     person_location_country: Optional[str] = None
+    # 2026-11-25 (B1): per-request name-resolution opt-in for name-only rows.
+    # Tri-state with ENABLE_NAME_RESOLVER: env "false" stays a hard kill-switch
+    # (flag ignored), env "true" resolves regardless, unset -> this flag decides.
+    resolve_names: bool = False
 
 
 @router.post("/flows/domain-enrich")
@@ -7478,6 +7482,7 @@ async def domain_enrich_with_providers(
         recent_hires_only=req.recent_hires_only,
         include_phone=req.include_phone,
         phone_for_all=req.phone_for_all,
+        resolve_names=req.resolve_names,
     )
 
     return {
@@ -7510,6 +7515,7 @@ async def _run_domain_enrich_job(
     recent_hires_only: bool = False,  # 2026-10-15: Blitz is_recent_hire (<90d job-changers)
     include_phone: bool = False,  # 2026-09: attach provider-returned phones
     phone_for_all: bool = False,  # 2026-09: phones for every contact (extra cost)
+    resolve_names: bool = False,  # 2026-11-25 (B1): per-request name-resolution opt-in
 ):
     """Background task to run domain enrichment using list_builder."""
     store = job_store.get_store()
@@ -7604,6 +7610,7 @@ async def _run_domain_enrich_job(
                 recent_hires_only=recent_hires_only,
                 include_phone=include_phone,
                 phone_for_all=phone_for_all,
+                resolve_names=resolve_names,
             ),
         )
 

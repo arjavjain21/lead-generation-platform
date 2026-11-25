@@ -406,6 +406,64 @@ def _empty_enriched() -> dict[str, Any]:
     }
 
 
+# --- Person-location OUTPUT filter (2026-11-25, A1) -------------------------
+# The person-location country rides INSIDE the persisted cascade (injected by
+# routes for the Blitz lane since PR-2.5). It doubles as a cross-leg OUTPUT
+# filter: rows whose dm_location_country is KNOWN and does not match are
+# dropped from the export. Unknown-location rows, skipped rows and error rows
+# (empty country) are always kept — nothing silently vanishes. Contacts DB
+# write-back is unaffected (the collector captured contacts at
+# provider-response time; this shapes exported rows only).
+
+_LOCATION_ALIASES: dict[str, str] = {
+    "us": "united states", "usa": "united states",
+    "uk": "united kingdom", "gb": "united kingdom",
+    "uae": "united arab emirates",
+}
+
+
+def _cascade_location_country(cascade_config) -> str:
+    """First non-empty location riding any cascade tier ('' when absent)."""
+    if not cascade_config:
+        return ""
+    try:
+        tiers = json.loads(cascade_config) if isinstance(cascade_config, str) else cascade_config
+        for tier in tiers or []:
+            for loc in (tier.get("location") or []):
+                if loc and str(loc).strip():
+                    return str(loc).strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _location_matches(row_country: str, wanted: str) -> bool:
+    """Case-insensitive equality, with a small code<->name alias map so a
+    'US' filter matches rows stored as 'United States' (and vice versa).
+    Never substring-based ('US' must not match 'Russia')."""
+    a = (row_country or "").strip().lower()
+    b = (wanted or "").strip().lower()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    return _LOCATION_ALIASES.get(a, a) == _LOCATION_ALIASES.get(b, b)
+
+
+def _filter_rows_by_person_location(rows: list, wanted: str) -> tuple[list, int]:
+    """(kept_rows, dropped_count) — drops ONLY rows with a known non-matching
+    dm_location_country. Rows with no country data pass through untouched."""
+    kept: list = []
+    dropped = 0
+    for r in rows:
+        rc = str(r.get("dm_location_country") or "").strip()
+        if rc and not _location_matches(rc, wanted):
+            dropped += 1
+            continue
+        kept.append(r)
+    return kept, dropped
+
+
 def _current_title(experiences: list[dict], direct_title: str = "") -> str:
     """
     Extract current job title from experiences or direct title field.
@@ -2456,6 +2514,7 @@ async def run_domain_enrichment(
     recent_hires_only: bool = False,  # 2026-10-15: Blitz is_recent_hire on waterfall cascades + find-people prepass (job-changed <90d)
     include_phone: bool = False,  # 2026-09: attach Blitz Direct Phone to qualifying rows (phone bundle)
     phone_for_all: bool = False,  # 2026-09: phone bundle targets EVERY qualifying row, not just the first
+    resolve_names: bool = False,  # 2026-11-25 (B1): per-request name-resolution opt-in (tri-state with ENABLE_NAME_RESOLVER)
 ) -> list[OutputRow]:
     """
     Main entry point for Flow 1: Domain → Generic Emails + Decision Makers
@@ -2517,6 +2576,13 @@ async def run_domain_enrichment(
                     logger.info("Using cascade_config from job %s", job_id)
         except Exception as e:
             logger.warning("Failed to fetch cascade_config from job %s: %s", job_id, e)
+
+    # 2026-11-25 (A1): the person-location country riding inside the cascade
+    # (Blitz lane filter since PR-2.5) doubles as a cross-leg OUTPUT filter.
+    # Read from the persisted cascade so restart/resume keeps the filter.
+    _person_location = _cascade_location_country(cascade_config)
+    if _person_location:
+        logger.info("Person-location OUTPUT filter active: %s", _person_location)
 
     # --- Blitz find-people batch prepass (2026-09) ---------------------------
     # For domain-only runs large enough to amortize it (>5 eligible domains),
@@ -2745,16 +2811,19 @@ async def run_domain_enrichment(
             )
         elif not domain:
             # PR-2.1/2.2: name-only rows are explicit, not silent. When
-            # ENABLE_NAME_RESOLVER arms resolution, a HIGH/MEDIUM-confident
-            # match resolves to a domain and re-routes into the domain
-            # cascade (resolver output, not a new path). AMBIGUOUS names are
-            # NEVER auto-joined — the row is skipped with the candidates
-            # serialized for review. Resolver off → name_unresolved.
+            # resolution is armed — ENABLE_NAME_RESOLVER=true, or (2026-11-25
+            # B1) the per-request resolve_names opt-in while the env is unset —
+            # a HIGH/MEDIUM-confident match resolves to a domain and re-routes
+            # into the domain cascade (resolver output, not a new path).
+            # AMBIGUOUS names are NEVER auto-joined — the row is skipped with
+            # the candidates serialized for review. Resolution off →
+            # name_unresolved. An explicit ENABLE_NAME_RESOLVER=false stays a
+            # hard kill-switch that ignores the request flag.
             _name = str(row.get(company_name_col) or "").strip() if company_name_col else ""
             if not _name:
                 result = [{**row, **_empty_enriched(), "row_status": STATUS_SKIPPED,
                            "no_email_reason": "no_identifier"}]
-            elif company_resolver.resolver_enabled():
+            elif company_resolver.resolution_allowed(resolve_names):
                 _res = await company_resolver.resolve_company_name(
                     contacts_http, _name, conn=_resolver_conn())
                 if _res.status in ("high", "medium") and _res.domain:
@@ -2816,6 +2885,23 @@ async def run_domain_enrichment(
                 contacts_http, result, domain, row, force_provider, source=source, limit=max_decision_makers, cascade_config=cascade_config
             )
 
+        # 2026-11-25 (A1): cross-leg person-location OUTPUT filter. Runs BEFORE
+        # the progress callback so event counters match the exported rows
+        # (contacts_found == CSV rows — the reconciliation guarantee), and
+        # BEFORE company-fallback/phone-bundle so those only decorate rows the
+        # user actually keeps. Write-back already happened at
+        # provider-response time via the collector; this shapes exports only.
+        # A domain whose contacts are ALL filtered out still gets one audit
+        # row (row_status=skipped, no_email_reason=location_filtered_out) —
+        # one row per input row, nothing silently vanishes.
+        if _person_location and result:
+            result, _loc_dropped = _filter_rows_by_person_location(result, _person_location)
+            if _loc_dropped:
+                gate_stats["location_filtered"] = gate_stats.get("location_filtered", 0) + _loc_dropped
+                if not result:
+                    result = [{**row, **_empty_enriched(), "row_status": STATUS_SKIPPED,
+                               "no_email_reason": "location_filtered_out"}]
+
         # Call progress callback with exception handling
         # This prevents progress callback errors from crashing the entire batch
         try:
@@ -2841,6 +2927,7 @@ async def run_domain_enrichment(
                     "source_counts": source_counts,
                     "title_gate_dropped": gate_stats.get("dropped", 0),
                     "catch_all_retained": catch_all_rows,
+                    "location_filtered": gate_stats.get("location_filtered", 0),
                 }
                 # Handle both sync and async callbacks
                 if asyncio.iscoroutinefunction(on_progress):
