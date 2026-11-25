@@ -375,10 +375,15 @@ class TestCollectorAndWriterCarry(unittest.TestCase):
 class TestEnrichedColumnsAppendOnly(unittest.TestCase):
     def test_experiences_pair_is_last_seg_pair_before_it(self):
         cols = lb.ENRICHED_COLUMNS
+        # PR-2.2 (2026-11-11) appended the name-resolution provenance columns;
+        # the experiences pair now sits immediately before them.
         self.assertEqual(
-            cols[-2:], ["dm_previous_companies", "dm_previous_titles"]
+            cols[-5:], [
+                "dm_previous_companies", "dm_previous_titles",
+                "name_resolution_status", "name_resolution_source", "name_candidates",
+            ]
         )
-        self.assertEqual(cols[-5:-2], ["seg_classification", "seg_provider", "dm_mx_provider"])
+        self.assertEqual(cols[-9:-6], ["seg_classification", "seg_provider", "dm_mx_provider"])
 
     def test_columns_present_exactly_once(self):
         for col in ("dm_previous_companies", "dm_previous_titles"):

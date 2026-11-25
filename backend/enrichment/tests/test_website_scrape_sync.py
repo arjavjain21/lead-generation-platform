@@ -535,8 +535,11 @@ class TestLookbackSweep:
             pushed.append(payloads)
             return {"inserted": len(payloads), "updated": 0, "skipped": 0}
 
-        async def fake_lookback(hours, limit):
+        async def fake_lookback(hours, limit, after=None):
+            # 2026-10-31 keyset pagination: the runner passes an (ts, id)
+            # cursor from the second page on; first page is after=None.
             assert hours == 48
+            assert after is None  # single short page — no cursor yet
             return [_remote_row(9), _remote_row(10)]
 
         out = asyncio.run(
@@ -562,9 +565,11 @@ class TestLookbackSweep:
         async def fake_push(payloads, job_id=None):
             return {"inserted": len(payloads), "updated": 0, "skipped": 0}
 
-        async def fake_lookback(hours, limit):
-            calls.append(limit)
-            # First call full batch, second call short -> loop stops.
+        async def fake_lookback(hours, limit, after=None):
+            calls.append(after)
+            # First call (cursor None) full batch, second call short -> loop
+            # stops. The cursor must be the first page's keyset on call 2.
+            assert len(calls) == 1 or after is not None
             return [_remote_row(i) for i in range(limit)] if len(calls) == 1 else [_remote_row(99)]
 
         out = asyncio.run(

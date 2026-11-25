@@ -54,6 +54,7 @@ class TestAcceptance1SuccessfulLinkedIn(unittest.IsolatedAsyncioTestCase):
         from enrichment import blitz_client as bc
         from enrichment import contacts_client as cc
         from enrichment import getleads_client as gl
+        from enrichment import leadocean_client as lo
         from enrichment import quickenrich_client as qe
 
         # Contacts DB returns None; the QuickEnrich + GetLeads tiers miss;
@@ -68,6 +69,8 @@ class TestAcceptance1SuccessfulLinkedIn(unittest.IsolatedAsyncioTestCase):
             cc, "mark_email_invalid", AsyncMock(return_value=None)
         ), patch.object(
             qe, "find_person_email", AsyncMock(return_value=None)
+        ), patch.object(
+            lo, "find_person_email", AsyncMock(return_value=None)
         ), patch.object(
             gl, "find_email_by_linkedin", AsyncMock(return_value=None)
         ), patch.object(
@@ -88,13 +91,14 @@ class TestAcceptance1SuccessfulLinkedIn(unittest.IsolatedAsyncioTestCase):
         self.assertIn("blitz", result["source_path"])
         self.assertIn("person_enrich_by_linkedin", result["source_path"])
         # 2. The structured attempt records must include the successful provider/method.
-        # Blitz short-circuits on success, so we have 4 attempts in the
+        # Blitz short-circuits on success, so we have 5 attempts in the
         # LinkedIn-arm order: contacts_db (no_match), quickenrich (no_match),
-        # getleads (no_match), blitz person_enrich_by_linkedin (email_found).
+        # leadocean (no_match), getleads (no_match),
+        # blitz person_enrich_by_linkedin (email_found).
         attempts = result["provider_attempts_json"]
         self.assertEqual(
             [a["provider"] for a in attempts],
-            ["contacts_db", "quickenrich", "getleads", "blitz"],
+            ["contacts_db", "quickenrich", "leadocean", "getleads", "blitz"],
         )
         blitz_attempt = next(
             (a for a in attempts if a["method"] == "person_enrich_by_linkedin"), None

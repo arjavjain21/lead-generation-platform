@@ -479,4 +479,6 @@ def test_enriched_columns_mirror_x2():
     )
     assert lb.ENRICHED_COLUMNS[len(pipeline_mod.ENRICHED_COLUMNS):] == [
         "dm_previous_companies", "dm_previous_titles",
+        # PR-2.2 (2026-11-11): name-resolution provenance columns.
+        "name_resolution_status", "name_resolution_source", "name_candidates",
     ]

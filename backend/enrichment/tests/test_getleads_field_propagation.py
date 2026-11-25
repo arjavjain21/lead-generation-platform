@@ -457,9 +457,10 @@ class TestEnrichedColumnsMirror(unittest.TestCase):
     """Stage 7: pipeline.ENRICHED_COLUMNS must mirror list_builder's set.
 
     2026-09-16: list_builder APPENDED dm_previous_companies /
-    dm_previous_titles (experiences end-to-end wave) — pipeline hasn't
+    dm_previous_titles (experiences end-to-end wave) plus the PR-2.2
+    name-resolution provenance columns (2026-11-11) — pipeline hasn't
     adopted them yet, so the invariant is pipeline ⊆ list_builder with
-    list_builder's superset limited to exactly those two new columns."""
+    list_builder's superset limited to exactly those five new columns."""
 
     def test_mirror_invariant(self):
         self.assertTrue(
@@ -467,7 +468,10 @@ class TestEnrichedColumnsMirror(unittest.TestCase):
         )
         self.assertEqual(
             set(list_builder.ENRICHED_COLUMNS) - set(pipeline.ENRICHED_COLUMNS),
-            {"dm_previous_companies", "dm_previous_titles"},
+            {
+                "dm_previous_companies", "dm_previous_titles",
+                "name_resolution_status", "name_resolution_source", "name_candidates",
+            },
         )
 
     def test_new_columns_present_in_both(self):
