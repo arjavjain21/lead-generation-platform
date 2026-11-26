@@ -212,22 +212,34 @@ def _kw_includes(keyword_filter: Any) -> list[str]:
     return []
 
 
+def _kw_excludes(keyword_filter: Any) -> list[str]:
+    """Exclude values from a Blitz-style {include:[...], exclude:[...]} filter."""
+    if isinstance(keyword_filter, dict):
+        return [str(v) for v in (keyword_filter.get("exclude") or []) if v]
+    return []
+
+
 def _tam_filter_values(company_filters: dict[str, Any]) -> dict[str, list[str]]:
-    """Normalize a Blitz CompanyFilter payload into flat include lists for
-    the QE/LO legs (accepts BOTH the payload shape {industry:{include}} and
-    the request shape {industry_include:[...]})."""
-    def inc(key, alt):
-        return list(dict.fromkeys(
-            [str(v) for v in (_kw_includes(company_filters.get(key)) or company_filters.get(alt) or []) if v]))
-    def exc(key, alt):
-        return list(dict.fromkeys(
-            [str(v) for v in (_kw_includes(company_filters.get(key) and {"include": None, "exclude": company_filters[key].get("exclude")} or None) or company_filters.get(alt) or []) if v]))
+    """Normalize a Blitz CompanyFilter payload into flat include/exclude
+    lists for the QE/LO legs (accepts BOTH the payload shape
+    {industry:{include,exclude}} and the request shape
+    {industry_include:[...], industry_exclude:[...]})."""
+    def vals(key, alt, part):
+        # payload shape first (dict), then flat request list
+        kw = company_filters.get(key)
+        if isinstance(kw, dict):
+            items = kw.get(part) or []
+        else:
+            items = company_filters.get(alt) or [] if part == "include" else company_filters.get(alt) or []
+        return list(dict.fromkeys(str(v) for v in items if v))
+
     out = {
-        "industry": inc("industry", "industry_include"),
-        "industry_exclude": exc("industry", "industry_exclude"),
-        "keywords": inc("keywords", "keywords_include"),
-        "name": inc("name", "name_include"),
-        "type": inc("type", "type_include"),
+        "industry": vals("industry", "industry_include", "include"),
+        "industry_exclude": vals("industry", "industry_exclude", "exclude"),
+        "keywords": vals("keywords", "keywords_include", "include"),
+        "keywords_exclude": vals("keywords", "keywords_exclude", "exclude"),
+        "name": vals("name", "name_include", "include"),
+        "type": vals("type", "type_include", "include"),
     }
     hq = company_filters.get("hq") or {}
     out["country"] = [str(v) for v in (hq.get("country_code") or company_filters.get("hq_country_code") or []) if v]
@@ -313,6 +325,7 @@ async def quickenrich_company_pull(
         "country_code": fv["country"] or None,
         "employee_count": [b for b in (company_filters.get("employee_range") or []) if b] or None,
         "keywords": fv["keywords"] or None,
+        "keywords_exclude": fv["keywords_exclude"] or None,
     }
     rows: list[dict[str, Any]] = []
     seen = set(existing_keys)
@@ -359,6 +372,7 @@ async def quickenrich_company_pull(
                     country_code=payload_common["country_code"],
                     employee_count=payload_common["employee_count"] or None,
                     keywords=kw_vals,
+                    exclude_keywords=payload_common["keywords_exclude"],
                 )
                 if isinstance(result, dict) and result.get("error") == "validation":
                     # QE industry enum rejected the value(s) — retry with the
@@ -371,6 +385,7 @@ async def quickenrich_company_pull(
                         country_code=payload_common["country_code"],
                         employee_count=payload_common["employee_count"] or None,
                         keywords=merged or None,
+                        exclude_keywords=payload_common["keywords_exclude"],
                     )
                 companies = result.get("companies") if isinstance(result, dict) else None
                 if companies is None:
@@ -426,6 +441,8 @@ async def leadocean_company_pull(
         params["hqCountry"] = fv["country"]
     if fv["keywords"]:
         params["keywords"] = fv["keywords"]
+    if fv["keywords_exclude"]:
+        params["excludeKeywords"] = fv["keywords_exclude"]
     if fv["name"]:
         params["q"] = " ".join(fv["name"][:3])
     if not params:

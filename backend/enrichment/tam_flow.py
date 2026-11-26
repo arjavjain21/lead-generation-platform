@@ -40,6 +40,7 @@ import httpx
 
 from enrichment import blitz_client
 from enrichment import tam_legs
+from enrichment.tam_legs import _kw_values, _kw_excludes, _kw_includes
 from shared.circuit_breaker import CircuitBreakerError
 from enrichment import tam_ranker
 from enrichment import job_store
@@ -85,7 +86,73 @@ TAM_CSV_COLUMNS: tuple[str, ...] = (
     "source",
     "match_score",
     "why_matched",
+    # TAM V2 (2026-11-26): include/exclude keyword enforcement provenance.
+    # "confirmed"  = provider applied the keyword filter natively (or a local
+    #                match was found in the company's returned text)
+    # "unverified" = provider has no company-keyword filter and the returned
+    #                metadata carries no matching text — kept, NOT claimed as
+    #                a match (unknown-data policy)
+    "keyword_match",
 )
+
+
+# Sources whose company-keyword filter is applied NATIVELY per request mode.
+# QE counts as native only in company-finder mode (contact-finder's bio_li
+# is an EMPLOYEE-bio field — company keywords must never ride it).
+def _native_keyword_sources(sources: list[str], people_filters: dict[str, Any]) -> set:
+    native = set()
+    if "blitz" in sources:
+        native.add("blitz")       # keywords{include,exclude} on the company profile
+    if "leadocean" in sources:
+        native.add("leadocean")   # keywords[] over description/specialties/tags/name + excludeKeywords[]
+    if "quickenrich" in sources and not (people_filters.get("job_title_include") or _kw_values(people_filters.get("job_title"))):
+        native.add("quickenrich")  # home_page_text Filter (company-finder mode only)
+    return native
+
+
+def _apply_keyword_provenance(
+    rows: list[dict[str, Any]],
+    kw_include: list[str],
+    kw_exclude: list[str],
+    native_sources: set,
+) -> dict[str, Any]:
+    """Unknown-data keyword policy (TAM V2).
+
+    Rows from native-keyword sources: "confirmed" (the provider enforced
+    include+exclude). Rows from sources without a company-keyword filter
+    (getleads, quickenrich contact-finder mode): local text check over the
+    returned metadata (name/industry/slogan). A found include -> "confirmed";
+    a found exclude -> row dropped (excluded_local); neither found ->
+    "unverified" — kept and counted, never claimed as a match, because the
+    missing description cannot prove either presence or absence.
+    """
+    inc = [k.lower() for k in kw_include]
+    exc = [k.lower() for k in kw_exclude]
+    stats = {"confirmed": 0, "unverified": 0, "excluded_local": 0,
+             "include": kw_include, "exclude": kw_exclude}
+    kept: list[dict[str, Any]] = []
+    for row in rows:
+        src = row.get("source") or ""
+        if src in native_sources:
+            row["keyword_match"] = "confirmed"
+            stats["confirmed"] += 1
+            kept.append(row)
+            continue
+        text = " ".join(
+            str(row.get(k) or "") for k in ("name", "industry", "slogan")
+        ).lower()
+        if any(k in text for k in exc):
+            stats["excluded_local"] += 1
+            continue
+        if inc and any(k in text for k in inc):
+            row["keyword_match"] = "confirmed"
+            stats["confirmed"] += 1
+        else:
+            row["keyword_match"] = "unverified"
+            stats["unverified"] += 1
+        kept.append(row)
+    rows[:] = kept
+    return stats
 
 # tam-by-people page size. One request per page, 1 FUP record per result.
 TAM_PAGE_SIZE = 50
@@ -174,6 +241,7 @@ def flatten_tam_company(entry: dict[str, Any]) -> dict[str, Any]:
         # ranked runs; None (empty CSV cell) everywhere else.
         "match_score": None,
         "why_matched": None,
+        "keyword_match": None,
     }
 
 
@@ -742,6 +810,34 @@ async def run_tam_flow(
                     logger.info("TAM %s: LeadOcean leg +%d companies (%d pages)",
                                 job_id, len(lo_rows), lo_pages)
 
+            # TAM V2 keyword provenance + unknown-data policy: mark each row
+            # confirmed/unverified, locally drop exclusion hits from sources
+            # without a native company-keyword filter, then rewrite the CSV so
+            # every row carries keyword_match (mid-run partials show blanks —
+            # restval='' — until this pass completes).
+            keyword_stats = None
+            filter_notes: list[str] = []
+            _kw_inc = _kw_values(company_filters.get("keywords"))
+            _kw_exc = list(_kw_includes({}) ) and [] or _kw_excludes(company_filters.get("keywords"))
+            if _kw_inc or _kw_exc:
+                _native = _native_keyword_sources(sources, people_filters)
+                keyword_stats = _apply_keyword_provenance(
+                    shared.rows, _kw_inc, _kw_exc, _native)
+                if not ranked:
+                    csv_file.seek(0)
+                    csv_file.truncate()
+                    writer.writeheader()
+                    for row in shared.rows:
+                        writer.writerow(row)
+                    csv_file.flush()
+                    await asyncio.to_thread(os.fsync, csv_file.fileno())
+                for src in ("getleads", "quickenrich"):
+                    if src in sources and src not in _native:
+                        filter_notes.append(
+                            f"{src}: no company-description keyword filter for this mode — "
+                            "rows kept as 'unverified' unless matched in name/industry text")
+                logger.info("TAM %s keyword policy: %s", job_id, keyword_stats)
+
             if blitz_unavailable and not shared.rows:
                 # AFTER the fallback: no leg produced anything — this is NOT
                 # a legitimate zero result; fail retryably with options.
@@ -817,6 +913,11 @@ async def run_tam_flow(
         "csv_path": str(output_path),
         "capped": not cancelled and cursor is not None,
         "sources": sources,
+        # TAM V2 (2026-11-26): keyword-enforcement stats + per-source filter
+        # limitations (surfaced, never silently ignored).
+        **({"keyword_stats": keyword_stats,
+            "filter_notes": filter_notes}
+           if (keyword_stats or filter_notes) else {}),
         # Honest coverage: a breaker-open run completed on GetLeads only —
         # labeled, never presented as full-coverage Blitz results.
         **({"coverage": "degraded: blitz unavailable (rate-limit circuit "

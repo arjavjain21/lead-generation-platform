@@ -769,7 +769,8 @@ async def company_finder(
     client,
     *,
     industry=None, exclude_industry=None, country_code=None,
-    company_name=None, keywords=None, employee_count=None, revenue=None,
+    company_name=None, keywords=None, exclude_keywords=None,
+    employee_count=None, revenue=None,
     per_page=100, cursor=None,
 ):
     """POST /api/companies/company-finder - discover companies by firmographic
@@ -786,7 +787,7 @@ async def company_finder(
         "industry": _finder_filter(include=industry, exclude=exclude_industry),
         "country_code": _finder_filter(include=country_code),
         "company_name": _finder_filter(include=company_name),
-        "home_page_text": _finder_filter(include=keywords),
+        "home_page_text": _finder_filter(include=keywords, exclude=exclude_keywords),
         "number_of_employees": _finder_filter(include=employee_count),
         "revenue": _finder_filter(include=revenue),
         "per_page": max(1, min(int(per_page), 100)),

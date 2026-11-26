@@ -50,9 +50,15 @@ def test_company_filter_ids_survived_for_options_loader(html):
     # single-select became the tamIndustrySearch/tamIndustryChips multi-select
     # — the loader now fills only the two remaining <select>s by id.)
     for element_id in (
-        "searchName", "searchEmployeeRange",
-        "tamCompanyTypes", "searchCountry",
+        # 2026-11-26 (TAM V2): searchEmployeeRange/searchCountry single
+        # selects became tamEmployeeSearch/tamCountrySearch chip multi-selects.
+        "searchName",
+        "tamCompanyTypes",
         "tamIndustrySearch",
+        "tamEmployeeSearch",
+        "tamCountrySearch",
+        "tamKwInclude",
+        "tamKwExclude",
     ):
         assert f'id="{element_id}"' in html
 

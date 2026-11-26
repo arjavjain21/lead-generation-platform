@@ -1978,8 +1978,12 @@
                     </div>
                     <div class="filter-group">
                         <label>Employees</label>
-                        <select id="searchEmployeeRange"><option value="">Any</option></select>
-                        <span class="field-helper">Filter by company size (optional)</span>
+                        <div style="position:relative;">
+                            <input type="text" id="tamEmployeeSearch" class="search-input" placeholder="Type to filter — click to toggle (Any by default)" autocomplete="off">
+                            <div id="tamEmployeeDrop" style="display:none;position:absolute;z-index:30;background:#fff;border:1px solid #d1d5db;border-radius:6px;max-height:220px;overflow-y:auto;width:100%;box-shadow:0 4px 10px rgba(0,0,0,.08);"></div>
+                        </div>
+                        <div id="tamEmployeeChips" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;"></div>
+                        <span class="field-helper">Pick one or more size ranges (matched as OR — e.g. 11-50 + 201-500 skips 51-200)</span>
                     </div>
                     <div class="filter-group">
                         <label>Type</label>
@@ -1988,8 +1992,28 @@
                     </div>
                     <div class="filter-group">
                         <label>Country</label>
-                        <select id="searchCountry"><option value="">Any</option></select>
-                        <span class="field-helper">Filter by country (optional)</span>
+                        <div style="position:relative;">
+                            <input type="text" id="tamCountrySearch" class="search-input" placeholder="Type to filter — click to toggle (Any by default)" autocomplete="off">
+                            <div id="tamCountryDrop" style="display:none;position:absolute;z-index:30;background:#fff;border:1px solid #d1d5db;border-radius:6px;max-height:220px;overflow-y:auto;width:100%;box-shadow:0 4px 10px rgba(0,0,0,.08);"></div>
+                        </div>
+                        <div id="tamCountryChips" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;"></div>
+                        <span class="field-helper">Pick one or more countries (matched as OR — company headquarters)</span>
+                    </div>
+                    <div class="filter-group" style="grid-column:1/-1;">
+                        <label>Company keywords — must mention (include)</label>
+                        <div style="position:relative;">
+                            <input type="text" id="tamKwInclude" class="search-input" placeholder="Type a keyword or phrase and press Enter — e.g. jewelry, fine jewelry, gemstones" autocomplete="off">
+                        </div>
+                        <div id="tamKwIncludeChips" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;"></div>
+                        <span class="field-helper">Companies whose description/specialties mention ANY of these (OR). Multi-word phrases allowed. Comma- or newline-separated paste supported.</span>
+                    </div>
+                    <div class="filter-group" style="grid-column:1/-1;">
+                        <label>Company keywords — must NOT mention (exclude)</label>
+                        <div style="position:relative;">
+                            <input type="text" id="tamKwExclude" class="search-input" placeholder="e.g. wholesale supplier, recruitment agency — press Enter to add" autocomplete="off">
+                        </div>
+                        <div id="tamKwExcludeChips" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;"></div>
+                        <span class="field-helper">Companies mentioning ANY of these are excluded. Results carry a keyword_match column: sources without a description search show "unverified" for rows we can't confirm.</span>
                     </div>
                     <div class="filter-group">
                         <label>Email infra (MX provider)</label>
@@ -3469,11 +3493,9 @@ example.org,Jane Doe</pre>
         async function loadSearchOptions() {
             try {
                 const res = await fetch('/api/enrichment/search/options', { headers: { 'Authorization': 'Bearer ' + token } }), data = await res.json();
-                ['EmployeeRange', 'Country'].forEach((type, i) => {
-                    const sel = document.getElementById('search' + type);
-                    const items = [data.employee_ranges, data.countries][i];
-                    items.forEach(item => { const opt = document.createElement('option'); opt.value = item.code || item; opt.textContent = item.name || item; sel.appendChild(opt); });
-                });
+                // TAM V2: employee ranges + countries are chip MULTI-selects
+                // (OR arrays); the legacy single <select>s are gone from markup.
+                setupTamV2Chips(data.employee_ranges, data.countries);
                 // Industry is a searchable chip MULTI-select (2026-11-25): the
                 // backend takes industry_include as an OR-array; chips replace
                 // the old single-select industry dropdown.
@@ -3542,6 +3564,115 @@ example.org,Jane Doe</pre>
             });
             drop.style.display = hits.length ? 'block' : 'none';
         }
+        // --- TAM V2 (2026-11-26): reusable chip multi-select + keyword tags ---
+        function makeTamChipSelect(cfg) {
+            // cfg: {inputId, dropId, chipsId, all(): [{value,label}], selected: Set }
+            const input = document.getElementById(cfg.inputId);
+            const drop = document.getElementById(cfg.dropId);
+            const chips = document.getElementById(cfg.chipsId);
+            function renderChips() {
+                chips.innerHTML = '';
+                cfg.selected.forEach(v => {
+                    const item = cfg.all().find(i => i.value === v) || { value: v, label: v };
+                    const chip = document.createElement('span');
+                    chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;background:#1a315d;color:#fff;border-radius:12px;padding:2px 8px;font-size:0.75rem;';
+                    chip.textContent = item.label;
+                    const x = document.createElement('button');
+                    x.type = 'button'; x.textContent = '×'; x.setAttribute('aria-label', 'Remove ' + item.label);
+                    x.style.cssText = 'background:none;border:none;color:#fff;cursor:pointer;font-size:0.85rem;padding:0 2px;';
+                    x.addEventListener('click', () => { cfg.selected.delete(v); renderChips(); renderDrop(input.value); });
+                    chip.appendChild(x); chips.appendChild(chip);
+                });
+            }
+            function renderDrop(filterText) {
+                const q = (filterText || '').trim().toLowerCase();
+                const hits = cfg.all().filter(i => !q || i.label.toLowerCase().includes(q) || String(i.value).toLowerCase().includes(q)).slice(0, 30);
+                drop.innerHTML = '';
+                hits.forEach(item => {
+                    const row = document.createElement('div');
+                    row.style.cssText = 'padding:6px 10px;cursor:pointer;font-size:0.82rem;display:flex;justify-content:space-between;align-items:center;';
+                    row.onmouseenter = () => { row.style.background = '#f3f4f6'; };
+                    row.onmouseleave = () => { row.style.background = '#fff'; };
+                    row.appendChild(document.createTextNode(item.label));
+                    if (cfg.selected.has(item.value)) {
+                        const tick = document.createElement('span'); tick.textContent = '✓';
+                        tick.style.cssText = 'color:#059669;font-weight:700;'; row.appendChild(tick);
+                    }
+                    row.addEventListener('click', () => {
+                        if (cfg.selected.has(item.value)) cfg.selected.delete(item.value);
+                        else cfg.selected.add(item.value);
+                        renderChips(); renderDrop(q);
+                    });
+                    drop.appendChild(row);
+                });
+                drop.style.display = hits.length ? 'block' : 'none';
+            }
+            if (input) {
+                input.addEventListener('input', () => renderDrop(input.value));
+                input.addEventListener('focus', () => renderDrop(input.value));
+            }
+            document.addEventListener('click', (e) => {
+                if (drop && !drop.contains(e.target) && e.target !== input) drop.style.display = 'none';
+            });
+            return { renderChips };
+        }
+
+        const tamEmployeeSelected = new Set();
+        let tamEmployeeAll = [];      // [{value,label}] from /search/options
+        const tamCountrySelected = new Set();
+        let tamCountryAll = [];
+        let _tamEmployeeUi = null, _tamCountryUi = null;
+        function setupTamV2Chips(employeeRanges, countries) {
+            // options loader items: string | {code,name}
+            tamEmployeeAll = (employeeRanges || []).map(i => ({ value: (i && i.code) || i, label: (i && i.name) || i }));
+            tamCountryAll = (countries || []).map(i => ({ value: (i && i.code) || i, label: (i && i.name) || i }));
+            _tamEmployeeUi = makeTamChipSelect({ inputId: 'tamEmployeeSearch', dropId: 'tamEmployeeDrop', chipsId: 'tamEmployeeChips', all: () => tamEmployeeAll, selected: tamEmployeeSelected });
+            _tamCountryUi = makeTamChipSelect({ inputId: 'tamCountrySearch', dropId: 'tamCountryDrop', chipsId: 'tamCountryChips', all: () => tamCountryAll, selected: tamCountrySelected });
+        }
+
+        // Keyword tag inputs: Enter/comma add, paste splits on , and newlines,
+        // normalize case+whitespace, dedupe, × removes.
+        function makeTamKeywordTags(inputId, chipsId, store) {
+            const input = document.getElementById(inputId);
+            const chips = document.getElementById(chipsId);
+            function addFromText(text) {
+                (text || '').split(/[\n,]+/).forEach(raw => {
+                    const v = raw.trim().toLowerCase().replace(/\s+/g, ' ');
+                    if (v && !store.includes(v)) store.push(v);
+                });
+                input.value = ''; render();
+            }
+            function render() {
+                chips.innerHTML = '';
+                store.forEach(v => {
+                    const chip = document.createElement('span');
+                    chip.style.cssText = 'display:inline-flex;align-items:center;gap:4px;background:#065f46;color:#fff;border-radius:12px;padding:2px 8px;font-size:0.75rem;';
+                    chip.textContent = v;
+                    const x = document.createElement('button');
+                    x.type = 'button'; x.textContent = '×'; x.setAttribute('aria-label', 'Remove ' + v);
+                    x.style.cssText = 'background:none;border:none;color:#fff;cursor:pointer;font-size:0.85rem;padding:0 2px;';
+                    x.addEventListener('click', () => { const i = store.indexOf(v); if (i >= 0) store.splice(i, 1); render(); });
+                    chip.appendChild(x); chips.appendChild(chip);
+                });
+            }
+            if (input) {
+                input.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') { e.preventDefault(); addFromText(input.value); }
+                    if (e.key === ',' ) { e.preventDefault(); addFromText(input.value); }
+                });
+                input.addEventListener('paste', (e) => {
+                    e.preventDefault();
+                    addFromText((e.clipboardData || window.clipboardData).getData('text'));
+                });
+                input.addEventListener('blur', () => { if (input.value.trim()) addFromText(input.value); });
+            }
+            return { addFromText, render };
+        }
+        const tamKwIncludeList = [];
+        const tamKwExcludeList = [];
+        makeTamKeywordTags('tamKwInclude', 'tamKwIncludeChips', tamKwIncludeList);
+        makeTamKeywordTags('tamKwExclude', 'tamKwExcludeChips', tamKwExcludeList);
+
         function setupTamIndustryChips(industries) {
             tamIndustryAll = industries;
             const input = document.getElementById('tamIndustrySearch');
@@ -5647,15 +5778,21 @@ example.org,Jane Doe</pre>
             // 1. Company filters (same element ids the options loader fills)
             const company = {};
             const searchName = document.getElementById('searchName').value.trim();
-            const searchEmployeeRange = document.getElementById('searchEmployeeRange').value;
-            const searchCountry = document.getElementById('searchCountry').value;
             const companyTypes = Array.from(document.querySelectorAll('input[name="tamCompanyType"]:checked')).map(cb => cb.value);
             if (searchName) company.name_include = [searchName];
             // Industry chip multi-select (2026-11-25): OR-array; empty = Any.
             if (tamIndustrySelected.size) company.industry_include = Array.from(tamIndustrySelected);
-            if (searchEmployeeRange) company.employee_range = [searchEmployeeRange];
+            // TAM V2 chip multi-selects (2026-11-26): employee ranges + HQ
+            // countries as OR-arrays (non-contiguous ranges stay disjoint —
+            // every provider takes the array natively, no broadening).
+            if (tamEmployeeSelected.size) company.employee_range = Array.from(tamEmployeeSelected);
             if (companyTypes.length) company.type_include = companyTypes;
-            if (searchCountry) company.hq_country_code = [searchCountry];
+            if (tamCountrySelected.size) company.hq_country_code = Array.from(tamCountrySelected);
+            // TAM V2 company keywords (include ANY / exclude ANY) — matched
+            // against company descriptions/specialties provider-side where
+            // supported; see keyword_match provenance in results.
+            if (tamKwIncludeList.length) company.keywords_include = tamKwIncludeList.slice();
+            if (tamKwExcludeList.length) company.keywords_exclude = tamKwExcludeList.slice();
             const mxProviders = Array.from(document.querySelectorAll('input[name="tamMxProvider"]:checked')).map(cb => cb.value);
             if (mxProviders.length) company.mx_providers_include = mxProviders;
 

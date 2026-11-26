@@ -60,8 +60,9 @@ def test_industry_include_feeds_from_chip_set(html):
 
 
 def test_employee_and_country_selects_still_populated(html):
-    # The options loader still fills the two surviving selects.
-    assert "['EmployeeRange', 'Country'].forEach" in html
+    # 2026-11-26 (TAM V2): the two single <select>s became chip multi-selects;
+    # the options loader now feeds setupTamV2Chips with the same data.
+    assert "setupTamV2Chips(data.employee_ranges, data.countries)" in html
 
 
 # --- UX2: TAM → People handoff -------------------------------------------------

@@ -434,9 +434,10 @@ class TestTamRoute(_TamRouteTestCase):
         # Ranked export: match_score desc + why_matched on every row.
         csv_text = Path(job["output_path"]).read_text(encoding="utf-8")
         header = csv_text.splitlines()[0]
-        self.assertTrue(header.endswith("match_score,why_matched"))
+        # 2026-11-26 (TAM V2): keyword_match provenance column trails the pair.
+        self.assertTrue(header.endswith("match_score,why_matched,keyword_match"))
         scores = [
-            int(line.rsplit(",", 2)[-2]) for line in csv_text.splitlines()[1:]
+            int(line.rsplit(",", 3)[-3]) for line in csv_text.splitlines()[1:]
         ]
         self.assertEqual(scores, sorted(scores, reverse=True))
 

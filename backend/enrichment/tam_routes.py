@@ -272,8 +272,14 @@ def _tam_display_summary(req: "TamRequest") -> str:
     parts.append(size[0] + " emp" if size else "any size")
     country = (req.company.hq_country_code or [])[:1]
     parts.append(country[0] if country else "all countries")
+    kw = (req.company.keywords_include or [])
+    if kw:
+        parts.append("+" + "/".join(kw[:2]) + ("…" if len(kw) > 2 else ""))
+    kw_x = (req.company.keywords_exclude or [])
+    if kw_x:
+        parts.append("−" + kw_x[0] + ("…" if len(kw_x) > 1 else ""))
     summary = " · ".join(parts)
-    return summary[:100]
+    return summary[:120]
 
 
 def _getleads_filters(req: "TamRequest", profile: dict[str, Any]) -> dict[str, Any]:
@@ -291,8 +297,9 @@ def _getleads_filters(req: "TamRequest", profile: dict[str, Any]) -> dict[str, A
     from enrichment.lookalike import to_getleads_band
 
     bands = [
-        b for b in (req.company.employee_range or [])
-        if (to_getleads_band(b))
+        converted for converted in (
+            to_getleads_band(b) for b in (req.company.employee_range or [])
+        ) if converted
     ]
     if not bands and profile.get("size_band"):
         gl_band = to_getleads_band(profile["size_band"])
