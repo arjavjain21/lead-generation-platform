@@ -45,7 +45,7 @@ class TestTamDegraded(unittest.TestCase):
                 {"industries": ["Software"]} if "getleads" in sources else {}
             ),
         }
-        gl_pull = AsyncMock(return_value=(gl_rows or [], 0))
+        gl_pull = AsyncMock(return_value=(gl_rows or [], 0, None))
 
         async def go():
             with patch("enrichment.tam_flow.blitz_client.tam_by_people",

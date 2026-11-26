@@ -312,7 +312,15 @@ def _getleads_filters(req: "TamRequest", profile: dict[str, Any]) -> dict[str, A
         filters["industries"] = list(industries)[:3]
     countries = req.company.hq_country_code or profile.get("countries") or []
     if countries:
-        filters["countries"] = list(countries)
+        from enrichment.tam_legs import _gl_country_names
+        converted, unmapped = _gl_country_names(list(countries))
+        if converted:
+            filters["countries"] = converted
+        if unmapped:
+            logger.warning(
+                "TAM GetLeads leg: country code(s) %s have no GetLeads name "
+                "mapping — dropped from that leg's filter", unmapped,
+            )
     if req.people.job_title_include:
         filters["job_titles"] = list(req.people.job_title_include)
     return filters

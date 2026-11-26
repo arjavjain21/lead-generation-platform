@@ -79,7 +79,8 @@ class TestProviderTranslation(unittest.TestCase):
             people = TamPeopleFilters(job_title_include=["CEO"])
         gl = _getleads_filters(R(), {})
         self.assertEqual(gl["company_size"], ["11 to 50", "201 to 500"])
-        self.assertEqual(gl["countries"], ["US", "CA"])
+        self.assertEqual(gl["countries"], ["United States", "Canada"],
+                         "ISO codes convert to GetLeads full names")
         self.assertNotIn("keywords", gl, "GetLeads has no company-keyword filter")
 
     def test_qe_leg_payload_carries_bands_countries_keywords(self):
@@ -99,7 +100,8 @@ class TestProviderTranslation(unittest.TestCase):
             asyncio.run(tam_legs.quickenrich_company_pull(
                 object(), cf, {"job_title_include": ["CEO"]}, needed=10,
                 existing_keys=set(), exclude_domains=set()))
-        self.assertEqual(captured.get("employee_count"), ["11-50", "201-500"])
+        self.assertIsNone(captured.get("employee_count"),
+                          "incompatible LI bands are never sent to QE natively")
         self.assertEqual(captured.get("country_code"), ["US", "CA"])
         # contact-finder mode: company keywords NOT passed (its bio_li is an
         # employee-bio field — company keywords must never ride it).
@@ -125,7 +127,8 @@ class TestProviderTranslation(unittest.TestCase):
                 existing_keys=set(), exclude_domains=set()))
         self.assertEqual(captured.get("keywords"), ["jewelry"])
         self.assertEqual(captured.get("exclude_keywords"), ["wholesale"])
-        self.assertEqual(captured.get("employee_count"), ["11-50", "201-500"])
+        self.assertIsNone(captured.get("employee_count"),
+                          "LI bands never sent natively (taxonomy mismatch)")
 
     def test_lo_leg_params_arrays_and_exclude_keywords(self):
         captured = {}
@@ -234,7 +237,7 @@ class TestFlowKeywordStats(unittest.TestCase):
 
         async def fake_gl(http, getleads_filters, **kw):
             return ([{"name": "GL NoText", "domain": "glnotext.com", "industry": "Apparel",
-                      "size": "", "revenue": "", "source": "getleads"}], 0)
+                      "size": "", "revenue": "", "source": "getleads"}], 0, None)
 
         try:
             with patch.object(tam_legs, "quickenrich_company_pull", new=fake_qe),                  patch.object(tam_legs, "leadocean_company_pull", new=fake_lo),                  patch.object(tam_flow, "_getleads_company_pull", new=fake_gl),                  patch.object(tam_flow, "_backup_companies_to_contacts_db",

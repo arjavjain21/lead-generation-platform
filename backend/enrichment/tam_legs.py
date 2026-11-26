@@ -159,6 +159,9 @@ async def _getleads_company_pull(
         page = await getleads_client.search_contacts_companies(
             http, limit=100, offset=offset, **getleads_filters,
         )
+        if page.get("ok") is False:
+            # Provider validation/API failure — NOT a zero-result search.
+            return [], 0, {"error": str(page.get("error") or "getleads request failed")[:200]}
         contacts = page.get("contacts") or []
         credits_used += int(page.get("query_credits_used") or len(contacts))
         for contact in contacts:
@@ -196,7 +199,7 @@ async def _getleads_company_pull(
         offset = page.get("next_offset") or (offset + len(contacts))
     for row, key in zip(rows, ordered):
         row["matched_people"] = contact_counts.get(key, 1)
-    return rows, credits_used
+    return rows, credits_used, None
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +254,35 @@ def _kw_values(keyword_filter: Any) -> list[str]:
     if isinstance(keyword_filter, dict):
         return [str(v) for v in (keyword_filter.get("include") or []) if v]
     return []
+
+# GetLeads expects FULL country names, not ISO codes (live 400 evidence
+# 2026-11-26: countries ["US","CA"] -> "Invalid countries value(s): CA.
+# Valid values: United States, India, United Kingdom, ..."). Canonical
+# ISO->name map for every value GL's validator listed.
+_GL_COUNTRY_NAMES = {
+    "US": "United States", "IN": "India", "GB": "United Kingdom",
+    "BR": "Brazil", "FR": "France", "CA": "Canada", "DE": "Germany",
+    "ES": "Spain", "IT": "Italy", "NL": "Netherlands", "AU": "Australia",
+    "ID": "Indonesia", "TR": "Turkey", "CN": "China", "MX": "Mexico",
+    "AE": "United Arab Emirates", "ZA": "South Africa", "CO": "Colombia",
+    "CH": "Switzerland", "IL": "Israel", "SE": "Sweden", "BE": "Belgium",
+    "SG": "Singapore",
+}
+
+
+def _gl_country_names(codes: list[str]) -> tuple[list[str], list[str]]:
+    """(converted, unmapped) — ISO codes to GL full names; already-full
+    names pass through unmolested."""
+    converted: list[str] = []
+    unmapped: list[str] = []
+    for c in codes or []:
+        c = str(c).strip()
+        if not c:
+            continue
+        converted.append(_GL_COUNTRY_NAMES.get(c.upper(), c))
+        if len(c) == 2 and c.upper() not in _GL_COUNTRY_NAMES:
+            unmapped.append(c)
+    return list(dict.fromkeys(converted)), unmapped
 
 
 QE_FINDER_MAX_ROWS = 2000
@@ -320,10 +352,18 @@ async def quickenrich_company_pull(
     titles = list(people_filters.get("job_title_include")
                   or _kw_values(people_filters.get("job_title")) or [])
     fv = _tam_filter_values(company_filters)
+    # QE's size taxonomy (< 5 / 5 - 19 / 20 - 99 / ...) is INCOMPATIBLE with
+    # LinkedIn bands (11-50 / 51-200 / ...): no band maps exactly, and
+    # overlapping bands would silently broaden the ICP (11-50 would pull
+    # 5-10 and 51-99 employees). Per the 2026-11-26 audit decision: when an
+    # employee_range filter is requested, QE does NOT filter on size
+    # natively — its rows are classified size-unverified candidates
+    # downstream (icp_status) instead of being passed off as exact matches.
+    li_bands_requested = bool([b for b in (company_filters.get("employee_range") or []) if b])
     payload_common = {
         "industry": fv["industry"] or None,
         "country_code": fv["country"] or None,
-        "employee_count": [b for b in (company_filters.get("employee_range") or []) if b] or None,
+        "employee_count": None,
         "keywords": fv["keywords"] or None,
         "keywords_exclude": fv["keywords_exclude"] or None,
     }
@@ -361,6 +401,8 @@ async def quickenrich_company_pull(
                         continue
                     seen.add(key)
                     match_counts[key] = match_counts.get(key, 0) + 1
+                    if li_bands_requested:
+                        row["size_unverified"] = True
                     rows.append(row)
                 cursor = result.get("next_cursor")
             else:
@@ -398,6 +440,8 @@ async def quickenrich_company_pull(
                     if row["domain"] and row["domain"] in exclude_domains:
                         continue
                     seen.add(key)
+                    if li_bands_requested:
+                        row["size_unverified"] = True
                     rows.append(row)
                 cursor = result.get("next_cursor")
             if not cursor or not result.get("has_more", bool(cursor)):

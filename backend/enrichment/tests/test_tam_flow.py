@@ -1794,7 +1794,7 @@ class TestGetleadsTypeSkip(_TempDbTestCase):
         async def ok_pull(http, *, getleads_filters, needed, existing_domains,
                           exclude_domains, credits_cap):
             pull_calls.append(dict(getleads_filters))
-            return [], 0
+            return [], 0, None
 
         with patch("enrichment.blitz_client.tam_by_people", new=fake_tam), \
              patch("enrichment.tam_flow._getleads_company_pull", new=ok_pull):

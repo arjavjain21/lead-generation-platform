@@ -449,7 +449,7 @@ class TestGetleadsPullLeg(unittest.TestCase):
                         credits_cap=500,
                     )
 
-        rows, credits = asyncio.run(run())
+        rows, credits, _err = asyncio.run(run())
         self.assertEqual(credits, 4)
         domains = [r["domain"] for r in rows]
         self.assertIn("a.com", domains)
@@ -478,7 +478,7 @@ class TestGetleadsPullLeg(unittest.TestCase):
                         credits_cap=500,
                     )
 
-        rows, credits = asyncio.run(run())
+        rows, credits, _err = asyncio.run(run())
         self.assertEqual(calls["n"], 2)  # 400 + 400 >= 500 cap
         self.assertEqual(credits, 800)
         self.assertEqual(len(rows), 2)
@@ -497,7 +497,7 @@ class TestGetleadsPullLeg(unittest.TestCase):
                         credits_cap=100,
                     )
 
-        rows, credits = asyncio.run(run())
+        rows, credits, _err = asyncio.run(run())
         self.assertEqual((rows, credits), ([], 0))
 
 

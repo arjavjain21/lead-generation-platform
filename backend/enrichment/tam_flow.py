@@ -746,7 +746,7 @@ async def run_tam_flow(
                         )
                         if fanout else remaining_needed
                     )
-                    gl_rows, credits = await _getleads_company_pull(
+                    gl_rows, credits, gl_error = await _getleads_company_pull(
                         http,
                         getleads_filters=gl_filters,
                         needed=needed,
@@ -760,6 +760,10 @@ async def run_tam_flow(
                             writer.writerow(row)
                     remaining_credits -= credits
                     getleads_credits_used += credits
+                    if gl_error:
+                        filter_notes_runtime.append(
+                            f"getleads: request FAILED ({gl_error.get('error')}) — "
+                            "zero contribution is a failure, not an empty result")
                     if on_progress and gl_rows:
                         try:
                             await _emit_progress(on_progress, {
@@ -817,6 +821,7 @@ async def run_tam_flow(
             # restval='' — until this pass completes).
             keyword_stats = None
             filter_notes: list[str] = []
+            filter_notes_runtime: list[str] = []
             _kw_inc = _kw_values(company_filters.get("keywords"))
             _kw_exc = list(_kw_includes({}) ) and [] or _kw_excludes(company_filters.get("keywords"))
             if _kw_inc or _kw_exc:
@@ -916,8 +921,8 @@ async def run_tam_flow(
         # TAM V2 (2026-11-26): keyword-enforcement stats + per-source filter
         # limitations (surfaced, never silently ignored).
         **({"keyword_stats": keyword_stats,
-            "filter_notes": filter_notes}
-           if (keyword_stats or filter_notes) else {}),
+            "filter_notes": filter_notes + filter_notes_runtime}
+           if (keyword_stats or filter_notes or filter_notes_runtime) else {}),
         # Honest coverage: a breaker-open run completed on GetLeads only —
         # labeled, never presented as full-coverage Blitz results.
         **({"coverage": "degraded: blitz unavailable (rate-limit circuit "
