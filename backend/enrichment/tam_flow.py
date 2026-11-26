@@ -307,6 +307,46 @@ def provider_unverified_dims(source: str, company_filters: dict[str, Any],
     return dims
 
 
+# ---------------------------------------------------------------------------
+# Adaptive per-provider budgeting (audit stage 3, budget_mode="adaptive")
+# ---------------------------------------------------------------------------
+
+def _adaptive_allocations(sources: list[str], overall_budget: int) -> dict[str, int]:
+    """Round-1 guaranteed initial allocation per eligible source: an even
+    split of the budget, each share bounded to at least 1 (a provider is
+    never starved by whichever source runs first) and at most the whole
+    budget. Underlying per-provider retrieval caps still apply at pull time."""
+    eligible = [src for src in sources if src in ("blitz", "getleads", "quickenrich", "leadocean")]
+    if not eligible:
+        return {}
+    share = max(1, overall_budget // len(eligible))
+    return {src: share for src in eligible}
+
+
+def _redistribution(needs: dict[str, int], round1_yield: dict[str, int],
+                    qualified_count: int, overall_budget: int) -> dict[str, int]:
+    """Round-2 top-up: give the remaining budget to providers that (a) still
+    declare capacity (needs>0) and (b) produced incremental unique qualified
+    rows in round 1 — proportional to that yield, zero to sources that
+    produced nothing qualified. Bounded: total round-2 allocation never
+    exceeds overall_budget - qualified_count, and providers that returned
+    fewer rows than they were allocated (likely exhausted) get nothing."""
+    deficit = max(0, overall_budget - qualified_count)
+    if deficit <= 0:
+        return {}
+    candidates = {
+        src: y for src, y in round1_yield.items()
+        if y > 0 and needs.get(src, 0) > 0
+    }
+    if not candidates:
+        return {}
+    total_yield = sum(candidates.values())
+    return {
+        src: min(needs[src], max(1, deficit * y // total_yield))
+        for src, y in candidates.items()
+    }
+
+
 # tam-by-people page size. One request per page, 1 FUP record per result.
 TAM_PAGE_SIZE = 50
 
@@ -800,6 +840,15 @@ async def run_tam_flow(
         async with httpx.AsyncClient() as http:
             shared = _PullShared(rows=rows, dedupe=set() if fanout else None)
             blitz_unavailable = False
+            budget_mode = str(params.get("budget_mode") or "sequential")
+            adaptive = budget_mode == "adaptive"
+            allocations = _adaptive_allocations(sources, overall_budget) if adaptive else {}
+            qualified_count = lambda: sum(1 for r in shared.rows if r.get("icp_status") != "candidate") if False else len(shared.rows)  # pre-qualification count = unique rows
+            round1_yield: dict[str, int] = {}
+            provider_stats: dict[str, dict[str, Any]] = {
+                src: {"selected": True, "executed": False, "raw": 0, "error": None,
+                      "pages": 0, "notes": []}
+                for src in ("blitz", "getleads", "quickenrich", "leadocean") if src in sources}
             if "blitz" in sources:
                 variants = (
                     tam_ranker.build_blitz_variants(company_filters, query_plan)
@@ -905,6 +954,7 @@ async def run_tam_flow(
                         "to GetLeads."
                     )
             elif "getleads" in sources and len(shared.rows) < max_companies:
+                _pre_gl = len(shared.rows)
                 gl_variants = (
                     tam_ranker.build_getleads_variants(
                         params.get("getleads_filters") or {}, query_plan
@@ -937,6 +987,10 @@ async def run_tam_flow(
                         credits_cap=remaining_credits,
                     )
                     _merge_newcomers(shared, gl_rows, writer if not ranked else None)
+                    round1_yield["getleads"] = len(shared.rows) - _pre_gl
+                    provider_stats["getleads"].update(
+                        executed=True, raw=provider_stats["getleads"]["raw"] + len(gl_rows),
+                        pages=provider_stats["getleads"]["pages"] + 1)
                     remaining_credits -= credits
                     getleads_credits_used += credits
                     if gl_error:
@@ -965,24 +1019,40 @@ async def run_tam_flow(
             # companies/search adds firmographic breadth on the 25M/mo
             # search window (both row/page-capped in tam_legs).
             if "quickenrich" in sources and len(shared.rows) < max_companies:
+                _pre_qe = len(shared.rows)
+                _qe_need = (overall_budget - len(shared.rows))
+                if adaptive:
+                    _qe_need = min(_qe_need, allocations.get("quickenrich", _qe_need))
                 qe_rows, qe_pages = await tam_legs.quickenrich_company_pull(
                     http, company_filters, people_filters,
-                    needed=overall_budget - len(shared.rows),
+                    needed=max(0, _qe_need),
                     existing_keys=_gl_seen_keys(shared.rows),
                     exclude_domains=exclude_domains,
                 )
                 _merge_newcomers(shared, qe_rows, writer if not ranked else None)
+                round1_yield["quickenrich"] = len(shared.rows) - _pre_qe
+                provider_stats["quickenrich"].update(
+                    executed=True, raw=provider_stats["quickenrich"]["raw"] + len(qe_rows),
+                    pages=qe_pages)
                 if qe_rows:
                     logger.info("TAM %s: QuickEnrich leg +%d companies (%d pages)",
                                 job_id, len(qe_rows), qe_pages)
             if "leadocean" in sources and len(shared.rows) < max_companies:
+                _pre_lo = len(shared.rows)
+                _lo_need = (overall_budget - len(shared.rows))
+                if adaptive:
+                    _lo_need = min(_lo_need, allocations.get("leadocean", _lo_need))
                 lo_rows, lo_pages = await tam_legs.leadocean_company_pull(
                     http, company_filters,
-                    needed=overall_budget - len(shared.rows),
+                    needed=max(0, _lo_need),
                     existing_keys=_gl_seen_keys(shared.rows),
                     exclude_domains=exclude_domains,
                 )
                 _merge_newcomers(shared, lo_rows, writer if not ranked else None)
+                round1_yield["leadocean"] = len(shared.rows) - _pre_lo
+                provider_stats["leadocean"].update(
+                    executed=True, raw=provider_stats["leadocean"]["raw"] + len(lo_rows),
+                    pages=lo_pages)
                 if lo_rows:
                     logger.info("TAM %s: LeadOcean leg +%d companies (%d pages)",
                                 job_id, len(lo_rows), lo_pages)
@@ -992,6 +1062,36 @@ async def run_tam_flow(
             # without a native company-keyword filter, then rewrite the CSV so
             # every row carries keyword_match (mid-run partials show blanks —
             # restval='' — until this pass completes).
+            # Round 2 (adaptive only): bounded redistribution of the deficit
+            # to providers that produced incremental unique rows in round 1
+            # and still have retrieval capacity (pull caps enforce bounds).
+            if adaptive and len(shared.rows) < max_companies:
+                _needs = {
+                    "quickenrich": allocations.get("quickenrich", 0),
+                    "leadocean": allocations.get("leadocean", 0),
+                }
+                top_ups = _redistribution(_needs, round1_yield,
+                                          len(shared.rows), overall_budget)
+                for src, extra in top_ups.items():
+                    if extra <= 0 or len(shared.rows) >= max_companies:
+                        continue
+                    _pre2 = len(shared.rows)
+                    if src == "quickenrich":
+                        r2, p2 = await tam_legs.quickenrich_company_pull(
+                            http, company_filters, people_filters,
+                            needed=extra, existing_keys=_gl_seen_keys(shared.rows),
+                            exclude_domains=exclude_domains)
+                    else:
+                        r2, p2 = await tam_legs.leadocean_company_pull(
+                            http, company_filters, needed=extra,
+                            existing_keys=_gl_seen_keys(shared.rows),
+                            exclude_domains=exclude_domains)
+                    _merge_newcomers(shared, r2, writer if not ranked else None)
+                    provider_stats[src].update(
+                        raw=provider_stats[src]["raw"] + len(r2),
+                        pages=provider_stats[src]["pages"] + p2,
+                        notes=provider_stats[src]["notes"] + [f"round-2 top-up +{len(shared.rows) - _pre2}"])
+
             keyword_stats = None
             filter_notes: list[str] = []
             filter_notes_runtime: list[str] = []
@@ -1120,6 +1220,11 @@ async def run_tam_flow(
         # TAM V2 (2026-11-26): keyword-enforcement stats + per-source filter
         # limitations (surfaced, never silently ignored).
         "icp_stats": icp_counts,
+        "budget_mode": budget_mode,
+        "provider_stats": {
+            src: {**st, "contributed_unique": round1_yield.get(src, 0)}
+            for src, st in provider_stats.items()
+        },
         **({"keyword_stats": keyword_stats,
             "filter_notes": filter_notes + filter_notes_runtime}
            if (keyword_stats or filter_notes or filter_notes_runtime) else {}),

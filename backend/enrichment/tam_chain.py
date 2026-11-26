@@ -168,10 +168,19 @@ def create_chained_enrichment_job(
     """
     from enrichment import routes as enrichment_routes  # lazy: avoids import cycle
 
+    # Qualified-only chaining (audit stage 3): rows whose icp_status is
+    # 'candidate' (some requested filter dimension could not be verified)
+    # are NOT auto-sent to paid enrichment — they stay in the TAM CSV for
+    # review. Rows with no icp_status (pre-2026-11-26 callers/legacy flows)
+    # chain as before.
+    def _chainable(row: dict[str, Any]) -> bool:
+        status = row.get("icp_status")
+        return bool(row.get("domain")) and status in (None, "", "qualified")
+
     chain_rows = [
         {"domain": row.get("domain") or "", "company_name": row.get("name") or ""}
         for row in companies
-        if row.get("domain")
+        if _chainable(row)
     ]
 
     # LinkedIn-only companies (PR-2.3): collect the canonical company URLs
@@ -190,6 +199,8 @@ def create_chained_enrichment_job(
         url = _company_url_from_tam_row(row)
         if not url or url in chained_urls:
             continue
+        if row.get("icp_status") == "candidate":
+            continue  # unverified rows are never auto-chained
         linkedin_rows.append({
             "domain": "",
             CHAIN_LINKEDIN_COL: url,

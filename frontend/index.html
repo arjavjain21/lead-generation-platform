@@ -2087,7 +2087,17 @@
                             <option value="qe">Blitz + QuickEnrich finder (unlimited plan)</option>
                             <option value="lo">Blitz + LeadOcean search (25M/mo)</option>
                             <option value="unlimited">QuickEnrich + LeadOcean only (no Blitz/GetLeads credits)</option>
+                            <option value="custom">Custom — pick providers below</option>
+                            <option value="all">All Sources — maximum coverage (adaptive budget)</option>
                         </select>
+                        <div id="tamCustomSources" style="display:none;gap:10px;flex-wrap:wrap;align-items:center;padding:6px 0;">
+                            <label style="display:inline-flex;align-items:center;gap:4px;font-size:0.8rem;"><input type="checkbox" name="tamSrc" value="blitz"> Blitz</label>
+                            <label style="display:inline-flex;align-items:center;gap:4px;font-size:0.8rem;"><input type="checkbox" name="tamSrc" value="quickenrich"> QuickEnrich</label>
+                            <label style="display:inline-flex;align-items:center;gap:4px;font-size:0.8rem;"><input type="checkbox" name="tamSrc" value="leadocean"> LeadOcean</label>
+                            <label style="display:inline-flex;align-items:center;gap:4px;font-size:0.8rem;"><input type="checkbox" name="tamSrc" value="getleads"> GetLeads</label>
+                            <label style="display:inline-flex;align-items:center;gap:6px;font-size:0.8rem;cursor:pointer;"><input type="checkbox" id="tamAdaptive" checked> Adaptive budget (fair split + top-up)</label>
+                        </div>
+                        <div id="tamSourceNotes" style="font-size:0.72rem;color:#92400e;margin-top:4px;display:none;"></div>
                         <span class="field-helper">Where the company list comes from</span>
                     </div>
                 </div>
@@ -5650,9 +5660,41 @@ example.org,Jane Doe</pre>
                 qe: ['blitz', 'quickenrich'],
                 lo: ['blitz', 'leadocean'],
                 unlimited: ['quickenrich', 'leadocean'],
+                all: ['blitz', 'quickenrich', 'leadocean', 'getleads'],
+                custom: Array.from(document.querySelectorAll('input[name="tamSrc"]:checked')).map(cb => cb.value),
             };
             return map[v] || [v];
         }
+        function _tamBudgetMode() {
+            const v = document.getElementById('tamSources').value;
+            const adaptiveEl = document.getElementById('tamAdaptive');
+            if (v === 'all') return 'adaptive';
+            if (v === 'custom' && adaptiveEl && adaptiveEl.checked) return 'adaptive';
+            return 'sequential';
+        }
+        function _tamUpdateSourceNotes() {
+            const v = document.getElementById('tamSources').value;
+            const box = document.getElementById('tamSourceNotes');
+            const wrap = document.getElementById('tamCustomSources');
+            if (wrap) wrap.style.display = (v === 'custom') ? 'flex' : 'none';
+            const srcs = _tamSourcesPayload();
+            const hasKw = (typeof tamKwIncludeList !== 'undefined' && (tamKwIncludeList.length > 0 || tamKwExcludeList.length > 0));
+            const hasBands = (typeof tamEmployeeSelected !== 'undefined' && tamEmployeeSelected.size > 0);
+            const hasType = Array.from(document.querySelectorAll('input[name="tamCompanyType"]:checked')).length > 0;
+            const notes = [];
+            if (srcs.includes('getleads') && hasKw) notes.push('GetLeads can\u2019t filter company keywords \u2014 its results arrive as unverified candidates');
+            if (srcs.includes('quickenrich') && hasBands) notes.push('QuickEnrich\u2019s size brackets differ \u2014 its results arrive as size-unverified candidates');
+            if ((srcs.includes('leadocean') || srcs.includes('quickenrich')) && hasType) notes.push('LeadOcean/QuickEnrich have no company-type filter \u2014 typed searches mark those rows as candidates');
+            if (v === 'all') notes.push('Adaptive budget: every provider gets a fair first share, then leftover budget flows to whoever produced qualified companies');
+            if (box) {
+                if (notes.length) { box.textContent = '\u26a0 ' + notes.join(' \u00b7 '); box.style.display = 'block'; }
+                else box.style.display = 'none';
+            }
+        }
+        document.getElementById('tamSources').addEventListener('change', _tamUpdateSourceNotes);
+        document.querySelectorAll('input[name="tamSrc"]').forEach(cb => cb.addEventListener('change', _tamUpdateSourceNotes));
+        document.querySelectorAll('input[name="tamCompanyType"]').forEach(cb => cb.addEventListener('change', _tamUpdateSourceNotes));
+        setTimeout(_tamUpdateSourceNotes, 50);
 
         function _tamRenderSeedPanel(seeds, profile) {
             const panel = document.getElementById('tamSeedPanel');
@@ -5736,7 +5778,8 @@ example.org,Jane Doe</pre>
             const payload = {
                 seed_companies: seeds, company, people,
                 max_companies: Math.min(Math.max(parseInt(document.getElementById('tamMaxCompanies').value, 10) || 500, 1), 10000),
-                sources: _tamSourcesPayload()
+                sources: _tamSourcesPayload(),
+                budget_mode: _tamBudgetMode()
             };
             if (document.getElementById('tamChainEnrich').checked) {
                 payload.create_enrichment_job = true;

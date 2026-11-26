@@ -248,6 +248,12 @@ class TamRequest(BaseModel):
     analyze_seeds: bool = False
     # Search source(s): blitz (default), getleads, or both.
     sources: Optional[list[str]] = None
+    # All-source release (2026-11-26): "sequential" (default, legacy) fills
+    # providers in order under one shared budget; "adaptive" gives every
+    # eligible provider a guaranteed initial allocation, then redistributes
+    # leftover budget in a second round to sources that produced incremental
+    # unique QUALIFIED companies and still have retrieval capacity.
+    budget_mode: str = "sequential"
     create_enrichment_job: bool = False
     titles: Optional[list[str]] = Field(None, max_length=50)
     max_decision_makers: int = Field(5, ge=1, le=25)
@@ -519,6 +525,7 @@ async def start_tam_flow(
         "exact_titles": req.exact_titles,
         "display_name": _tam_display_summary(req),
         "sources": sources,
+        "budget_mode": req.budget_mode,
         "exclude_domains": sorted(seed_domains),
         "getleads_filters": _getleads_filters(req, profile),
         # Lookalike 2.0 ranked mode: fan-out retrieval plan + seed profiles
