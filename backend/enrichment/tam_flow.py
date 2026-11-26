@@ -1147,6 +1147,11 @@ async def run_tam_flow(
                 # size dimension: QE rows tagged size_unverified never clear it
                 if row.get("size_unverified"):
                     unv.add("size")
+                # keyword dimension: QE's industry-enum fallback merged the
+                # industry terms INTO the keyword filter — a "confirmed" match
+                # there may match only the industry terms, not the keywords.
+                if row.get("kw_approximate"):
+                    unv.add("keywords")
                 row["unverified_dims"] = ";".join(sorted(unv))
                 row["icp_status"] = "candidate" if unv else "qualified"
                 icp_counts[row["icp_status"]] += 1

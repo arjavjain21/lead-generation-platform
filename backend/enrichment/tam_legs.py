@@ -424,6 +424,7 @@ async def quickenrich_company_pull(
                     # 422 industry→keywords fallback; the failed request does
                     # not count against results).
                     merged = list(dict.fromkeys((kw_vals or []) + (industry_vals or [])))
+                    kw_approximate = True  # industry terms polluted the filter
                     result = await qe.company_finder(
                         http, cursor=None,
                         country_code=payload_common["country_code"],
@@ -445,6 +446,11 @@ async def quickenrich_company_pull(
                     row.setdefault("matched_people_basis", "placeholder")
                     if li_bands_requested:
                         row["size_unverified"] = True
+                    if kw_approximate:
+                        # Industry-enum fallback merged industry terms into
+                        # the keyword filter — matches are approximate, not
+                        # confirmed for the user's actual keywords.
+                        row["kw_approximate"] = True
                     rows.append(row)
                 cursor = result.get("next_cursor")
             if not cursor or not result.get("has_more", bool(cursor)):
