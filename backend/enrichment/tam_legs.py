@@ -469,6 +469,11 @@ async def leadocean_company_pull(
                 seen.add(key)
                 row["matched_people"] = 1
                 row["source"] = "leadocean"
+                # Fill the TAM geo column from the normalized country (the
+                # finder returns it as `country`; the CSV schema speaks
+                # hq_country_code — blank cells were hiding the filter's work).
+                if row.get("country") and not row.get("hq_country_code"):
+                    row["hq_country_code"] = row.pop("country")
                 rows.append(row)
             cursor = result.get("next_cursor")
             if not cursor:
