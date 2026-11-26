@@ -167,9 +167,9 @@ async def _getleads_company_pull(
         for contact in contacts:
             domain = (contact.get("org_domain") or "").strip().lower()
             name = (contact.get("org_company_name") or "").strip().lower()
-            key = domain or f"name:{name}"
-            if not key or key in seen:
-                continue
+            key = domain or (f"name:{name}" if name else "")
+            if not key or key in seen or key == "name:":
+                continue  # empty-name/domain contacts are unkeyable — skip
             seen.add(key)
             ordered.append(key)
             contact_counts[key] = 1

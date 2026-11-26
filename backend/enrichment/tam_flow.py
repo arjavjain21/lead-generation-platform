@@ -1096,16 +1096,28 @@ async def run_tam_flow(
                             needed=extra, existing_keys=_gl_seen_keys(shared.rows),
                             exclude_domains=exclude_domains)
                     elif src == "blitz":
+                        # _blitz_pull returns None (it writes into shared) —
+                        # measure the diff instead of unpacking its result.
+                        _pre_blitz2 = len(shared.rows)
                         try:
-                            r2, p2 = await _blitz_pull(
+                            await _blitz_pull(
                                 http, job_id=job_id, company_filters=company_filters,
                                 people_filters=people_filters, budget=extra, shared=shared,
                                 exclude_domains=exclude_domains, should_cancel=should_cancel,
-                                on_progress=on_progress, write=not ranked,
-                                writer=writer, csv_file=csv_file,
-                            ), shared.pages
+                                on_progress=on_progress, write=False,
+                                writer=None, csv_file=csv_file,
+                            )
                         except CircuitBreakerError:
-                            r2, p2 = [], 0
+                            pass
+                        r2 = shared.rows[_pre_blitz2:]
+                        # The round-2 pull re-walks the cursor and can re-emit
+                        # rows round 1 already collected — drop exact identity
+                        # duplicates (first occurrence wins).
+                        _seen2 = _gl_seen_keys(shared.rows[:_pre_blitz2])
+                        r2 = [r for r in r2 if (k := tam_identity_key(r)) is None or k not in _seen2]
+                        del shared.rows[_pre_blitz2:]
+                        _merge_newcomers(shared, r2, writer if not ranked else None)
+                        p2 = 0
                     else:
                         r2, p2 = await tam_legs.leadocean_company_pull(
                             http, company_filters, needed=extra,
