@@ -199,6 +199,7 @@ async def _getleads_company_pull(
         offset = page.get("next_offset") or (offset + len(contacts))
     for row, key in zip(rows, ordered):
         row["matched_people"] = contact_counts.get(key, 1)
+        row["matched_people_basis"] = "observed"  # GL persona filter: real matches
     return rows, credits_used, None
 
 
@@ -401,6 +402,7 @@ async def quickenrich_company_pull(
                         continue
                     seen.add(key)
                     match_counts[key] = match_counts.get(key, 0) + 1
+                    row["matched_people_basis"] = "observed"  # title-matched contacts
                     if li_bands_requested:
                         row["size_unverified"] = True
                     rows.append(row)
@@ -440,6 +442,7 @@ async def quickenrich_company_pull(
                     if row["domain"] and row["domain"] in exclude_domains:
                         continue
                     seen.add(key)
+                    row.setdefault("matched_people_basis", "placeholder")
                     if li_bands_requested:
                         row["size_unverified"] = True
                     rows.append(row)
@@ -512,6 +515,7 @@ async def leadocean_company_pull(
                     continue
                 seen.add(key)
                 row["matched_people"] = 1
+                row["matched_people_basis"] = "placeholder"  # no persona filter
                 row["source"] = "leadocean"
                 # Fill the TAM geo column from the normalized country (the
                 # finder returns it as `country`; the CSV schema speaks

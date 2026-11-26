@@ -93,6 +93,23 @@ TAM_CSV_COLUMNS: tuple[str, ...] = (
     #                metadata carries no matching text — kept, NOT claimed as
     #                a match (unknown-data policy)
     "keyword_match",
+    # All-source release (2026-11-26, audit stage 2):
+    # icp_status: "qualified" = every requested filter dimension was enforced
+    #             exactly (native provider filter or verified locally)
+    #             "candidate" = at least one requested dimension could not be
+    #             verified for this row (kept, NOT qualified; excluded from
+    #             chaining by default)
+    "icp_status",
+    # unverified_dims: which dimensions couldn't be verified for this row
+    # (semicolon list: size, keywords, type, min_matches, industry)
+    "unverified_dims",
+    # sources: every provider that contributed to this company (semicolon
+    # list; primary source first). Field-level merge is fill-not-overwrite.
+    "sources",
+    # matched_people_basis: "observed" (provider counted matching employees),
+    # "lower_bound" (>=N matches provably found, exact count unknown),
+    # "placeholder" (no persona evidence — synthetic 1)
+    "matched_people_basis",
 )
 
 
@@ -153,6 +170,142 @@ def _apply_keyword_provenance(
         kept.append(row)
     rows[:] = kept
     return stats
+
+# ---------------------------------------------------------------------------
+# All-source release (audit stage 2): canonical identity, capability matrix,
+# survivorship merge, row qualification.
+# ---------------------------------------------------------------------------
+
+def _norm_domain_key(domain: str) -> str:
+    """Bare, lowercased domain ('' when unusable): strips scheme, userinfo,
+    port, path, query; drops a leading www. (fixture-driven 2026-11-26 —
+    https://www.Nike.com/x?y and nike.com must key identically)."""
+    d = str(domain or "").strip().lower()
+    if not d:
+        return ""
+    if "://" in d:
+        d = d.split("://", 1)[1]
+    if "@" in d:
+        d = d.rsplit("@", 1)[1]
+    d = d.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    if ":" in d:
+        d = d.split(":", 1)[0]
+    if d.startswith("www."):
+        d = d[4:]
+    return d if "." in d else ""
+
+
+def _norm_linkedin_key(url: str) -> str:
+    """Canonical LinkedIn company-page key ('' when not one)."""
+    u = str(url or "").strip().lower()
+    if not u or "linkedin.com" not in u:
+        return ""
+    if "://" in u:
+        u = u.split("://", 1)[1]
+    u = u.split("?", 1)[0]
+    u = u.rstrip("/")
+    if u.startswith("www."):
+        u = u[4:]
+    return u
+
+
+def tam_identity_key(row: dict[str, Any]) -> Optional[str]:
+    """Canonical cross-provider identity: normalized domain, else normalized
+    LinkedIn company URL, else exact lowercased name. Name-keying only fires
+    when BOTH domain and LinkedIn are absent (no fuzzy name merging —
+    identical names at different companies must NOT collide)."""
+    d = _norm_domain_key(row.get("domain") or row.get("website") or "")
+    if d:
+        return "d:" + d
+    li = _norm_linkedin_key(row.get("linkedin_url") or "")
+    if li:
+        return "l:" + li
+    n = (row.get("name") or "").strip().lower()
+    return ("n:" + n) if n else None
+
+
+def _merge_company_row(survivor: dict[str, Any], newcomer: dict[str, Any]) -> bool:
+    """Fill-not-overwrite survivorship merge. Returns True when the newcomer
+    contributed at least one field. Preserves every populated survivor field
+    (never lets a later provider overwrite a more accurate earlier value);
+    fills blanks; records all contributing sources; reconciles matched_people
+    to the max observed value with the strongest basis."""
+    merged_any = False
+    for key in ("domain", "website", "linkedin_url", "industry", "type", "size",
+                "employees_on_linkedin", "followers", "founded_year",
+                "hq_city", "hq_state", "hq_country_code", "hq_region",
+                "revenue", "slogan", "employee_growth_1y"):
+        if not str(survivor.get(key) or "").strip() and str(newcomer.get(key) or "").strip():
+            survivor[key] = newcomer[key]
+            merged_any = True
+    # matched_people: keep the largest OBSERVED count; never let a
+    # placeholder 1 overwrite a real count.
+    def _basis_rank(v: str) -> int:
+        return {"observed": 2, "lower_bound": 1, "placeholder": 0}.get(v, 0)
+    if (int(newcomer.get("matched_people") or 0) > int(survivor.get("matched_people") or 0)
+            and _basis_rank(newcomer.get("matched_people_basis") or "") >= _basis_rank(survivor.get("matched_people_basis") or "")):
+        survivor["matched_people"] = newcomer.get("matched_people")
+        survivor["matched_people_basis"] = newcomer.get("matched_people_basis")
+        merged_any = True
+    # sources list: primary first, contributors appended once
+    srcs = [x for x in str(survivor.get("sources") or survivor.get("source") or "").split(";") if x]
+    for src in str(newcomer.get("source") or "").split(";"):
+        if src and src not in srcs:
+            srcs.append(src)
+            merged_any = True
+    survivor["sources"] = ";".join(srcs)
+    # keyword_match: a local/native confirmation from any contributor
+    # confirms the merged record; unverified stays unverified.
+    if newcomer.get("keyword_match") == "confirmed" and survivor.get("keyword_match") != "confirmed":
+        survivor["keyword_match"] = "confirmed"
+        merged_any = True
+    return merged_any
+
+
+# Per-provider enforcement capability for EACH requested dimension, derived
+# from the live 2026-11-26 probes + SDK contracts:
+#   exact     = native provider filter (or exact-equivalent taxonomy)
+#   none      = provider cannot enforce it at all
+# Company keywords: blitz native; leadocean native; quickenrich native in
+# company-finder mode only; getleads none. Size: blitz/leadocean/getleads
+# exact (LinkedIn-style bands); quickenrich TAXONOMY-INCOMPATIBLE -> none.
+# Type: blitz native; getleads has no column (skips leg); qe/lo none.
+# Persona min-matches: blitz native only.
+_PROVIDER_CAPS: dict[str, dict[str, str]] = {
+    "blitz":       {"keywords": "exact", "size": "exact", "type": "exact", "industry": "exact",
+                    "country": "exact", "min_matches": "exact"},
+    "leadocean":   {"keywords": "exact", "size": "exact", "type": "none", "industry": "exact",
+                    "country": "exact", "min_matches": "none"},
+    "quickenrich": {"keywords": "exact*", "size": "none", "type": "none", "industry": "exact*",
+                    "country": "exact", "min_matches": "none"},
+    "getleads":    {"keywords": "none", "size": "exact", "type": "none", "industry": "exact",
+                    "country": "exact", "min_matches": "none"},
+    # * exact only in company-finder mode (no job titles requested)
+}
+
+
+def provider_unverified_dims(source: str, company_filters: dict[str, Any],
+                             people_filters: dict[str, Any]) -> list[str]:
+    """Dimensions this provider cannot enforce for THIS search. Drives both
+    the pre-job eligibility report and per-row icp_status."""
+    caps = _PROVIDER_CAPS.get(source, {})
+    kw = company_filters.get("keywords") or {}
+    has_kw = bool(_kw_values(kw) or _kw_excludes(kw))
+    titles = bool(_kw_values(people_filters.get("job_title"))
+                  or people_filters.get("job_title_include"))
+    dims: list[str] = []
+    if has_kw:
+        cap = caps.get("keywords", "none")
+        if cap == "none" or (cap == "exact*" and titles):
+            dims.append("keywords")
+    if company_filters.get("employee_range") and caps.get("size") != "exact":
+        dims.append("size")
+    if company_filters.get("type") and caps.get("type") != "exact":
+        dims.append("type")
+    if (people_filters.get("min_per_company") or 0) > 1 and caps.get("min_matches") != "exact":
+        dims.append("min_matches")
+    return dims
+
 
 # tam-by-people page size. One request per page, 1 FUP record per result.
 TAM_PAGE_SIZE = 50
@@ -242,6 +395,10 @@ def flatten_tam_company(entry: dict[str, Any]) -> dict[str, Any]:
         "match_score": None,
         "why_matched": None,
         "keyword_match": None,
+        "icp_status": None,
+        "unverified_dims": None,
+        "sources": None,
+        "matched_people_basis": None,
     }
 
 
@@ -349,18 +506,43 @@ def _row_dedupe_key(row: dict[str, Any]) -> Optional[str]:
     return f"name:{name}" if name else None
 
 
+def _merge_newcomers(shared: Any, newcomer_rows: list[dict[str, Any]],
+                     writer: Any = None) -> None:
+    """Survivorship append: genuinely-new rows are added (and written when
+    incremental); rows whose canonical identity already exists are MERGED
+    into the survivor (fill-not-overwrite + source list) instead of being
+    discarded with their complementary metadata."""
+    from enrichment.tam_flow import _row_merge_map  # noqa: F401 (self-ref guard)
+    existing = _row_merge_map(shared.rows)
+    for row in newcomer_rows:
+        key = tam_identity_key(row)
+        if key and key in existing:
+            _merge_company_row(existing[key], row)
+        else:
+            shared.rows.append(row)
+            if key:
+                existing[key] = row
+            if writer is not None:
+                writer.writerow(row)
+        if writer is not None and key and key in existing and existing[key] is not row:
+            pass  # merged rows are rewritten wholesale at keyword/candidate pass
+
+
 def _gl_seen_keys(rows: list[dict[str, Any]]) -> set[str]:
-    """Domain + name keys of already-collected rows, for GetLeads dedupe
-    (its pull dedupes on ``domain or name:<name>`` keys)."""
-    keys: set[str] = set()
+    """Canonical identity keys of already-collected rows (cross-source
+    dedupe base). Legacy alias kept for call sites/tests."""
+    return {k for k in (tam_identity_key(r) for r in rows) if k}
+
+
+def _row_merge_map(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """identity key -> surviving row (for survivorship merges when a later
+    provider rediscovers the same company)."""
+    out: dict[str, dict[str, Any]] = {}
     for row in rows:
-        domain = (row.get("domain") or "").strip().lower()
-        name = (row.get("name") or "").strip().lower()
-        if domain:
-            keys.add(domain)
-        if name:
-            keys.add(f"name:{name}")
-    return keys
+        k = tam_identity_key(row)
+        if k and k not in out:
+            out[k] = row
+    return out
 
 
 async def _blitz_pull(
@@ -754,10 +936,7 @@ async def run_tam_flow(
                         exclude_domains=exclude_domains,
                         credits_cap=remaining_credits,
                     )
-                    for row in gl_rows:
-                        shared.rows.append(row)
-                        if not ranked:
-                            writer.writerow(row)
+                    _merge_newcomers(shared, gl_rows, writer if not ranked else None)
                     remaining_credits -= credits
                     getleads_credits_used += credits
                     if gl_error:
@@ -792,10 +971,7 @@ async def run_tam_flow(
                     existing_keys=_gl_seen_keys(shared.rows),
                     exclude_domains=exclude_domains,
                 )
-                for row in qe_rows:
-                    shared.rows.append(row)
-                    if not ranked:
-                        writer.writerow(row)
+                _merge_newcomers(shared, qe_rows, writer if not ranked else None)
                 if qe_rows:
                     logger.info("TAM %s: QuickEnrich leg +%d companies (%d pages)",
                                 job_id, len(qe_rows), qe_pages)
@@ -806,10 +982,7 @@ async def run_tam_flow(
                     existing_keys=_gl_seen_keys(shared.rows),
                     exclude_domains=exclude_domains,
                 )
-                for row in lo_rows:
-                    shared.rows.append(row)
-                    if not ranked:
-                        writer.writerow(row)
+                _merge_newcomers(shared, lo_rows, writer if not ranked else None)
                 if lo_rows:
                     logger.info("TAM %s: LeadOcean leg +%d companies (%d pages)",
                                 job_id, len(lo_rows), lo_pages)
@@ -822,26 +995,52 @@ async def run_tam_flow(
             keyword_stats = None
             filter_notes: list[str] = []
             filter_notes_runtime: list[str] = []
+
+            # Row qualification (stage 2): every row gets icp_status based on
+            # which requested dimensions ITS source could enforce (or that a
+            # local check confirmed). qualified = chainable; candidate = kept
+            # in the CSV, excluded from chaining, reported separately.
+            icp_counts = {"qualified": 0, "candidate": 0}
+            for row in shared.rows:
+                primary = (row.get("sources") or row.get("source") or "").split(";")[0]
+                unv = set(provider_unverified_dims(primary, company_filters, people_filters))
+                # keyword dimension: a native/locally confirmed match clears it
+                if "keywords" in unv and row.get("keyword_match") == "confirmed":
+                    unv.discard("keywords")
+                # size dimension: QE rows tagged size_unverified never clear it
+                if row.get("size_unverified"):
+                    unv.add("size")
+                row["unverified_dims"] = ";".join(sorted(unv))
+                row["icp_status"] = "candidate" if unv else "qualified"
+                icp_counts[row["icp_status"]] += 1
+                # matched_people basis (default placeholder for synthetic 1s)
+                if not row.get("matched_people_basis"):
+                    titles = bool(_kw_values(people_filters.get("job_title"))
+                                  or people_filters.get("job_title_include"))
+                    row["matched_people_basis"] = "lower_bound" if (titles and int(row.get("matched_people") or 0) >= 1) else "placeholder"
+            for src in sources:
+                _dims = provider_unverified_dims(src, company_filters, people_filters)
+                if _dims:
+                    filter_notes.append(
+                        f"{src}: cannot enforce {_dims} — its rows are kept as "
+                        "'candidate' (unverified), never counted as qualified")
             _kw_inc = _kw_values(company_filters.get("keywords"))
             _kw_exc = list(_kw_includes({}) ) and [] or _kw_excludes(company_filters.get("keywords"))
             if _kw_inc or _kw_exc:
                 _native = _native_keyword_sources(sources, people_filters)
                 keyword_stats = _apply_keyword_provenance(
                     shared.rows, _kw_inc, _kw_exc, _native)
-                if not ranked:
-                    csv_file.seek(0)
-                    csv_file.truncate()
-                    writer.writeheader()
-                    for row in shared.rows:
-                        writer.writerow(row)
-                    csv_file.flush()
-                    await asyncio.to_thread(os.fsync, csv_file.fileno())
-                for src in ("getleads", "quickenrich"):
-                    if src in sources and src not in _native:
-                        filter_notes.append(
-                            f"{src}: no company-description keyword filter for this mode — "
-                            "rows kept as 'unverified' unless matched in name/industry text")
-                logger.info("TAM %s keyword policy: %s", job_id, keyword_stats)
+            if not ranked and (keyword_stats is not None or icp_counts["candidate"] or sources):
+                # Final rewrite once with qualification + keyword marks +
+                # merged survivorship fields (mid-run partials carry blanks).
+                csv_file.seek(0)
+                csv_file.truncate()
+                writer.writeheader()
+                for row in shared.rows:
+                    writer.writerow(row)
+                csv_file.flush()
+                await asyncio.to_thread(os.fsync, csv_file.fileno())
+                logger.info("TAM %s keyword policy: %s | icp: %s", job_id, keyword_stats, icp_counts)
 
             if blitz_unavailable and not shared.rows:
                 # AFTER the fallback: no leg produced anything — this is NOT
@@ -920,6 +1119,7 @@ async def run_tam_flow(
         "sources": sources,
         # TAM V2 (2026-11-26): keyword-enforcement stats + per-source filter
         # limitations (surfaced, never silently ignored).
+        "icp_stats": icp_counts,
         **({"keyword_stats": keyword_stats,
             "filter_notes": filter_notes + filter_notes_runtime}
            if (keyword_stats or filter_notes or filter_notes_runtime) else {}),

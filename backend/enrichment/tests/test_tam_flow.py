@@ -263,8 +263,9 @@ class TestFlattenTamCompany(unittest.TestCase):
     def test_ranking_columns_trail_the_contract(self):
         # Lookalike 2.0 trailing pair + TAM V2 keyword provenance column.
         self.assertEqual(
-            tam_flow.TAM_CSV_COLUMNS[-3:],
-            ("match_score", "why_matched", "keyword_match"),
+            tam_flow.TAM_CSV_COLUMNS[-7:],
+            ("match_score", "why_matched", "keyword_match", "icp_status",
+             "unverified_dims", "sources", "matched_people_basis"),
         )
         row = tam_flow.flatten_tam_company(_company_entry(0))
         self.assertIsNone(row["match_score"])
