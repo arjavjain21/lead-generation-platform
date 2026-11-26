@@ -867,6 +867,10 @@ async def run_tam_flow(
                             tam_ranker.split_fanout_budget(
                                 remaining_budget, total_variants - index + 1
                             ),
+                            # Adaptive round 1: blitz is bounded to its fair
+                            # share like every other provider (first-runner
+                            # starvation fix, live-canary-verified need).
+                            allocations.get("blitz", overall_budget) if adaptive else overall_budget,
                         )
                         if on_progress:
                             try:
@@ -911,7 +915,8 @@ async def run_tam_flow(
                             job_id=job_id,
                             company_filters=company_filters,
                             people_filters=people_filters,
-                            budget=overall_budget,
+                            budget=(allocations.get("blitz", overall_budget)
+                                     if adaptive else overall_budget),
                             shared=shared,
                             exclude_domains=exclude_domains,
                             should_cancel=should_cancel,
@@ -926,6 +931,11 @@ async def run_tam_flow(
                             "TAM job %s: blitz circuit open before first page — "
                             "blitz leg unavailable", job_id,
                         )
+            if "blitz" in sources:
+                round1_yield.setdefault("blitz", len(shared.rows))
+                if provider_stats.get("blitz"):
+                    provider_stats["blitz"].update(executed=True, raw=len(shared.rows), pages=shared.pages)
+
             cancelled = shared.cancelled
             pages = shared.pages
             cursor = shared.cursor
@@ -1070,6 +1080,10 @@ async def run_tam_flow(
                     "quickenrich": allocations.get("quickenrich", 0),
                     "leadocean": allocations.get("leadocean", 0),
                 }
+                if shared.cursor:
+                    # Blitz stopped mid-cursor under its round-1 clamp —
+                    # eligible for a round-2 top-up like the others.
+                    _needs["blitz"] = overall_budget
                 top_ups = _redistribution(_needs, round1_yield,
                                           len(shared.rows), overall_budget)
                 for src, extra in top_ups.items():
@@ -1081,6 +1095,17 @@ async def run_tam_flow(
                             http, company_filters, people_filters,
                             needed=extra, existing_keys=_gl_seen_keys(shared.rows),
                             exclude_domains=exclude_domains)
+                    elif src == "blitz":
+                        try:
+                            r2, p2 = await _blitz_pull(
+                                http, job_id=job_id, company_filters=company_filters,
+                                people_filters=people_filters, budget=extra, shared=shared,
+                                exclude_domains=exclude_domains, should_cancel=should_cancel,
+                                on_progress=on_progress, write=not ranked,
+                                writer=writer, csv_file=csv_file,
+                            ), shared.pages
+                        except CircuitBreakerError:
+                            r2, p2 = [], 0
                     else:
                         r2, p2 = await tam_legs.leadocean_company_pull(
                             http, company_filters, needed=extra,
