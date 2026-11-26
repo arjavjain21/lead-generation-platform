@@ -7267,11 +7267,12 @@ class ProviderToggleRequest(BaseModel):
     # Phone for ALL contacts per domain; may trigger extra paid phone
     # lookups. Default False. No effect when include_phone is off.
     phone_for_all: bool = False
-    # PR-2.4 (2026-11-11): QuickEnrich dataset-search depth, 1..10 pages of
+    # PR-2.4 (2026-11-11): QuickEnrich dataset-search depth, 1..20 pages of
     # 20 employees-with-email (server clamps to the
-    # QUICKENRICH_DATASET_MAX_PAGES_CEIL ceiling). Default None = env
-    # QUICKENRICH_DATASET_MAX_PAGES (2). Each extra page can bill up to 20
-    # more credit-per-returned-employee rows per company — a bounded opt-in.
+    # QUICKENRICH_DATASET_MAX_PAGES_CEIL ceiling — raised 10→20 on the
+    # unlimited plan, 2026-11-26). Default None = env
+    # QUICKENRICH_DATASET_MAX_PAGES (2). Each extra page can return up to 20
+    # more employee rows per company — bounded opt-in, still capped.
     dataset_max_pages: Optional[int] = None
     # PR-2.5 (2026-11-11): optional person country for the BLITZ search lane
     # only (cascade location filter). Other providers match on their own

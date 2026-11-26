@@ -105,7 +105,10 @@ _DATASET_CAPACITY = float(
 _DATASET_MAX_PAGES = int(os.getenv("QUICKENRICH_DATASET_MAX_PAGES", "2"))
 # Hard ceiling for per-request dataset_max_pages overrides (PR-2.4): a
 # request may LOWER or modestly RAISE the page cap, never blow past this.
-_DATASET_MAX_PAGES_CEIL = int(os.getenv("QUICKENRICH_DATASET_MAX_PAGES_CEIL", "10"))
+# Unlimited-plan ceiling (2026-11-26, owner request): per-request dataset depth
+# may go to 20 pages (20 x 20 employees-with-email = up to 400 rows/domain).
+# Env still clamps tighter if ever needed.
+_DATASET_MAX_PAGES_CEIL = int(os.getenv("QUICKENRICH_DATASET_MAX_PAGES_CEIL", "20"))
 
 # Per-job page-cap override (PR-2.4): routes set this ContextVar before
 # scheduling the runner; domain_search consumes it when its explicit

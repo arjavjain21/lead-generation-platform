@@ -24,7 +24,9 @@ class TestPageCapClamp(unittest.TestCase):
         self.assertEqual(qe.clamp_page_cap_override(None), None)
         self.assertEqual(qe.clamp_page_cap_override(3), 3)
         self.assertEqual(qe.clamp_page_cap_override(0), 1)      # floor
-        self.assertEqual(qe.clamp_page_cap_override(99), 10)    # ceiling
+        self.assertEqual(qe.clamp_page_cap_override(99), 20)    # ceiling (unlimited-plan raise 2026-11-26)
+        self.assertEqual(qe.clamp_page_cap_override(20), 20)    # 20 now allowed
+        self.assertEqual(qe.clamp_page_cap_override(21), 20)    # still clamped above 20
         self.assertEqual(qe.clamp_page_cap_override("x"), None) # junk → env default
 
     def test_contextvar_consumed_by_domain_search(self):
