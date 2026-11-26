@@ -718,14 +718,29 @@ async def search_companies(
     rows_out: list[dict[str, Any]] = []
     for item in (data or [])[:max_rows]:
         cd = item.get("company_data") or {}
+        # Nested structures (live-verified 2026-11-26):
+        #   company_employees.number_of_employees_code = "1001-5000" band
+        #   company_primary_address.country_code      = "IT"
+        #   company_industries[0].name3               = display industry
+        emp = cd.get("company_employees") or {}
+        size = emp.get("number_of_employees_code") or _co_first(
+            cd, "employee_range", "employeeRange", "employees") or ""
+        addr = cd.get("company_primary_address") or {}
+        country = addr.get("country_code") or _co_first(
+            cd, "country", "hq_country", "country_code") or ""
+        inds = cd.get("company_industries") or []
+        industry = (inds[0].get("name3") if inds and isinstance(inds[0], dict) else None)             or _co_first(cd, "industry", "company_industry") or ""
+        revenue_usd = cd.get("company_revenue_in_usd")
         rows_out.append({
             "name": _co_first(cd, "company_name", "name") or "",
             "domain": (_co_first(cd, "company_domain", "domain") or "").lower(),
-            "linkedin_url": _co_first(cd, "company_linkedin_url", "linkedin_url", "linkedin") or "",
-            "industry": _co_first(cd, "industry", "company_industry") or "",
-            "size": _co_first(cd, "employee_range", "employeeRange", "employees") or "",
-            "revenue": _co_first(cd, "revenue", "revenue_range") or "",
-            "country": _co_first(cd, "country", "hq_country", "country_code") or "",
+            "linkedin_url": _co_first(cd, "company_linkedin_url", "linkedin_url", "linkedin")
+                or ((cd.get("company_social_links") or {}).get("linkedin") or {}).get("url", ""),
+            "industry": industry,
+            "size": size,
+            "revenue": (f"${int(revenue_usd):,}" if isinstance(revenue_usd, (int, float)) and revenue_usd
+                        else (_co_first(cd, "revenue", "revenue_range") or "")),
+            "country": country,
         })
     return {
         "companies": rows_out,
