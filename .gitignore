@@ -125,3 +125,11 @@ docs/blitz-api-py/
 LOOP-latam.md
 .listbuilding-api-key
 .claude/.listbuilding-enrichment-api-key
+
+# Local-only artifacts (2026-11-27): frontend rollback snapshots are local
+# safety nets — git history is the real backup; venv and empty ops dirs.
+frontend/index.html.bak*
+venv/
+archive/
+backend/.tables
+backend/header
