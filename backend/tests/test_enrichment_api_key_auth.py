@@ -264,8 +264,10 @@ class TestKeyIdentity:
         assert "other-user-job" in ids
         assert detail.status_code == 200
 
-    def test_non_admin_key_cannot_see_other_users_jobs(self, enrichment_store):
-        # Non-admin key: strictly own jobs (403 on foreign job detail).
+    def test_non_admin_key_sees_team_jobs(self, enrichment_store):
+        # Team-shared model (2026-11-26): non-admin members see and open ALL
+        # team jobs — the board is shared; attribution lives on jobs.user_id
+        # plus the audit log, not on per-user isolation.
         from fastapi.testclient import TestClient
         from main import app
 
@@ -276,7 +278,11 @@ class TestKeyIdentity:
         )
         try:
             with TestClient(app) as c:
+                listing = c.get("/api/enrichment/jobs")
                 detail = c.get("/api/enrichment/jobs/other-user-job")
         finally:
             app.dependency_overrides.clear()
-        assert detail.status_code == 403
+        assert listing.status_code == 200
+        ids = [j["job_id"] for j in listing.json()["jobs"]]
+        assert "other-user-job" in ids
+        assert detail.status_code == 200

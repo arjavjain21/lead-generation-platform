@@ -45,7 +45,7 @@ from . import cache as cache_module
 from . import centers as centers_module
 from . import job_store
 from .crawler import OUTPUT_COLS
-from .routes import OUTPUT_DIR, _count_csv_data_rows, _owns_job
+from .routes import OUTPUT_DIR, _count_csv_data_rows
 
 # Mirror of routes.py's download-gate set — statuses at which a job's results
 # may be served. 'stopped' is legacy but still accepted by the existing
@@ -554,8 +554,14 @@ def _get_scraper_job_or_404(job_id: str) -> dict[str, Any]:
 
 
 def _require_owner(job: dict[str, Any], user: dict[str, Any]) -> None:
-    if not _owns_job(job, user):
-        raise ExternalError("access_denied", "Access denied.", 403)
+    # STRICT owner-or-admin on the external/MCP surface (2026-11-26): the
+    # internal scraper/routes._owns_job helper became team-permissive with
+    # the multi-user rollout, but API-key clients must not inherit that —
+    # a non-admin key (e.g. a client integration key) stays scoped to its
+    # own jobs. Deliberately local, not shared with the UI helper.
+    if user.get("is_admin") or job.get("user_id") == user.get("user_id"):
+        return
+    raise ExternalError("access_denied", "Access denied.", 403)
 
 
 def impl_estimate(user: dict[str, Any], req: ExternalScrapeRequest) -> dict[str, Any]:

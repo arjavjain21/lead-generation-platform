@@ -169,11 +169,15 @@ class TestTokenQueryAuth:
         r = client.get("/api/enrichment/jobs/native-dl-bad/recover-partial?token=not.a.jwt")
         assert r.status_code == 401
 
-    def test_other_users_job_is_403(self, store, client):
+    def test_other_users_job_not_forbidden_team_model(self, store, client):
+        # Team-shared model (2026-11-26): a foreign member's token is no
+        # longer 403-denied — ownership checks pass for everyone. This job
+        # has no partial file on disk, so the endpoint itself 404s.
         _insert_job(store, "native-dl-foreign", status="running", total=100)
         other = _auth.create_token({"user_id": "someone-else", "email": "x@t", "is_admin": 0})
         r = client.get(f"/api/enrichment/jobs/native-dl-foreign/recover-partial?token={other}")
-        assert r.status_code == 403
+        assert r.status_code != 403
+        assert r.status_code == 404
 
 
 class TestShardsBasisCoversRowsOnDisk:

@@ -683,9 +683,9 @@ async def get_subset_count(
 # ---------------------------------------------------------------------------
 
 def _owns_job(job: dict[str, Any], current_user: dict[str, Any]) -> bool:
-    if current_user.get("is_admin"):
-        return True
-    return job.get("user_id") == current_user["user_id"]
+    # Team-shared model (2026-11-26): every member sees and can act on every
+    # team job. Signature kept so existing call sites stay untouched.
+    return True
 
 
 def _job_output_exists(job: dict) -> bool:
@@ -701,7 +701,7 @@ def _job_output_exists(job: dict) -> bool:
 
 @router.get("/jobs")
 async def list_scraper_jobs(current_user: dict = Depends(auth.get_current_user)):
-    """List scraper jobs for current user (or all for admin).
+    """List scraper jobs (all team jobs — team-shared model, 2026-11-26).
 
     Returns a SLIM projection: the jobs table has 60+ columns and full rows
     made this endpoint ~1 MB per poll for the UI (2026-09-20 slowness RCA —
@@ -709,13 +709,19 @@ async def list_scraper_jobs(current_user: dict = Depends(auth.get_current_user))
     The single-job GET /jobs/{job_id} still returns the full row.
     """
     store = job_store.get_store()
-    if current_user.get("is_admin"):
-        jobs = store.list_jobs(job_type="scraper", limit=200)
-    else:
-        jobs = store.list_jobs(user_id=current_user["user_id"], job_type="scraper", limit=200)
+    # Team-shared model (2026-11-26): all members see all team jobs.
+    jobs = store.list_jobs(job_type="scraper", limit=200)
+    # Owner attribution: one batched user_id → email lookup for the card
+    # badges (user_id is already in the SELECT * row — no extra query cost).
+    try:
+        emails = auth.emails_for_user_ids([j.get("user_id") for j in jobs])
+    except Exception as oe:
+        logger.warning("scraper owner email augmentation failed: %s", oe)
+        emails = {}
     slim_jobs = [
         {k: j.get(k) for k in _SCRAPER_LIST_FIELDS}
         | {
+            "user_email": emails.get(j.get("user_id")),
             "regions": _compact_regions_for_list(j.get("regions")),
             "location_display": _location_display_for_list(j.get("regions")),
             "output_exists": _job_output_exists(j),

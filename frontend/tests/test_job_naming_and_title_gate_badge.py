@@ -43,8 +43,10 @@ class TestTitleGateBadge:
 
     def test_chip_inserted_into_card(self, html_content):
         # the chip must actually be appended inside the card markup, not just defined
+        # (2026-11-26: ownerChip sits between sourceChip and titleGateChip —
+        # the owner badge ships with the multi-user rollout.)
         card_match = re.search(
-            r"\+ sourceChip\s*\n\s*\+ titleGateChip", html_content
+            r"\+ sourceChip\s*\n\s*\+ ownerChip\s*\n\s*\+ titleGateChip", html_content
         )
         assert card_match is not None
 

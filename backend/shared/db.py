@@ -11,8 +11,10 @@ This module provides:
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,8 +31,53 @@ CACHE_EXPIRY_DAYS = 90  # 90-day cache freshness as requested
 
 _local = threading.local()
 
-# Daily API request limit for non-admin users
-NON_ADMIN_DAILY_REQUEST_LIMIT = 50000
+# Daily API request ceiling for non-admin users (admins are exempt, as before).
+# Per-user overrides live in users.daily_quota (set by admins via
+# POST /api/admin/users/{id}/quota); NULL there falls back to this env
+# default. Raised 50k → 100k for the multi-user rollout (2026-11-26).
+DEFAULT_USER_DAILY_QUOTA = int(os.getenv("DEFAULT_USER_DAILY_QUOTA", "100000"))
+# Legacy alias kept one release so any straggler reference keeps resolving.
+NON_ADMIN_DAILY_REQUEST_LIMIT = DEFAULT_USER_DAILY_QUOTA
+
+# 60s per-process cache for resolved per-user quotas: the limit check runs on
+# hot scraper/external paths and the SELECT should not repeat per request.
+# Invalidation on admin change is best-effort (invalidate_quota_cache) plus
+# TTL expiry — a ≤60s lag on a freshly-raised quota is acceptable.
+_quota_cache: dict[str, tuple[int, float]] = {}
+_QUOTA_CACHE_TTL_S = 60.0
+
+
+def get_user_daily_quota(user_id: str) -> int:
+    """Resolve a user's daily request ceiling.
+
+    ``users.daily_quota`` when set, else ``DEFAULT_USER_DAILY_QUOTA``.
+    Read-only SELECT, cached 60s per process; a missing users table (fresh
+    test env) falls back to the env default rather than failing the request.
+    """
+    now = time.monotonic()
+    cached = _quota_cache.get(user_id)
+    if cached and now - cached[1] < _QUOTA_CACHE_TTL_S:
+        return cached[0]
+    quota = DEFAULT_USER_DAILY_QUOTA
+    try:
+        row = get_db().execute(
+            "SELECT daily_quota FROM users WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        if row is not None and row["daily_quota"]:
+            quota = int(row["daily_quota"])
+    except sqlite3.Error:
+        pass
+    _quota_cache[user_id] = (quota, now)
+    return quota
+
+
+def invalidate_quota_cache(user_id: str | None = None) -> None:
+    """Drop cached quota resolution (all users, or one). Called by the admin
+    quota endpoint so a change is visible without waiting out the TTL."""
+    if user_id is None:
+        _quota_cache.clear()
+    else:
+        _quota_cache.pop(user_id, None)
 
 
 def get_db() -> sqlite3.Connection:
@@ -359,6 +406,45 @@ def init_db() -> None:
             skipped_junk     INTEGER NOT NULL DEFAULT 0,
             errors           INTEGER NOT NULL DEFAULT 0
         );
+
+        -- Per-user activity audit log (2026-11-26). One row per audited
+        -- action: every non-GET /api/* mutation, download-shaped GETs,
+        -- logins (success + failure) and admin operations. Written ONLY via
+        -- shared/audit.py's batched writer thread (queue + executemany,
+        -- ≤1 commit/s per worker) or its sync=True login path — never inline
+        -- from request handlers, per the write-contention doctrine
+        -- (shared/auth.py last_used debounce RCA 2026-08-24). Retention:
+        -- pruned at boot to AUDIT_RETENTION_DAYS (default 90) by main.py's
+        -- _maybe_prune_audit_log, marker-file deduped across the 4 workers.
+        CREATE TABLE IF NOT EXISTS user_activity_log (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts          TEXT NOT NULL,     -- ISO-8601 UTC
+            user_id     TEXT,              -- NULL for unauthenticated (401) requests
+            email       TEXT,              -- attempted email on login_failed
+            key_id      TEXT,              -- API-key identity when key-authed
+            action      TEXT NOT NULL,     -- 'login','login_failed','job.cancel','download','admin.…'
+            method      TEXT,
+            path        TEXT,              -- request path, ids intact
+            resource_id TEXT,              -- UUID / group name / cache id extracted from path
+            status      INTEGER,
+            ip          TEXT,
+            meta        TEXT               -- small JSON blob (≤2KB)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ual_ts
+            ON user_activity_log (ts);
+
+        CREATE INDEX IF NOT EXISTS idx_ual_action_ts
+            ON user_activity_log (action, ts);
+
+        -- email + ip indexes serve the admin activity feed filter and the
+        -- login lockout COUNT respectively; both must stay index-served
+        -- because count_recent runs on every login attempt.
+        CREATE INDEX IF NOT EXISTS idx_ual_email_ts
+            ON user_activity_log (email, ts);
+
+        CREATE INDEX IF NOT EXISTS idx_ual_ip_ts
+            ON user_activity_log (ip, ts);
         """
     )
 
@@ -502,13 +588,15 @@ def check_daily_request_limit(user_id: str, is_admin: bool, estimated_requests: 
 
     current_count = get_daily_request_count(user_id)
     projected_count = current_count + estimated_requests
+    daily_limit = get_user_daily_quota(user_id)
 
-    if projected_count > NON_ADMIN_DAILY_REQUEST_LIMIT:
-        remaining = NON_ADMIN_DAILY_REQUEST_LIMIT - current_count
+    if projected_count > daily_limit:
+        remaining = daily_limit - current_count
         return False, (
             f"Daily API request limit exceeded. You have used {current_count:,} of "
-            f"{NON_ADMIN_DAILY_REQUEST_LIMIT:,} daily requests. "
-            f"Remaining: {remaining:,}. Please try again tomorrow."
+            f"{daily_limit:,} daily requests. "
+            f"Remaining: {remaining:,}. Please try again tomorrow or ask an "
+            f"admin to raise your daily quota."
         )
 
     return True, ""
@@ -563,7 +651,8 @@ def get_api_quota_status(user_id: str, is_admin: bool) -> dict[str, any]:
         }
 
     used = get_daily_request_count(user_id)
-    remaining = max(0, NON_ADMIN_DAILY_REQUEST_LIMIT - used)
+    daily_limit = get_user_daily_quota(user_id)
+    remaining = max(0, daily_limit - used)
 
     # Calculate reset time (midnight UTC tomorrow)
     tomorrow = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -571,7 +660,7 @@ def get_api_quota_status(user_id: str, is_admin: bool) -> dict[str, any]:
     tomorrow += timedelta(days=1)
 
     return {
-        "limit": NON_ADMIN_DAILY_REQUEST_LIMIT,
+        "limit": daily_limit,
         "used": used,
         "remaining": remaining,
         "resets_at": tomorrow.isoformat(),

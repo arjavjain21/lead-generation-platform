@@ -1430,7 +1430,12 @@ def get_notification_recipients() -> list[str]:
 # Cleanup settings
 UPLOAD_RETENTION_DAYS = 7
 OUTPUT_RETENTION_DAYS = 30
-MAX_JOBS_PER_USER = 100
+# Enrichment-job retention cap per user (oldest deleted beyond it). Raised
+# 100 → 1000 and made env-tunable for the multi-user rollout (2026-11-26):
+# per-person accounts fragment usage, and deleting a person's oldest jobs
+# at 100 would quietly destroy their download history. Admins are exempt
+# (see enforce_job_limit) — management@ alone owns 5,000+ jobs.
+MAX_JOBS_PER_USER = int(os.getenv("MAX_JOBS_PER_USER", "1000"))
 
 # BetterEnrich - no per-user rate limiting (use freely)
 # Rate limiting is handled by the BetterEnrich API itself
@@ -1629,8 +1634,13 @@ def _map_validation_status(code: str) -> str:
     return code_map.get(code, "unknown")
 
 
-def enforce_job_limit(user_id: str) -> None:
-    """Delete oldest jobs if user has more than MAX_JOBS_PER_USER."""
+def enforce_job_limit(user_id: str, is_admin: bool = False) -> None:
+    """Delete oldest jobs if user has more than MAX_JOBS_PER_USER.
+
+    Admins are exempt (2026-11-26): the service account (management@) owns
+    the team's accumulated history and must never be silently trimmed."""
+    if is_admin:
+        return
     store = job_store.get_store()
     jobs = store.list_enrichment_jobs(user_id=user_id, limit=1000)
 
@@ -4902,9 +4912,10 @@ async def upload_csv(
 
 
 def _owns_job(job: dict[str, Any], current_user: dict[str, Any]) -> bool:
-    if current_user.get("is_admin"):
-        return True
-    return job.get("user_id") == current_user["user_id"]
+    # Team-shared model (2026-11-26): every member sees and can act on every
+    # team job — the board is shared; attribution lives on jobs.user_id plus
+    # the audit log. Signature kept so the ~17 call sites stay untouched.
+    return True
 
 
 def _job_output_exists(job: dict) -> bool:
@@ -4931,7 +4942,8 @@ async def list_enrichment_jobs(
 ):
     """List enrichment jobs (paginated, optional status + search + date + file-ready + source filter)."""
     store = job_store.get_store()
-    user_id = None if current_user.get("is_admin") else current_user["user_id"]
+    # Team-shared model (2026-11-26): all members see all team jobs.
+    user_id = None
 
     if file_ready:
         # output_exists is a per-job filesystem check (_job_output_exists), not a
@@ -5005,6 +5017,16 @@ async def list_enrichment_jobs(
         logger.warning("checkpoint_count augmentation failed: %s", cke)
         for job in jobs:
             job.setdefault("checkpoint_count", 0)
+
+    # Owner attribution (2026-11-26): batch user_id → email map so cards can
+    # show WHO ran the job. One indexed SELECT per page, same shape as the
+    # checkpoint augmentation above.
+    try:
+        emails = auth.emails_for_user_ids([j.get("user_id") for j in jobs])
+        for job in jobs:
+            job["user_email"] = emails.get(job.get("user_id"))
+    except Exception as oe:
+        logger.warning("owner email augmentation failed: %s", oe)
 
     # Title-gate mode per job (2026-09-28): 'on' | 'off' | 'default' so the
     # UI can badge the strict-titles setting at a glance. Derived from the
@@ -5108,7 +5130,7 @@ async def start_enrichment_job(
     cascade_json = json.dumps(cascade) if cascade else None
 
     # Enforce job limit before creating new job
-    enforce_job_limit(current_user["user_id"])
+    enforce_job_limit(current_user["user_id"], is_admin=bool(current_user.get("is_admin")))
 
     store.create_enrichment_job(
         job_id=job_id,

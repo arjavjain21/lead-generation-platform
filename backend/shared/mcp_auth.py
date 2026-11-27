@@ -82,45 +82,13 @@ class MCPAuthMiddleware(BaseHTTPMiddleware):
 
     @staticmethod
     def _resolve_user(request: Request) -> dict | None:
-        """Try API key first, then JWT bearer. Return user dict or None."""
-        # Path A: API key in X-API-Key header.
-        api_key = request.headers.get("x-api-key")
-        if api_key:
-            try:
-                user = auth.verify_api_key(api_key)
-            except Exception:
-                user = None
-            if user:
-                return user
+        """Try API key first, then JWT bearer. Return user dict or None.
 
-        # Path B: Bearer token (JWT or API key — the auth layer accepts both).
-        auth_header = request.headers.get("authorization", "")
-        if auth_header.lower().startswith("bearer "):
-            token = auth_header[7:].strip()
-            if not token:
-                return None
-
-            # Try as API key first (lgp_ prefix indicates an API key).
-            if token.startswith("lgp_"):
-                try:
-                    user = auth.verify_api_key(token)
-                except Exception:
-                    user = None
-                if user:
-                    return user
-
-            # Fall through to JWT validation.
-            try:
-                payload = auth.decode_token(token)
-            except Exception:
-                # decode_token raises HTTPException(401) on bad JWT — we
-                # treat any exception as auth failure and let the caller
-                # emit the standard 401.
-                return None
-            if payload:
-                return payload
-
-        return None
+        Delegates to ``auth.resolve_request_identity`` (added 2026-11-26) so
+        the MCP gate and the audit middleware share one resolution path and
+        can never disagree about who called.
+        """
+        return auth.resolve_request_identity(request)
 
     @staticmethod
     def _unauthorized_response() -> JSONResponse:

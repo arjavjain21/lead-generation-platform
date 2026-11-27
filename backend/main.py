@@ -34,7 +34,8 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from shared import auth, db
+from shared import audit, auth, db
+from shared.audit_middleware import AuditMiddleware
 from shared.job_store_base import JobStoreBase
 from shared.mcp_auth import MCPAuthMiddleware
 from scraper import routes as scraper_routes
@@ -208,6 +209,11 @@ async def _run_parent_startup():
     auth.init_auth_db()
     db.init_db()
 
+    # Audit writer thread (2026-11-26): must be running before the first
+    # audited request can arrive; lifespan shutdown calls audit.stop() to
+    # flush the queue.
+    audit.start()
+
     # Production-only boot actions (default on; pytest sets it false via
     # conftest). The startup reapers + background loops write to the REAL
     # jobs DB — a TestClient boot inside a pytest run against prod data
@@ -228,6 +234,12 @@ async def _run_parent_startup():
         logger.info("Started job_events prune (file-gated, retention=%s days)", os.getenv("JOB_EVENTS_RETENTION_DAYS", "7"))
     except Exception as e:
         logger.warning("Failed to start job_events prune: %s", e)
+
+    try:
+        asyncio.create_task(_maybe_prune_audit_log())
+        logger.info("Started audit-log prune (file-gated, retention=%s days)", audit.AUDIT_RETENTION_DAYS)
+    except Exception as e:
+        logger.warning("Failed to start audit-log prune: %s", e)
 
     try:
         state = enrichment_routes.job_store.get_store().restore_job_state()
@@ -352,11 +364,13 @@ async def lifespan(app: FastAPI):
                 logger.info("MCP session manager started")
                 yield
         finally:
+            audit.stop()  # flush the audit writer queue before the process exits
             logger.info("Lifespan shutdown complete (MCP session manager stopped)")
     else:
         # MCP not enabled — just yield
         logger.info("MCP not enabled, lifespan yields without MCP")
         yield
+        audit.stop()  # flush the audit writer queue before the process exits
         logger.info("Lifespan shutdown complete")
 
 
@@ -393,6 +407,14 @@ app.add_middleware(
 # instance, so /mcp stays protected even if the mount path changes.
 if _MCP_ENABLED:
     app.add_middleware(MCPAuthMiddleware)
+
+# Per-user activity audit (2026-11-26): registered LAST → runs OUTERMOST, so
+# it also records 401/403 rejections produced by the inner auth layers.
+# Registered UNCONDITIONALLY — the dispatch and audit() both re-check
+# audit.AUDIT_ENABLED per request/call so the ENABLE_AUDIT_LOG kill switch
+# works without a code change, and tests (conftest sets it false) keep the
+# middleware in the stack for tests that flip it back on.
+app.add_middleware(AuditMiddleware)
 
 # Include module routers
 app.include_router(scraper_routes.router, tags=["scraper"])
@@ -511,6 +533,37 @@ async def _maybe_prune_job_events() -> None:
             logger.info("job_events prune: removed %d rows (retention=%dd)", removed, days)
     except Exception as e:
         logger.warning("job_events prune failed: %s", e)
+
+
+async def _maybe_prune_audit_log() -> None:
+    """Prune user_activity_log at boot to AUDIT_RETENTION_DAYS (default 90),
+    gated by a marker file so the 4 workers don't all prune at once.
+
+    Same shape as _maybe_prune_job_events: a startup-shot task, NOT a
+    periodic loop — gunicorn --max-requests recycles workers faster than a
+    multi-hour sleep would ever fire. Batched DELETE keeps each lock short;
+    best-effort (failures logged, never raised)."""
+    import time
+    from pathlib import Path
+    min_interval = int(os.getenv("AUDIT_PRUNE_MIN_INTERVAL", "21600"))  # 6h
+    marker = Path(__file__).resolve().parent / "data" / ".last_audit_prune"
+    try:
+        if marker.exists() and (time.time() - marker.stat().st_mtime) < min_interval:
+            return  # another worker pruned recently
+    except Exception:
+        pass
+    try:
+        removed = audit.prune_old(audit.AUDIT_RETENTION_DAYS)
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
+        except Exception:
+            pass
+        if removed:
+            logger.info("audit-log prune: removed %d rows (retention=%dd)",
+                        removed, audit.AUDIT_RETENTION_DAYS)
+    except Exception as e:
+        logger.warning("audit-log prune failed: %s", e)
 
 
 async def _call_tracker_health_loop() -> None:
@@ -632,12 +685,64 @@ async def meta():
 
 
 @shared_router.post("/auth/login")
-async def login(req: LoginRequest):
-    """Authenticate with email + password. Returns JWT token on success."""
+def login(req: LoginRequest, request: Request):
+    """Authenticate with email + password. Returns JWT token on success.
+
+    Sync ``def`` on purpose — FastAPI runs it in the threadpool so bcrypt +
+    the lockout SELECT never touch the event loop (RCA 2026-08-24 doctrine).
+
+    Multi-user hardening (2026-11-26):
+    - Lockout: ≥ LOGIN_LOCKOUT_THRESHOLD 'login_failed' rows for this email
+      OR source IP in the trailing 15 minutes → 429. Counted from
+      user_activity_log (index-served) — no new state to wedge.
+    - Inactive accounts fail closed with the same 401 shape as bad
+      credentials (no user-enumeration signal).
+    - Telemetry: success stamps users.last_login_at/ip + a 'login' audit
+      row; failures write 'login_failed'. Both use sync=True so the lockout
+      counter sees them immediately (the queued writer lags ~1s).
+
+    The audit middleware deliberately skips this path — the endpoint is the
+    single authority for login rows (see audit_middleware._should_audit).
+    """
     email = req.email.strip().lower()
+    ip = audit.client_ip(request)
+
+    threshold = int(os.getenv("LOGIN_LOCKOUT_THRESHOLD", "10"))
+    if threshold > 0 and audit.count_recent(
+        action="login_failed", email=email, ip=ip, window_min=15
+    ) >= threshold:
+        audit.audit(
+            "login_locked_out", method="POST", path="/api/auth/login",
+            status=429, ip=ip, email=email, sync=True,
+        )
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed login attempts. Please try again in 15 minutes.",
+            headers={"Retry-After": "900"},
+        )
+
     user = auth.get_user_by_email(email)
     if user is None or not auth.verify_password(req.password, user["password_hash"]):
+        audit.audit(
+            "login_failed", method="POST", path="/api/auth/login",
+            status=401, ip=ip, email=email, sync=True,
+        )
         raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+    if not user.get("is_active", 1):
+        audit.audit(
+            "login_failed", method="POST", path="/api/auth/login",
+            status=401, ip=ip, email=email, sync=True,
+            meta={"reason": "account_disabled"},
+        )
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+    auth.record_login(user["user_id"], ip)
+    audit.audit(
+        "login", method="POST", path="/api/auth/login",
+        user={"user_id": user["user_id"], "email": user["email"]},
+        status=200, ip=ip, sync=True,
+    )
     token = auth.create_token(user)
     return {
         "token": token,
@@ -662,13 +767,21 @@ async def refresh_token(current_user: dict = Depends(auth.get_current_user)):
     """
     Refresh JWT token (must be authenticated with valid token).
     Returns a new token with updated expiration.
+
+    Deactivated users are refused here — a partial close of the residual
+    ≤7-day JWT window (per-request is_active checks on ~226K GETs/day would
+    violate the write-contention doctrine; API keys are killed immediately
+    at deactivation instead).
     """
-    new_token = auth.create_token(current_user)
+    user = auth.get_user_by_id(current_user.get("user_id", ""))
+    if not user or not user.get("is_active", 1):
+        raise HTTPException(status_code=403, detail="Account is disabled.")
+    new_token = auth.create_token(user)
     return {
         "token": new_token,
-        "user_id": current_user["user_id"],
-        "email": current_user["email"],
-        "is_admin": bool(current_user.get("is_admin", False)),
+        "user_id": user["user_id"],
+        "email": user["email"],
+        "is_admin": bool(user.get("is_admin", False)),
     }
 
 
@@ -716,8 +829,9 @@ async def delete_api_key(
 async def get_api_quota(current_user: dict = Depends(auth.get_current_user)):
     """
     Return the current user's API quota status.
-    Admins have unlimited quota (limit=None).
-    Non-admins have 50,000 requests per day.
+    Admins have unlimited quota (limit=None). Non-admins get the per-user
+    daily quota (users.daily_quota override, else DEFAULT_USER_DAILY_QUOTA,
+    default 100,000) — meters scraper-task/places/external-API volume.
     """
     is_admin = current_user.get("is_admin", False)
     status = db.get_api_quota_status(current_user["user_id"], is_admin)
@@ -741,10 +855,8 @@ async def list_jobs(
 
     store = JobStoreBase(db.get_db())
 
-    if current_user.get("is_admin"):
-        jobs = store.list_jobs(job_type=job_type, limit=200)
-    else:
-        jobs = store.list_jobs(user_id=current_user["user_id"], job_type=job_type, limit=200)
+    # Team-shared model (2026-11-26): all members see all team jobs.
+    jobs = store.list_jobs(job_type=job_type, limit=200)
 
     # Enhance enrichment jobs with user-friendly filenames
     for job in jobs:
@@ -778,9 +890,7 @@ async def get_job(job_id: str, current_user: dict = Depends(auth.get_current_use
     if not job_data:
         raise HTTPException(status_code=404, detail="Job not found.")
 
-    # Check ownership
-    if not current_user.get("is_admin") and job_data.get("user_id") != current_user["user_id"]:
-        raise HTTPException(status_code=403, detail="Access denied.")
+    # Team-shared model (2026-11-26): any member may view any team job.
 
     # Include child jobs if this is a scraper job
     if job_data.get("job_type") == "scraper":
@@ -831,9 +941,7 @@ async def chain_to_enrichment(
     if scraper_job["status"] != "done":
         raise HTTPException(status_code=400, detail="Scraper job must be complete before chaining.")
 
-    # Check ownership
-    if not current_user.get("is_admin") and scraper_job.get("user_id") != current_user["user_id"]:
-        raise HTTPException(status_code=403, detail="Access denied.")
+    # Team-shared model (2026-11-26): any member may chain off any team job.
 
     output_path = scraper_job.get("output_path")
     if not output_path or not Path(output_path).exists():
@@ -955,9 +1063,111 @@ async def admin_list_all_jobs(
 
 @admin_router.get("/users")
 async def admin_list_users(_admin: dict = Depends(auth.require_admin)):
-    """Admin-only: list all registered users."""
+    """Admin-only: list all registered users (with lifecycle + quota state)."""
     users = auth.list_users()
+    for u in users:
+        u["daily_quota_resolved"] = (
+            None if u.get("is_admin") else db.get_user_daily_quota(u["user_id"])
+        )
     return {"users": users}
+
+
+# --- Admin user management (multi-user rollout, 2026-11-26) ---------------
+# Every endpoint here is auto-audited by the middleware as admin.<action>;
+# user creation is also CLI-able via create_user.py — this surface just
+# removes the SSH dependency for arjav/atishay.
+
+class AdminCreateUserRequest(BaseModel):
+    email: str
+    password: str
+    is_admin: bool = False
+
+
+class AdminResetPasswordRequest(BaseModel):
+    new_password: str
+
+
+class AdminUserStatusRequest(BaseModel):
+    is_active: bool
+
+
+class AdminUserQuotaRequest(BaseModel):
+    daily_quota: Optional[int] = None  # None clears the override (env default)
+
+
+@admin_router.post("/users")
+async def admin_create_user(req: AdminCreateUserRequest, _admin: dict = Depends(auth.require_admin)):
+    """Admin-only: create a user (member by default)."""
+    try:
+        user = auth.create_user(email=req.email, password=req.password, is_admin=req.is_admin)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {
+        "user": {k: user[k] for k in ("user_id", "email", "is_admin", "created_at")}
+    }
+
+
+@admin_router.post("/users/{user_id}/reset-password")
+async def admin_reset_password(user_id: str, req: AdminResetPasswordRequest, _admin: dict = Depends(auth.require_admin)):
+    """Admin-only: reset a user's password."""
+    try:
+        ok = auth.reset_password_for_user(user_id, req.new_password)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not ok:
+        raise HTTPException(status_code=404, detail="User not found.")
+    return {"message": "Password updated."}
+
+
+@admin_router.post("/users/{user_id}/status")
+async def admin_set_user_status(user_id: str, req: AdminUserStatusRequest, admin: dict = Depends(auth.require_admin)):
+    """Admin-only: activate/deactivate a user. Deactivation disables all
+    their API keys in the same transaction. Self-deactivation is refused —
+    one fat click must not lock the admin out of the admin surface."""
+    if user_id == admin["user_id"] and not req.is_active:
+        raise HTTPException(status_code=400, detail="Cannot deactivate your own account.")
+    if not auth.set_user_active(user_id, req.is_active):
+        raise HTTPException(status_code=404, detail="User not found.")
+    return {"user_id": user_id, "is_active": req.is_active}
+
+
+@admin_router.post("/users/{user_id}/quota")
+async def admin_set_user_quota(user_id: str, req: AdminUserQuotaRequest, _admin: dict = Depends(auth.require_admin)):
+    """Admin-only: set/clear a per-user daily quota override. Admins are
+    exempt from metering regardless, so setting it on an admin is a no-op
+    stored for the day they're demoted."""
+    try:
+        ok = auth.set_user_quota(user_id, req.daily_quota)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not ok:
+        raise HTTPException(status_code=404, detail="User not found.")
+    db.invalidate_quota_cache(user_id)
+    return {
+        "user_id": user_id,
+        "daily_quota": req.daily_quota,
+        "daily_quota_resolved": db.get_user_daily_quota(user_id),
+    }
+
+
+@admin_router.get("/activity")
+async def admin_activity(
+    email: Optional[str] = None,
+    action: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+    _admin: dict = Depends(auth.require_admin),
+):
+    """Admin-only: filterable feed from the audit log (who did what)."""
+    limit = min(max(1, limit), 200)
+    offset = max(0, offset)
+    events, total = audit.query_activity(
+        email=email, action=action, since=since, until=until,
+        limit=limit, offset=offset,
+    )
+    return {"events": events, "total": total, "limit": limit, "offset": offset}
 
 
 # Include shared and admin routers

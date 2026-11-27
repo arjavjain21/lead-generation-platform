@@ -138,6 +138,24 @@ def get_user_phone_jobs(user_id: str, limit: int = 50) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def list_phone_jobs(limit: int = 50) -> list[dict[str, Any]]:
+    """Most recent phone enrichment jobs across ALL users.
+
+    Team-shared model (2026-11-26): the phone page lists team jobs like the
+    scraper/enrichment pages do. get_user_phone_jobs kept for per-user views."""
+    db = get_db()
+    rows = db.execute(
+        """
+        SELECT * FROM jobs
+        WHERE job_type = 'phone_enrichment'
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def update_job_status(job_id: str, status: str) -> None:
     """Update job status."""
     db = get_db()

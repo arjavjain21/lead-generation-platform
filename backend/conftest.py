@@ -32,6 +32,7 @@ os.environ.setdefault("ENABLE_MCP_ORACLE", "false")
 os.environ.setdefault("ENABLE_STARTUP_REAPERS", "false")
 os.environ.setdefault("ENABLE_BLITZ_MISS_SKIP", "false")
 os.environ.setdefault("LEADOCEAN_GUARDS_ARMED", "false")
+os.environ.setdefault("ENABLE_AUDIT_LOG", "false")
 
 # 4. Env-leak guard (2026-10-15): several modules run ``load_dotenv()`` at
 #    IMPORT time — ``main`` (endpoint tests) and the root-level
@@ -78,6 +79,31 @@ os.environ.setdefault("ENABLE_MCP_ORACLE", "false")
 os.environ.setdefault("ENABLE_STARTUP_REAPERS", "false")
 os.environ.setdefault("ENABLE_BLITZ_MISS_SKIP", "false")
 os.environ.setdefault("LEADOCEAN_GUARDS_ARMED", "false")
+# 5. ENABLE_AUDIT_LOG=false — the audit middleware is registered
+#    unconditionally in main.py, but self-gates per request on
+#    audit.AUDIT_ENABLED (read from this env at shared.audit import).
+#    Without this guard, every TestClient POST in every existing suite
+#    would flow through the middleware and write audit rows into the REAL
+#    jobs.db user_activity_log (tests share the prod DB path). Audit tests
+#    flip the module attribute back on with a monkeypatched temp DB.
+os.environ.setdefault("ENABLE_AUDIT_LOG", "false")
+
+# 6. Call-tracker backfill no-op (2026-11-27): every TestClient lifespan
+#    starts _call_tracker_purge_loop → backfill_call_log_daily, which full-
+#    scans the 21M-row provider_call_log (SELECT DISTINCT day) plus one
+#    transaction per day — minutes of event-loop-blocking SQLite PER TEST
+#    lifespan on this box (observed 2026-11-27: single tests hanging >90s in
+#    fixture setup; whole suites freezing). It is telemetry catch-up for the
+#    daily rollup; NO test asserts on it (grep-verified). Patched to a no-op
+#    for the whole pytest process — production startup is untouched.
+import sys as _sys
+if os.path.abspath(os.path.dirname(__file__)) not in _sys.path:
+    _sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+try:
+    from enrichment import call_tracker as _call_tracker
+    _call_tracker.backfill_call_log_daily = lambda: {"days": 0, "rows": 0}
+except Exception:  # pragma: no cover — import failures shouldn't kill collection
+    pass
 
 _SESSION_ENV_START = dict(os.environ)
 

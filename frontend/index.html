@@ -1180,6 +1180,8 @@
             <div class="nav-section">
                 <div class="nav-section-title">Resources</div>
                 <a class="nav-item" href="#" data-page="apikeys"><span class="nav-icon" aria-label="API Keys"><i data-lucide="key"></i></span>API Keys</a>
+                <!-- Team (admin-only): hidden unless updateUserUI sees user.is_admin -->
+                <a class="nav-item" href="#" data-page="team" id="navTeam" style="display:none;"><span class="nav-icon" aria-label="Team"><i data-lucide="users-round"></i></span>Team</a>
                 <a class="nav-item" href="#" data-page="help"><span class="nav-icon" aria-label="Help & Guide"><i data-lucide="help-circle"></i></span>Help & Guide</a>
             </div>
         </nav>
@@ -2978,6 +2980,72 @@ example.org,Jane Doe</pre>
 }</pre>
             </div>
         </div>
+
+        <!-- Team (admin-only): user management + activity audit feed. Nav item
+             stays hidden until updateUserUI sees user.is_admin. -->
+        <div class="page" id="page-team">
+            <div class="welcome-card" style="background: linear-gradient(135deg, #1a315d 0%, #122544 100%);">
+                <h2>Team</h2>
+                <p>Manage user accounts and see who did what across the platform.</p>
+            </div>
+
+            <div class="form-card">
+                <h3>Users</h3>
+                <div id="teamUsersError" class="validation-message error" style="display:none;"></div>
+                <div id="teamUsersList"><div class="loading">Loading...</div></div>
+            </div>
+
+            <div class="form-card">
+                <h3>Add User</h3>
+                <div style="display: flex; gap: 1rem; align-items: flex-end; flex-wrap: wrap;">
+                    <div class="form-group" style="flex: 2; min-width: 220px; margin-bottom: 0;">
+                        <label>Email</label>
+                        <input type="email" id="teamNewEmail" placeholder="name@eagleinfoservice.com">
+                    </div>
+                    <div class="form-group" style="flex: 2; min-width: 180px; margin-bottom: 0;">
+                        <label>Password (min 8 chars)</label>
+                        <input type="text" id="teamNewPassword" placeholder="temporary password">
+                    </div>
+                    <div class="form-group" style="flex: 0; margin-bottom: 0.4rem;">
+                        <label style="display:flex; gap:0.4rem; align-items:center; font-weight:400;">
+                            <input type="checkbox" id="teamNewAdmin"> Admin
+                        </label>
+                    </div>
+                    <button class="btn btn-primary" id="teamCreateBtn">Create User</button>
+                </div>
+                <span class="field-helper">Members see and act on all team jobs. Admins additionally manage users here.</span>
+            </div>
+
+            <div class="form-card">
+                <h3>Recent Activity</h3>
+                <div style="display: flex; gap: 0.75rem; align-items: flex-end; flex-wrap: wrap; margin-bottom: 0.75rem;">
+                    <div class="form-group" style="flex: 2; min-width: 200px; margin-bottom: 0;">
+                        <label>Email</label>
+                        <input type="text" id="teamActivityEmail" placeholder="filter by user email">
+                    </div>
+                    <div class="form-group" style="flex: 1.5; min-width: 160px; margin-bottom: 0;">
+                        <label>Action</label>
+                        <select id="teamActivityAction">
+                            <option value="">All actions</option>
+                            <option value="login">login</option>
+                            <option value="login_failed">login_failed</option>
+                            <option value="login_locked_out">login_locked_out</option>
+                            <option value="download">download</option>
+                            <option value="job.cancel">job.cancel</option>
+                            <option value="job.restart">job.restart</option>
+                            <option value="job.resume">job.resume</option>
+                            <option value="job.chain">job.chain</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-secondary" id="teamActivityApply">Apply</button>
+                </div>
+                <div id="teamActivityList"><div class="loading">Loading...</div></div>
+                <div style="margin-top: 0.75rem; text-align: center;">
+                    <button class="btn btn-secondary btn-sm" id="teamActivityMore" style="display:none;">Load more</button>
+                </div>
+                <span class="field-helper">Retention: 90 days. Covers job actions, downloads, logins and admin operations.</span>
+            </div>
+        </div>
     </main>
     
     <script>
@@ -3247,6 +3315,9 @@ example.org,Jane Doe</pre>
             userEmailEl.textContent = email;
             userEmailEl.title = email;
             document.getElementById('userAvatar').textContent = email.charAt(0).toUpperCase();
+            // Team page is admin-only — gate the nav item (server enforces too).
+            const navTeam = document.getElementById('navTeam');
+            if (navTeam) navTeam.style.display = (user && user.is_admin) ? '' : 'none';
         }
         
         document.getElementById('loginForm').addEventListener('submit', async (e) => {
@@ -3370,6 +3441,7 @@ example.org,Jane Doe</pre>
             'enrichment-jobs': 'jobs',
             'help': 'help',
             'api-keys': 'apikeys',
+            'team': 'team',
         };
 
         function getRouteFromHash() {
@@ -3406,6 +3478,13 @@ example.org,Jane Doe</pre>
             if (pageId === 'search') loadTamRuns();
             if (pageId === 'apikeys') loadApiKeys();
             if (pageId === 'explorer') initExplorerPage();
+            if (pageId === 'team') {
+                // Server enforces admin on every /api/admin call anyway; this
+                // guard just avoids rendering an empty page for members.
+                if (!(user && user.is_admin)) { navigateToPage('home'); return; }
+                loadTeamUsers();
+                loadTeamActivity(true);
+            }
         }
 
         function navigateToPage(page) {
@@ -3902,6 +3981,169 @@ example.org,Jane Doe</pre>
         }
 
         document.getElementById('createApiKeyBtn')?.addEventListener('click', createApiKey);
+
+        // =============================================================================
+        // Team page (admin-only): user management + activity audit feed
+        // (multi-user rollout 2026-11-26). All calls go to /api/admin/* which
+        // enforces require_admin server-side; the page itself is gated in
+        // handleHashChange + updateUserUI.
+        // =============================================================================
+
+        let teamActivityOffset = 0;
+        const TEAM_ACTIVITY_PAGE = 50;
+
+        async function loadTeamUsers() {
+            const listEl = document.getElementById('teamUsersList');
+            if (!listEl) return;
+            try {
+                const res = await fetch('/api/admin/users', { headers: { 'Authorization': 'Bearer ' + token } });
+                if (!res.ok) { listEl.innerHTML = '<div class="empty-state">Failed to load users (admin only).</div>'; return; }
+                const users = (await res.json()).users || [];
+                if (!users.length) { listEl.innerHTML = '<div class="empty-state">No users found.</div>'; return; }
+                listEl.innerHTML = users.map(u => `
+                    <div style="padding: 0.75rem; border-bottom: 1px solid var(--gray-200);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
+                            <div>
+                                <div style="font-weight: 500;">${escHtml(u.email)}
+                                    ${u.is_admin ? '<span style="font-size:0.65rem; background:#1a315d; color:#fff; padding:0.1rem 0.4rem; border-radius:4px; margin-left:0.4rem;">admin</span>' : ''}
+                                    ${!u.is_active ? '<span style="font-size:0.65rem; background:#fee2e2; color:#dc2626; padding:0.1rem 0.4rem; border-radius:4px; margin-left:0.4rem;">disabled</span>' : ''}
+                                </div>
+                                <div style="font-size: 0.75rem; color: var(--gray-500);">
+                                    Quota: ${u.is_admin ? 'unlimited' : (u.daily_quota != null ? u.daily_quota.toLocaleString() + '/day' : 'default (' + (u.daily_quota_resolved || 100000).toLocaleString() + '/day)')}
+                                    ${u.last_login_at ? ' | Last login: ' + new Date(u.last_login_at).toLocaleString() : ' | Never logged in'}
+                                </div>
+                            </div>
+                            <div style="display: flex; gap: 0.4rem; flex-wrap: wrap;">
+                                <button class="btn btn-secondary btn-sm" onclick="teamResetPassword('${u.user_id}', '${escHtml(u.email)}')">Reset password</button>
+                                <button class="btn btn-secondary btn-sm" onclick="teamSetQuota('${u.user_id}', ${u.daily_quota == null ? 'null' : u.daily_quota})">${u.is_admin ? 'Quota' : 'Set quota'}</button>
+                                <button class="btn btn-secondary btn-sm" onclick="teamToggleActive('${u.user_id}', ${u.is_active ? 'false' : 'true'})" style="${u.is_active ? 'background:#fee2e2;color:#dc2626;' : ''}">${u.is_active ? 'Deactivate' : 'Activate'}</button>
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (e) {
+                console.error('Failed to load team users:', e);
+                listEl.innerHTML = '<div class="empty-state">Failed to load users.</div>';
+            }
+        }
+
+        async function teamCreateUser() {
+            const email = document.getElementById('teamNewEmail').value.trim();
+            const password = document.getElementById('teamNewPassword').value;
+            const is_admin = document.getElementById('teamNewAdmin').checked;
+            const errEl = document.getElementById('teamUsersError');
+            errEl.style.display = 'none';
+            try {
+                const res = await fetch('/api/admin/users', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, password, is_admin })
+                });
+                if (!res.ok) {
+                    const body = await res.json().catch(() => ({}));
+                    errEl.textContent = body.detail || 'Failed to create user.';
+                    errEl.style.display = 'block';
+                    return;
+                }
+                document.getElementById('teamNewEmail').value = '';
+                document.getElementById('teamNewPassword').value = '';
+                document.getElementById('teamNewAdmin').checked = false;
+                loadTeamUsers();
+            } catch (e) {
+                errEl.textContent = 'Failed to create user: ' + e.message;
+                errEl.style.display = 'block';
+            }
+        }
+
+        async function teamResetPassword(userId, email) {
+            const pw = prompt('New password for ' + email + ' (min 8 characters):');
+            if (!pw) return;
+            try {
+                const res = await fetch('/api/admin/users/' + userId + '/reset-password', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ new_password: pw })
+                });
+                if (res.ok) { alert('Password updated for ' + email); }
+                else { const b = await res.json().catch(() => ({})); alert(b.detail || 'Failed to reset password'); }
+            } catch (e) { alert('Failed to reset password: ' + e.message); }
+        }
+
+        async function teamToggleActive(userId, makeActive) {
+            const verb = makeActive ? 'activate' : 'deactivate';
+            if (!confirm('Are you sure you want to ' + verb + ' this account? Deactivating also disables all their API keys.')) return;
+            try {
+                const res = await fetch('/api/admin/users/' + userId + '/status', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ is_active: makeActive })
+                });
+                if (res.ok) { loadTeamUsers(); }
+                else { const b = await res.json().catch(() => ({})); alert(b.detail || 'Failed to ' + verb + ' user'); }
+            } catch (e) { alert('Failed to ' + verb + ': ' + e.message); }
+        }
+
+        async function teamSetQuota(userId, currentQuota) {
+            const input = prompt('Daily request quota (scraper/external task volume). Leave empty for the default, 0 is not allowed.\nCurrent: ' + (currentQuota == null ? 'default' : currentQuota.toLocaleString()), currentQuota == null ? '' : String(currentQuota));
+            if (input === null) return;
+            const trimmed = input.trim();
+            const body = trimmed === '' ? { daily_quota: null } : { daily_quota: parseInt(trimmed, 10) };
+            if (trimmed !== '' && (isNaN(body.daily_quota) || body.daily_quota < 1)) { alert('Quota must be a positive number.'); return; }
+            try {
+                const res = await fetch('/api/admin/users/' + userId + '/quota', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                if (res.ok) { loadTeamUsers(); }
+                else { const b = await res.json().catch(() => ({})); alert(b.detail || 'Failed to set quota'); }
+            } catch (e) { alert('Failed to set quota: ' + e.message); }
+        }
+
+        async function loadTeamActivity(reset) {
+            const listEl = document.getElementById('teamActivityList');
+            if (!listEl) return;
+            if (reset) { teamActivityOffset = 0; listEl.innerHTML = '<div class="loading">Loading...</div>'; }
+            const email = document.getElementById('teamActivityEmail').value.trim();
+            const action = document.getElementById('teamActivityAction').value;
+            const params = new URLSearchParams({ limit: String(TEAM_ACTIVITY_PAGE), offset: String(teamActivityOffset) });
+            if (email) params.set('email', email);
+            if (action) params.set('action', action);
+            try {
+                const res = await fetch('/api/admin/activity?' + params.toString(), { headers: { 'Authorization': 'Bearer ' + token } });
+                if (!res.ok) { listEl.innerHTML = '<div class="empty-state">Failed to load activity (admin only).</div>'; return; }
+                const data = await res.json();
+                const events = data.events || [];
+                const rows = events.map(ev => `
+                    <div style="padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--gray-200); font-size: 0.8rem; display: flex; gap: 0.75rem; flex-wrap: wrap;">
+                        <span style="color: var(--gray-500); min-width: 9.5rem;">${new Date(ev.ts).toLocaleString()}</span>
+                        <span style="min-width: 10rem;">${escHtml(ev.email || ev.user_id || 'anonymous')}</span>
+                        <span style="min-width: 7rem;"><strong>${escHtml(ev.action)}</strong>${ev.status ? ' <span style="color:' + (ev.status < 400 ? '#16a34a' : '#dc2626') + '">(' + ev.status + ')</span>' : ''}</span>
+                        <span style="color: var(--gray-500); flex: 1; word-break: break-all;">${escHtml(ev.method || '')} ${escHtml(ev.path || '')}${ev.resource_id ? ' · ' + escHtml(ev.resource_id) : ''}${ev.ip ? ' · ' + escHtml(ev.ip) : ''}</span>
+                    </div>
+                `).join('');
+                if (reset) {
+                    listEl.innerHTML = rows || '<div class="empty-state">No activity found.</div>';
+                } else {
+                    listEl.insertAdjacentHTML('beforeend', rows);
+                }
+                teamActivityOffset += events.length;
+                document.getElementById('teamActivityMore').style.display =
+                    (teamActivityOffset < data.total) ? '' : 'none';
+            } catch (e) {
+                console.error('Failed to load activity:', e);
+                listEl.innerHTML = '<div class="empty-state">Failed to load activity.</div>';
+            }
+        }
+
+        document.getElementById('teamCreateBtn')?.addEventListener('click', teamCreateUser);
+        document.getElementById('teamActivityApply')?.addEventListener('click', () => loadTeamActivity(true));
+        document.getElementById('teamActivityMore')?.addEventListener('click', () => loadTeamActivity(false));
+        // Inline onclick handlers in rendered rows need these on window
+        // (third outbreak of this bug class — see test window-export guards).
+        window.teamResetPassword = teamResetPassword;
+        window.teamToggleActive = teamToggleActive;
+        window.teamSetQuota = teamSetQuota;
 
         // Domain Upload
         const domainUploadZone = document.getElementById('domainUploadZone'), domainFile = document.getElementById('domainFile');
@@ -8202,6 +8444,13 @@ example.org,Jane Doe</pre>
                         const _src = _srcKey ? _srcMap[_srcKey] : null;
                         const sourceChip = _src ? '<span class="file-chip" style="color:' + _src.c + ';background:' + _src.b + ';" title="Origin: ' + _srcKey + '">' + _src.t + '</span>' : '';
 
+                        // Owner badge (2026-11-26): WHO ran this job — shown
+                        // when the owner isn't the logged-in user (own jobs
+                        // stay unlabeled; the board is team-shared).
+                        const ownerChip = (job.user_email && (!user || job.user_email !== user.email))
+                            ? '<span class="file-chip" style="color:#4c1d95;background:#ede9fe;" title="Run by ' + esc(job.user_email) + '">👤 ' + esc(job.user_email.split('@')[0]) + '</span>'
+                            : '';
+
                         // Title-gate badge (2026-09-28): surface the strict-titles
                         // setting at a glance. The Sep-23 museums confusion was
                         // two uploads of one file — one strict, one not — and
@@ -8266,6 +8515,7 @@ example.org,Jane Doe</pre>
                             + '<div class="job-meta">' + metaHtml + '</div>'
                             + fileChip
                             + sourceChip
+                            + ownerChip
                             + titleGateChip + catchAllChip
                             + (ctx.chainBadge || '')
                             + supersededBadge
@@ -8684,11 +8934,17 @@ example.org,Jane Doe</pre>
                     ? '<span class="file-chip file-missing" title="Result file is no longer on disk">⊘ File unavailable</span>'
                     : '<span class="file-chip file-ready" title="Result file is ready">✓ File ready</span>') : '';
 
+                // Owner badge (2026-11-26): hidden on the owner's own cards.
+                const ownerChip = (job.user_email && (!user || job.user_email !== user.email))
+                    ? '<span class="file-chip" style="color:#4c1d95;background:#ede9fe;" title="Run by ' + escHtml(job.user_email) + '">👤 ' + escHtml(job.user_email.split('@')[0]) + '</span>'
+                    : '';
+
                 return '<div class="job-card scraper-job">'
                     + '<div class="job-info">'
                     + '<h4 class="scraper-job-title">' + (job.display_name || job.query || 'Scraper Job') + '</h4>'
                     + '<div class="job-meta">' + metaHtml + '</div>'
                     + fileChip
+                    + ownerChip
                     + errorInfo
                     + '</div>'
                     + '<div class="job-status-wrap">' + statusBadge + '</div>'

@@ -707,7 +707,10 @@ class TestQuotaAndKillSwitch:
         try:
             r = client.get("/api/external/scraper/quota")
             data = r.json()["data"]
-            assert data["limit"] == 50_000
+            # Per-user daily quota (multi-user rollout 2026-11-26): the
+            # ceiling is users.daily_quota else db.DEFAULT_USER_DAILY_QUOTA
+            # (env-tunable, default 100k) — no longer the old fixed 50k.
+            assert data["limit"] == db.DEFAULT_USER_DAILY_QUOTA
             assert data["external_task_limit"] > 0
             assert data["resets_at"]
         finally:

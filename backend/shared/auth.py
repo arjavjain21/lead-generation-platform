@@ -118,6 +118,22 @@ def init_auth_db() -> None:
         );
         """
     )
+    # Guarded ALTERs (multi-user rollout, 2026-11-26), same pattern as
+    # shared/db.py init_db: is_active gates logins AND API keys
+    # (verify_api_key rejects deactivated users); daily_quota overrides
+    # db.DEFAULT_USER_DAILY_QUOTA per user (NULL = env default);
+    # last_login_at/ip are written once per successful login. ADD COLUMN
+    # with a constant default is metadata-only in SQLite — no table rewrite
+    # on the live 12 GB database.
+    user_cols = {row[1] for row in c.execute("PRAGMA table_info(users)").fetchall()}
+    if "is_active" not in user_cols:
+        c.execute("ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
+    if "daily_quota" not in user_cols:
+        c.execute("ALTER TABLE users ADD COLUMN daily_quota INTEGER")
+    if "last_login_at" not in user_cols:
+        c.execute("ALTER TABLE users ADD COLUMN last_login_at TEXT")
+    if "last_login_ip" not in user_cols:
+        c.execute("ALTER TABLE users ADD COLUMN last_login_ip TEXT")
     c.commit()
 
 
@@ -161,9 +177,113 @@ def get_user_by_id(user_id: str) -> Optional[dict[str, Any]]:
 
 def list_users() -> list[dict[str, Any]]:
     rows = _conn().execute(
-        "SELECT user_id, email, is_admin, created_at FROM users ORDER BY created_at DESC"
+        "SELECT user_id, email, is_admin, is_active, daily_quota, "
+        "last_login_at, last_login_ip, created_at FROM users ORDER BY created_at DESC"
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# User lifecycle (admin-managed, multi-user rollout 2026-11-26)
+# ---------------------------------------------------------------------------
+
+def set_user_active(user_id: str, active: bool) -> bool:
+    """Activate/deactivate a user. Returns False if the user doesn't exist.
+
+    Deactivation also disables all their API keys in the same transaction —
+    otherwise the toggle would be cosmetic for automation accounts.
+    verify_api_key() independently rejects deactivated users, but killing
+    the keys makes the revocation durable and visible in key listings.
+    Re-activation deliberately does NOT resurrect keys; new keys are minted
+    on purpose.
+    """
+    conn = _conn()
+    row = conn.execute(
+        "SELECT user_id FROM users WHERE user_id = ?", (user_id,)
+    ).fetchone()
+    if row is None:
+        return False
+    conn.execute(
+        "UPDATE users SET is_active = ? WHERE user_id = ?",
+        (1 if active else 0, user_id),
+    )
+    if not active:
+        conn.execute(
+            "UPDATE api_keys SET is_active = 0 WHERE user_id = ?", (user_id,)
+        )
+    conn.commit()
+    return True
+
+
+def set_user_quota(user_id: str, quota: Optional[int]) -> bool:
+    """Set a per-user daily request quota override.
+
+    ``quota=None`` clears the override (falls back to the env default).
+    Returns False if the user doesn't exist. Cache invalidation is handled
+    by the admin endpoint (db.invalidate_quota_cache) — this module must not
+    import shared.db (circular: db imports nothing from auth today, keep it
+    that way).
+    """
+    conn = _conn()
+    row = conn.execute(
+        "SELECT user_id FROM users WHERE user_id = ?", (user_id,)
+    ).fetchone()
+    if row is None:
+        return False
+    if quota is not None and quota < 1:
+        raise ValueError("Quota must be a positive integer or null.")
+    conn.execute(
+        "UPDATE users SET daily_quota = ? WHERE user_id = ?", (quota, user_id)
+    )
+    conn.commit()
+    return True
+
+
+def reset_password_for_user(user_id: str, new_password: str) -> bool:
+    """Admin-initiated password reset by user_id (vs update_password's email)."""
+    if len(new_password) < 8:
+        raise ValueError("Password must be at least 8 characters.")
+    conn = _conn()
+    row = conn.execute(
+        "SELECT user_id FROM users WHERE user_id = ?", (user_id,)
+    ).fetchone()
+    if row is None:
+        return False
+    password_hash = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
+    conn.execute(
+        "UPDATE users SET password_hash = ? WHERE user_id = ?",
+        (password_hash, user_id),
+    )
+    conn.commit()
+    return True
+
+
+def record_login(user_id: str, ip: str) -> None:
+    """Stamp last_login_at/ip on successful login. Telemetry only — best
+    effort, never fails the login (~5 writes/day, safe to do inline)."""
+    try:
+        conn = _conn()
+        conn.execute(
+            "UPDATE users SET last_login_at = ?, last_login_ip = ? WHERE user_id = ?",
+            (_now(), ip, user_id),
+        )
+        conn.commit()
+    except sqlite3.Error as exc:
+        logger.warning("last_login update failed for %s (non-fatal): %s", user_id, exc)
+
+
+def emails_for_user_ids(user_ids) -> dict[str, str]:
+    """Batch user_id → email map for job-list owner badges. One indexed
+    SELECT per list render, regardless of how many distinct owners."""
+    ids = sorted({u for u in user_ids if u})
+    if not ids:
+        return {}
+    placeholders = ",".join("?" * len(ids))
+    rows = _conn().execute(
+        f"SELECT user_id, email FROM users WHERE user_id IN ({placeholders})",
+        ids,
+    ).fetchall()
+    return {r["user_id"]: r["email"] for r in rows}
 
 
 def update_password(email: str, new_password: str) -> None:
@@ -419,9 +539,11 @@ def verify_api_key(api_key: str) -> Optional[dict[str, Any]]:
     # last_used_at telemetry (debounced, best-effort — never auth-critical).
     _touch_last_used(row["key_id"])
 
-    # Get user info
+    # Get user info. Deactivated users fail closed even with an active key
+    # (multi-user rollout 2026-11-26): without this check the admin disable
+    # toggle would be cosmetic for automation accounts whose keys stay on.
     user = get_user_by_id(row["user_id"])
-    if not user:
+    if not user or not user.get("is_active", 1):
         return None
 
     return {
@@ -440,3 +562,54 @@ def get_api_key_by_id(key_id: str, user_id: str) -> Optional[dict[str, Any]]:
         (key_id, user_id),
     ).fetchone()
     return dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# Request identity resolution (shared by MCP + audit middleware)
+# ---------------------------------------------------------------------------
+
+def resolve_request_identity(request: Any) -> Optional[dict[str, Any]]:
+    """Best-effort identity resolution straight off a request object.
+
+    Order: ``X-API-Key`` header → ``Authorization: Bearer`` (``lgp_`` API
+    key first, then JWT payload). Returns the user dict (keys carry
+    key_id/key_name) or None — never raises; a 401 from decode_token is
+    treated as "unidentified" because the audit log records anonymous
+    requests too.
+
+    Deliberately synchronous — the API-key path hits SQLite, so event-loop
+    callers must wrap it in ``run_in_threadpool`` (the same discipline as
+    MCPAuthMiddleware; see the RCA note there). Single source of truth so
+    the MCP gate and the audit trail can never disagree about who called.
+    """
+    # Path A: API key in X-API-Key header.
+    api_key = request.headers.get("x-api-key")
+    if api_key:
+        try:
+            user = verify_api_key(api_key)
+        except Exception:
+            user = None
+        if user:
+            return user
+
+    # Path B: Bearer token (JWT or lgp_ API key — the auth layer accepts both).
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header[7:].strip()
+        if not token:
+            return None
+        if token.startswith("lgp_"):
+            try:
+                user = verify_api_key(token)
+            except Exception:
+                user = None
+            if user:
+                return user
+        try:
+            payload = decode_token(token)
+        except Exception:
+            return None
+        if payload:
+            return payload
+
+    return None

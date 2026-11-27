@@ -85,9 +85,8 @@ def _detect_linkedin_column(columns: list[str]) -> Optional[str]:
 async def list_phone_jobs(
     user: dict = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """List all phone enrichment jobs for the current user."""
-    user_id = _get_user_id(user)
-    jobs = job_store.get_user_phone_jobs(user_id)
+    """List phone enrichment jobs (all team jobs — team-shared model, 2026-11-26)."""
+    jobs = job_store.list_phone_jobs()
 
     # Convert to response format
     return {
@@ -199,15 +198,12 @@ async def get_phone_job(
     user: dict = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Get details of a phone enrichment job."""
-    user_id = _get_user_id(user)
     job = job_store.get_phone_job(job_id)
 
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    # Verify ownership
-    if job.get("user_id") != user_id:
-        raise HTTPException(status_code=403, detail="Access denied")
+    # Team-shared model (2026-11-26): any member may view any team job.
 
     # Never leak the server-absolute output_path to the client (Fix 6). The
     # download endpoint already serves the file by job_id, so expose only a
@@ -238,14 +234,10 @@ async def stream_phone_job(
     """
     SSE stream for job progress updates.
     """
-    user_id = _get_user_id(user)
-
-    # Verify job exists and belongs to user
+    # Team-shared model (2026-11-26): any member may stream any team job.
     job = job_store.get_phone_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    if job.get("user_id") != user_id:
-        raise HTTPException(status_code=403, detail="Access denied")
 
     # Create event for this job if not exists
     if job_id not in _job_signals:
@@ -305,14 +297,12 @@ async def download_phone_results(
     user: dict = Depends(get_current_user),
 ):
     """Download the enriched CSV file."""
-    user_id = _get_user_id(user)
-
     job = job_store.get_phone_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    if job.get("user_id") != user_id:
-        raise HTTPException(status_code=403, detail="Access denied")
+    # Team-shared model (2026-11-26): any member may download any team job's
+    # result — the download itself is attributed in the audit log.
 
     if job.get("status") != "done":
         raise HTTPException(status_code=400, detail="Job not completed yet")
@@ -427,8 +417,7 @@ async def cancel_phone_job(
 
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    if job.get("user_id") != user_id:
-        raise HTTPException(status_code=403, detail="Access denied")
+    # Team-shared model (2026-11-26): any member may cancel any team job.
     if job["status"] not in ("queued", "running"):
         raise HTTPException(status_code=400, detail="Only running or queued jobs can be cancelled")
 

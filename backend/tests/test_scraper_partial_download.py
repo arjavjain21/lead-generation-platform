@@ -296,7 +296,10 @@ class TestStatusGateAndAuth:
         job_id, _, _ = running_job
         assert client.get(f"/api/scraper/jobs/{job_id}/partial-download").status_code == 404
 
-    def test_non_owner_gets_403(self, running_job):
+    def test_non_owner_allowed_team_model(self, running_job):
+        # Team-shared model (2026-11-26): a foreign member is no longer
+        # 403-denied on team jobs — these endpoints serve them exactly like
+        # the owner (the download itself is audit-attributed).
         from fastapi.testclient import TestClient
         from main import app
 
@@ -311,8 +314,8 @@ class TestStatusGateAndAuth:
         try:
             with TestClient(app) as c:
                 for ep in ("partial-progress", "shards", "partial-download"):
-                    assert c.get(f"/api/scraper/jobs/{job_id}/{ep}").status_code == 403
-                assert c.get(f"/api/scraper/jobs/{job_id}/shard/0").status_code == 403
+                    assert c.get(f"/api/scraper/jobs/{job_id}/{ep}").status_code == 200
+                assert c.get(f"/api/scraper/jobs/{job_id}/shard/0").status_code == 200
         finally:
             app.dependency_overrides.clear()
 
